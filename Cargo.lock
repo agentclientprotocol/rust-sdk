@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -42,8 +42,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "0.4.6"
-source = "git+https://github.com/agentclientprotocol/agent-client-protocol.git#935857fc830cb0243a1dfac1dd58cb2d37741ac7"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db625c1cb83729cb7d04080fff35cabe7f68870f31e003546aa99565beccb11a"
 dependencies = [
  "anyhow",
  "schemars",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.7 (2025-10-13)
+
+- Depend on `agent-client-protocol-schema` for schema types
+
 ## 0.4.6 (2025-10-10)
 
 ### Rust
