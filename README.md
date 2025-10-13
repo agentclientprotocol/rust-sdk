@@ -51,12 +51,12 @@ ACP is a protocol intended for broad adoption across the ecosystem; we follow a 
 
 ### Pull Requests
 
-Pull requests should intend to close [an existing issue](https://github.com/agentclientprotocol/agent-client-protocol/issues).
+Pull requests should intend to close [an existing issue](https://github.com/agentclientprotocol/rust-sdk/issues).
 
 ### Issues
 
-- **Bug Reports**: If you notice a bug in the protocol, please file [an issue](https://github.com/agentclientprotocol/agent-client-protocol/issues/new?template=05_bug_report.yml) and we will be in touch.
-- **Protocol Suggestions**: If you'd like to propose additions or changes to the protocol, please start a [discussion](https://github.com/agentclientprotocol/agent-client-protocol/discussions/categories/protocol-suggestions) first. We want to make sure proposed suggestions align well with the project. If accepted, we can have a conversation around the implementation of these changes. Once that is complete, we will create an issue for pull requests to target.
+- **Bug Reports**: If you notice a bug in the protocol, please file [an issue](https://github.com/agentclientprotocol/rust-sdk/issues/new?template=05_bug_report.yml) and we will be in touch.
+- **Protocol Suggestions**: If you'd like to propose additions or changes to the protocol, please start a [discussion](https://github.com/agentclientprotocol/rust-sdk/discussions/categories/protocol-suggestions) first. We want to make sure proposed suggestions align well with the project. If accepted, we can have a conversation around the implementation of these changes. Once that is complete, we will create an issue for pull requests to target.
 
 ### License
 
