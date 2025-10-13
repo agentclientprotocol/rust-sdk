@@ -14,10 +14,7 @@
 
 use std::cell::Cell;
 
-use agent_client_protocol::{
-    self as acp, AuthenticateResponse, Client, ExtNotification, ExtRequest, ExtResponse,
-    SessionNotification, SetSessionModeResponse,
-};
+use agent_client_protocol::{self as acp, Client as _};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -56,9 +53,9 @@ impl acp::Agent for ExampleAgent {
     async fn authenticate(
         &self,
         arguments: acp::AuthenticateRequest,
-    ) -> Result<AuthenticateResponse, acp::Error> {
+    ) -> Result<acp::AuthenticateResponse, acp::Error> {
         log::info!("Received authenticate request {arguments:?}");
-        Ok(AuthenticateResponse::default())
+        Ok(acp::AuthenticateResponse::default())
     }
 
     async fn new_session(
@@ -99,7 +96,7 @@ impl acp::Agent for ExampleAgent {
             let (tx, rx) = oneshot::channel();
             self.session_update_tx
                 .send((
-                    SessionNotification {
+                    acp::SessionNotification {
                         session_id: arguments.session_id.clone(),
                         update: acp::SessionUpdate::AgentMessageChunk { content },
                         meta: None,
@@ -125,7 +122,7 @@ impl acp::Agent for ExampleAgent {
         args: acp::SetSessionModeRequest,
     ) -> Result<acp::SetSessionModeResponse, acp::Error> {
         log::info!("Received set session mode request {args:?}");
-        Ok(SetSessionModeResponse::default())
+        Ok(acp::SetSessionModeResponse::default())
     }
 
     #[cfg(feature = "unstable")]
@@ -137,7 +134,7 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModelResponse::default())
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, acp::Error> {
+    async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         log::info!(
             "Received extension method call: method={}, params={:?}",
             args.method,
@@ -146,7 +143,7 @@ impl acp::Agent for ExampleAgent {
         Ok(serde_json::value::to_raw_value(&json!({"example": "response"}))?.into())
     }
 
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), acp::Error> {
+    async fn ext_notification(&self, args: acp::ExtNotification) -> Result<(), acp::Error> {
         log::info!(
             "Received extension notification: method={}, params={:?}",
             args.method,

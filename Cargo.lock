@@ -21,7 +21,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "agent-client-protocol"
 version = "0.4.6"
 dependencies = [
- "agent-client-protocol 0.4.6 (git+https://github.com/agentclientprotocol/agent-client-protocol.git)",
+ "agent-client-protocol-schema",
  "anyhow",
  "async-broadcast",
  "async-trait",
@@ -41,16 +41,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "agent-client-protocol"
+name = "agent-client-protocol-schema"
 version = "0.4.6"
-source = "git+https://github.com/agentclientprotocol/agent-client-protocol.git#e9f9b2707f0ad1582a4f193fab578f6ec2d0711a"
+source = "git+https://github.com/agentclientprotocol/agent-client-protocol.git#935857fc830cb0243a1dfac1dd58cb2d37741ac7"
 dependencies = [
  "anyhow",
- "async-broadcast",
- "async-trait",
- "futures",
- "log",
- "parking_lot",
  "schemars",
  "serde",
  "serde_json",

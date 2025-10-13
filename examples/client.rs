@@ -12,9 +12,7 @@
 //! cargo build --example agent && cargo run --example client -- target/debug/examples/agent
 //! ```
 
-use agent_client_protocol::{
-    self as acp, Agent, ExtNotification, ExtRequest, ExtResponse, KillTerminalCommandResponse,
-};
+use agent_client_protocol::{self as acp, Agent as _};
 use anyhow::bail;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -74,7 +72,7 @@ impl acp::Client for ExampleClient {
     async fn kill_terminal_command(
         &self,
         _args: acp::KillTerminalCommandRequest,
-    ) -> anyhow::Result<KillTerminalCommandResponse, acp::Error> {
+    ) -> anyhow::Result<acp::KillTerminalCommandResponse, acp::Error> {
         Err(acp::Error::method_not_found())
     }
 
@@ -104,11 +102,11 @@ impl acp::Client for ExampleClient {
         Ok(())
     }
 
-    async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse, acp::Error> {
+    async fn ext_method(&self, _args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         Err(acp::Error::method_not_found())
     }
 
-    async fn ext_notification(&self, _args: ExtNotification) -> Result<(), acp::Error> {
+    async fn ext_notification(&self, _args: acp::ExtNotification) -> Result<(), acp::Error> {
         Err(acp::Error::method_not_found())
     }
 }

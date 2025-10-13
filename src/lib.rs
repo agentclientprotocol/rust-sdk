@@ -1,18 +1,3 @@
-pub use agent_client_protocol_schema::{
-    AGENT_METHOD_NAMES, AgentCapabilities, AgentNotification, AgentRequest, AgentResponse,
-    AuthenticateRequest, AuthenticateResponse, CLIENT_METHOD_NAMES, CancelNotification,
-    ClientCapabilities, ClientNotification, ClientRequest, ClientResponse, ContentBlock,
-    CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
-    InitializeRequest, InitializeResponse, KillTerminalCommandRequest, KillTerminalCommandResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, RawValue, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
-    ReleaseTerminalResponse, RequestPermissionRequest, RequestPermissionResponse, SessionId,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TerminalOutputRequest, TerminalOutputResponse, V1, WaitForTerminalExitRequest,
-    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
-};
-#[cfg(feature = "unstable")]
-pub use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
 use rpc::{MessageHandler, RpcConnection, Side};
@@ -25,7 +10,7 @@ mod rpc_tests;
 mod stream_broadcast;
 
 pub use agent::*;
-// pub use agent_client_protocol_schema::*; // TODO
+pub use agent_client_protocol_schema::*;
 pub use client::*;
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,

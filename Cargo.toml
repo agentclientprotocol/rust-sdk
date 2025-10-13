@@ -17,7 +17,7 @@ include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 unstable = ["agent-client-protocol-schema/unstable"]
 
 [dependencies]
-agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol.git", package = "agent-client-protocol" }
+agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol.git" }
 anyhow = "1"
 async-broadcast = "0.7"
 async-trait = "0.1"
