@@ -1,15 +1,2 @@
 target
-node_modules
-dist
-*.tsbuildinfo
 .DS_Store
-
-# TypeScript generated files
-typescript/*.js
-typescript/*.d.ts
-typescript/*.js.map
-# Exclude generator scripts
-!typescript/generate.js
-
-# TypeDoc generated documentation
-typescript/docs/

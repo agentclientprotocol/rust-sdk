@@ -2,7 +2,7 @@ use std::{rc::Rc, sync::Arc};
 
 use serde_json::value::RawValue;
 
-use crate::{
+use agent_client_protocol_schema::{
     CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
     KillTerminalCommandRequest, KillTerminalCommandResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,

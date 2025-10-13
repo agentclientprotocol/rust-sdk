@@ -2,14 +2,14 @@ use std::{rc::Rc, sync::Arc};
 
 use serde_json::value::RawValue;
 
-use crate::{
+use agent_client_protocol_schema::{
     AuthenticateRequest, AuthenticateResponse, CancelNotification, Error, ExtNotification,
     ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
     SetSessionModeRequest, SetSessionModeResponse,
 };
 #[cfg(feature = "unstable")]
-use crate::{SetSessionModelRequest, SetSessionModelResponse};
+use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 
 /// Defines the interface that all ACP-compliant agents must implement.
 ///

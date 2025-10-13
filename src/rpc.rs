@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use agent_client_protocol_schema::Error;
 use anyhow::Result;
 use futures::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, FutureExt as _,
@@ -25,7 +26,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
 use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
-use crate::Error;
 
 pub struct RpcConnection<Local: Side, Remote: Side> {
     outgoing_tx: UnboundedSender<OutgoingMessage<Local, Remote>>,

@@ -1,10 +1,21 @@
+pub use agent_client_protocol_schema::{
+    AGENT_METHOD_NAMES, AgentCapabilities, AgentNotification, AgentRequest, AgentResponse,
+    AuthenticateRequest, AuthenticateResponse, CLIENT_METHOD_NAMES, CancelNotification,
+    ClientCapabilities, ClientNotification, ClientRequest, ClientResponse, ContentBlock,
+    CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
+    InitializeRequest, InitializeResponse, KillTerminalCommandRequest, KillTerminalCommandResponse,
+    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, RawValue, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
+    ReleaseTerminalResponse, RequestPermissionRequest, RequestPermissionResponse, SessionId,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    TerminalOutputRequest, TerminalOutputResponse, V1, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+};
+#[cfg(feature = "unstable")]
+pub use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
-
-use crate::{
-    sdk::rpc::{MessageHandler, RpcConnection, Side},
-    *,
-};
+use rpc::{MessageHandler, RpcConnection, Side};
 
 mod agent;
 mod client;
@@ -14,6 +25,7 @@ mod rpc_tests;
 mod stream_broadcast;
 
 pub use agent::*;
+// pub use agent_client_protocol_schema::*; // TODO
 pub use client::*;
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
@@ -81,7 +93,7 @@ impl Agent for ClientSideConnection {
     async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse, Error> {
         self.conn
             .request(
-                INITIALIZE_METHOD_NAME,
+                AGENT_METHOD_NAMES.initialize,
                 Some(ClientRequest::InitializeRequest(args)),
             )
             .await
@@ -90,7 +102,7 @@ impl Agent for ClientSideConnection {
     async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse, Error> {
         self.conn
             .request::<Option<_>>(
-                AUTHENTICATE_METHOD_NAME,
+                AGENT_METHOD_NAMES.authenticate,
                 Some(ClientRequest::AuthenticateRequest(args)),
             )
             .await
@@ -100,7 +112,7 @@ impl Agent for ClientSideConnection {
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse, Error> {
         self.conn
             .request(
-                SESSION_NEW_METHOD_NAME,
+                AGENT_METHOD_NAMES.session_new,
                 Some(ClientRequest::NewSessionRequest(args)),
             )
             .await
@@ -109,7 +121,7 @@ impl Agent for ClientSideConnection {
     async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
         self.conn
             .request::<Option<_>>(
-                SESSION_LOAD_METHOD_NAME,
+                AGENT_METHOD_NAMES.session_load,
                 Some(ClientRequest::LoadSessionRequest(args)),
             )
             .await
@@ -122,7 +134,7 @@ impl Agent for ClientSideConnection {
     ) -> Result<SetSessionModeResponse, Error> {
         self.conn
             .request(
-                SESSION_SET_MODE_METHOD_NAME,
+                AGENT_METHOD_NAMES.session_set_mode,
                 Some(ClientRequest::SetSessionModeRequest(args)),
             )
             .await
@@ -131,7 +143,7 @@ impl Agent for ClientSideConnection {
     async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse, Error> {
         self.conn
             .request(
-                SESSION_PROMPT_METHOD_NAME,
+                AGENT_METHOD_NAMES.session_prompt,
                 Some(ClientRequest::PromptRequest(args)),
             )
             .await
@@ -139,7 +151,7 @@ impl Agent for ClientSideConnection {
 
     async fn cancel(&self, args: CancelNotification) -> Result<(), Error> {
         self.conn.notify(
-            SESSION_CANCEL_METHOD_NAME,
+            AGENT_METHOD_NAMES.session_cancel,
             Some(ClientNotification::CancelNotification(args)),
         )
     }
@@ -151,7 +163,7 @@ impl Agent for ClientSideConnection {
     ) -> Result<SetSessionModelResponse, Error> {
         self.conn
             .request(
-                SESSION_SET_MODEL_METHOD_NAME,
+                AGENT_METHOD_NAMES.session_set_model,
                 Some(ClientRequest::SetSessionModelRequest(args)),
             )
             .await
@@ -192,30 +204,34 @@ impl Side for ClientSide {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
-            SESSION_REQUEST_PERMISSION_METHOD_NAME => serde_json::from_str(params.get())
-                .map(AgentRequest::RequestPermissionRequest)
-                .map_err(Into::into),
-            FS_WRITE_TEXT_FILE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.session_request_permission => {
+                serde_json::from_str(params.get())
+                    .map(AgentRequest::RequestPermissionRequest)
+                    .map_err(Into::into)
+            }
+            m if m == CLIENT_METHOD_NAMES.fs_write_text_file => serde_json::from_str(params.get())
                 .map(AgentRequest::WriteTextFileRequest)
                 .map_err(Into::into),
-            FS_READ_TEXT_FILE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.fs_read_text_file => serde_json::from_str(params.get())
                 .map(AgentRequest::ReadTextFileRequest)
                 .map_err(Into::into),
-            TERMINAL_CREATE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.terminal_create => serde_json::from_str(params.get())
                 .map(AgentRequest::CreateTerminalRequest)
                 .map_err(Into::into),
-            TERMINAL_OUTPUT_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.terminal_output => serde_json::from_str(params.get())
                 .map(AgentRequest::TerminalOutputRequest)
                 .map_err(Into::into),
-            TERMINAL_KILL_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.terminal_kill => serde_json::from_str(params.get())
                 .map(AgentRequest::KillTerminalCommandRequest)
                 .map_err(Into::into),
-            TERMINAL_RELEASE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.terminal_release => serde_json::from_str(params.get())
                 .map(AgentRequest::ReleaseTerminalRequest)
                 .map_err(Into::into),
-            TERMINAL_WAIT_FOR_EXIT_METHOD_NAME => serde_json::from_str(params.get())
-                .map(AgentRequest::WaitForTerminalExitRequest)
-                .map_err(Into::into),
+            m if m == CLIENT_METHOD_NAMES.terminal_wait_for_exit => {
+                serde_json::from_str(params.get())
+                    .map(AgentRequest::WaitForTerminalExitRequest)
+                    .map_err(Into::into)
+            }
             _ => {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(AgentRequest::ExtMethodRequest(ExtRequest {
@@ -236,7 +252,7 @@ impl Side for ClientSide {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
-            SESSION_UPDATE_NOTIFICATION => serde_json::from_str(params.get())
+            m if m == CLIENT_METHOD_NAMES.session_update => serde_json::from_str(params.get())
                 .map(AgentNotification::SessionNotification)
                 .map_err(Into::into),
             _ => {
@@ -373,7 +389,7 @@ impl Client for AgentSideConnection {
     ) -> Result<RequestPermissionResponse, Error> {
         self.conn
             .request(
-                SESSION_REQUEST_PERMISSION_METHOD_NAME,
+                CLIENT_METHOD_NAMES.session_request_permission,
                 Some(AgentRequest::RequestPermissionRequest(args)),
             )
             .await
@@ -385,7 +401,7 @@ impl Client for AgentSideConnection {
     ) -> Result<WriteTextFileResponse, Error> {
         self.conn
             .request::<Option<_>>(
-                FS_WRITE_TEXT_FILE_METHOD_NAME,
+                CLIENT_METHOD_NAMES.fs_write_text_file,
                 Some(AgentRequest::WriteTextFileRequest(args)),
             )
             .await
@@ -398,7 +414,7 @@ impl Client for AgentSideConnection {
     ) -> Result<ReadTextFileResponse, Error> {
         self.conn
             .request(
-                FS_READ_TEXT_FILE_METHOD_NAME,
+                CLIENT_METHOD_NAMES.fs_read_text_file,
                 Some(AgentRequest::ReadTextFileRequest(args)),
             )
             .await
@@ -410,7 +426,7 @@ impl Client for AgentSideConnection {
     ) -> Result<CreateTerminalResponse, Error> {
         self.conn
             .request(
-                TERMINAL_CREATE_METHOD_NAME,
+                CLIENT_METHOD_NAMES.terminal_create,
                 Some(AgentRequest::CreateTerminalRequest(args)),
             )
             .await
@@ -422,7 +438,7 @@ impl Client for AgentSideConnection {
     ) -> Result<TerminalOutputResponse, Error> {
         self.conn
             .request(
-                TERMINAL_OUTPUT_METHOD_NAME,
+                CLIENT_METHOD_NAMES.terminal_output,
                 Some(AgentRequest::TerminalOutputRequest(args)),
             )
             .await
@@ -434,7 +450,7 @@ impl Client for AgentSideConnection {
     ) -> Result<ReleaseTerminalResponse, Error> {
         self.conn
             .request::<Option<_>>(
-                TERMINAL_RELEASE_METHOD_NAME,
+                CLIENT_METHOD_NAMES.terminal_release,
                 Some(AgentRequest::ReleaseTerminalRequest(args)),
             )
             .await
@@ -447,7 +463,7 @@ impl Client for AgentSideConnection {
     ) -> Result<WaitForTerminalExitResponse, Error> {
         self.conn
             .request(
-                TERMINAL_WAIT_FOR_EXIT_METHOD_NAME,
+                CLIENT_METHOD_NAMES.terminal_wait_for_exit,
                 Some(AgentRequest::WaitForTerminalExitRequest(args)),
             )
             .await
@@ -459,7 +475,7 @@ impl Client for AgentSideConnection {
     ) -> Result<KillTerminalCommandResponse, Error> {
         self.conn
             .request::<Option<_>>(
-                TERMINAL_KILL_METHOD_NAME,
+                CLIENT_METHOD_NAMES.terminal_kill,
                 Some(AgentRequest::KillTerminalCommandRequest(args)),
             )
             .await
@@ -468,7 +484,7 @@ impl Client for AgentSideConnection {
 
     async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
         self.conn.notify(
-            SESSION_UPDATE_NOTIFICATION,
+            CLIENT_METHOD_NAMES.session_update,
             Some(AgentNotification::SessionNotification(args)),
         )
     }
@@ -508,26 +524,26 @@ impl Side for AgentSide {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
-            INITIALIZE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.initialize => serde_json::from_str(params.get())
                 .map(ClientRequest::InitializeRequest)
                 .map_err(Into::into),
-            AUTHENTICATE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.authenticate => serde_json::from_str(params.get())
                 .map(ClientRequest::AuthenticateRequest)
                 .map_err(Into::into),
-            SESSION_NEW_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_new => serde_json::from_str(params.get())
                 .map(ClientRequest::NewSessionRequest)
                 .map_err(Into::into),
-            SESSION_LOAD_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_load => serde_json::from_str(params.get())
                 .map(ClientRequest::LoadSessionRequest)
                 .map_err(Into::into),
-            SESSION_SET_MODE_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_set_mode => serde_json::from_str(params.get())
                 .map(ClientRequest::SetSessionModeRequest)
                 .map_err(Into::into),
             #[cfg(feature = "unstable")]
-            SESSION_SET_MODEL_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_set_model => serde_json::from_str(params.get())
                 .map(ClientRequest::SetSessionModelRequest)
                 .map_err(Into::into),
-            SESSION_PROMPT_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_prompt => serde_json::from_str(params.get())
                 .map(ClientRequest::PromptRequest)
                 .map_err(Into::into),
             _ => {
@@ -550,7 +566,7 @@ impl Side for AgentSide {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
-            SESSION_CANCEL_METHOD_NAME => serde_json::from_str(params.get())
+            m if m == AGENT_METHOD_NAMES.session_cancel => serde_json::from_str(params.get())
                 .map(ClientNotification::CancelNotification)
                 .map_err(Into::into),
             _ => {

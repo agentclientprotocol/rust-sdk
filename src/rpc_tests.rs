@@ -1,3 +1,18 @@
+use agent_client_protocol_schema::{
+    AgentCapabilities, AgentNotification, AuthenticateRequest, AuthenticateResponse,
+    CancelNotification, ClientCapabilities, ClientNotification, ContentBlock,
+    CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
+    InitializeRequest, InitializeResponse, KillTerminalCommandRequest, KillTerminalCommandResponse,
+    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
+    PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
+    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, SessionId,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
+    TerminalOutputRequest, TerminalOutputResponse, TextContent, ToolCall, ToolCallContent,
+    ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    VERSION, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
+    WriteTextFileResponse,
+};
 use anyhow::Result;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -234,10 +249,10 @@ impl Agent for TestAgent {
     #[cfg(feature = "unstable")]
     async fn set_session_model(
         &self,
-        args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
+        args: agent_client_protocol_schema::SetSessionModelRequest,
+    ) -> Result<agent_client_protocol_schema::SetSessionModelResponse, Error> {
         log::info!("Received select model request {args:?}");
-        Ok(SetSessionModelResponse::default())
+        Ok(agent_client_protocol_schema::SetSessionModelResponse::default())
     }
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
@@ -741,10 +756,6 @@ async fn test_full_conversation_flow() {
 #[tokio::test]
 async fn test_notification_wire_format() {
     use super::rpc::{JsonRpcMessage, OutgoingMessage};
-    use crate::{
-        AgentNotification, AgentSide, CancelNotification, ClientNotification, ClientSide,
-        ContentBlock, SessionNotification, SessionUpdate, TextContent,
-    };
     use serde_json::{Value, json};
 
     // Test client -> agent notification wire format

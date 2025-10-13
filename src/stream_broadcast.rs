@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
+use agent_client_protocol_schema::Error;
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
 use super::rpc::{Id, OutgoingMessage, ResponseResult, Side};
-use crate::Error;
 
 /// A message that flows through the RPC stream.
 ///
