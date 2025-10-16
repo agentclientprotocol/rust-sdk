@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.8 (2025-10-16)
+
+- Export `acp::Result<T, E = acp::Error>` for easier indication of ACP errors.
+
 ## 0.4.7 (2025-10-13)
 
 - Depend on `agent-client-protocol-schema` for schema types

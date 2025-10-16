@@ -19,7 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.4.7"
+version = "0.4.8"
 dependencies = [
  "agent-client-protocol-schema",
  "anyhow",
@@ -33,7 +33,6 @@ dependencies = [
  "piper",
  "pretty_assertions",
  "rustyline",
- "schemars",
  "serde",
  "serde_json",
  "tokio",
@@ -42,9 +41,9 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-schema"
-version = "0.4.9"
+version = "0.4.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db625c1cb83729cb7d04080fff35cabe7f68870f31e003546aa99565beccb11a"
+checksum = "36bd1f574102fc8611d1018e06246307c3d16ed862d4259cab55bbf4be804e84"
 dependencies = [
  "anyhow",
  "schemars",

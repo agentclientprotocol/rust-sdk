@@ -154,7 +154,7 @@ impl acp::Agent for ExampleAgent {
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> acp::Result<()> {
     env_logger::init();
 
     let outgoing = tokio::io::stdout().compat_write();

@@ -8,8 +8,7 @@ use std::{
     },
 };
 
-use agent_client_protocol_schema::Error;
-use anyhow::Result;
+use agent_client_protocol_schema::{Error, Result};
 use futures::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, FutureExt as _,
     StreamExt as _,
@@ -35,8 +34,8 @@ pub struct RpcConnection<Local: Side, Remote: Side> {
 }
 
 struct PendingResponse {
-    deserialize: fn(&serde_json::value::RawValue) -> Result<Box<dyn Any + Send>, Error>,
-    respond: oneshot::Sender<Result<Box<dyn Any + Send>, Error>>,
+    deserialize: fn(&serde_json::value::RawValue) -> Result<Box<dyn Any + Send>>,
+    respond: oneshot::Sender<Result<Box<dyn Any + Send>>>,
 }
 
 impl<Local, Remote> RpcConnection<Local, Remote>
@@ -96,7 +95,7 @@ where
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InNotification>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         self.outgoing_tx
             .unbounded_send(OutgoingMessage::Notification {
                 method: method.into(),
@@ -109,7 +108,7 @@ where
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InRequest>,
-    ) -> impl Future<Output = Result<Out, Error>> {
+    ) -> impl Future<Output = Result<Out>> {
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = Id::Number(id);
@@ -378,8 +377,8 @@ pub enum ResponseResult<Res> {
     Error(Error),
 }
 
-impl<T> From<Result<T, Error>> for ResponseResult<T> {
-    fn from(result: Result<T, Error>) -> Self {
+impl<T> From<Result<T>> for ResponseResult<T> {
+    fn from(result: Result<T>) -> Self {
         match result {
             Ok(value) => ResponseResult::Result(value),
             Err(error) => ResponseResult::Error(error),
@@ -392,24 +391,22 @@ pub trait Side: Clone {
     type OutResponse: Clone + Serialize + DeserializeOwned + 'static;
     type InNotification: Clone + Serialize + DeserializeOwned + 'static;
 
-    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<Self::InRequest, Error>;
+    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<Self::InRequest>;
 
-    fn decode_notification(
-        method: &str,
-        params: Option<&RawValue>,
-    ) -> Result<Self::InNotification, Error>;
+    fn decode_notification(method: &str, params: Option<&RawValue>)
+    -> Result<Self::InNotification>;
 }
 
 pub trait MessageHandler<Local: Side> {
     fn handle_request(
         &self,
         request: Local::InRequest,
-    ) -> impl Future<Output = Result<Local::OutResponse, Error>>;
+    ) -> impl Future<Output = Result<Local::OutResponse>>;
 
     fn handle_notification(
         &self,
         notification: Local::InNotification,
-    ) -> impl Future<Output = Result<(), Error>>;
+    ) -> impl Future<Output = Result<()>>;
 }
 
 #[cfg(test)]

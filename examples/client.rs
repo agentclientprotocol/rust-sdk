@@ -13,7 +13,6 @@
 //! ```
 
 use agent_client_protocol::{self as acp, Agent as _};
-use anyhow::bail;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 struct ExampleClient {}
@@ -23,21 +22,21 @@ impl acp::Client for ExampleClient {
     async fn request_permission(
         &self,
         _args: acp::RequestPermissionRequest,
-    ) -> anyhow::Result<acp::RequestPermissionResponse, acp::Error> {
+    ) -> acp::Result<acp::RequestPermissionResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn write_text_file(
         &self,
         _args: acp::WriteTextFileRequest,
-    ) -> anyhow::Result<acp::WriteTextFileResponse, acp::Error> {
+    ) -> acp::Result<acp::WriteTextFileResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn read_text_file(
         &self,
         _args: acp::ReadTextFileRequest,
-    ) -> anyhow::Result<acp::ReadTextFileResponse, acp::Error> {
+    ) -> acp::Result<acp::ReadTextFileResponse> {
         Err(acp::Error::method_not_found())
     }
 
@@ -51,35 +50,35 @@ impl acp::Client for ExampleClient {
     async fn terminal_output(
         &self,
         _args: acp::TerminalOutputRequest,
-    ) -> anyhow::Result<acp::TerminalOutputResponse, acp::Error> {
+    ) -> acp::Result<acp::TerminalOutputResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn release_terminal(
         &self,
         _args: acp::ReleaseTerminalRequest,
-    ) -> anyhow::Result<acp::ReleaseTerminalResponse, acp::Error> {
+    ) -> acp::Result<acp::ReleaseTerminalResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn wait_for_terminal_exit(
         &self,
         _args: acp::WaitForTerminalExitRequest,
-    ) -> anyhow::Result<acp::WaitForTerminalExitResponse, acp::Error> {
+    ) -> acp::Result<acp::WaitForTerminalExitResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn kill_terminal_command(
         &self,
         _args: acp::KillTerminalCommandRequest,
-    ) -> anyhow::Result<acp::KillTerminalCommandResponse, acp::Error> {
+    ) -> acp::Result<acp::KillTerminalCommandResponse> {
         Err(acp::Error::method_not_found())
     }
 
     async fn session_notification(
         &self,
         args: acp::SessionNotification,
-    ) -> anyhow::Result<(), acp::Error> {
+    ) -> acp::Result<(), acp::Error> {
         match args.update {
             acp::SessionUpdate::AgentMessageChunk { content } => {
                 let text = match content {
@@ -102,11 +101,11 @@ impl acp::Client for ExampleClient {
         Ok(())
     }
 
-    async fn ext_method(&self, _args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
+    async fn ext_method(&self, _args: acp::ExtRequest) -> acp::Result<acp::ExtResponse> {
         Err(acp::Error::method_not_found())
     }
 
-    async fn ext_notification(&self, _args: acp::ExtNotification) -> Result<(), acp::Error> {
+    async fn ext_notification(&self, _args: acp::ExtNotification) -> acp::Result<()> {
         Err(acp::Error::method_not_found())
     }
 }
@@ -130,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 child,
             )
         }
-        _ => bail!("Usage: client AGENT_PROGRAM AGENT_ARG..."),
+        _ => anyhow::bail!("Usage: client AGENT_PROGRAM AGENT_ARG..."),
     };
 
     // The ClientSideConnection will spawn futures onto our Tokio runtime.

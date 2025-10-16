@@ -1,4 +1,3 @@
-use anyhow::Result;
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
 use rpc::{MessageHandler, RpcConnection, Side};
 
@@ -75,7 +74,7 @@ impl ClientSideConnection {
 
 #[async_trait::async_trait(?Send)]
 impl Agent for ClientSideConnection {
-    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse, Error> {
+    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse> {
         self.conn
             .request(
                 AGENT_METHOD_NAMES.initialize,
@@ -84,7 +83,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse, Error> {
+    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse> {
         self.conn
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.authenticate,
@@ -94,7 +93,7 @@ impl Agent for ClientSideConnection {
             .map(Option::unwrap_or_default)
     }
 
-    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse, Error> {
+    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.conn
             .request(
                 AGENT_METHOD_NAMES.session_new,
@@ -103,7 +102,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
+    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse> {
         self.conn
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.session_load,
@@ -116,7 +115,7 @@ impl Agent for ClientSideConnection {
     async fn set_session_mode(
         &self,
         args: SetSessionModeRequest,
-    ) -> Result<SetSessionModeResponse, Error> {
+    ) -> Result<SetSessionModeResponse> {
         self.conn
             .request(
                 AGENT_METHOD_NAMES.session_set_mode,
@@ -125,7 +124,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse, Error> {
+    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
         self.conn
             .request(
                 AGENT_METHOD_NAMES.session_prompt,
@@ -134,7 +133,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn cancel(&self, args: CancelNotification) -> Result<(), Error> {
+    async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.conn.notify(
             AGENT_METHOD_NAMES.session_cancel,
             Some(ClientNotification::CancelNotification(args)),
@@ -145,7 +144,7 @@ impl Agent for ClientSideConnection {
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
+    ) -> Result<SetSessionModelResponse> {
         self.conn
             .request(
                 AGENT_METHOD_NAMES.session_set_model,
@@ -154,7 +153,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.conn
             .request(
                 format!("_{}", args.method),
@@ -163,7 +162,7 @@ impl Agent for ClientSideConnection {
             .await
     }
 
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.conn.notify(
             format!("_{}", args.method),
             Some(ClientNotification::ExtNotification(args)),
@@ -185,7 +184,7 @@ impl Side for ClientSide {
     type InRequest = AgentRequest;
     type OutResponse = ClientResponse;
 
-    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<AgentRequest, Error> {
+    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<AgentRequest> {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
@@ -230,10 +229,7 @@ impl Side for ClientSide {
         }
     }
 
-    fn decode_notification(
-        method: &str,
-        params: Option<&RawValue>,
-    ) -> Result<AgentNotification, Error> {
+    fn decode_notification(method: &str, params: Option<&RawValue>) -> Result<AgentNotification> {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
@@ -255,7 +251,7 @@ impl Side for ClientSide {
 }
 
 impl<T: Client> MessageHandler<ClientSide> for T {
-    async fn handle_request(&self, request: AgentRequest) -> Result<ClientResponse, Error> {
+    async fn handle_request(&self, request: AgentRequest) -> Result<ClientResponse> {
         match request {
             AgentRequest::RequestPermissionRequest(args) => {
                 let response = self.request_permission(args).await?;
@@ -296,7 +292,7 @@ impl<T: Client> MessageHandler<ClientSide> for T {
         }
     }
 
-    async fn handle_notification(&self, notification: AgentNotification) -> Result<(), Error> {
+    async fn handle_notification(&self, notification: AgentNotification) -> Result<()> {
         match notification {
             AgentNotification::SessionNotification(args) => {
                 self.session_notification(args).await?;
@@ -371,7 +367,7 @@ impl Client for AgentSideConnection {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
-    ) -> Result<RequestPermissionResponse, Error> {
+    ) -> Result<RequestPermissionResponse> {
         self.conn
             .request(
                 CLIENT_METHOD_NAMES.session_request_permission,
@@ -380,10 +376,7 @@ impl Client for AgentSideConnection {
             .await
     }
 
-    async fn write_text_file(
-        &self,
-        args: WriteTextFileRequest,
-    ) -> Result<WriteTextFileResponse, Error> {
+    async fn write_text_file(&self, args: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
         self.conn
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.fs_write_text_file,
@@ -393,10 +386,7 @@ impl Client for AgentSideConnection {
             .map(Option::unwrap_or_default)
     }
 
-    async fn read_text_file(
-        &self,
-        args: ReadTextFileRequest,
-    ) -> Result<ReadTextFileResponse, Error> {
+    async fn read_text_file(&self, args: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
         self.conn
             .request(
                 CLIENT_METHOD_NAMES.fs_read_text_file,
@@ -405,10 +395,7 @@ impl Client for AgentSideConnection {
             .await
     }
 
-    async fn create_terminal(
-        &self,
-        args: CreateTerminalRequest,
-    ) -> Result<CreateTerminalResponse, Error> {
+    async fn create_terminal(&self, args: CreateTerminalRequest) -> Result<CreateTerminalResponse> {
         self.conn
             .request(
                 CLIENT_METHOD_NAMES.terminal_create,
@@ -417,10 +404,7 @@ impl Client for AgentSideConnection {
             .await
     }
 
-    async fn terminal_output(
-        &self,
-        args: TerminalOutputRequest,
-    ) -> Result<TerminalOutputResponse, Error> {
+    async fn terminal_output(&self, args: TerminalOutputRequest) -> Result<TerminalOutputResponse> {
         self.conn
             .request(
                 CLIENT_METHOD_NAMES.terminal_output,
@@ -432,7 +416,7 @@ impl Client for AgentSideConnection {
     async fn release_terminal(
         &self,
         args: ReleaseTerminalRequest,
-    ) -> Result<ReleaseTerminalResponse, Error> {
+    ) -> Result<ReleaseTerminalResponse> {
         self.conn
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.terminal_release,
@@ -445,7 +429,7 @@ impl Client for AgentSideConnection {
     async fn wait_for_terminal_exit(
         &self,
         args: WaitForTerminalExitRequest,
-    ) -> Result<WaitForTerminalExitResponse, Error> {
+    ) -> Result<WaitForTerminalExitResponse> {
         self.conn
             .request(
                 CLIENT_METHOD_NAMES.terminal_wait_for_exit,
@@ -457,7 +441,7 @@ impl Client for AgentSideConnection {
     async fn kill_terminal_command(
         &self,
         args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse, Error> {
+    ) -> Result<KillTerminalCommandResponse> {
         self.conn
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.terminal_kill,
@@ -467,14 +451,14 @@ impl Client for AgentSideConnection {
             .map(Option::unwrap_or_default)
     }
 
-    async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
+    async fn session_notification(&self, args: SessionNotification) -> Result<()> {
         self.conn.notify(
             CLIENT_METHOD_NAMES.session_update,
             Some(AgentNotification::SessionNotification(args)),
         )
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.conn
             .request(
                 format!("_{}", args.method),
@@ -483,7 +467,7 @@ impl Client for AgentSideConnection {
             .await
     }
 
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.conn.notify(
             format!("_{}", args.method),
             Some(AgentNotification::ExtNotification(args)),
@@ -505,7 +489,7 @@ impl Side for AgentSide {
     type InNotification = ClientNotification;
     type OutResponse = AgentResponse;
 
-    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<ClientRequest, Error> {
+    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<ClientRequest> {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
@@ -544,10 +528,7 @@ impl Side for AgentSide {
         }
     }
 
-    fn decode_notification(
-        method: &str,
-        params: Option<&RawValue>,
-    ) -> Result<ClientNotification, Error> {
+    fn decode_notification(method: &str, params: Option<&RawValue>) -> Result<ClientNotification> {
         let params = params.ok_or_else(Error::invalid_params)?;
 
         match method {
@@ -569,7 +550,7 @@ impl Side for AgentSide {
 }
 
 impl<T: Agent> MessageHandler<AgentSide> for T {
-    async fn handle_request(&self, request: ClientRequest) -> Result<AgentResponse, Error> {
+    async fn handle_request(&self, request: ClientRequest) -> Result<AgentResponse> {
         match request {
             ClientRequest::InitializeRequest(args) => {
                 let response = self.initialize(args).await?;
@@ -607,7 +588,7 @@ impl<T: Agent> MessageHandler<AgentSide> for T {
         }
     }
 
-    async fn handle_notification(&self, notification: ClientNotification) -> Result<(), Error> {
+    async fn handle_notification(&self, notification: ClientNotification) -> Result<()> {
         match notification {
             ClientNotification::CancelNotification(args) => {
                 self.cancel(args).await?;
