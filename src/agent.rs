@@ -1,15 +1,14 @@
 use std::{rc::Rc, sync::Arc};
 
-use serde_json::value::RawValue;
-
 use agent_client_protocol_schema::{
     AuthenticateRequest, AuthenticateResponse, CancelNotification, Error, ExtNotification,
     ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SetSessionModeRequest, SetSessionModeResponse,
+    Result, SetSessionModeRequest, SetSessionModeResponse,
 };
 #[cfg(feature = "unstable")]
 use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
+use serde_json::value::RawValue;
 
 /// Defines the interface that all ACP-compliant agents must implement.
 ///
@@ -27,7 +26,7 @@ pub trait Agent {
     /// The agent should respond with its supported protocol version and capabilities.
     ///
     /// See protocol docs: [Initialization](https://agentclientprotocol.com/protocol/initialization)
-    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse, Error>;
+    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse>;
 
     /// Authenticates the client using the specified authentication method.
     ///
@@ -38,7 +37,7 @@ pub trait Agent {
     /// `new_session` without receiving an `auth_required` error.
     ///
     /// See protocol docs: [Initialization](https://agentclientprotocol.com/protocol/initialization)
-    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse, Error>;
+    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse>;
 
     /// Creates a new conversation session with the agent.
     ///
@@ -52,7 +51,7 @@ pub trait Agent {
     /// May return an `auth_required` error if the agent requires authentication.
     ///
     /// See protocol docs: [Session Setup](https://agentclientprotocol.com/protocol/session-setup)
-    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse, Error>;
+    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse>;
 
     /// Processes a user prompt within a session.
     ///
@@ -65,7 +64,7 @@ pub trait Agent {
     /// - Returns when the turn is complete with a stop reason
     ///
     /// See protocol docs: [Prompt Turn](https://agentclientprotocol.com/protocol/prompt-turn)
-    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse, Error>;
+    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse>;
 
     /// Cancels ongoing operations for a session.
     ///
@@ -78,7 +77,7 @@ pub trait Agent {
     /// - Respond to the original `session/prompt` request with `StopReason::Cancelled`
     ///
     /// See protocol docs: [Cancellation](https://agentclientprotocol.com/protocol/prompt-turn#cancellation)
-    async fn cancel(&self, args: CancelNotification) -> Result<(), Error>;
+    async fn cancel(&self, args: CancelNotification) -> Result<()>;
 
     /// Loads an existing session to resume a previous conversation.
     ///
@@ -90,7 +89,7 @@ pub trait Agent {
     /// - Stream the entire conversation history back to the client via notifications
     ///
     /// See protocol docs: [Loading Sessions](https://agentclientprotocol.com/protocol/session-setup#loading-sessions)
-    async fn load_session(&self, _args: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
+    async fn load_session(&self, _args: LoadSessionRequest) -> Result<LoadSessionResponse> {
         Err(Error::method_not_found())
     }
 
@@ -110,7 +109,7 @@ pub trait Agent {
     async fn set_session_mode(
         &self,
         _args: SetSessionModeRequest,
-    ) -> Result<SetSessionModeResponse, Error> {
+    ) -> Result<SetSessionModeResponse> {
         Err(Error::method_not_found())
     }
 
@@ -123,7 +122,7 @@ pub trait Agent {
     async fn set_session_model(
         &self,
         _args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
+    ) -> Result<SetSessionModelResponse> {
         Err(Error::method_not_found())
     }
 
@@ -133,7 +132,7 @@ pub trait Agent {
     /// protocol compatibility.
     ///
     /// See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
-    async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse> {
         Ok(RawValue::NULL.to_owned().into())
     }
 
@@ -143,89 +142,89 @@ pub trait Agent {
     /// while maintaining protocol compatibility.
     ///
     /// See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
-    async fn ext_notification(&self, _args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, _args: ExtNotification) -> Result<()> {
         Ok(())
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl<T: Agent> Agent for Rc<T> {
-    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse, Error> {
+    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse> {
         self.as_ref().initialize(args).await
     }
-    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse, Error> {
+    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse> {
         self.as_ref().authenticate(args).await
     }
-    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse, Error> {
+    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.as_ref().new_session(args).await
     }
-    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
+    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse> {
         self.as_ref().load_session(args).await
     }
     async fn set_session_mode(
         &self,
         args: SetSessionModeRequest,
-    ) -> Result<SetSessionModeResponse, Error> {
+    ) -> Result<SetSessionModeResponse> {
         self.as_ref().set_session_mode(args).await
     }
-    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse, Error> {
+    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
         self.as_ref().prompt(args).await
     }
-    async fn cancel(&self, args: CancelNotification) -> Result<(), Error> {
+    async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.as_ref().cancel(args).await
     }
     #[cfg(feature = "unstable")]
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
+    ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
     }
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.as_ref().ext_notification(args).await
     }
 }
 
 #[async_trait::async_trait(?Send)]
 impl<T: Agent> Agent for Arc<T> {
-    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse, Error> {
+    async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse> {
         self.as_ref().initialize(args).await
     }
-    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse, Error> {
+    async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse> {
         self.as_ref().authenticate(args).await
     }
-    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse, Error> {
+    async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.as_ref().new_session(args).await
     }
-    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
+    async fn load_session(&self, args: LoadSessionRequest) -> Result<LoadSessionResponse> {
         self.as_ref().load_session(args).await
     }
     async fn set_session_mode(
         &self,
         args: SetSessionModeRequest,
-    ) -> Result<SetSessionModeResponse, Error> {
+    ) -> Result<SetSessionModeResponse> {
         self.as_ref().set_session_mode(args).await
     }
-    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse, Error> {
+    async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
         self.as_ref().prompt(args).await
     }
-    async fn cancel(&self, args: CancelNotification) -> Result<(), Error> {
+    async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.as_ref().cancel(args).await
     }
     #[cfg(feature = "unstable")]
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
-    ) -> Result<SetSessionModelResponse, Error> {
+    ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
     }
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.as_ref().ext_notification(args).await
     }
 }

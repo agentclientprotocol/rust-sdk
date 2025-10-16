@@ -1,15 +1,14 @@
 use std::{rc::Rc, sync::Arc};
 
-use serde_json::value::RawValue;
-
 use agent_client_protocol_schema::{
     CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
     KillTerminalCommandRequest, KillTerminalCommandResponse, ReadTextFileRequest,
     ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification,
+    RequestPermissionRequest, RequestPermissionResponse, Result, SessionNotification,
     TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
+use serde_json::value::RawValue;
 
 /// Defines the interface that ACP-compliant clients must implement.
 ///
@@ -31,7 +30,7 @@ pub trait Client {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
-    ) -> Result<RequestPermissionResponse, Error>;
+    ) -> Result<RequestPermissionResponse>;
 
     /// Handles session update notifications from the agent.
     ///
@@ -44,7 +43,7 @@ pub trait Client {
     /// updates before responding with the cancelled stop reason.
     ///
     /// See protocol docs: [Agent Reports Output](https://agentclientprotocol.com/protocol/prompt-turn#3-agent-reports-output)
-    async fn session_notification(&self, args: SessionNotification) -> Result<(), Error>;
+    async fn session_notification(&self, args: SessionNotification) -> Result<()>;
 
     /// Writes content to a text file in the client's file system.
     ///
@@ -52,10 +51,7 @@ pub trait Client {
     /// Allows the agent to create or modify files within the client's environment.
     ///
     /// See protocol docs: [Client](https://agentclientprotocol.com/protocol/overview#client)
-    async fn write_text_file(
-        &self,
-        _args: WriteTextFileRequest,
-    ) -> Result<WriteTextFileResponse, Error> {
+    async fn write_text_file(&self, _args: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
         Err(Error::method_not_found())
     }
 
@@ -65,10 +61,7 @@ pub trait Client {
     /// Allows the agent to access file contents within the client's environment.
     ///
     /// See protocol docs: [Client](https://agentclientprotocol.com/protocol/overview#client)
-    async fn read_text_file(
-        &self,
-        _args: ReadTextFileRequest,
-    ) -> Result<ReadTextFileResponse, Error> {
+    async fn read_text_file(&self, _args: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
         Err(Error::method_not_found())
     }
 
@@ -89,7 +82,7 @@ pub trait Client {
     async fn create_terminal(
         &self,
         _args: CreateTerminalRequest,
-    ) -> Result<CreateTerminalResponse, Error> {
+    ) -> Result<CreateTerminalResponse> {
         Err(Error::method_not_found())
     }
 
@@ -102,7 +95,7 @@ pub trait Client {
     async fn terminal_output(
         &self,
         _args: TerminalOutputRequest,
-    ) -> Result<TerminalOutputResponse, Error> {
+    ) -> Result<TerminalOutputResponse> {
         Err(Error::method_not_found())
     }
 
@@ -121,7 +114,7 @@ pub trait Client {
     async fn release_terminal(
         &self,
         _args: ReleaseTerminalRequest,
-    ) -> Result<ReleaseTerminalResponse, Error> {
+    ) -> Result<ReleaseTerminalResponse> {
         Err(Error::method_not_found())
     }
 
@@ -131,7 +124,7 @@ pub trait Client {
     async fn wait_for_terminal_exit(
         &self,
         _args: WaitForTerminalExitRequest,
-    ) -> Result<WaitForTerminalExitResponse, Error> {
+    ) -> Result<WaitForTerminalExitResponse> {
         Err(Error::method_not_found())
     }
 
@@ -150,7 +143,7 @@ pub trait Client {
     async fn kill_terminal_command(
         &self,
         _args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse, Error> {
+    ) -> Result<KillTerminalCommandResponse> {
         Err(Error::method_not_found())
     }
 
@@ -161,7 +154,7 @@ pub trait Client {
     /// protocol compatibility.
     ///
     /// See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
-    async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse> {
         Ok(RawValue::NULL.to_owned().into())
     }
 
@@ -172,7 +165,7 @@ pub trait Client {
     /// while maintaining protocol compatibility.
     ///
     /// See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
-    async fn ext_notification(&self, _args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, _args: ExtNotification) -> Result<()> {
         Ok(())
     }
 }
@@ -182,58 +175,46 @@ impl<T: Client> Client for Rc<T> {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
-    ) -> Result<RequestPermissionResponse, Error> {
+    ) -> Result<RequestPermissionResponse> {
         self.as_ref().request_permission(args).await
     }
-    async fn write_text_file(
-        &self,
-        args: WriteTextFileRequest,
-    ) -> Result<WriteTextFileResponse, Error> {
+    async fn write_text_file(&self, args: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
         self.as_ref().write_text_file(args).await
     }
-    async fn read_text_file(
-        &self,
-        args: ReadTextFileRequest,
-    ) -> Result<ReadTextFileResponse, Error> {
+    async fn read_text_file(&self, args: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
         self.as_ref().read_text_file(args).await
     }
-    async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
+    async fn session_notification(&self, args: SessionNotification) -> Result<()> {
         self.as_ref().session_notification(args).await
     }
-    async fn create_terminal(
-        &self,
-        args: CreateTerminalRequest,
-    ) -> Result<CreateTerminalResponse, Error> {
+    async fn create_terminal(&self, args: CreateTerminalRequest) -> Result<CreateTerminalResponse> {
         self.as_ref().create_terminal(args).await
     }
-    async fn terminal_output(
-        &self,
-        args: TerminalOutputRequest,
-    ) -> Result<TerminalOutputResponse, Error> {
+    async fn terminal_output(&self, args: TerminalOutputRequest) -> Result<TerminalOutputResponse> {
         self.as_ref().terminal_output(args).await
     }
     async fn release_terminal(
         &self,
         args: ReleaseTerminalRequest,
-    ) -> Result<ReleaseTerminalResponse, Error> {
+    ) -> Result<ReleaseTerminalResponse> {
         self.as_ref().release_terminal(args).await
     }
     async fn wait_for_terminal_exit(
         &self,
         args: WaitForTerminalExitRequest,
-    ) -> Result<WaitForTerminalExitResponse, Error> {
+    ) -> Result<WaitForTerminalExitResponse> {
         self.as_ref().wait_for_terminal_exit(args).await
     }
     async fn kill_terminal_command(
         &self,
         args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse, Error> {
+    ) -> Result<KillTerminalCommandResponse> {
         self.as_ref().kill_terminal_command(args).await
     }
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.as_ref().ext_notification(args).await
     }
 }
@@ -243,58 +224,46 @@ impl<T: Client> Client for Arc<T> {
     async fn request_permission(
         &self,
         args: RequestPermissionRequest,
-    ) -> Result<RequestPermissionResponse, Error> {
+    ) -> Result<RequestPermissionResponse> {
         self.as_ref().request_permission(args).await
     }
-    async fn write_text_file(
-        &self,
-        args: WriteTextFileRequest,
-    ) -> Result<WriteTextFileResponse, Error> {
+    async fn write_text_file(&self, args: WriteTextFileRequest) -> Result<WriteTextFileResponse> {
         self.as_ref().write_text_file(args).await
     }
-    async fn read_text_file(
-        &self,
-        args: ReadTextFileRequest,
-    ) -> Result<ReadTextFileResponse, Error> {
+    async fn read_text_file(&self, args: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
         self.as_ref().read_text_file(args).await
     }
-    async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
+    async fn session_notification(&self, args: SessionNotification) -> Result<()> {
         self.as_ref().session_notification(args).await
     }
-    async fn create_terminal(
-        &self,
-        args: CreateTerminalRequest,
-    ) -> Result<CreateTerminalResponse, Error> {
+    async fn create_terminal(&self, args: CreateTerminalRequest) -> Result<CreateTerminalResponse> {
         self.as_ref().create_terminal(args).await
     }
-    async fn terminal_output(
-        &self,
-        args: TerminalOutputRequest,
-    ) -> Result<TerminalOutputResponse, Error> {
+    async fn terminal_output(&self, args: TerminalOutputRequest) -> Result<TerminalOutputResponse> {
         self.as_ref().terminal_output(args).await
     }
     async fn release_terminal(
         &self,
         args: ReleaseTerminalRequest,
-    ) -> Result<ReleaseTerminalResponse, Error> {
+    ) -> Result<ReleaseTerminalResponse> {
         self.as_ref().release_terminal(args).await
     }
     async fn wait_for_terminal_exit(
         &self,
         args: WaitForTerminalExitRequest,
-    ) -> Result<WaitForTerminalExitResponse, Error> {
+    ) -> Result<WaitForTerminalExitResponse> {
         self.as_ref().wait_for_terminal_exit(args).await
     }
     async fn kill_terminal_command(
         &self,
         args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse, Error> {
+    ) -> Result<KillTerminalCommandResponse> {
         self.as_ref().kill_terminal_command(args).await
     }
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.as_ref().ext_notification(args).await
     }
 }

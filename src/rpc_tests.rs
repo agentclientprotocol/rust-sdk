@@ -13,7 +13,6 @@ use agent_client_protocol_schema::{
     VERSION, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
     WriteTextFileResponse,
 };
-use anyhow::Result;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 
@@ -60,7 +59,7 @@ impl Client for TestClient {
     async fn request_permission(
         &self,
         _arguments: RequestPermissionRequest,
-    ) -> Result<RequestPermissionResponse, Error> {
+    ) -> Result<RequestPermissionResponse> {
         let responses = self.permission_responses.clone();
         let mut responses = responses.lock().unwrap();
         let outcome = responses
@@ -75,7 +74,7 @@ impl Client for TestClient {
     async fn write_text_file(
         &self,
         arguments: WriteTextFileRequest,
-    ) -> Result<WriteTextFileResponse, Error> {
+    ) -> Result<WriteTextFileResponse> {
         self.written_files
             .lock()
             .unwrap()
@@ -83,10 +82,7 @@ impl Client for TestClient {
         Ok(WriteTextFileResponse::default())
     }
 
-    async fn read_text_file(
-        &self,
-        arguments: ReadTextFileRequest,
-    ) -> Result<ReadTextFileResponse, Error> {
+    async fn read_text_file(&self, arguments: ReadTextFileRequest) -> Result<ReadTextFileResponse> {
         let contents = self.file_contents.lock().unwrap();
         let content = contents
             .get(&arguments.path)
@@ -98,7 +94,7 @@ impl Client for TestClient {
         })
     }
 
-    async fn session_notification(&self, args: SessionNotification) -> Result<(), Error> {
+    async fn session_notification(&self, args: SessionNotification) -> Result<()> {
         self.session_notifications.lock().unwrap().push(args);
         Ok(())
     }
@@ -106,39 +102,39 @@ impl Client for TestClient {
     async fn create_terminal(
         &self,
         _args: CreateTerminalRequest,
-    ) -> Result<CreateTerminalResponse, Error> {
+    ) -> Result<CreateTerminalResponse> {
         unimplemented!()
     }
 
     async fn terminal_output(
         &self,
         _args: TerminalOutputRequest,
-    ) -> Result<TerminalOutputResponse, Error> {
+    ) -> Result<TerminalOutputResponse> {
         unimplemented!()
     }
 
     async fn kill_terminal_command(
         &self,
         _args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse, Error> {
+    ) -> Result<KillTerminalCommandResponse> {
         unimplemented!()
     }
 
     async fn release_terminal(
         &self,
         _args: ReleaseTerminalRequest,
-    ) -> Result<ReleaseTerminalResponse, Error> {
+    ) -> Result<ReleaseTerminalResponse> {
         unimplemented!()
     }
 
     async fn wait_for_terminal_exit(
         &self,
         _args: WaitForTerminalExitRequest,
-    ) -> Result<WaitForTerminalExitResponse, Error> {
+    ) -> Result<WaitForTerminalExitResponse> {
         unimplemented!()
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         match dbg!(args.method.as_ref()) {
             "example.com/ping" => Ok(raw_json!({
                 "response": "pong",
@@ -148,7 +144,7 @@ impl Client for TestClient {
         }
     }
 
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.extension_notifications
             .lock()
             .unwrap()
@@ -180,7 +176,7 @@ impl TestAgent {
 
 #[async_trait::async_trait(?Send)]
 impl Agent for TestAgent {
-    async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse, Error> {
+    async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
         Ok(InitializeResponse {
             protocol_version: arguments.protocol_version,
             agent_capabilities: AgentCapabilities::default(),
@@ -189,17 +185,11 @@ impl Agent for TestAgent {
         })
     }
 
-    async fn authenticate(
-        &self,
-        _arguments: AuthenticateRequest,
-    ) -> Result<AuthenticateResponse, Error> {
+    async fn authenticate(&self, _arguments: AuthenticateRequest) -> Result<AuthenticateResponse> {
         Ok(AuthenticateResponse::default())
     }
 
-    async fn new_session(
-        &self,
-        _arguments: NewSessionRequest,
-    ) -> Result<NewSessionResponse, Error> {
+    async fn new_session(&self, _arguments: NewSessionRequest) -> Result<NewSessionResponse> {
         let session_id = SessionId(Arc::from("test-session-123"));
         self.sessions.lock().unwrap().insert(session_id.clone());
         Ok(NewSessionResponse {
@@ -211,7 +201,7 @@ impl Agent for TestAgent {
         })
     }
 
-    async fn load_session(&self, _: LoadSessionRequest) -> Result<LoadSessionResponse, Error> {
+    async fn load_session(&self, _: LoadSessionRequest) -> Result<LoadSessionResponse> {
         Ok(LoadSessionResponse {
             modes: None,
             #[cfg(feature = "unstable")]
@@ -223,11 +213,11 @@ impl Agent for TestAgent {
     async fn set_session_mode(
         &self,
         _arguments: SetSessionModeRequest,
-    ) -> Result<SetSessionModeResponse, Error> {
+    ) -> Result<SetSessionModeResponse> {
         Ok(SetSessionModeResponse { meta: None })
     }
 
-    async fn prompt(&self, arguments: PromptRequest) -> Result<PromptResponse, Error> {
+    async fn prompt(&self, arguments: PromptRequest) -> Result<PromptResponse> {
         self.prompts_received
             .lock()
             .unwrap()
@@ -238,7 +228,7 @@ impl Agent for TestAgent {
         })
     }
 
-    async fn cancel(&self, args: CancelNotification) -> Result<(), Error> {
+    async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.cancellations_received
             .lock()
             .unwrap()
@@ -250,12 +240,12 @@ impl Agent for TestAgent {
     async fn set_session_model(
         &self,
         args: agent_client_protocol_schema::SetSessionModelRequest,
-    ) -> Result<agent_client_protocol_schema::SetSessionModelResponse, Error> {
+    ) -> Result<agent_client_protocol_schema::SetSessionModelResponse> {
         log::info!("Received select model request {args:?}");
         Ok(agent_client_protocol_schema::SetSessionModelResponse::default())
     }
 
-    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse, Error> {
+    async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         dbg!();
         match dbg!(args.method.as_ref()) {
             "example.com/echo" => {
@@ -268,7 +258,7 @@ impl Agent for TestAgent {
         }
     }
 
-    async fn ext_notification(&self, args: ExtNotification) -> Result<(), Error> {
+    async fn ext_notification(&self, args: ExtNotification) -> Result<()> {
         self.extension_notifications
             .lock()
             .unwrap()

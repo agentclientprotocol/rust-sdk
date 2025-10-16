@@ -1,7 +1,7 @@
 [package]
 name = "agent-client-protocol"
 authors = ["Zed <hi@zed.dev>"]
-version = "0.4.7"
+version = "0.4.8"
 edition = "2024"
 license = "Apache-2.0"
 description = "A protocol for standardizing communication between code editors and AI coding agents"
@@ -17,14 +17,13 @@ include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 unstable = ["agent-client-protocol-schema/unstable"]
 
 [dependencies]
-agent-client-protocol-schema = "0.4.9"
+agent-client-protocol-schema = "0.4.10"
 anyhow = "1"
 async-broadcast = "0.7"
 async-trait = "0.1"
 futures = { version = "0.3" }
 log = "0.4"
 parking_lot = "0.12"
-schemars = { version = "1" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 

@@ -6,8 +6,7 @@
 
 use std::sync::Arc;
 
-use agent_client_protocol_schema::Error;
-use anyhow::Result;
+use agent_client_protocol_schema::{Error, Result};
 use serde::Serialize;
 use serde_json::value::RawValue;
 
@@ -59,7 +58,7 @@ pub enum StreamMessageContent {
         /// The ID of the request this response is for.
         id: Id,
         /// The result of the request (success or error).
-        result: Result<Option<serde_json::Value>, Error>,
+        result: Result<Option<serde_json::Value>>,
     },
     /// A JSON-RPC notification message.
     Notification {
@@ -101,7 +100,10 @@ impl StreamReceiver {
     /// - `Ok(StreamMessage)` when a message is received
     /// - `Err` when the sender is dropped or the receiver is lagged
     pub async fn recv(&mut self) -> Result<StreamMessage> {
-        Ok(self.0.recv().await?)
+        self.0
+            .recv()
+            .await
+            .map_err(|e| Error::internal_error().with_data(e.to_string()))
     }
 }
 
