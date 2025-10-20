@@ -1,5 +1,5 @@
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
-use rpc::{MessageHandler, RpcConnection, Side};
+use rpc::RpcConnection;
 
 mod agent;
 mod client;
@@ -11,6 +11,7 @@ mod stream_broadcast;
 pub use agent::*;
 pub use agent_client_protocol_schema::*;
 pub use client::*;
+pub use rpc::*;
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
 };
@@ -220,7 +221,7 @@ impl Side for ClientSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(AgentRequest::ExtMethodRequest(ExtRequest {
                         method: custom_method.into(),
-                        params: RawValue::from_string(params.get().to_string())?.into(),
+                        params: params.to_owned().into(),
                     }))
                 } else {
                     Err(Error::method_not_found())
@@ -519,7 +520,7 @@ impl Side for AgentSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(ClientRequest::ExtMethodRequest(ExtRequest {
                         method: custom_method.into(),
-                        params: RawValue::from_string(params.get().to_string())?.into(),
+                        params: params.to_owned().into(),
                     }))
                 } else {
                     Err(Error::method_not_found())
