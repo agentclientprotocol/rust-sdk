@@ -220,7 +220,7 @@ impl Side for ClientSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(AgentRequest::ExtMethodRequest(ExtRequest {
                         method: custom_method.into(),
-                        params: RawValue::from_string(params.get().to_string())?.into(),
+                        params: params.to_owned().into(),
                     }))
                 } else {
                     Err(Error::method_not_found())
@@ -519,7 +519,7 @@ impl Side for AgentSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(ClientRequest::ExtMethodRequest(ExtRequest {
                         method: custom_method.into(),
-                        params: RawValue::from_string(params.get().to_string())?.into(),
+                        params: params.to_owned().into(),
                     }))
                 } else {
                     Err(Error::method_not_found())
