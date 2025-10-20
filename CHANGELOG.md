@@ -4,10 +4,8 @@
 
 - Export necessary RPC types. Fixes an issue where certain fields weren't public enough.
 - Make id types easier to create and add `PartialEq` and `Eq` impls for as many types as possible.
-
-## 0.4.8 (2025-10-16)
-
 - Export `acp::Result<T, E = acp::Error>` for easier indication of ACP errors.
+- Use `acp::Error`/`acp::Result` instead of `anyhow::Error`/`anyhow::Result` for all return types.
 
 ## 0.4.7 (2025-10-13)
 
