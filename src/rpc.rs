@@ -9,6 +9,7 @@ use std::{
 };
 
 use agent_client_protocol_schema::{Error, Result};
+use derive_more::Display;
 use futures::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, FutureExt as _,
     StreamExt as _,
@@ -298,10 +299,11 @@ where
 }
 
 /// JSON RPC Request Id
-#[derive(Debug, PartialEq, Clone, Hash, Eq, Deserialize, Serialize, PartialOrd, Ord)]
+#[derive(Debug, PartialEq, Clone, Hash, Eq, Deserialize, Serialize, PartialOrd, Ord, Display)]
 #[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum RequestId {
+    #[display("null")]
     Null,
     Number(i64),
     Str(String),
@@ -450,5 +452,20 @@ mod tests {
 
         let id = serde_json::to_value(RequestId::Str("id".to_owned())).unwrap();
         assert_eq!(id, Value::String("id".to_owned()));
+    }
+
+    #[test]
+    fn id_display() {
+        let id = RequestId::Null;
+        assert_eq!(id.to_string(), "null");
+
+        let id = RequestId::Number(1);
+        assert_eq!(id.to_string(), "1");
+
+        let id = RequestId::Number(-1);
+        assert_eq!(id.to_string(), "-1");
+
+        let id = RequestId::Str("id".to_owned());
+        assert_eq!(id.to_string(), "id");
     }
 }
