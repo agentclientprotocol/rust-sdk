@@ -26,9 +26,9 @@ use serde_json::value::RawValue;
 
 use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
 
-pub struct RpcConnection<Local: Side, Remote: Side> {
+pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
     outgoing_tx: UnboundedSender<OutgoingMessage<Local, Remote>>,
-    pending_responses: Arc<Mutex<HashMap<Id, PendingResponse>>>,
+    pending_responses: Arc<Mutex<HashMap<RequestId, PendingResponse>>>,
     next_id: AtomicI64,
     broadcast: StreamBroadcast,
 }
@@ -43,7 +43,7 @@ where
     Local: Side + 'static,
     Remote: Side + 'static,
 {
-    pub fn new<Handler>(
+    pub(crate) fn new<Handler>(
         handler: Handler,
         outgoing_bytes: impl Unpin + AsyncWrite,
         incoming_bytes: impl Unpin + AsyncRead,
@@ -87,11 +87,11 @@ where
         (this, io_task)
     }
 
-    pub fn subscribe(&self) -> StreamReceiver {
+    pub(crate) fn subscribe(&self) -> StreamReceiver {
         self.broadcast.receiver()
     }
 
-    pub fn notify(
+    pub(crate) fn notify(
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InNotification>,
@@ -104,14 +104,14 @@ where
             .map_err(|_| Error::internal_error().with_data("failed to send notification"))
     }
 
-    pub fn request<Out: DeserializeOwned + Send + 'static>(
+    pub(crate) fn request<Out: DeserializeOwned + Send + 'static>(
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InRequest>,
     ) -> impl Future<Output = Result<Out>> {
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let id = Id::Number(id);
+        let id = RequestId::Number(id);
         self.pending_responses.lock().insert(
             id.clone(),
             PendingResponse {
@@ -153,7 +153,7 @@ where
         mut outgoing_rx: UnboundedReceiver<OutgoingMessage<Local, Remote>>,
         mut outgoing_bytes: impl Unpin + AsyncWrite,
         incoming_bytes: impl Unpin + AsyncRead,
-        pending_responses: Arc<Mutex<HashMap<Id, PendingResponse>>>,
+        pending_responses: Arc<Mutex<HashMap<RequestId, PendingResponse>>>,
         broadcast: StreamSender,
     ) -> Result<()> {
         // TODO: Create nicer abstraction for broadcast
@@ -301,37 +301,42 @@ where
 #[derive(Debug, PartialEq, Clone, Hash, Eq, Deserialize, Serialize, PartialOrd, Ord)]
 #[serde(deny_unknown_fields)]
 #[serde(untagged)]
-pub enum Id {
+pub enum RequestId {
     Null,
     Number(i64),
     Str(String),
 }
 
 #[derive(Deserialize)]
-struct RawIncomingMessage<'a> {
-    id: Option<Id>,
+pub struct RawIncomingMessage<'a> {
+    id: Option<RequestId>,
     method: Option<&'a str>,
     params: Option<&'a RawValue>,
     result: Option<&'a RawValue>,
     error: Option<Error>,
 }
 
-enum IncomingMessage<Local: Side> {
-    Request { id: Id, request: Local::InRequest },
-    Notification { notification: Local::InNotification },
+pub enum IncomingMessage<Local: Side> {
+    Request {
+        id: RequestId,
+        request: Local::InRequest,
+    },
+    Notification {
+        notification: Local::InNotification,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum OutgoingMessage<Local: Side, Remote: Side> {
     Request {
-        id: Id,
+        id: RequestId,
         method: Arc<str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         params: Option<Remote::InRequest>,
     },
     Response {
-        id: Id,
+        id: RequestId,
         #[serde(flatten)]
         result: ResponseResult<Local::OutResponse>,
     },
@@ -417,33 +422,33 @@ mod tests {
 
     #[test]
     fn id_deserialization() {
-        let id = serde_json::from_value::<Id>(Value::Null).unwrap();
-        assert_eq!(id, Id::Null);
+        let id = serde_json::from_value::<RequestId>(Value::Null).unwrap();
+        assert_eq!(id, RequestId::Null);
 
-        let id =
-            serde_json::from_value::<Id>(Value::Number(Number::from_u128(1).unwrap())).unwrap();
-        assert_eq!(id, Id::Number(1));
+        let id = serde_json::from_value::<RequestId>(Value::Number(Number::from_u128(1).unwrap()))
+            .unwrap();
+        assert_eq!(id, RequestId::Number(1));
 
-        let id =
-            serde_json::from_value::<Id>(Value::Number(Number::from_i128(-1).unwrap())).unwrap();
-        assert_eq!(id, Id::Number(-1));
+        let id = serde_json::from_value::<RequestId>(Value::Number(Number::from_i128(-1).unwrap()))
+            .unwrap();
+        assert_eq!(id, RequestId::Number(-1));
 
-        let id = serde_json::from_value::<Id>(Value::String("id".to_owned())).unwrap();
-        assert_eq!(id, Id::Str("id".to_owned()));
+        let id = serde_json::from_value::<RequestId>(Value::String("id".to_owned())).unwrap();
+        assert_eq!(id, RequestId::Str("id".to_owned()));
     }
 
     #[test]
     fn id_serialization() {
-        let id = serde_json::to_value(Id::Null).unwrap();
+        let id = serde_json::to_value(RequestId::Null).unwrap();
         assert_eq!(id, Value::Null);
 
-        let id = serde_json::to_value(Id::Number(1)).unwrap();
+        let id = serde_json::to_value(RequestId::Number(1)).unwrap();
         assert_eq!(id, Value::Number(Number::from_u128(1).unwrap()));
 
-        let id = serde_json::to_value(Id::Number(-1)).unwrap();
+        let id = serde_json::to_value(RequestId::Number(-1)).unwrap();
         assert_eq!(id, Value::Number(Number::from_i128(-1).unwrap()));
 
-        let id = serde_json::to_value(Id::Str("id".to_owned())).unwrap();
+        let id = serde_json::to_value(RequestId::Str("id".to_owned())).unwrap();
         assert_eq!(id, Value::String("id".to_owned()));
     }
 }

@@ -7,10 +7,11 @@
 use std::sync::Arc;
 
 use agent_client_protocol_schema::{Error, Result};
+use derive_more::From;
 use serde::Serialize;
 use serde_json::value::RawValue;
 
-use super::rpc::{Id, OutgoingMessage, ResponseResult, Side};
+use super::rpc::{OutgoingMessage, RequestId, ResponseResult, Side};
 
 /// A message that flows through the RPC stream.
 ///
@@ -19,7 +20,7 @@ use super::rpc::{Id, OutgoingMessage, ResponseResult, Side};
 ///
 /// Stream messages are used for observing and debugging the protocol communication
 /// without interfering with the actual message handling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMessage {
     /// The direction of the message relative to this side of the connection.
     pub direction: StreamMessageDirection,
@@ -42,12 +43,12 @@ pub enum StreamMessageDirection {
 /// - Requests: Method calls that expect a response
 /// - Responses: Replies to previous requests
 /// - Notifications: One-way messages that don't expect a response
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamMessageContent {
     /// A JSON-RPC request message.
     Request {
         /// The unique identifier for this request.
-        id: Id,
+        id: RequestId,
         /// The name of the method being called.
         method: Arc<str>,
         /// Optional parameters for the method.
@@ -56,7 +57,7 @@ pub enum StreamMessageContent {
     /// A JSON-RPC response message.
     Response {
         /// The ID of the request this response is for.
-        id: Id,
+        id: RequestId,
         /// The result of the request (success or error).
         result: Result<Option<serde_json::Value>>,
     },
@@ -88,6 +89,7 @@ pub enum StreamMessageContent {
 ///     }
 /// }
 /// ```
+#[derive(Debug, From)]
 pub struct StreamReceiver(async_broadcast::Receiver<StreamMessage>);
 
 impl StreamReceiver {
@@ -111,6 +113,7 @@ impl StreamReceiver {
 ///
 /// This is used internally by the RPC system to broadcast messages to all receivers.
 /// You typically won't interact with this directly.
+#[derive(Clone, Debug, From)]
 pub(crate) struct StreamSender(async_broadcast::Sender<StreamMessage>);
 
 impl StreamSender {
@@ -150,7 +153,7 @@ impl StreamSender {
     /// Broadcasts an incoming request to all receivers.
     pub(crate) fn incoming_request(
         &self,
-        id: Id,
+        id: RequestId,
         method: impl Into<Arc<str>>,
         params: &impl Serialize,
     ) {
@@ -171,7 +174,11 @@ impl StreamSender {
     }
 
     /// Broadcasts an incoming response to all receivers.
-    pub(crate) fn incoming_response(&self, id: Id, result: Result<Option<&RawValue>, &Error>) {
+    pub(crate) fn incoming_response(
+        &self,
+        id: RequestId,
+        result: Result<Option<&RawValue>, &Error>,
+    ) {
         if self.0.receiver_count() == 0 {
             return;
         }
@@ -216,6 +223,7 @@ impl StreamSender {
 ///
 /// This is used internally by the RPC connection to allow multiple receivers
 /// to observe the message stream.
+#[derive(Debug, Clone)]
 pub(crate) struct StreamBroadcast {
     receiver: async_broadcast::InactiveReceiver<StreamMessage>,
 }
@@ -228,7 +236,7 @@ impl StreamBroadcast {
     pub(crate) fn new() -> (StreamSender, Self) {
         let (sender, receiver) = async_broadcast::broadcast(1);
         (
-            StreamSender(sender),
+            sender.into(),
             Self {
                 receiver: receiver.deactivate(),
             },
@@ -245,7 +253,7 @@ impl StreamBroadcast {
             // Grow capacity once we actually have a receiver
             new_receiver.set_capacity(64);
         }
-        StreamReceiver(new_receiver)
+        new_receiver.into()
     }
 }
 

@@ -1,5 +1,5 @@
 use futures::{AsyncRead, AsyncWrite, future::LocalBoxFuture};
-use rpc::{MessageHandler, RpcConnection, Side};
+use rpc::RpcConnection;
 
 mod agent;
 mod client;
@@ -11,6 +11,7 @@ mod stream_broadcast;
 pub use agent::*;
 pub use agent_client_protocol_schema::*;
 pub use client::*;
+pub use rpc::*;
 pub use stream_broadcast::{
     StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
 };
