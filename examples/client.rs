@@ -80,7 +80,7 @@ impl acp::Client for ExampleClient {
         args: acp::SessionNotification,
     ) -> acp::Result<(), acp::Error> {
         match args.update {
-            acp::SessionUpdate::AgentMessageChunk { content } => {
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk { content, .. }) => {
                 let text = match content {
                     acp::ContentBlock::Text(text_content) => text_content.text,
                     acp::ContentBlock::Image(_) => "<image>".into(),

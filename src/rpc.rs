@@ -8,8 +8,9 @@ use std::{
     },
 };
 
-use agent_client_protocol_schema::{Error, Result};
-use derive_more::Display;
+use agent_client_protocol_schema::{
+    Error, JsonRpcMessage, OutgoingMessage, RequestId, ResponseResult, Result, Side,
+};
 use futures::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, FutureExt as _,
     StreamExt as _,
@@ -22,7 +23,7 @@ use futures::{
     select_biased,
 };
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
 use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
@@ -298,17 +299,6 @@ where
     }
 }
 
-/// JSON RPC Request Id
-#[derive(Debug, PartialEq, Clone, Hash, Eq, Deserialize, Serialize, PartialOrd, Ord, Display)]
-#[serde(deny_unknown_fields)]
-#[serde(untagged)]
-pub enum RequestId {
-    #[display("null")]
-    Null,
-    Number(i64),
-    Str(String),
-}
-
 #[derive(Deserialize)]
 pub struct RawIncomingMessage<'a> {
     id: Option<RequestId>,
@@ -328,82 +318,6 @@ pub enum IncomingMessage<Local: Side> {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-#[serde(untagged)]
-pub enum OutgoingMessage<Local: Side, Remote: Side> {
-    Request {
-        id: RequestId,
-        method: Arc<str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        params: Option<Remote::InRequest>,
-    },
-    Response {
-        id: RequestId,
-        #[serde(flatten)]
-        result: ResponseResult<Local::OutResponse>,
-    },
-    Notification {
-        method: Arc<str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        params: Option<Remote::InNotification>,
-    },
-}
-
-/// Either [`OutgoingMessage`] or [`IncomingMessage`] with `"jsonrpc": "2.0"` specified as
-/// [required by JSON-RPC 2.0 Specification][1].
-///
-/// [1]: https://www.jsonrpc.org/specification#compatibility
-#[derive(Debug, Serialize, Deserialize)]
-pub struct JsonRpcMessage<M> {
-    jsonrpc: &'static str,
-    #[serde(flatten)]
-    message: M,
-}
-
-impl<M> JsonRpcMessage<M> {
-    /// Used version of [JSON-RPC protocol].
-    ///
-    /// [JSON-RPC]: https://www.jsonrpc.org
-    pub const VERSION: &'static str = "2.0";
-
-    /// Wraps the provided [`OutgoingMessage`] or [`IncomingMessage`] into a versioned
-    /// [`JsonRpcMessage`].
-    #[must_use]
-    pub fn wrap(message: M) -> Self {
-        Self {
-            jsonrpc: Self::VERSION,
-            message,
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-pub enum ResponseResult<Res> {
-    Result(Res),
-    Error(Error),
-}
-
-impl<T> From<Result<T>> for ResponseResult<T> {
-    fn from(result: Result<T>) -> Self {
-        match result {
-            Ok(value) => ResponseResult::Result(value),
-            Err(error) => ResponseResult::Error(error),
-        }
-    }
-}
-
-pub trait Side: Clone {
-    type InRequest: Clone + Serialize + DeserializeOwned + 'static;
-    type OutResponse: Clone + Serialize + DeserializeOwned + 'static;
-    type InNotification: Clone + Serialize + DeserializeOwned + 'static;
-
-    fn decode_request(method: &str, params: Option<&RawValue>) -> Result<Self::InRequest>;
-
-    fn decode_notification(method: &str, params: Option<&RawValue>)
-    -> Result<Self::InNotification>;
-}
-
 pub trait MessageHandler<Local: Side> {
     fn handle_request(
         &self,
@@ -414,58 +328,4 @@ pub trait MessageHandler<Local: Side> {
         &self,
         notification: Local::InNotification,
     ) -> impl Future<Output = Result<()>>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use serde_json::{Number, Value};
-
-    #[test]
-    fn id_deserialization() {
-        let id = serde_json::from_value::<RequestId>(Value::Null).unwrap();
-        assert_eq!(id, RequestId::Null);
-
-        let id = serde_json::from_value::<RequestId>(Value::Number(Number::from_u128(1).unwrap()))
-            .unwrap();
-        assert_eq!(id, RequestId::Number(1));
-
-        let id = serde_json::from_value::<RequestId>(Value::Number(Number::from_i128(-1).unwrap()))
-            .unwrap();
-        assert_eq!(id, RequestId::Number(-1));
-
-        let id = serde_json::from_value::<RequestId>(Value::String("id".to_owned())).unwrap();
-        assert_eq!(id, RequestId::Str("id".to_owned()));
-    }
-
-    #[test]
-    fn id_serialization() {
-        let id = serde_json::to_value(RequestId::Null).unwrap();
-        assert_eq!(id, Value::Null);
-
-        let id = serde_json::to_value(RequestId::Number(1)).unwrap();
-        assert_eq!(id, Value::Number(Number::from_u128(1).unwrap()));
-
-        let id = serde_json::to_value(RequestId::Number(-1)).unwrap();
-        assert_eq!(id, Value::Number(Number::from_i128(-1).unwrap()));
-
-        let id = serde_json::to_value(RequestId::Str("id".to_owned())).unwrap();
-        assert_eq!(id, Value::String("id".to_owned()));
-    }
-
-    #[test]
-    fn id_display() {
-        let id = RequestId::Null;
-        assert_eq!(id.to_string(), "null");
-
-        let id = RequestId::Number(1);
-        assert_eq!(id.to_string(), "1");
-
-        let id = RequestId::Number(-1);
-        assert_eq!(id.to_string(), "-1");
-
-        let id = RequestId::Str("id".to_owned());
-        assert_eq!(id.to_string(), "id");
-    }
 }

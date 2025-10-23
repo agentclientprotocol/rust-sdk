@@ -17,7 +17,7 @@ include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 unstable = ["agent-client-protocol-schema/unstable"]
 
 [dependencies]
-agent-client-protocol-schema = { version = "0.4.11" }
+agent-client-protocol-schema = { version = "0.5.0" }
 anyhow = "1"
 async-broadcast = "0.7"
 async-trait = "0.1"
