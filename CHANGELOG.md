@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0 (2025-10-23)
+
+- Provide missing `_meta` fields on certain enum variants.
+- More consistent enum usage. Enums are always either newtype or struct variants within a single enum, not mixed.
+
 ## 0.5.0 (2025-10-20)
 
 - Export necessary RPC types. Fixes an issue where certain fields weren't public enough.

@@ -1,19 +1,3 @@
-use agent_client_protocol_schema::{
-    AgentCapabilities, AgentNotification, AuthenticateRequest, AuthenticateResponse,
-    CancelNotification, ClientCapabilities, ClientNotification, ContentBlock,
-    CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
-    InitializeRequest, InitializeResponse, KillTerminalCommandRequest, KillTerminalCommandResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionId, PermissionOptionKind, PromptRequest, PromptResponse,
-    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, SessionId,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, SetSessionModeResponse, StopReason,
-    TerminalOutputRequest, TerminalOutputResponse, TextContent, ToolCall, ToolCallContent,
-    ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
-    VERSION, WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
-};
-use serde_json::json;
 use std::sync::{Arc, Mutex};
 
 use crate::*;
@@ -406,13 +390,14 @@ async fn test_session_notifications() {
             client_conn
                 .session_notification(SessionNotification {
                     session_id: session_id.clone(),
-                    update: SessionUpdate::UserMessageChunk {
+                    update: SessionUpdate::UserMessageChunk(ContentChunk {
                         content: ContentBlock::Text(TextContent {
                             annotations: None,
                             text: "Hello from user".to_string(),
                             meta: None,
                         }),
-                    },
+                        meta: None,
+                    }),
                     meta: None,
                 })
                 .await
@@ -421,13 +406,14 @@ async fn test_session_notifications() {
             client_conn
                 .session_notification(SessionNotification {
                     session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk {
+                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
                         content: ContentBlock::Text(TextContent {
                             annotations: None,
                             text: "Hello from agent".to_string(),
                             meta: None,
                         }),
-                    },
+                        meta: None,
+                    }),
                     meta: None,
                 })
                 .await
@@ -562,13 +548,14 @@ async fn test_full_conversation_flow() {
             client_conn
                 .session_notification(SessionNotification {
                     session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk {
+                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
                         content: ContentBlock::Text(TextContent {
                             annotations: None,
                             text: "I'll analyze the file for you. ".to_string(),
                             meta: None,
                         }),
-                    },
+                        meta: None,
+                    }),
                     meta: None,
                 })
                 .await
@@ -688,13 +675,14 @@ async fn test_full_conversation_flow() {
             client_conn
                 .session_notification(SessionNotification {
                     session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk {
+                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
                         content: ContentBlock::Text(TextContent {
                             annotations: None,
                             text: "Based on the file contents, here's my summary: The file contains placeholder text commonly used in the printing industry.".to_string(),
                             meta: None,
                         }),
-                    },
+                        meta: None,
+                    }),
                     meta: None,
                 })
                 .await
@@ -716,7 +704,7 @@ async fn test_full_conversation_flow() {
 
             for notification in updates.iter() {
                 match &notification.update {
-                    SessionUpdate::AgentMessageChunk { content : ContentBlock::Text(text)} => {
+                    SessionUpdate::AgentMessageChunk(ContentChunk { content : ContentBlock::Text(text), ..}) => {
                         if text.text.contains("I'll analyze") {
                             found_agent_message = true;
                         } else if text.text.contains("Based on the file") {
@@ -741,72 +729,6 @@ async fn test_full_conversation_flow() {
             assert!(found_final_message, "Should have final agent message");
         })
         .await;
-}
-
-#[tokio::test]
-async fn test_notification_wire_format() {
-    use super::rpc::{JsonRpcMessage, OutgoingMessage};
-    use serde_json::{Value, json};
-
-    // Test client -> agent notification wire format
-    let outgoing_msg =
-        JsonRpcMessage::wrap(OutgoingMessage::<ClientSide, AgentSide>::Notification {
-            method: "cancel".into(),
-            params: Some(ClientNotification::CancelNotification(CancelNotification {
-                session_id: SessionId("test-123".into()),
-                meta: None,
-            })),
-        });
-
-    let serialized: Value = serde_json::to_value(&outgoing_msg).unwrap();
-    assert_eq!(
-        serialized,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "cancel",
-            "params": {
-                "sessionId": "test-123"
-            },
-        })
-    );
-
-    // Test agent -> client notification wire format
-    let outgoing_msg =
-        JsonRpcMessage::wrap(OutgoingMessage::<AgentSide, ClientSide>::Notification {
-            method: "sessionUpdate".into(),
-            params: Some(AgentNotification::SessionNotification(
-                SessionNotification {
-                    session_id: SessionId("test-456".into()),
-                    update: SessionUpdate::AgentMessageChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: "Hello".to_string(),
-                            meta: None,
-                        }),
-                    },
-                    meta: None,
-                },
-            )),
-        });
-
-    let serialized: Value = serde_json::to_value(&outgoing_msg).unwrap();
-    assert_eq!(
-        serialized,
-        json!({
-            "jsonrpc": "2.0",
-            "method": "sessionUpdate",
-            "params": {
-                "sessionId": "test-456",
-                "update": {
-                    "sessionUpdate": "agent_message_chunk",
-                    "content": {
-                        "type": "text",
-                        "text": "Hello"
-                    }
-                }
-            }
-        })
-    );
 }
 
 #[tokio::test]

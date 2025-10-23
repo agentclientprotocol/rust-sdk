@@ -98,7 +98,10 @@ impl acp::Agent for ExampleAgent {
                 .send((
                     acp::SessionNotification {
                         session_id: arguments.session_id.clone(),
-                        update: acp::SessionUpdate::AgentMessageChunk { content },
+                        update: acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
+                            content,
+                            meta: None,
+                        }),
                         meta: None,
                     },
                     tx,
