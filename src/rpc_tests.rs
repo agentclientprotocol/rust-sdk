@@ -164,6 +164,11 @@ impl Agent for TestAgent {
         Ok(InitializeResponse {
             protocol_version: arguments.protocol_version,
             agent_capabilities: AgentCapabilities::default(),
+            agent_info: Some(Implementation {
+                name: "test-agent".into(),
+                title: Some("Test Agent".into()),
+                version: "0.0.0".into(),
+            }),
             auth_methods: vec![],
             meta: None,
         })
@@ -298,6 +303,11 @@ async fn test_initialize() {
                 .initialize(InitializeRequest {
                     protocol_version: VERSION,
                     client_capabilities: ClientCapabilities::default(),
+                    client_info: Some(Implementation {
+                        name: "test-client".to_string(),
+                        title: Some("Test Client".to_string()),
+                        version: "0.0.0".to_string(),
+                    }),
                     meta: None,
                 })
                 .await;

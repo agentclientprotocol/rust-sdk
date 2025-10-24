@@ -151,6 +151,11 @@ async fn main() -> anyhow::Result<()> {
             conn.initialize(acp::InitializeRequest {
                 protocol_version: acp::V1,
                 client_capabilities: acp::ClientCapabilities::default(),
+                client_info: Some(acp::Implementation {
+                    name: "example-client".to_string(),
+                    title: Some("Example Client".to_string()),
+                    version: "0.1.0".to_string(),
+                }),
                 meta: None,
             })
             .await?;

@@ -46,6 +46,11 @@ impl acp::Agent for ExampleAgent {
             protocol_version: acp::V1,
             agent_capabilities: acp::AgentCapabilities::default(),
             auth_methods: Vec::new(),
+            agent_info: Some(acp::Implementation {
+                name: "example-agent".to_string(),
+                title: Some("Example Agent".to_string()),
+                version: "0.1.0".to_string(),
+            }),
             meta: None,
         })
     }

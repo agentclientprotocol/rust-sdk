@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0 (2025-10-24)
+
+- Add ability for agents and clients to provide information about their implementation
+- Fix incorrectly serialized `_meta` field on `SetSessionModeResponse`
+
 ## 0.6.0 (2025-10-23)
 
 - Provide missing `_meta` fields on certain enum variants.
