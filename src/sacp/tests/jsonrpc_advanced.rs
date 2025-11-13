@@ -1,0 +1,334 @@
+//! Advanced feature tests for JSON-RPC layer
+//!
+//! Tests advanced JSON-RPC capabilities:
+//! - Bidirectional communication (both sides can be client+server)
+//! - Request ID tracking and matching
+//! - Out-of-order response handling
+
+use futures::{AsyncRead, AsyncWrite};
+use sacp::{JrHandlerChain, JrMessage, JrRequest, JrRequestCx, JrResponse, JrResponsePayload};
+use serde::{Deserialize, Serialize};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+/// Test helper to block and wait for a JSON-RPC response.
+async fn recv<R: JrResponsePayload + Send>(response: JrResponse<R>) -> Result<R, sacp::Error> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    response.await_when_result_received(async move |result| {
+        tx.send(result).map_err(|_| sacp::Error::internal_error())
+    })?;
+    rx.await.map_err(|_| sacp::Error::internal_error())?
+}
+
+/// Helper to set up test streams for testing.
+fn setup_test_streams() -> (
+    impl AsyncRead,
+    impl AsyncWrite,
+    impl AsyncRead,
+    impl AsyncWrite,
+) {
+    let (client_writer, server_reader) = tokio::io::duplex(1024);
+    let (server_writer, client_reader) = tokio::io::duplex(1024);
+
+    let server_reader = server_reader.compat();
+    let server_writer = server_writer.compat_write();
+    let client_reader = client_reader.compat();
+    let client_writer = client_writer.compat_write();
+
+    (server_reader, server_writer, client_reader, client_writer)
+}
+
+// ============================================================================
+// Test types
+// ============================================================================
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct PingRequest {
+    value: u32,
+}
+
+impl JrMessage for PingRequest {
+    fn into_untyped_message(self) -> Result<sacp::UntypedMessage, sacp::Error> {
+        let method = self.method().to_string();
+        sacp::UntypedMessage::new(&method, self)
+    }
+
+    fn method(&self) -> &str {
+        "ping"
+    }
+
+    fn parse_request(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Option<Result<Self, sacp::Error>> {
+        if method != "ping" {
+            return None;
+        }
+        Some(sacp::util::json_cast(params))
+    }
+
+    fn parse_notification(
+        _method: &str,
+        _params: &impl serde::Serialize,
+    ) -> Option<Result<Self, sacp::Error>> {
+        // This is a request, not a notification
+        None
+    }
+}
+
+impl JrRequest for PingRequest {
+    type Response = PongResponse;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PongResponse {
+    value: u32,
+}
+
+impl JrResponsePayload for PongResponse {
+    fn into_json(self, _method: &str) -> Result<serde_json::Value, sacp::Error> {
+        serde_json::to_value(self).map_err(sacp::Error::into_internal_error)
+    }
+
+    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, sacp::Error> {
+        sacp::util::json_cast(&value)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SlowRequest {
+    delay_ms: u64,
+    id: u32,
+}
+
+impl JrMessage for SlowRequest {
+    fn into_untyped_message(self) -> Result<sacp::UntypedMessage, sacp::Error> {
+        let method = self.method().to_string();
+        sacp::UntypedMessage::new(&method, self)
+    }
+
+    fn method(&self) -> &str {
+        "slow"
+    }
+
+    fn parse_request(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Option<Result<Self, sacp::Error>> {
+        if method != "slow" {
+            return None;
+        }
+        Some(sacp::util::json_cast(params))
+    }
+
+    fn parse_notification(
+        _method: &str,
+        _params: &impl serde::Serialize,
+    ) -> Option<Result<Self, sacp::Error>> {
+        // This is a request, not a notification
+        None
+    }
+}
+
+impl JrRequest for SlowRequest {
+    type Response = SlowResponse;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct SlowResponse {
+    id: u32,
+}
+
+impl JrResponsePayload for SlowResponse {
+    fn into_json(self, _method: &str) -> Result<serde_json::Value, sacp::Error> {
+        serde_json::to_value(self).map_err(sacp::Error::into_internal_error)
+    }
+
+    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, sacp::Error> {
+        sacp::util::json_cast(&value)
+    }
+}
+
+// ============================================================================
+// Test 1: Bidirectional communication
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_bidirectional_communication() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            // Set up two connections that are symmetric - both can send and receive
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+
+            let side_a_transport = sacp::ByteStreams::new(server_writer, server_reader);
+            let side_a = JrHandlerChain::new().on_receive_request(
+                async |request: PingRequest, request_cx: JrRequestCx<PongResponse>| {
+                    request_cx.respond(PongResponse {
+                        value: request.value + 1,
+                    })
+                },
+            );
+
+            let side_b_transport = sacp::ByteStreams::new(client_writer, client_reader);
+            let side_b = JrHandlerChain::new();
+
+            // Spawn side_a as server
+            tokio::task::spawn_local(async move {
+                side_a.serve(side_a_transport).await.ok();
+            });
+
+            // Use side_b as client
+            let result = side_b
+                .with_client(side_b_transport, async |cx| -> Result<(), sacp::Error> {
+                    let request = PingRequest { value: 10 };
+                    let response_future = recv(cx.send_request(request));
+                    let response: Result<PongResponse, _> = response_future.await;
+
+                    assert!(response.is_ok());
+                    if let Ok(resp) = response {
+                        assert_eq!(resp.value, 11);
+                    }
+                    Ok(())
+                })
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {:?}", result);
+        })
+        .await;
+}
+
+// ============================================================================
+// Test 2: Request IDs are properly tracked
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_request_ids() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+
+            let server_transport = sacp::ByteStreams::new(server_writer, server_reader);
+            let server = JrHandlerChain::new().on_receive_request(
+                async |request: PingRequest, request_cx: JrRequestCx<PongResponse>| {
+                    request_cx.respond(PongResponse {
+                        value: request.value + 1,
+                    })
+                },
+            );
+
+            let client_transport = sacp::ByteStreams::new(client_writer, client_reader);
+            let client = JrHandlerChain::new();
+
+            tokio::task::spawn_local(async move {
+                server.serve(server_transport).await.ok();
+            });
+
+            let result = client
+                .with_client(client_transport, async |cx| -> Result<(), sacp::Error> {
+                    // Send multiple requests and verify responses match
+                    let req1 = PingRequest { value: 1 };
+                    let req2 = PingRequest { value: 2 };
+                    let req3 = PingRequest { value: 3 };
+
+                    let resp1_future = recv(cx.send_request(req1));
+                    let resp2_future = recv(cx.send_request(req2));
+                    let resp3_future = recv(cx.send_request(req3));
+
+                    let resp1: Result<PongResponse, _> = resp1_future.await;
+                    let resp2: Result<PongResponse, _> = resp2_future.await;
+                    let resp3: Result<PongResponse, _> = resp3_future.await;
+
+                    // Verify each response corresponds to its request
+                    assert_eq!(resp1.unwrap().value, 2); // 1 + 1
+                    assert_eq!(resp2.unwrap().value, 3); // 2 + 1
+                    assert_eq!(resp3.unwrap().value, 4); // 3 + 1
+
+                    Ok(())
+                })
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {:?}", result);
+        })
+        .await;
+}
+
+// ============================================================================
+// Test 3: Out-of-order responses
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_out_of_order_responses() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+
+            let server_transport = sacp::ByteStreams::new(server_writer, server_reader);
+            let server = JrHandlerChain::new().on_receive_request(
+                async |request: SlowRequest, request_cx: JrRequestCx<SlowResponse>| {
+                    // Simulate delay
+                    tokio::time::sleep(tokio::time::Duration::from_millis(request.delay_ms)).await;
+                    request_cx.respond(SlowResponse { id: request.id })
+                },
+            );
+
+            let client_transport = sacp::ByteStreams::new(client_writer, client_reader);
+            let client = JrHandlerChain::new();
+
+            tokio::task::spawn_local(async move {
+                server.serve(server_transport).await.ok();
+            });
+
+            let result = client
+                .with_client(client_transport, async |cx| -> Result<(), sacp::Error> {
+                    // Send requests with different delays
+                    // Request 1: 100ms delay
+                    // Request 2: 50ms delay
+                    // Request 3: 10ms delay
+                    // Responses should arrive in order: 3, 2, 1
+
+                    let req1 = SlowRequest {
+                        delay_ms: 100,
+                        id: 1,
+                    };
+                    let req2 = SlowRequest {
+                        delay_ms: 50,
+                        id: 2,
+                    };
+                    let req3 = SlowRequest {
+                        delay_ms: 10,
+                        id: 3,
+                    };
+
+                    let resp1_future = recv(cx.send_request(req1));
+                    let resp2_future = recv(cx.send_request(req2));
+                    let resp3_future = recv(cx.send_request(req3));
+
+                    // Wait for all responses
+                    let resp1: Result<SlowResponse, _> = resp1_future.await;
+                    let resp2: Result<SlowResponse, _> = resp2_future.await;
+                    let resp3: Result<SlowResponse, _> = resp3_future.await;
+
+                    // Verify each future got the correct response despite out-of-order arrival
+                    assert_eq!(resp1.unwrap().id, 1);
+                    assert_eq!(resp2.unwrap().id, 2);
+                    assert_eq!(resp3.unwrap().id, 3);
+
+                    Ok(())
+                })
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {:?}", result);
+        })
+        .await;
+}

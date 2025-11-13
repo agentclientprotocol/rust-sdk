@@ -1,6 +1,16 @@
 [workspace]
 members = [
     "src/agent-client-protocol",
+    "src/sacp",
+    "src/sacp-tokio",
+    "src/sacp-proxy",
+    "src/sacp-rmcp",
+    "src/sacp-conductor",
+    "src/sacp-test",
+    "src/sacp-tee",
+    "src/elizacp",
+    "src/yopo",
+    "examples/migration",
 ]
 resolver = "2"
 
@@ -10,3 +20,45 @@ edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/agentclientprotocol/rust-sdk"
 homepage = "https://github.com/agentclientprotocol/rust-sdk"
+
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.48", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+
+# Protocol
+agent-client-protocol-schema = "0.6.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = { version = "1.0", features = ["derive"] }
+
+# UUID generation
+uuid = { version = "1.18", features = ["v4"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# MCP SDK
+rmcp = { version = "0.8.3", features = ["server", "transport-io", "schemars"] }
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Other dependencies
+boxfnonce = "0.1.1"
+chrono = "0.4"
+futures = "0.3.31"
+fxhash = "0.2.1"
+jsonrpcmsg = "0.1.2"
+
+# Testing
+expect-test = "1.5"
+tokio-test = "0.4"
