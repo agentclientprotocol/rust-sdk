@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - Merge pull request #30 from nikomatsakis/main
-- *(sacp)* remove Deref impl from JrRequestCx
+- _(sacp)_ remove Deref impl from JrRequestCx
 
 ## [1.0.0-alpha.6](https://github.com/symposium-dev/symposium-acp/compare/sacp-proxy-v1.0.0-alpha.5...sacp-proxy-v1.0.0-alpha.6) - 2025-11-12
 
@@ -61,7 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - add GitHub links to example files in sacp and sacp-proxy
 - add deny(missing_docs) and document all public APIs
-- *(sacp-proxy)* add comprehensive crate-level documentation
+- _(sacp-proxy)_ add comprehensive crate-level documentation
 - rename JsonRpcRequest to JrRequest
 - add READMEs for sacp-tokio, sacp-proxy, and sacp-conductor
 
@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- remove more uses of `agent_client_protocl_schema`
+- remove more uses of `agent_client_protocol_schema`
 - replace acp:: with crate::/sacp:: throughout codebase
 - rename JsonRpc* types to Jr* across all crates
-- *(deps)* switch from agent-client-protocol to agent-client-protocol-schema
+- _(deps)_ switch from agent-client-protocol to agent-client-protocol-schema

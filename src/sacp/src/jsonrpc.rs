@@ -950,7 +950,7 @@ enum OutgoingMessage {
         params: Option<jsonrpcmsg::Params>,
     },
 
-    /// Send a reponse to a message from the server
+    /// Send a response to a message from the server
     Response {
         id: jsonrpcmsg::Id,
 
@@ -990,20 +990,6 @@ impl<T> IntoHandled<T> for Handled<T> {
         self
     }
 }
-
-/// Trait for types that can provide transport for JSON-RPC messages.
-///
-/// Implementations of this trait bridge between the internal protocol channels
-/// (which carry `jsonrpcmsg::Message`) and the actual I/O mechanism (byte streams,
-/// in-process channels, network sockets, etc.).
-///
-/// The transport layer is responsible only for moving `jsonrpcmsg::Message` in and out.
-/// It has no knowledge of protocol semantics like request/response correlation, ID assignment,
-/// or handler dispatch - those are handled by the protocol layer in `JrConnection`.
-///
-/// # Example
-///
-/// See [`ByteStreams`] for the standard byte stream implementation.
 
 /// Connection context for sending messages and spawning tasks.
 ///

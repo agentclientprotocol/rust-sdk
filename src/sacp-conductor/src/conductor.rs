@@ -398,7 +398,7 @@ impl ConductorHandlerState {
                 }),
 
             // MCP connection successfully established. Spawn the actor
-            // and insert the connection into our map fot future reference.
+            // and insert the connection into our map for future reference.
             ConductorMessage::McpConnectionEstablished {
                 response: McpConnectResponse { connection_id },
                 actor,

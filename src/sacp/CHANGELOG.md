@@ -24,21 +24,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - Merge pull request #30 from nikomatsakis/main
-- *(sacp)* remove Deref impl from JrRequestCx
-- *(sacp)* add common patterns section to crate-level documentation
-- *(sacp)* add Component::serve() and simplify channel API
+- _(sacp)_ remove Deref impl from JrRequestCx
+- _(sacp)_ add common patterns section to crate-level documentation
+- _(sacp)_ add Component::serve() and simplify channel API
 
 ## [1.0.0-alpha.6](https://github.com/symposium-dev/symposium-acp/compare/sacp-v1.0.0-alpha.5...sacp-v1.0.0-alpha.6) - 2025-11-12
 
 ### Added
 
-- *(sacp)* extend IntoHandled support to notification handlers
-- *(sacp)* add IntoHandled trait for flexible handler return types
+- _(sacp)_ extend IntoHandled support to notification handlers
+- _(sacp)_ add IntoHandled trait for flexible handler return types
 
 ### Other
 
 - Merge pull request #28 from nikomatsakis/main
-- *(sacp)* add tests for IntoHandled message transformation
+- _(sacp)_ add tests for IntoHandled message transformation
 
 ## [1.0.0-alpha.5](https://github.com/symposium-dev/symposium-acp/compare/sacp-v1.0.0-alpha.4...sacp-v1.0.0-alpha.5) - 2025-11-11
 
@@ -55,21 +55,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - unify Transport and Component traits with BoxFuture-returning signatures
 - create selective jsonrpcmsg re-export module
 - move Component trait to sacp-proxy crate
-- *(sacp)* improve IntoJrTransport and Component trait impls
+- _(sacp)_ improve IntoJrTransport and Component trait impls
 
 ## [1.0.0-alpha.3](https://github.com/symposium-dev/symposium-acp/compare/sacp-v1.0.0-alpha.2...sacp-v1.0.0-alpha.3) - 2025-11-09
 
 ### Other
 
 - Merge pull request #18 from nikomatsakis/main
-- *(sacp-conductor)* route all message forwarding through central queue
+- _(sacp-conductor)_ route all message forwarding through central queue
 
 ## [1.0.0-alpha.2](https://github.com/symposium-dev/symposium-acp/compare/sacp-v1.0.0-alpha.1...sacp-v1.0.0-alpha.2) - 2025-11-08
 
 ### Added
 
-- *(sacp)* add convenience methods for common connection patterns
-- *(sacp)* add IntoJrConnectionTransport trait and ByteStreamTransport
+- _(sacp)_ add convenience methods for common connection patterns
+- _(sacp)_ add IntoJrConnectionTransport trait and ByteStreamTransport
 
 ### Other
 
@@ -78,16 +78,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - wipwipwip
 - introduce a `IntoJrHandler` trait
 - [**breaking**] remove Unpin bounds and simplify transport API
-- *(sacp)* clarify id: None semantics and remove phase references
-- *(sacp)* split actors into protocol and transport layers
+- _(sacp)_ clarify id: None semantics and remove phase references
+- _(sacp)_ split actors into protocol and transport layers
 
 ## [0.2.0](https://github.com/symposium-dev/symposium-acp/compare/sacp-v0.1.1...sacp-v0.2.0) - 2025-11-04
 
 ### Added
 
-- *(sacp-tokio)* implement JrConnectionExt trait for to_agent
+- _(sacp-tokio)_ implement JrConnectionExt trait for to_agent
 - create sacp-tokio crate and improve AcpAgent API
-- *(sacp)* add AcpAgent utility and yolo-one-shot-client example
+- _(sacp)_ add AcpAgent utility and yolo-one-shot-client example
 
 ### Fixed
 
@@ -96,29 +96,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - add GitHub links to example files in sacp and sacp-proxy
-- *(sacp)* [**breaking**] rename json_rpc_cx to connection_cx
+- _(sacp)_ [**breaking**] rename json_rpc_cx to connection_cx
 - add deny(missing_docs) and document all public APIs
-- *(sacp)* improve cx cloning pattern in doc examples
-- *(sacp)* update crate-level documentation to match README
+- _(sacp)_ improve cx cloning pattern in doc examples
+- _(sacp)_ update crate-level documentation to match README
 - factor "doc-test-only" code into its own crate
 - make doctests build
-- *(sacp)* fix remaining doc test compilation errors
-- *(sacp)* enhance JrResponse method documentation
-- *(sacp)* document event loop and concurrency model
+- _(sacp)_ fix remaining doc test compilation errors
+- _(sacp)_ enhance JrResponse method documentation
+- _(sacp)_ document event loop and concurrency model
 - rename JsonRpcRequest to JrRequest
 - use util.rs
-- *(sacp)* move typed utilities to util module and add docs
-- *(sacp)* remove mention of non-existent derive macro
-- *(sacp)* fix doctests to compile instead of being ignored
-- *(sacp)* add comprehensive rustdoc for JrConnection
-- *(sacp)* rewrite README with streamlined quick start
-- *(sacp)* use stderr for yolo-one-shot-client meta output
+- _(sacp)_ move typed utilities to util module and add docs
+- _(sacp)_ remove mention of non-existent derive macro
+- _(sacp)_ fix doctests to compile instead of being ignored
+- _(sacp)_ add comprehensive rustdoc for JrConnection
+- _(sacp)_ rewrite README with streamlined quick start
+- _(sacp)_ use stderr for yolo-one-shot-client meta output
 
 ## [0.1.1](https://github.com/symposium-dev/symposium-acp/compare/sacp-v0.1.0...sacp-v0.1.1) - 2025-10-30
 
 ### Added
 
-- *(sacp)* re-export all agent-client-protocol-schema types
+- _(sacp)_ re-export all agent-client-protocol-schema types
 
 ### Fixed
 
@@ -126,8 +126,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Other
 
-- remove more uses of `agent_client_protocl_schema`
+- remove more uses of `agent_client_protocol_schema`
 - replace acp:: with crate::/sacp:: throughout codebase
 - rename JsonRpc* types to Jr* across all crates
-- *(deps)* switch from agent-client-protocol to agent-client-protocol-schema
-- *(sacp)* add simple_agent example demonstrating JsonRpcConnection usage
+- _(deps)_ switch from agent-client-protocol to agent-client-protocol-schema
+- _(sacp)_ add simple_agent example demonstrating JsonRpcConnection usage

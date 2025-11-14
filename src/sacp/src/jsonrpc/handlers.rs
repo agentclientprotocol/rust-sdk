@@ -179,7 +179,6 @@ where
 }
 
 /// Handler that tries H1 and then H2.
-
 pub struct MessageHandler<R, N, F>
 where
     R: JrRequest,
