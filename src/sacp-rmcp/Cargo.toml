@@ -1,0 +1,23 @@
+[package]
+name = "sacp-rmcp"
+version = "0.8.0"
+edition = "2024"
+description = "rmcp integration for SACP proxy components"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/symposium-dev/symposium-acp"
+keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
+categories = ["development-tools"]
+
+[dependencies]
+sacp = { version = "1.0.0", path = "../sacp" }
+sacp-proxy = { version = "1.0.0", path = "../sacp-proxy" }
+rmcp.workspace = true
+futures.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+serde.workspace = true
+schemars.workspace = true
+tracing-subscriber.workspace = true
+tracing.workspace = true

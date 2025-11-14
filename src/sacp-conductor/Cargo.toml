@@ -1,0 +1,43 @@
+[package]
+name = "sacp-conductor"
+version = "1.0.0"
+edition = "2024"
+description = "Conductor for orchestrating SACP proxy chains"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/symposium-dev/symposium-acp"
+keywords = ["acp", "agent", "conductor", "ai"]
+categories = ["development-tools"]
+
+[features]
+test-support = []
+unstable = ["sacp/unstable", "agent-client-protocol-schema/unstable"]
+
+[dependencies]
+sacp = { version = "1.0.0", path = "../sacp" }
+sacp-proxy = { version = "1.0.0", path = "../sacp-proxy" }
+sacp-tokio = { version = "1.0.0", path = "../sacp-tokio" }
+agent-client-protocol-schema.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+shell-words = "1.1"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+elizacp = { path = "../elizacp" }
+expect-test.workspace = true
+rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
+schemars.workspace = true
+sacp-rmcp = { path = "../sacp-rmcp" }
+sacp-test = { path = "../sacp-test" }
+sacp-tokio = { path = "../sacp-tokio" }

@@ -1,0 +1,32 @@
+[package]
+name = "sacp"
+version = "1.0.0"
+edition = "2024"
+description = "Core protocol types and traits for SACP (Symposium's extensions to ACP)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/symposium-dev/symposium-acp"
+keywords = ["acp", "agent", "protocol", "ai"]
+categories = ["development-tools"]
+
+[features]
+unstable = ["agent-client-protocol-schema/unstable"]
+
+[dependencies]
+agent-client-protocol-schema.workspace = true
+anyhow.workspace = true
+boxfnonce.workspace = true
+futures.workspace = true
+jsonrpcmsg.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+clap = { workspace = true, features = ["derive"] }
+expect-test.workspace = true
+shell-words = "1.1"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "time", "process"] }
+tokio-util.workspace = true
+sacp-test = { path = "../sacp-test" }

@@ -1,0 +1,43 @@
+[package]
+name = "migration-examples"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[[example]]
+name = "agent_legacy"
+path = "agent_legacy.rs"
+
+[[example]]
+name = "agent_sacp"
+path = "agent_sacp.rs"
+
+[[example]]
+name = "client_legacy"
+path = "client_legacy.rs"
+
+[[example]]
+name = "client_sacp"
+path = "client_sacp.rs"
+
+[[example]]
+name = "agent_with_callbacks_sacp"
+path = "agent_with_callbacks_sacp.rs"
+
+
+[features]
+unstable = ["agent-client-protocol/unstable", "agent-client-protocol-schema/unstable"]
+
+[dependencies]
+# Legacy SDK
+agent-client-protocol = { path = "../../src/agent-client-protocol" }
+agent-client-protocol-schema.workspace = true
+
+# New SDK
+sacp = { path = "../../src/sacp" }
+
+# Async runtime
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+async-trait = "0.1"

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_historian_log__log",
+      "mcp__plugin_historian_sidechat__receive_message"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

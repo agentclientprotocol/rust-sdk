@@ -1,47 +1,64 @@
-[package]
-name = "agent-client-protocol"
+[workspace]
+members = [
+    "src/agent-client-protocol",
+    "src/sacp",
+    "src/sacp-tokio",
+    "src/sacp-proxy",
+    "src/sacp-rmcp",
+    "src/sacp-conductor",
+    "src/sacp-test",
+    "src/sacp-tee",
+    "src/elizacp",
+    "src/yopo",
+    "examples/migration",
+]
+resolver = "3"
+
+[workspace.package]
 authors = ["Zed <hi@zed.dev>"]
-version = "0.7.0"
 edition = "2024"
 license = "Apache-2.0"
-description = "A protocol for standardizing communication between code editors and AI coding agents"
 repository = "https://github.com/agentclientprotocol/rust-sdk"
 homepage = "https://github.com/agentclientprotocol/rust-sdk"
-documentation = "https://docs.rs/agent-client-protocol"
-readme = "README.md"
-keywords = ["agent", "client", "protocol", "ai", "editor"]
-categories = ["development-tools", "api-bindings"]
-include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 
-[features]
-unstable = ["agent-client-protocol-schema/unstable"]
-
-[dependencies]
-agent-client-protocol-schema = { version = "0.6.2" }
-anyhow = "1"
-async-broadcast = "0.7"
-async-trait = "0.1"
-derive_more = { version = "2", features = ["from"] }
-futures = { version = "0.3" }
-log = "0.4"
-parking_lot = "0.12"
-serde = { version = "1", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
-
-[dev-dependencies]
-env_logger = "0.11"
-futures-util = { version = "0.3", features = ["io"] }
-piper = "0.2"
-pretty_assertions = "1"
-rustyline = "17"
-tokio = { version = "1", features = [
-    "macros",
-    "rt",
-    "time",
-    "io-std",
-    "io-util",
-    "net",
-    "process",
-    "sync",
-] }
+[workspace.dependencies]
+# Core async runtime
+tokio = { version = "1.48", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+
+# Protocol
+agent-client-protocol-schema = "0.6.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = { version = "1.0", features = ["derive"] }
+
+# UUID generation
+uuid = { version = "1.18", features = ["v4"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# MCP SDK
+rmcp = { version = "0.8.3", features = ["server", "transport-io", "schemars"] }
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Other dependencies
+boxfnonce = "0.1.1"
+chrono = "0.4"
+futures = "0.3.31"
+fxhash = "0.2.1"
+jsonrpcmsg = "0.1.2"
+
+# Testing
+expect-test = "1.5"
+tokio-test = "0.4"
