@@ -27,6 +27,8 @@ async fn main() -> Result<(), sacp::Error> {
             cx.respond(NewSessionResponse {
                 session_id: "session-1".into(),
                 modes: None,
+                #[cfg(feature = "unstable")]
+                models: None,
                 meta: Default::default(),
             })
         })

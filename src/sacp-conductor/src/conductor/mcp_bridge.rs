@@ -73,7 +73,7 @@ impl McpBridgeListeners {
 
         // Spawn TCP listener on ephemeral port
         let tcp_port = self
-            .spawn_tcp_listener(cx, &url, conductor_tx.clone())
+            .spawn_tcp_listener(cx, url, conductor_tx.clone())
             .await?;
 
         info!(

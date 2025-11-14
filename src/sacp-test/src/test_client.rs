@@ -43,10 +43,10 @@ where
         .name("test-client")
         .on_receive_notification(async |notif: SessionNotification, _cx| {
             // Collect text from AgentMessageChunk updates
-            if let SessionUpdate::AgentMessageChunk(chunk) = &notif.update {
-                if let ContentBlock::Text(text_content) = &chunk.content {
-                    collected_text.push_str(&text_content.text);
-                }
+            if let SessionUpdate::AgentMessageChunk(chunk) = &notif.update
+                && let ContentBlock::Text(text_content) = &chunk.content
+            {
+                collected_text.push_str(&text_content.text);
             }
             Ok(())
         })

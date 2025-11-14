@@ -42,6 +42,8 @@ impl Agent for MyAgent {
             session_id: "session-1".into(),
             modes: None,
             meta: Default::default(),
+            #[cfg(feature = "unstable")]
+            models: None,
         })
     }
 

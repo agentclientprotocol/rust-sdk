@@ -57,6 +57,8 @@ impl ElizaAgent {
         let response = NewSessionResponse {
             session_id,
             modes: None,
+            #[cfg(feature = "unstable")]
+            models: None,
             meta: None,
         };
 
@@ -75,6 +77,8 @@ impl ElizaAgent {
 
         let response = LoadSessionResponse {
             modes: None,
+            #[cfg(feature = "unstable")]
+            models: None,
             meta: None,
         };
 

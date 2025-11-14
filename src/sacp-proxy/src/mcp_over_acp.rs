@@ -1,4 +1,3 @@
-use sacp;
 use sacp::{
     JrMessage, JrNotification, JrRequest, JrResponsePayload, UntypedMessage, util::json_cast,
 };

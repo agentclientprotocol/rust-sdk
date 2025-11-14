@@ -61,6 +61,7 @@ struct InitComponent {
 }
 
 impl InitComponent {
+    #[expect(clippy::new_ret_no_self)]
     fn new(config: &Arc<InitConfig>) -> sacp::DynComponent {
         sacp::DynComponent::new(Self {
             config: config.clone(),

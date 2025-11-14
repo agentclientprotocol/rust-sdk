@@ -32,6 +32,8 @@ impl JrMessage for ClientRequest {
             ClientRequest::SetSessionModeRequest(_) => "session/set_mode",
             ClientRequest::PromptRequest(_) => "session/prompt",
             ClientRequest::ExtMethodRequest(ext) => &ext.method,
+            #[cfg(feature = "unstable")]
+            ClientRequest::SetSessionModelRequest(_) => "session/set_model",
         }
     }
 

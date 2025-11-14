@@ -176,7 +176,7 @@ pub(super) async fn transport_outgoing_actor(
                 if let Ok(msg_str) = std::str::from_utf8(&bytes) {
                     tracing::trace!(message = %msg_str, "Sending JSON-RPC message");
                 }
-                bytes.push('\n' as u8);
+                bytes.push(b'\n');
                 outgoing_bytes
                     .write_all(&bytes)
                     .await
@@ -333,7 +333,7 @@ async fn dispatch_request(
     match handler.handle_message(message_cx).await? {
         Handled::Yes => {
             tracing::debug!(method = request.method, ?request.id, handler = ?handler.describe_chain(), "Message handled");
-            return Ok(());
+            Ok(())
         }
 
         Handled::No(m) => {

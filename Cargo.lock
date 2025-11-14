@@ -1229,6 +1229,7 @@ dependencies = [
  "rmcp",
  "sacp",
  "sacp-proxy",
+ "sacp-rmcp",
  "sacp-test",
  "sacp-tokio",
  "schemars",

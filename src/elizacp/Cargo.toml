@@ -14,6 +14,9 @@ readme = "README.md"
 name = "elizacp"
 path = "src/main.rs"
 
+[features]
+unstable = ["sacp/unstable","agent-client-protocol-schema/unstable"]
+
 [dependencies]
 sacp = { version = "1.0.0", path = "../sacp" }
 agent-client-protocol-schema.workspace = true

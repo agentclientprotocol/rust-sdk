@@ -605,7 +605,7 @@ impl ConductorHandlerState {
                 self.forward_session_new_request(
                     target_component_index,
                     request,
-                    &conductor_tx,
+                    conductor_tx,
                     request_cx,
                 )
                 .await

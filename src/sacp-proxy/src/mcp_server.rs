@@ -78,7 +78,7 @@ impl McpServiceRegistry {
         }
 
         let name = name.to_string();
-        if let Some(_) = self.get_registered_server_by_name(&name) {
+        if self.get_registered_server_by_name(&name).is_some() {
             return Err(sacp::util::internal_error(format!(
                 "Server with name '{}' already exists",
                 name

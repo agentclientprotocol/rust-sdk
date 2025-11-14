@@ -369,6 +369,12 @@ impl JrHandlerChain<NullHandler> {
     }
 }
 
+impl Default for JrHandlerChain<NullHandler> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<H: JrMessageHandler> JrHandlerChain<H> {
     /// Create a new handler chain with the given handler.
     pub fn new_with(handler: H) -> Self {
@@ -1277,12 +1283,11 @@ impl JrConnectionCx {
     }
 
     fn send_raw_message(&self, message: OutgoingMessage) -> Result<(), crate::Error> {
-        match &message {
-            OutgoingMessage::Response { id, response } => match response {
+        if let OutgoingMessage::Response { id, response } = &message {
+            match response {
                 Ok(_) => tracing::debug!(?id, "send_raw_message: queuing success response"),
                 Err(e) => tracing::warn!(?id, ?e, "send_raw_message: queuing error response"),
-            },
-            _ => {}
+            }
         }
         self.message_tx
             .unbounded_send(message)
@@ -1377,7 +1382,7 @@ impl JrRequestCx<serde_json::Value> {
     /// Cast this request context to a different response type
     pub fn cast<T: JrResponsePayload>(self) -> JrRequestCx<T> {
         self.wrap_params(move |method, value| match value {
-            Ok(value) => T::into_json(value, &method),
+            Ok(value) => T::into_json(value, method),
             Err(e) => Err(e),
         })
     }
@@ -1393,7 +1398,7 @@ impl<T: JrResponsePayload> JrRequestCx<T> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> JrRequestCx<serde_json::Value> {
-        self.wrap_params(|method, value| T::from_value(&method, value?))
+        self.wrap_params(|method, value| T::from_value(method, value?))
     }
 
     /// Return a new JrResponse that expects a response of type U and serializes it.

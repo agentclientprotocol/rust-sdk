@@ -10,6 +10,7 @@ categories = ["development-tools"]
 
 [features]
 test-support = []
+unstable = ["sacp/unstable", "agent-client-protocol-schema/unstable"]
 
 [dependencies]
 sacp = { version = "1.0.0", path = "../sacp" }
@@ -37,5 +38,6 @@ elizacp = { path = "../elizacp" }
 expect-test.workspace = true
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
 schemars.workspace = true
+sacp-rmcp = { path = "../sacp-rmcp" }
 sacp-test = { path = "../sacp-test" }
 sacp-tokio = { path = "../sacp-tokio" }

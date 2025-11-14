@@ -224,7 +224,7 @@ impl Eliza {
                 let lower = word.to_lowercase();
                 self.reflections
                     .get(&lower)
-                    .map(|r| r.clone())
+                    .cloned()
                     .unwrap_or_else(|| word.to_string())
             })
             .collect();

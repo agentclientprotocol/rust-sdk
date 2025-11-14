@@ -76,6 +76,8 @@ impl Component for AgentComponent {
                     let response = NewSessionResponse {
                         session_id: "test-session-123".into(),
                         modes: None,
+                        #[cfg(feature = "unstable")]
+                        models: None,
                         meta: None,
                     };
                     request_cx.respond(response)
@@ -130,68 +132,67 @@ impl AgentComponent {
 
         // Get MCP servers
         let mcp_servers = state.mcp_servers.lock().await;
-        if let Some(mcp_server) = mcp_servers.first() {
-            if let McpServer::Stdio {
+        if let Some(mcp_server) = mcp_servers.first()
+            && let McpServer::Stdio {
                 command, args, env, ..
             } = mcp_server
-            {
-                tracing::debug!(
-                    command = ?command,
-                    args = ?args,
-                    "Starting MCP client"
-                );
+        {
+            tracing::debug!(
+                command = ?command,
+                args = ?args,
+                "Starting MCP client"
+            );
 
-                // Create MCP client by spawning the process
-                let mcp_client = ()
-                    .serve(
-                        TokioChildProcess::new(Command::new(command).configure(|cmd| {
-                            cmd.args(args);
-                            for env_var in env {
-                                cmd.env(&env_var.name, &env_var.value);
-                            }
-                        }))
-                        .map_err(sacp::Error::into_internal_error)?,
-                    )
-                    .await
-                    .map_err(sacp::Error::into_internal_error)?;
+            // Create MCP client by spawning the process
+            let mcp_client = ()
+                .serve(
+                    TokioChildProcess::new(Command::new(command).configure(|cmd| {
+                        cmd.args(args);
+                        for env_var in env {
+                            cmd.env(&env_var.name, &env_var.value);
+                        }
+                    }))
+                    .map_err(sacp::Error::into_internal_error)?,
+                )
+                .await
+                .map_err(sacp::Error::into_internal_error)?;
 
-                tracing::debug!("MCP client connected");
+            tracing::debug!("MCP client connected");
 
-                // Call the echo tool
-                let tool_result = mcp_client
-                    .call_tool(CallToolRequestParam {
-                        name: "echo".into(),
-                        arguments: serde_json::json!({
-                            "message": "Hello from the agent!"
-                        })
-                        .as_object()
-                        .cloned(),
+            // Call the echo tool
+            let tool_result = mcp_client
+                .call_tool(CallToolRequestParam {
+                    name: "echo".into(),
+                    arguments: serde_json::json!({
+                        "message": "Hello from the agent!"
                     })
-                    .await
-                    .map_err(sacp::Error::into_internal_error)?;
+                    .as_object()
+                    .cloned(),
+                })
+                .await
+                .map_err(sacp::Error::into_internal_error)?;
 
-                tracing::debug!("Tool call result: {:?}", tool_result);
+            tracing::debug!("Tool call result: {:?}", tool_result);
 
-                // Send the tool result as a message
-                connection_cx.send_notification(SessionNotification {
-                    session_id: request.session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: format!("MCP tool result: {:?}", tool_result),
-                            meta: None,
-                        }),
+            // Send the tool result as a message
+            connection_cx.send_notification(SessionNotification {
+                session_id: request.session_id.clone(),
+                update: SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent {
+                        annotations: None,
+                        text: format!("MCP tool result: {:?}", tool_result),
                         meta: None,
                     }),
                     meta: None,
-                })?;
+                }),
+                meta: None,
+            })?;
 
-                // Clean up the client
-                mcp_client
-                    .cancel()
-                    .await
-                    .map_err(sacp::Error::into_internal_error)?;
-            }
+            // Clean up the client
+            mcp_client
+                .cancel()
+                .await
+                .map_err(sacp::Error::into_internal_error)?;
         }
 
         let response = PromptResponse {

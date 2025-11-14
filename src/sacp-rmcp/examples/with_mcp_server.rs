@@ -41,6 +41,12 @@ impl ExampleMcpServer {
     }
 }
 
+impl Default for ExampleMcpServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[tool_router]
 impl ExampleMcpServer {
     /// Echo tool - returns the input message

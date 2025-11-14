@@ -2,6 +2,7 @@
 
 use sacp::{Component, JrHandlerChain};
 use sacp_proxy::{AcpProxyExt, McpServiceRegistry};
+use sacp_rmcp::McpServiceRegistryRmcpExt;
 
 use crate::mcp_integration::mcp_server::TestMcpServer;
 
