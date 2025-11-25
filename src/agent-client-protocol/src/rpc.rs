@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicI64, Ordering},
     },
 };
@@ -22,7 +22,6 @@ use futures::{
     io::BufReader,
     select_biased,
 };
-use parking_lot::Mutex;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
@@ -74,7 +73,7 @@ where
                     broadcast_tx,
                 )
                 .await;
-                pending_responses.lock().clear();
+                pending_responses.lock().unwrap().clear();
                 result
             }
         };
@@ -116,7 +115,7 @@ where
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
-        self.pending_responses.lock().insert(
+        self.pending_responses.lock().unwrap().insert(
             id.clone(),
             PendingResponse {
                 deserialize: |value| {
@@ -139,7 +138,7 @@ where
             })
             .is_err()
         {
-            self.pending_responses.lock().remove(&id);
+            self.pending_responses.lock().unwrap().remove(&id);
         }
         async move {
             let result = rx
@@ -208,7 +207,7 @@ where
                                             broadcast.outgoing(&error_response);
                                         }
                                     }
-                                } else if let Some(pending_response) = pending_responses.lock().remove(&id) {
+                                } else if let Some(pending_response) = pending_responses.lock().unwrap().remove(&id) {
                                     // Response
                                     if let Some(result_value) = message.result {
                                         broadcast.incoming_response(id, Ok(Some(result_value)));

@@ -17,34 +17,24 @@ include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 unstable = ["agent-client-protocol-schema/unstable"]
 
 [dependencies]
-agent-client-protocol-schema = { version = "0.6.2" }
-anyhow = "1"
-async-broadcast = "0.7"
-async-trait = "0.1"
-derive_more = { version = "2", features = ["from"] }
-futures = { version = "0.3" }
-log = "0.4"
-parking_lot = "0.12"
-serde = { version = "1", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
+agent-client-protocol-schema.workspace = true
+anyhow.workspace = true
+async-broadcast.workspace = true
+async-trait.workspace = true
+derive_more.workspace = true
+futures.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
-env_logger = "0.11"
-futures-util = { version = "0.3", features = ["io"] }
-piper = "0.2"
-pretty_assertions = "1"
-rustyline = "17"
-tokio = { version = "1", features = [
-    "macros",
-    "rt",
-    "time",
-    "io-std",
-    "io-util",
-    "net",
-    "process",
-    "sync",
-] }
-tokio-util = { version = "0.7", features = ["compat"] }
+env_logger.workspace = true
+futures-util.workspace = true
+piper.workspace = true
+pretty_assertions.workspace = true
+rustyline.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [lints]
 workspace = true
