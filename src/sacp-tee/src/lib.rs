@@ -56,7 +56,7 @@ pub struct LogWriter {
 }
 
 impl LogWriter {
-    #[must_use] 
+    #[must_use]
     pub fn new(log_file: PathBuf) -> (Self, mpsc::UnboundedSender<LogEntry>) {
         let (tx, rx) = mpsc::unbounded_channel();
         (
@@ -98,7 +98,7 @@ pub struct TeeHandler {
 }
 
 impl TeeHandler {
-    #[must_use] 
+    #[must_use]
     pub fn new(log_tx: mpsc::UnboundedSender<LogEntry>) -> Self {
         Self { log_tx, next_id: 1 }
     }
@@ -184,7 +184,7 @@ pub struct Tee {
 }
 
 impl Tee {
-    #[must_use] 
+    #[must_use]
     pub fn new(log_file: PathBuf) -> Self {
         Self { log_file }
     }

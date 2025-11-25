@@ -20,9 +20,10 @@ pub async fn run_arrow_proxy(transport: impl Component + 'static) -> Result<(), 
             async |mut notification: SessionNotification, cx| {
                 // Modify the content by adding > prefix
                 if let SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(text_content),
-                        ..
-                    }) = &mut notification.update {
+                    content: ContentBlock::Text(text_content),
+                    ..
+                }) = &mut notification.update
+                {
                     // Add > prefix to text content
                     text_content.text = format!(">{}", text_content.text);
                 } else {

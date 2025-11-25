@@ -8,7 +8,8 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pid = std::process::id();
-    let cwd = std::env::current_dir().map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
+    let cwd = std::env::current_dir()
+        .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
 
     // Check for SYMPOSIUM_LOG environment variable
     if let Ok(log_level) = std::env::var("SYMPOSIUM_LOG") {

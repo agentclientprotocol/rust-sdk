@@ -30,13 +30,13 @@ pub struct Eliza {
 impl Eliza {
     /// Create a new Eliza instance with classic patterns.
     /// Uses a fixed seed for deterministic testing.
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::with_seed(42)
     }
 
     /// Create a new Eliza instance with a specific seed.
-    #[must_use] 
+    #[must_use]
     pub fn with_seed(seed: u64) -> Self {
         let mut eliza = Self {
             patterns: Vec::new(),
@@ -213,7 +213,10 @@ impl Eliza {
         let regex = Regex::new(pattern).expect("Invalid regex pattern");
         self.patterns.push(Pattern {
             pattern: regex,
-            responses: responses.into_iter().map(std::string::ToString::to_string).collect(),
+            responses: responses
+                .into_iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             priority,
         });
     }
