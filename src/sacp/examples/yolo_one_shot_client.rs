@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Kill the child process when done
-    let _ = child.kill().await;
+    drop(child.kill().await);
 
     Ok(())
 }

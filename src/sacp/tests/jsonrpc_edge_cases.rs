@@ -322,7 +322,7 @@ async fn test_client_disconnect() {
             );
 
             tokio::task::spawn_local(async move {
-                let _ = server.serve(server_transport).await;
+                drop(server.serve(server_transport).await);
             });
 
             // Send partial request and then disconnect

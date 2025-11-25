@@ -36,3 +36,6 @@ sacp-tokio = { version = "1.0.0", path = "../sacp-tokio" }
 
 [dev-dependencies]
 expect-test.workspace = true
+
+[lints]
+workspace = true

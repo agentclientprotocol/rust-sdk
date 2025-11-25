@@ -49,6 +49,7 @@ impl LogEntry {
 }
 
 /// Log writer actor that receives log entries and writes them to disk
+#[derive(Debug)]
 pub struct LogWriter {
     log_file: PathBuf,
     receiver: mpsc::UnboundedReceiver<LogEntry>,
@@ -89,6 +90,7 @@ impl LogWriter {
 }
 
 /// Handler that logs messages passing through
+#[derive(Debug)]
 pub struct TeeHandler {
     log_tx: mpsc::UnboundedSender<LogEntry>,
     next_id: u64,
@@ -101,7 +103,7 @@ impl TeeHandler {
 
     fn log_entry(&self, entry: LogEntry) {
         // Fire and forget - if the channel is closed, we just drop the log
-        let _ = self.log_tx.send(entry);
+        drop(self.log_tx.send(entry));
     }
 
     fn allocate_id(&mut self) -> u64 {
@@ -149,7 +151,7 @@ impl JrMessageHandler for TeeHandler {
                     };
                     let entry = LogEntry::new("upstream", json_msg);
 
-                    let _ = log_tx.send(entry);
+                    drop(log_tx.send(entry));
 
                     result
                 });
@@ -174,6 +176,7 @@ impl JrMessageHandler for TeeHandler {
 
 /// The Tee component - can be used as a component in a larger proxy chain
 /// or run standalone as a binary
+#[derive(Debug)]
 pub struct Tee {
     log_file: PathBuf,
 }

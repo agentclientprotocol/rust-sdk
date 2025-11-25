@@ -261,6 +261,7 @@ impl<H: JrMessageHandler> AcpProxyExt<H> for JrHandlerChain<H> {
 }
 
 /// Handler to process a message of type `R` coming from the successor component.
+#[derive(Debug)]
 pub struct MessageFromSuccessorHandler<R, N, F>
 where
     R: JrRequest,
@@ -371,6 +372,7 @@ where
 }
 
 /// Handler to process a request of type `R` coming from the successor component.
+#[derive(Debug)]
 pub struct RequestFromSuccessorHandler<R, F>
 where
     R: JrRequest,
@@ -435,6 +437,7 @@ where
 }
 
 /// Handler to process a notification of type `N` coming from the successor component.
+#[derive(Debug)]
 pub struct NotificationFromSuccessorHandler<N, F>
 where
     N: JrNotification,
@@ -500,6 +503,7 @@ where
 }
 
 /// Handler for the "default proxy" behavior.
+#[derive(Debug)]
 pub struct ProxyHandler {}
 
 impl JrMessageHandler for ProxyHandler {

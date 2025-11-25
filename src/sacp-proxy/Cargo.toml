@@ -25,3 +25,6 @@ uuid.workspace = true
 chrono.workspace = true
 schemars.workspace = true
 tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

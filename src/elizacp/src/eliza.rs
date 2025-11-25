@@ -20,6 +20,7 @@ struct Pattern {
 }
 
 /// The Eliza chatbot engine.
+#[derive(Debug)]
 pub struct Eliza {
     patterns: Vec<Pattern>,
     reflections: HashMap<String, String>,

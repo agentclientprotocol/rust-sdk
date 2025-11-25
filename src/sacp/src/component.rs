@@ -188,6 +188,12 @@ pub struct DynComponent {
     inner: Box<dyn ErasedComponent>,
 }
 
+impl std::fmt::Debug for DynComponent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynComponent").finish()
+    }
+}
+
 impl DynComponent {
     /// Create a new `DynComponent` from any type implementing [`Component`].
     pub fn new<C: Component>(component: C) -> Self {

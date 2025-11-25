@@ -37,6 +37,7 @@ pub trait MetaCapability {
 ///
 /// When present in `_meta.symposium.proxy`, signals that the component should use
 /// the `_proxy/successor/*` protocol to communicate with its successor.
+#[derive(Debug)]
 pub struct Proxy;
 
 impl MetaCapability for Proxy {
@@ -49,6 +50,7 @@ impl MetaCapability for Proxy {
 ///
 /// When present in `_meta.symposium.mcp_acp_transport`, signals that the agent
 /// supports having MCP servers with `acp:UUID` transport proxied through the conductor.
+#[derive(Debug)]
 pub struct McpAcpTransport;
 
 impl MetaCapability for McpAcpTransport {

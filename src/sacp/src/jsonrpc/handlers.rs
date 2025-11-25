@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::ops::AsyncFnMut;
 
 /// Null handler that accepts no messages.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct NullHandler {
     _private: (),
 }
@@ -25,6 +25,7 @@ impl JrMessageHandler for NullHandler {
 }
 
 /// Handler for typed request messages
+#[derive(Debug)]
 pub struct RequestHandler<R, F>
 where
     R: JrRequest,
@@ -101,6 +102,7 @@ where
 }
 
 /// Handler for typed notification messages
+#[derive(Debug)]
 pub struct NotificationHandler<N, F>
 where
     N: JrNotification,
@@ -179,6 +181,7 @@ where
 }
 
 /// Handler that tries H1 and then H2.
+#[derive(Debug)]
 pub struct MessageHandler<R, N, F>
 where
     R: JrRequest,
@@ -278,6 +281,7 @@ where
 }
 
 /// Chains two handlers together, trying the first handler and falling back to the second
+#[derive(Debug)]
 pub struct NamedHandler<H> {
     name: Option<String>,
     handler: H,
@@ -319,6 +323,7 @@ where
 }
 
 /// Chains two handlers together, trying the first handler and falling back to the second
+#[derive(Debug)]
 pub struct ChainedHandler<H1, H2> {
     handler1: H1,
     handler2: H2,

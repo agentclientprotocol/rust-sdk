@@ -63,6 +63,7 @@ use crate::{
 /// Each `handle_if` tries to parse the message as the specified type. If parsing succeeds,
 /// that handler runs and subsequent handlers are skipped. If parsing fails for all types,
 /// the `otherwise` handler receives the original untyped message.
+#[derive(Debug)]
 #[must_use]
 pub struct MatchMessage {
     state: Result<Handled<MessageAndCx>, crate::Error>,
@@ -247,12 +248,14 @@ impl MatchMessage {
 ///
 /// Since notifications don't expect responses, handlers only receive the parsed
 /// notification (not a request context).
+#[derive(Debug)]
 #[must_use]
 pub struct TypeNotification {
     cx: JrConnectionCx,
     state: Option<TypeNotificationState>,
 }
 
+#[derive(Debug)]
 enum TypeNotificationState {
     Unhandled(String, Option<Params>),
     Handled(Result<(), crate::Error>),

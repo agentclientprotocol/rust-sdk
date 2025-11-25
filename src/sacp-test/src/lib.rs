@@ -7,6 +7,7 @@ pub mod test_client;
 
 /// A mock transport for doctests that panics if actually used.
 /// This is only for documentation examples that don't actually run.
+#[derive(Debug)]
 pub struct MockTransport;
 
 impl Component for MockTransport {

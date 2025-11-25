@@ -153,6 +153,15 @@ pub struct Conductor {
     conductor_command: Option<Vec<String>>,
 }
 
+impl std::fmt::Debug for Conductor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Conductor")
+            .field("name", &self.name)
+            .field("conductor_command", &self.conductor_command)
+            .finish()
+    }
+}
+
 impl Conductor {
     pub fn new(
         name: String,
@@ -228,6 +237,7 @@ impl sacp::Component for Conductor {
     }
 }
 
+#[derive(Debug)]
 pub struct ConductorMessageHandler {
     conductor_tx: mpsc::Sender<ConductorMessage>,
 }

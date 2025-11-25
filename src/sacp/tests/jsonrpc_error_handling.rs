@@ -123,7 +123,7 @@ async fn test_invalid_json() {
 
             // Spawn server
             tokio::task::spawn_local(async move {
-                let _ = server.serve(server_transport).await;
+                drop(server.serve(server_transport).await);
             });
 
             // Send invalid JSON

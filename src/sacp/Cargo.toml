@@ -30,3 +30,6 @@ shell-words = "1.1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util", "time", "process"] }
 tokio-util.workspace = true
 sacp-test = { path = "../sacp-test" }
+
+[lints]
+workspace = true

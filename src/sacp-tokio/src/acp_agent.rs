@@ -157,7 +157,7 @@ impl Future for ChildHolder {
 
 impl Drop for ChildHolder {
     fn drop(&mut self) {
-        let _: Result<_, _> = self._child.start_kill();
+        drop(self._child.start_kill());
     }
 }
 

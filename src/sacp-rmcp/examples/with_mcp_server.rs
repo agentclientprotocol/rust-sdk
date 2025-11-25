@@ -28,7 +28,7 @@ struct EchoParams {
 }
 
 /// Simple MCP server with an echo tool
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ExampleMcpServer {
     tool_router: ToolRouter<ExampleMcpServer>,
 }

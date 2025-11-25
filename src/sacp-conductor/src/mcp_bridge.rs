@@ -47,8 +47,8 @@ pub async fn run_mcp_bridge(port: u16) -> Result<(), sacp::Error> {
                 }
 
                 // Parse to validate JSON
-                let _: Value = serde_json::from_str(stdin_line.trim())
-                    .context("Invalid JSON from stdin")?;
+                drop(serde_json::from_str::<Value>(stdin_line.trim())
+                    .context("Invalid JSON from stdin")?);
 
                 tracing::debug!("Bridge: stdin → TCP: {}", stdin_line.trim());
 
@@ -71,8 +71,8 @@ pub async fn run_mcp_bridge(port: u16) -> Result<(), sacp::Error> {
                 }
 
                 // Parse to validate JSON
-                let _: Value = serde_json::from_str(tcp_line.trim())
-                    .context("Invalid JSON from TCP")?;
+                drop(serde_json::from_str::<Value>(tcp_line.trim())
+                    .context("Invalid JSON from TCP")?);
 
                 tracing::debug!("Bridge: TCP → stdout: {}", tcp_line.trim());
 

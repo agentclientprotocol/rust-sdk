@@ -349,6 +349,7 @@ pub trait JrMessageHandler {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 #[must_use]
 pub struct JrHandlerChain<H: JrMessageHandler> {
     name: Option<String>,
@@ -752,6 +753,7 @@ impl<H: JrMessageHandler> JrHandlerChain<H> {
 ///
 /// Most users won't construct this directly - instead use `JrHandlerChain::connect_to()` or
 /// `JrHandlerChain::serve()` for convenience.
+#[derive(Debug)]
 pub struct JrConnection<H: JrMessageHandler> {
     cx: JrConnectionCx,
     name: Option<String>,
@@ -968,6 +970,7 @@ enum OutgoingMessage {
 }
 
 /// Return type from JrHandler; indicates whether the request was handled or not.
+#[derive(Debug)]
 #[must_use]
 pub enum Handled<T> {
     /// The message was handled
@@ -1755,6 +1758,16 @@ pub struct JrResponse<R> {
     to_result: Box<dyn Fn(serde_json::Value) -> Result<R, crate::Error> + Send>,
 }
 
+impl<R> std::fmt::Debug for JrResponse<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JrResponse")
+            .field("method", &self.method)
+            .field("connection_cx", &self.connection_cx)
+            .field("response_rx", &self.response_rx)
+            .finish()
+    }
+}
+
 impl JrResponse<serde_json::Value> {
     fn new(
         method: String,
@@ -2112,6 +2125,7 @@ fn communication_failure(err: impl ToString) -> crate::Error {
 /// ```
 ///
 /// [`Component`]: crate::Component
+#[derive(Debug)]
 pub struct ByteStreams<OB, IB> {
     /// Outgoing byte stream (where we write serialized messages)
     pub outgoing: OB,
@@ -2190,6 +2204,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct Channel {
     /// Receives messages (or errors) from the counterpart.
     pub rx: mpsc::UnboundedReceiver<Result<jsonrpcmsg::Message, crate::Error>>,
