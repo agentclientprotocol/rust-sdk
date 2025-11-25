@@ -43,7 +43,7 @@ impl McpBridgeListeners {
     /// 2. Stores the mapping for message routing
     /// 3. Transforms the server to use stdio transport pointing to `conductor mcp $PORT`
     ///
-    /// Returns the modified NewSessionRequest with transformed MCP servers.
+    /// Returns the modified `NewSessionRequest` with transformed MCP servers.
     pub async fn transform_mcp_servers(
         &mut self,
         cx: &JrConnectionCx,

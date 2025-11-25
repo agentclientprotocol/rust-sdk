@@ -7,6 +7,9 @@
 
 mod mcp_integration;
 
+use std::path::PathBuf;
+
+use agent_client_protocol_schema::{ClientCapabilities, ProtocolVersion};
 use expect_test::expect;
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use sacp::JrHandlerChain;
@@ -78,8 +81,8 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
         async |editor_cx| {
             // Send initialization request
             let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: Default::default(),
-                client_capabilities: Default::default(),
+                protocol_version: ProtocolVersion::default(),
+                client_capabilities: ClientCapabilities::default(),
                 meta: None,
                 client_info: None,
             }))
@@ -87,13 +90,12 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             // Send session/new request
             let session_response = recv(editor_cx.send_request(NewSessionRequest {
-                cwd: Default::default(),
+                cwd: PathBuf::default(),
                 mcp_servers: vec![],
                 meta: None,
             }))
@@ -101,8 +103,7 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
 
             assert!(
                 session_response.is_ok(),
-                "Session/new should succeed: {:?}",
-                session_response
+                "Session/new should succeed: {session_response:?}"
             );
 
             let session = session_response.unwrap();
@@ -158,8 +159,8 @@ async fn test_agent_handles_prompt() -> Result<(), sacp::Error> {
         .with_client(transport, async |editor_cx| {
             // Initialize
             recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: Default::default(),
-                client_capabilities: Default::default(),
+                protocol_version: ProtocolVersion::default(),
+                client_capabilities: ClientCapabilities::default(),
                 meta: None,
                 client_info: None,
             }))
@@ -167,7 +168,7 @@ async fn test_agent_handles_prompt() -> Result<(), sacp::Error> {
 
             // Create session
             let session = recv(editor_cx.send_request(NewSessionRequest {
-                cwd: Default::default(),
+                cwd: PathBuf::default(),
                 mcp_servers: vec![],
                 meta: None,
             }))

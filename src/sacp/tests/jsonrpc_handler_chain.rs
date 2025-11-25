@@ -37,7 +37,7 @@ impl JrMessage for FooRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "foo"
     }
 
@@ -90,7 +90,7 @@ impl JrMessage for BarRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "bar"
     }
 
@@ -194,7 +194,7 @@ async fn test_multiple_handlers_different_methods() {
                         }))
                         .await
                         .map_err(|e| -> sacp::Error {
-                            sacp::util::internal_error(format!("Bar request failed: {:?}", e))
+                            sacp::util::internal_error(format!("Bar request failed: {e:?}"))
                         })?;
                         assert_eq!(bar_response.result, "bar: test2");
 
@@ -203,7 +203,7 @@ async fn test_multiple_handlers_different_methods() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -223,7 +223,7 @@ impl JrMessage for TrackRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "track"
     }
 
@@ -294,7 +294,7 @@ async fn test_handler_priority_ordering() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -307,7 +307,7 @@ async fn test_handler_priority_ordering() {
                         }))
                         .await
                         .map_err(|e| {
-                            sacp::util::internal_error(format!("Track request failed: {:?}", e))
+                            sacp::util::internal_error(format!("Track request failed: {e:?}"))
                         })?;
 
                         // First handler should have handled it
@@ -318,7 +318,7 @@ async fn test_handler_priority_ordering() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
             // Verify only handler1 was invoked
             let handled_by = handled.lock().unwrap();
@@ -343,7 +343,7 @@ impl JrMessage for Method1Request {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "method1"
     }
 
@@ -381,7 +381,7 @@ impl JrMessage for Method2Request {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "method2"
     }
 
@@ -452,7 +452,7 @@ async fn test_fallthrough_behavior() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -466,7 +466,7 @@ async fn test_fallthrough_behavior() {
                         }))
                         .await
                         .map_err(|e| {
-                            sacp::util::internal_error(format!("Method2 request failed: {:?}", e))
+                            sacp::util::internal_error(format!("Method2 request failed: {e:?}"))
                         })?;
 
                         assert_eq!(response.result, "method2: fallthrough");
@@ -476,7 +476,7 @@ async fn test_fallthrough_behavior() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
             // Verify only method2 was handled (handler1 passed through)
             let handled_methods = handled.lock().unwrap();
@@ -520,7 +520,7 @@ async fn test_no_handler_claims() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -542,7 +542,7 @@ async fn test_no_handler_claims() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -562,7 +562,7 @@ impl JrMessage for EventNotification {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "event"
     }
 
@@ -619,7 +619,7 @@ async fn test_handler_claims_notification() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -632,8 +632,7 @@ async fn test_handler_claims_notification() {
                         })
                         .map_err(|e| {
                             sacp::util::internal_error(format!(
-                                "Failed to send notification: {:?}",
-                                e
+                                "Failed to send notification: {e:?}"
                             ))
                         })?;
 
@@ -645,7 +644,7 @@ async fn test_handler_claims_notification() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
             let received_events = events.lock().unwrap();
             assert_eq!(received_events.len(), 1);

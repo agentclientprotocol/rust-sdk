@@ -20,6 +20,7 @@ struct Pattern {
 }
 
 /// The Eliza chatbot engine.
+#[derive(Debug)]
 pub struct Eliza {
     patterns: Vec<Pattern>,
     reflections: HashMap<String, String>,
@@ -29,11 +30,13 @@ pub struct Eliza {
 impl Eliza {
     /// Create a new Eliza instance with classic patterns.
     /// Uses a fixed seed for deterministic testing.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_seed(42)
     }
 
     /// Create a new Eliza instance with a specific seed.
+    #[must_use]
     pub fn with_seed(seed: u64) -> Self {
         let mut eliza = Self {
             patterns: Vec::new(),
@@ -210,7 +213,10 @@ impl Eliza {
         let regex = Regex::new(pattern).expect("Invalid regex pattern");
         self.patterns.push(Pattern {
             pattern: regex,
-            responses: responses.into_iter().map(|s| s.to_string()).collect(),
+            responses: responses
+                .into_iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
             priority,
         });
     }
@@ -225,7 +231,7 @@ impl Eliza {
                 self.reflections
                     .get(&lower)
                     .cloned()
-                    .unwrap_or_else(|| word.to_string())
+                    .unwrap_or_else(|| (*word).to_string())
             })
             .collect();
         reflected.join(" ")
@@ -291,10 +297,10 @@ mod tests {
         let eliza = Eliza::new();
 
         let reflected = eliza.reflect("I am happy");
-        expect![[r#"you are happy"#]].assert_eq(&reflected);
+        expect![[r"you are happy"]].assert_eq(&reflected);
 
         let reflected = eliza.reflect("my mother");
-        expect![[r#"your mother"#]].assert_eq(&reflected);
+        expect![[r"your mother"]].assert_eq(&reflected);
     }
 
     #[test]
@@ -334,8 +340,7 @@ mod tests {
             let response2 = eliza2.respond(input);
             assert_eq!(
                 response1, response2,
-                "Responses should be identical for input: {}",
-                input
+                "Responses should be identical for input: {input}"
             );
         }
 

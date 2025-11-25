@@ -24,7 +24,7 @@ use serde_json::json;
 /// Capabilities are key-value pairs that signal features or context to components
 /// in the proxy chain. Implement this trait to define new capabilities.
 pub trait MetaCapability {
-    /// The key name in the `_meta.symposium` object (e.g., "proxy", "mcp_acp_transport")
+    /// The key name in the `_meta.symposium` object (e.g., "proxy", "`mcp_acp_transport`")
     fn key(&self) -> &'static str;
 
     /// The value to set when adding this capability (defaults to `true`)
@@ -37,6 +37,7 @@ pub trait MetaCapability {
 ///
 /// When present in `_meta.symposium.proxy`, signals that the component should use
 /// the `_proxy/successor/*` protocol to communicate with its successor.
+#[derive(Debug)]
 pub struct Proxy;
 
 impl MetaCapability for Proxy {
@@ -45,10 +46,11 @@ impl MetaCapability for Proxy {
     }
 }
 
-/// The mcp_acp_transport capability - indicates support for MCP-over-ACP bridging.
+/// The `mcp_acp_transport` capability - indicates support for MCP-over-ACP bridging.
 ///
 /// When present in `_meta.symposium.mcp_acp_transport`, signals that the agent
 /// supports having MCP servers with `acp:UUID` transport proxied through the conductor.
+#[derive(Debug)]
 pub struct McpAcpTransport;
 
 impl MetaCapability for McpAcpTransport {
@@ -63,9 +65,11 @@ pub trait MetaCapabilityExt {
     fn has_meta_capability(&self, capability: impl MetaCapability) -> bool;
 
     /// Add a capability to `_meta.symposium`, creating the structure if needed
+    #[must_use]
     fn add_meta_capability(self, capability: impl MetaCapability) -> Self;
 
     /// Remove a capability from `_meta.symposium` if present
+    #[must_use]
     fn remove_meta_capability(self, capability: impl MetaCapability) -> Self;
 }
 

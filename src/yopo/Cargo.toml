@@ -10,3 +10,6 @@ repository = "https://github.com/symposium-dev/symposium-acp"
 sacp = { version = "1.0.0", path = "../sacp" }
 sacp-tokio = { version = "1.0.0", path = "../sacp-tokio" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

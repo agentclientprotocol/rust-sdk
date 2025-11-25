@@ -21,3 +21,6 @@ tokio-util.workspace = true
 [dev-dependencies]
 expect-test.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

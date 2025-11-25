@@ -6,11 +6,13 @@
 pub fn init_test_tracing() {
     use tracing_subscriber::{EnvFilter, fmt};
 
-    let _ = fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("trace,sacp::jsonrpc=trace")),
-        )
-        .with_test_writer()
-        .try_init();
+    drop(
+        fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| EnvFilter::new("trace,sacp::jsonrpc=trace")),
+            )
+            .with_test_writer()
+            .try_init(),
+    );
 }

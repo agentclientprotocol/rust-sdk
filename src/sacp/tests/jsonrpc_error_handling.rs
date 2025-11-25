@@ -55,7 +55,7 @@ impl JrMessage for SimpleRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "simple_method"
     }
 
@@ -123,7 +123,7 @@ async fn test_invalid_json() {
 
             // Spawn server
             tokio::task::spawn_local(async move {
-                let _ = server.serve(server_transport).await;
+                drop(server.serve(server_transport).await);
             });
 
             // Send invalid JSON
@@ -222,7 +222,7 @@ async fn test_unknown_method() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -242,7 +242,7 @@ impl JrMessage for ErrorRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "error_method"
     }
 
@@ -315,7 +315,7 @@ async fn test_handler_returns_error() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -333,7 +333,7 @@ impl JrMessage for EmptyRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "strict_method"
     }
 
@@ -407,7 +407,7 @@ async fn test_missing_required_params() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }

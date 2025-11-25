@@ -11,6 +11,7 @@
 //! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
+use agent_client_protocol_schema::ClientCapabilities;
 use clap::Parser;
 use sacp::JrHandlerChain;
 use sacp::schema::{
@@ -94,20 +95,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .on_receive_request(async move |request: RequestPermissionRequest, request_cx| {
             // YOLO: Auto-approve all permission requests by selecting the first option
-            eprintln!("✅ Auto-approving permission request: {:?}", request);
+            eprintln!("✅ Auto-approving permission request: {request:?}");
             let option_id = request.options.first().map(|opt| opt.id.clone());
-            match option_id {
-                Some(id) => request_cx.respond(RequestPermissionResponse {
+            if let Some(id) = option_id {
+                request_cx.respond(RequestPermissionResponse {
                     outcome: RequestPermissionOutcome::Selected { option_id: id },
                     meta: None,
-                }),
-                None => {
-                    eprintln!("⚠️ No options provided in permission request, cancelling");
-                    request_cx.respond(RequestPermissionResponse {
-                        outcome: RequestPermissionOutcome::Cancelled,
-                        meta: None,
-                    })
-                }
+                })
+            } else {
+                eprintln!("⚠️ No options provided in permission request, cancelling");
+                request_cx.respond(RequestPermissionResponse {
+                    outcome: RequestPermissionOutcome::Cancelled,
+                    meta: None,
+                })
             }
         })
         .with_client(transport, |cx: sacp::JrConnectionCx| async move {
@@ -116,8 +116,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let init_response = cx
                 .send_request(InitializeRequest {
                     protocol_version: PROTOCOL_VERSION,
-                    client_capabilities: Default::default(),
-                    client_info: Default::default(),
+                    client_capabilities: ClientCapabilities::default(),
+                    client_info: None,
                     meta: None,
                 })
                 .block_task()
@@ -137,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
 
             let session_id = new_session_response.session_id;
-            eprintln!("✓ Session created: {}", session_id);
+            eprintln!("✓ Session created: {session_id}");
 
             // Send the prompt
             eprintln!("💬 Sending prompt: \"{}\"", cli.prompt);
@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Kill the child process when done
-    let _ = child.kill().await;
+    drop(child.kill().await);
 
     Ok(())
 }

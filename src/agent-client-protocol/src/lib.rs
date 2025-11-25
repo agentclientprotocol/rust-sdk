@@ -26,6 +26,7 @@ pub use stream_broadcast::{
 /// prompts, and managing the agent lifecycle.
 ///
 /// See protocol docs: [Client](https://agentclientprotocol.com/protocol/overview#client)
+#[derive(Debug)]
 pub struct ClientSideConnection {
     conn: RpcConnection<ClientSide, AgentSide>,
 }
@@ -177,7 +178,7 @@ impl Agent for ClientSideConnection {
 /// are incoming vs outgoing from the client's perspective.
 ///
 /// See protocol docs: [Communication Model](https://agentclientprotocol.com/protocol/overview#communication-model)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ClientSide;
 
 impl Side for ClientSide {
@@ -316,6 +317,7 @@ impl<T: Client> MessageHandler<ClientSide> for T {
 /// and sending session updates.
 ///
 /// See protocol docs: [Agent](https://agentclientprotocol.com/protocol/overview#agent)
+#[derive(Debug)]
 pub struct AgentSideConnection {
     conn: RpcConnection<AgentSide, ClientSide>,
 }
@@ -482,7 +484,7 @@ impl Client for AgentSideConnection {
 /// are incoming vs outgoing from the agent's perspective.
 ///
 /// See protocol docs: [Communication Model](https://agentclientprotocol.com/protocol/overview#communication-model)
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AgentSide;
 
 impl Side for AgentSide {

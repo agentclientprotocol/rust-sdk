@@ -51,7 +51,7 @@ impl JrMessage for EmptyRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "empty_method"
     }
 
@@ -90,7 +90,7 @@ impl JrMessage for OptionalParamsRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "optional_params_method"
     }
 
@@ -177,7 +177,7 @@ async fn test_empty_request() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -224,7 +224,7 @@ async fn test_null_params() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -288,7 +288,7 @@ async fn test_server_shutdown() {
 
             // Wait for client to finish
             let result = client_result.await;
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -322,7 +322,7 @@ async fn test_client_disconnect() {
             );
 
             tokio::task::spawn_local(async move {
-                let _ = server.serve(server_transport).await;
+                drop(server.serve(server_transport).await);
             });
 
             // Send partial request and then disconnect

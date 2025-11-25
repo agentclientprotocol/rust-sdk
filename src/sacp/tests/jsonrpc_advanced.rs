@@ -52,7 +52,7 @@ impl JrMessage for PingRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "ping"
     }
 
@@ -106,7 +106,7 @@ impl JrMessage for SlowRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "slow"
     }
 
@@ -195,7 +195,7 @@ async fn test_bidirectional_communication() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -254,7 +254,7 @@ async fn test_request_ids() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -328,7 +328,7 @@ async fn test_out_of_order_responses() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }

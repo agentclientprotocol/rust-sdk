@@ -103,7 +103,7 @@ where
 
         // Spawn task to connect byte_streams to the provided client
         tokio::spawn(async move {
-            let _ = byte_streams.serve(client).await;
+            drop(byte_streams.serve(client).await);
         });
 
         // Run the rmcp server with the server side of the duplex stream

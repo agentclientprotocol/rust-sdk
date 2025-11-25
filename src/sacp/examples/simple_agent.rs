@@ -10,15 +10,10 @@ async fn main() -> Result<(), sacp::Error> {
             // Respond to initialize successfully
             request_cx.respond(InitializeResponse {
                 protocol_version: initialize.protocol_version,
-                agent_capabilities: AgentCapabilities {
-                    load_session: Default::default(),
-                    prompt_capabilities: Default::default(),
-                    mcp_capabilities: Default::default(),
-                    meta: Default::default(),
-                },
-                auth_methods: Default::default(),
-                agent_info: Default::default(),
-                meta: Default::default(),
+                agent_capabilities: AgentCapabilities::default(),
+                auth_methods: vec![],
+                agent_info: None,
+                meta: None,
             })
         })
         .on_receive_message(

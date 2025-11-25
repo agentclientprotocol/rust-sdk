@@ -123,7 +123,7 @@ impl<Req: JrNotification> JrNotification for SuccessorNotification<Req> {}
 // Proxy methods
 // ============================================================
 
-/// Extension trait for JrConnection that adds proxy-specific functionality
+/// Extension trait for `JrConnection` that adds proxy-specific functionality
 pub trait AcpProxyExt<H: JrMessageHandler> {
     /// Adds a handler for requests received from the successor component.
     ///
@@ -261,6 +261,7 @@ impl<H: JrMessageHandler> AcpProxyExt<H> for JrHandlerChain<H> {
 }
 
 /// Handler to process a message of type `R` coming from the successor component.
+#[derive(Debug)]
 pub struct MessageFromSuccessorHandler<R, N, F>
 where
     R: JrRequest,
@@ -371,6 +372,7 @@ where
 }
 
 /// Handler to process a request of type `R` coming from the successor component.
+#[derive(Debug)]
 pub struct RequestFromSuccessorHandler<R, F>
 where
     R: JrRequest,
@@ -435,6 +437,7 @@ where
 }
 
 /// Handler to process a notification of type `N` coming from the successor component.
+#[derive(Debug)]
 pub struct NotificationFromSuccessorHandler<N, F>
 where
     N: JrNotification,
@@ -500,6 +503,7 @@ where
 }
 
 /// Handler for the "default proxy" behavior.
+#[derive(Debug)]
 pub struct ProxyHandler {}
 
 impl JrMessageHandler for ProxyHandler {
@@ -536,9 +540,7 @@ impl JrMessageHandler for ProxyHandler {
                     InitializeRequest::parse_request(&request.method, &request.params)
                 {
                     let request = result?;
-                    return self
-                        .forward_initialize(request, request_cx.cast())
-                        .await
+                    return Self::forward_initialize(request, request_cx.cast())
                         .map(|()| Handled::Yes);
                 }
 
@@ -577,8 +579,7 @@ impl ProxyHandler {
     /// Proxy initialization requires (1) a `Proxy` capability to be
     /// provided by the conductor and (2) provides a `Proxy` capability
     /// in our response.
-    async fn forward_initialize(
-        &mut self,
+    fn forward_initialize(
         mut request: InitializeRequest,
         request_cx: JrRequestCx<InitializeResponse>,
     ) -> Result<(), sacp::Error> {

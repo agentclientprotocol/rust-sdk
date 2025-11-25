@@ -23,7 +23,7 @@ impl JrMessage for RequestPermissionRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/request_permission"
     }
 
@@ -67,7 +67,7 @@ impl JrMessage for WriteTextFileRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "fs/write_text_file"
     }
 
@@ -111,7 +111,7 @@ impl JrMessage for ReadTextFileRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "fs/read_text_file"
     }
 
@@ -155,7 +155,7 @@ impl JrMessage for CreateTerminalRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "terminal/create"
     }
 
@@ -199,7 +199,7 @@ impl JrMessage for TerminalOutputRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "terminal/output"
     }
 
@@ -243,7 +243,7 @@ impl JrMessage for ReleaseTerminalRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "terminal/release"
     }
 
@@ -287,7 +287,7 @@ impl JrMessage for WaitForTerminalExitRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "terminal/wait_for_exit"
     }
 
@@ -331,7 +331,7 @@ impl JrMessage for KillTerminalCommandRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "terminal/kill"
     }
 

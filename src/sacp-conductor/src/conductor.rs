@@ -153,6 +153,15 @@ pub struct Conductor {
     conductor_command: Option<Vec<String>>,
 }
 
+impl std::fmt::Debug for Conductor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Conductor")
+            .field("name", &self.name)
+            .field("conductor_command", &self.conductor_command)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Conductor {
     pub fn new(
         name: String,
@@ -178,10 +187,10 @@ impl Conductor {
         });
 
         let mut state = ConductorHandlerState {
-            components: Default::default(),
+            components: Vec::default(),
             component_list: Some(self.component_list),
-            bridge_listeners: Default::default(),
-            bridge_connections: Default::default(),
+            bridge_listeners: McpBridgeListeners::default(),
+            bridge_connections: HashMap::default(),
             conductor_command,
             proxy_mode: AtomicBool::new(false),
         };
@@ -228,6 +237,7 @@ impl sacp::Component for Conductor {
     }
 }
 
+#[derive(Debug)]
 pub struct ConductorMessageHandler {
     conductor_tx: mpsc::Sender<ConductorMessage>,
 }
@@ -259,7 +269,7 @@ struct ConductorHandlerState {
     /// Whether the conductor is operating in proxy mode.
     /// In proxy mode, the conductor itself acts as a proxy component in a larger chain,
     /// and ALL components (including the last) receive the proxy capability.
-    /// Uses AtomicBool for thread-safe interior mutability since we detect this during initialization.
+    /// Uses `AtomicBool` for thread-safe interior mutability since we detect this during initialization.
     proxy_mode: AtomicBool,
 }
 
@@ -621,8 +631,7 @@ impl ConductorHandlerState {
                         .get_mut(&connection_id)
                         .ok_or_else(|| {
                             sacp::util::internal_error(format!(
-                                "unknown connection id: {}",
-                                connection_id
+                                "unknown connection id: {connection_id}"
                             ))
                         })?
                         .send(MessageAndCx::Request(mcp_request, request_cx))
@@ -640,8 +649,7 @@ impl ConductorHandlerState {
                         .get_mut(&connection_id)
                         .ok_or_else(|| {
                             sacp::util::internal_error(format!(
-                                "unknown connection id: {}",
-                                connection_id
+                                "unknown connection id: {connection_id}"
                             ))
                         })?
                         .send(MessageAndCx::Notification(
@@ -697,7 +705,7 @@ impl ConductorHandlerState {
                 info!(component_index, "Spawning component");
 
                 let connection = JrHandlerChain::new()
-                    .name(format!("conductor-to-component({})", component_index))
+                    .name(format!("conductor-to-component({component_index})"))
                     // Intercept messages sent by a proxy component to its successor.
                     .on_receive_message({
                         let mut conductor_tx = conductor_tx.clone();
@@ -769,7 +777,19 @@ impl ConductorHandlerState {
         tracing::debug!(?is_agent, "forward_initialize_request");
 
         let conductor_tx = conductor_tx.clone();
-        if !is_agent {
+        if is_agent {
+            // Agent component - no proxy capability
+            self.components[target_component_index]
+                .send_request(initialize_req)
+                .await_when_result_received(async move |response| {
+                    tracing::debug!(?response, "got initialize response");
+
+                    match response {
+                        Ok(response) => request_cx.respond(response),
+                        Err(error) => request_cx.respond_with_error(error),
+                    }
+                })
+        } else {
             // Add proxy capability and verify response
             initialize_req = initialize_req.add_meta_capability(Proxy);
             self.components[target_component_index]
@@ -781,8 +801,7 @@ impl ConductorHandlerState {
                         // abort the conductor.
                         if !response.has_meta_capability(Proxy) {
                             return Err(sacp::util::internal_error(format!(
-                                "component {} is not a proxy",
-                                target_component_index
+                                "component {target_component_index} is not a proxy"
                             )));
                         }
 
@@ -795,18 +814,6 @@ impl ConductorHandlerState {
                         request_cx.respond_via(conductor_tx, response).await
                     }
                     Err(error) => request_cx.respond_with_error(error),
-                })
-        } else {
-            // Agent component - no proxy capability
-            self.components[target_component_index]
-                .send_request(initialize_req)
-                .await_when_result_received(async move |response| {
-                    tracing::debug!(?response, "got initialize response");
-
-                    match response {
-                        Ok(response) => request_cx.respond(response),
-                        Err(error) => request_cx.respond_with_error(error),
-                    }
                 })
         }
     }
@@ -1084,7 +1091,7 @@ impl<R: JrResponsePayload> JrRequestCxExt<R> for JrRequestCx<R> {
                 result,
             })
             .await
-            .map_err(|e| sacp::util::internal_error(format!("Failed to send response: {}", e)))
+            .map_err(|e| sacp::util::internal_error(format!("Failed to send response: {e}")))
     }
 
     async fn respond_with_result_via(
@@ -1099,7 +1106,7 @@ impl<R: JrResponsePayload> JrRequestCxExt<R> for JrRequestCx<R> {
                 result,
             })
             .await
-            .map_err(|e| sacp::util::internal_error(format!("Failed to send response: {}", e)))
+            .map_err(|e| sacp::util::internal_error(format!("Failed to send response: {e}")))
     }
 }
 

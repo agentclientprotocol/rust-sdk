@@ -17,7 +17,7 @@ impl JrMessage for EchoRequestResponse {
         })
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "echo"
     }
 

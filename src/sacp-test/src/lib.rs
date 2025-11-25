@@ -1,5 +1,8 @@
-use sacp::handler::*;
-use sacp::*;
+use sacp::handler::NullHandler;
+use sacp::{
+    Component, Error, JrHandlerChain, JrMessage, JrNotification, JrRequest, JrResponsePayload,
+    UntypedMessage,
+};
 use serde::{Deserialize, Serialize};
 
 pub mod arrow_proxy;
@@ -7,6 +10,7 @@ pub mod test_client;
 
 /// A mock transport for doctests that panics if actually used.
 /// This is only for documentation examples that don't actually run.
+#[derive(Debug)]
 pub struct MockTransport;
 
 impl Component for MockTransport {
@@ -236,10 +240,12 @@ impl JrResponsePayload for OtherResponse {
 }
 
 // Mock async functions
+#[expect(clippy::unused_async)]
 pub async fn expensive_analysis(_data: &str) -> Result<String, crate::Error> {
     Ok("analysis result".into())
 }
 
+#[expect(clippy::unused_async)]
 pub async fn expensive_operation(_data: &str) -> Result<String, crate::Error> {
     Ok("operation result".into())
 }

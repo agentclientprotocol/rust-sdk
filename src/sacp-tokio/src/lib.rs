@@ -10,6 +10,7 @@ pub use acp_agent::AcpAgent;
 use sacp::{ByteStreams, Component};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[derive(Debug)]
 pub struct Stdio;
 
 impl Component for Stdio {

@@ -41,3 +41,6 @@ schemars.workspace = true
 sacp-rmcp = { path = "../sacp-rmcp" }
 sacp-test = { path = "../sacp-test" }
 sacp-tokio = { path = "../sacp-tokio" }
+
+[lints]
+workspace = true

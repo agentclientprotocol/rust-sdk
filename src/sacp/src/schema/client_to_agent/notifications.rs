@@ -10,7 +10,7 @@ impl JrMessage for CancelNotification {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/cancel"
     }
 

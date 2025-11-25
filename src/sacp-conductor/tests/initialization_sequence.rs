@@ -6,6 +6,7 @@
 //! 3. Proxy components must accept the capability or initialization fails
 //! 4. Last component (agent) never receives proxy capability offer
 
+use agent_client_protocol_schema::{ClientCapabilities, ProtocolVersion};
 use sacp::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 use sacp::{Component, JrHandlerChain, MetaCapabilityExt, Proxy};
 use sacp_conductor::conductor::Conductor;
@@ -144,8 +145,8 @@ async fn test_single_component_no_proxy_offer() -> Result<(), sacp::Error> {
 
     run_test_with_components(vec![InitComponent::new(&component1)], async |editor_cx| {
         let init_response = recv(editor_cx.send_request(InitializeRequest {
-            protocol_version: Default::default(),
-            client_capabilities: Default::default(),
+            protocol_version: ProtocolVersion::default(),
+            client_capabilities: ClientCapabilities::default(),
             meta: None,
             client_info: None,
         }))
@@ -153,8 +154,7 @@ async fn test_single_component_no_proxy_offer() -> Result<(), sacp::Error> {
 
         assert!(
             init_response.is_ok(),
-            "Initialize should succeed: {:?}",
-            init_response
+            "Initialize should succeed: {init_response:?}"
         );
 
         Ok::<(), sacp::Error>(())
@@ -179,8 +179,8 @@ async fn test_two_components() -> Result<(), sacp::Error> {
         ],
         async |editor_cx| {
             let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: Default::default(),
-                client_capabilities: Default::default(),
+                protocol_version: ProtocolVersion::default(),
+                client_capabilities: ClientCapabilities::default(),
                 meta: None,
                 client_info: None,
             }))
@@ -188,8 +188,7 @@ async fn test_two_components() -> Result<(), sacp::Error> {
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             Ok::<(), sacp::Error>(())
@@ -216,8 +215,8 @@ async fn test_proxy_component_must_respond_with_proxy() -> Result<(), sacp::Erro
         ],
         async |editor_cx| {
             let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: Default::default(),
-                client_capabilities: Default::default(),
+                protocol_version: ProtocolVersion::default(),
+                client_capabilities: ClientCapabilities::default(),
                 meta: None,
                 client_info: None,
             }))
@@ -239,8 +238,7 @@ async fn test_proxy_component_must_respond_with_proxy() -> Result<(), sacp::Erro
     let error = result.unwrap_err();
     assert!(
         error.to_string().contains("component 0 is not a proxy"),
-        "Expected 'component 0 is not a proxy' error, got: {:?}",
-        error
+        "Expected 'component 0 is not a proxy' error, got: {error:?}"
     );
 
     // Verify component1 was offered proxy
@@ -262,8 +260,8 @@ async fn test_proxy_component_must_strip_proxy_when_forwarding() -> Result<(), s
         ],
         async |editor_cx| {
             let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: Default::default(),
-                client_capabilities: Default::default(),
+                protocol_version: ProtocolVersion::default(),
+                client_capabilities: ClientCapabilities::default(),
                 meta: None,
                 client_info: None,
             }))
@@ -287,8 +285,7 @@ async fn test_proxy_component_must_strip_proxy_when_forwarding() -> Result<(), s
         error
             .to_string()
             .contains("conductor received unexpected initialization request with proxy capability"),
-        "Expected 'conductor received unexpected initialization request with proxy capability' error, got: {:?}",
-        error
+        "Expected 'conductor received unexpected initialization request with proxy capability' error, got: {error:?}"
     );
 
     // Verify component1 was offered proxy

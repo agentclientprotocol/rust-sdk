@@ -28,6 +28,7 @@ use serde_json::value::RawValue;
 
 use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
 
+#[derive(Debug)]
 pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
     outgoing_tx: UnboundedSender<OutgoingMessage<Local, Remote>>,
     pending_responses: Arc<Mutex<HashMap<RequestId, PendingResponse>>>,
@@ -35,6 +36,7 @@ pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
     broadcast: StreamBroadcast,
 }
 
+#[derive(Debug)]
 struct PendingResponse {
     deserialize: fn(&serde_json::value::RawValue) -> Result<Box<dyn Any + Send>>,
     respond: oneshot::Sender<Result<Box<dyn Any + Send>>>,
@@ -182,7 +184,7 @@ where
                     }
                     log::trace!("recv: {}", &incoming_line);
 
-                    match serde_json::from_str::<RawIncomingMessage>(&incoming_line) {
+                    match serde_json::from_str::<RawIncomingMessage<'_>>(&incoming_line) {
                         Ok(message) => {
                             if let Some(id) = message.id {
                                 if let Some(method) = message.method {
@@ -299,7 +301,7 @@ where
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct RawIncomingMessage<'a> {
     id: Option<RequestId>,
     method: Option<&'a str>,
@@ -308,6 +310,7 @@ pub struct RawIncomingMessage<'a> {
     error: Option<Error>,
 }
 
+#[derive(Debug)]
 pub enum IncomingMessage<Local: Side> {
     Request {
         id: RequestId,
