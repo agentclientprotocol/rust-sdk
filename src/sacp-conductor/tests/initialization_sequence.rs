@@ -6,8 +6,7 @@
 //! 3. Proxy components must accept the capability or initialization fails
 //! 4. Last component (agent) never receives proxy capability offer
 
-use agent_client_protocol_schema::{ClientCapabilities, ProtocolVersion};
-use sacp::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
+use sacp::schema::{InitializeRequest, InitializeResponse, VERSION};
 use sacp::{Component, JrHandlerChain, MetaCapabilityExt, Proxy};
 use sacp_conductor::conductor::Conductor;
 use sacp_proxy::JrCxExt;
@@ -97,13 +96,7 @@ impl Component for InitComponent {
                                 request_cx.respond(response)
                             })
                     } else {
-                        let response = InitializeResponse {
-                            protocol_version: request.protocol_version,
-                            agent_capabilities: AgentCapabilities::default(),
-                            auth_methods: vec![],
-                            meta: None,
-                            agent_info: None,
-                        };
+                        let response = InitializeResponse::new(request.protocol_version);
 
                         request_cx.respond(response)
                     }
@@ -144,13 +137,7 @@ async fn test_single_component_no_proxy_offer() -> Result<(), sacp::Error> {
     let component1 = InitConfig::new(false);
 
     run_test_with_components(vec![InitComponent::new(&component1)], async |editor_cx| {
-        let init_response = recv(editor_cx.send_request(InitializeRequest {
-            protocol_version: ProtocolVersion::default(),
-            client_capabilities: ClientCapabilities::default(),
-            meta: None,
-            client_info: None,
-        }))
-        .await;
+        let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
 
         assert!(
             init_response.is_ok(),
@@ -178,13 +165,7 @@ async fn test_two_components() -> Result<(), sacp::Error> {
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: ProtocolVersion::default(),
-                client_capabilities: ClientCapabilities::default(),
-                meta: None,
-                client_info: None,
-            }))
-            .await;
+            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
 
             assert!(
                 init_response.is_ok(),
@@ -214,13 +195,7 @@ async fn test_proxy_component_must_respond_with_proxy() -> Result<(), sacp::Erro
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: ProtocolVersion::default(),
-                client_capabilities: ClientCapabilities::default(),
-                meta: None,
-                client_info: None,
-            }))
-            .await;
+            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
 
             // Should fail because component1 was offered proxy but didn't respond with it
             assert!(
@@ -259,13 +234,7 @@ async fn test_proxy_component_must_strip_proxy_when_forwarding() -> Result<(), s
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: ProtocolVersion::default(),
-                client_capabilities: ClientCapabilities::default(),
-                meta: None,
-                client_info: None,
-            }))
-            .await;
+            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
 
             // Should fail because component1 forwarded request with proxy capability still attached
             assert!(

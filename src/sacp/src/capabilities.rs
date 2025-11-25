@@ -152,17 +152,12 @@ impl MetaCapabilityExt for InitializeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{AgentCapabilities, ClientCapabilities, VERSION};
+    use crate::schema::{ClientCapabilities, VERSION};
     use serde_json::json;
 
     #[test]
     fn test_add_proxy_capability() {
-        let request = InitializeRequest {
-            protocol_version: VERSION,
-            client_capabilities: ClientCapabilities::default(),
-            meta: None,
-            client_info: None,
-        };
+        let request = InitializeRequest::new(VERSION);
 
         let request = request.add_meta_capability(Proxy);
 
@@ -175,21 +170,13 @@ mod tests {
 
     #[test]
     fn test_remove_proxy_capability() {
-        let client_capabilities = ClientCapabilities {
-            meta: Some(json!({
-                "symposium": {
-                    "proxy": true
-                }
-            })),
-            ..Default::default()
-        };
+        let client_capabilities = ClientCapabilities::new().meta(json!({
+            "symposium": {
+                "proxy": true
+            }
+        }));
 
-        let request = InitializeRequest {
-            protocol_version: VERSION,
-            client_capabilities,
-            meta: None,
-            client_info: None,
-        };
+        let request = InitializeRequest::new(VERSION).client_capabilities(client_capabilities);
 
         let request = request.remove_meta_capability(Proxy);
 
@@ -198,21 +185,13 @@ mod tests {
 
     #[test]
     fn test_has_proxy_capability() {
-        let client_capabilities = ClientCapabilities {
-            meta: Some(json!({
-                "symposium": {
-                    "proxy": true
-                }
-            })),
-            ..Default::default()
-        };
+        let client_capabilities = ClientCapabilities::new().meta(json!({
+            "symposium": {
+                "proxy": true
+            }
+        }));
 
-        let request = InitializeRequest {
-            protocol_version: VERSION,
-            client_capabilities,
-            meta: None,
-            client_info: None,
-        };
+        let request = InitializeRequest::new(VERSION).client_capabilities(client_capabilities);
 
         assert!(request.has_meta_capability(Proxy));
         assert!(!request.has_meta_capability(McpAcpTransport));
@@ -220,13 +199,7 @@ mod tests {
 
     #[test]
     fn test_response_capabilities() {
-        let response = InitializeResponse {
-            protocol_version: VERSION,
-            agent_capabilities: AgentCapabilities::default(),
-            auth_methods: vec![],
-            meta: None,
-            agent_info: None,
-        };
+        let response = InitializeResponse::new(VERSION);
 
         let response = response.add_meta_capability(McpAcpTransport);
 

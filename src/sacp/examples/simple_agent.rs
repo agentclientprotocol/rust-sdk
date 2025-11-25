@@ -1,4 +1,4 @@
-use sacp::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
+use sacp::schema::{InitializeRequest, InitializeResponse};
 use sacp::{JrHandlerChain, MessageAndCx, UntypedMessage};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -8,13 +8,7 @@ async fn main() -> Result<(), sacp::Error> {
         .name("my-agent") // for debugging
         .on_receive_request(async move |initialize: InitializeRequest, request_cx| {
             // Respond to initialize successfully
-            request_cx.respond(InitializeResponse {
-                protocol_version: initialize.protocol_version,
-                agent_capabilities: AgentCapabilities::default(),
-                auth_methods: vec![],
-                agent_info: None,
-                meta: None,
-            })
+            request_cx.respond(InitializeResponse::new(initialize.protocol_version))
         })
         .on_receive_message(
             async move |message: MessageAndCx<UntypedMessage, UntypedMessage>| {

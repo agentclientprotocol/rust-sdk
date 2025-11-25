@@ -11,13 +11,12 @@
 //! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
-use agent_client_protocol_schema::ClientCapabilities;
 use clap::Parser;
 use sacp::JrHandlerChain;
 use sacp::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, TextContent,
-    VERSION as PROTOCOL_VERSION,
+    InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionNotification, VERSION as PROTOCOL_VERSION,
 };
 use std::path::PathBuf;
 use tokio::process::Child;
@@ -96,30 +95,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_receive_request(async move |request: RequestPermissionRequest, request_cx| {
             // YOLO: Auto-approve all permission requests by selecting the first option
             eprintln!("✅ Auto-approving permission request: {request:?}");
-            let option_id = request.options.first().map(|opt| opt.id.clone());
-            if let Some(id) = option_id {
-                request_cx.respond(RequestPermissionResponse {
-                    outcome: RequestPermissionOutcome::Selected { option_id: id },
-                    meta: None,
-                })
+            let option_id = request.options.first().map(|opt| opt.option_id.clone());
+            if let Some(option_id) = option_id {
+                request_cx.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                ))
             } else {
                 eprintln!("⚠️ No options provided in permission request, cancelling");
-                request_cx.respond(RequestPermissionResponse {
-                    outcome: RequestPermissionOutcome::Cancelled,
-                    meta: None,
-                })
+                request_cx.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ))
             }
         })
         .with_client(transport, |cx: sacp::JrConnectionCx| async move {
             // Initialize the agent
             eprintln!("🤝 Initializing agent...");
             let init_response = cx
-                .send_request(InitializeRequest {
-                    protocol_version: PROTOCOL_VERSION,
-                    client_capabilities: ClientCapabilities::default(),
-                    client_info: None,
-                    meta: None,
-                })
+                .send_request(InitializeRequest::new(PROTOCOL_VERSION))
                 .block_task()
                 .await?;
 
@@ -128,11 +120,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Create a new session
             eprintln!("📝 Creating new session...");
             let new_session_response = cx
-                .send_request(NewSessionRequest {
-                    mcp_servers: vec![],
-                    cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                    meta: None,
-                })
+                .send_request(NewSessionRequest::new(
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                ))
                 .block_task()
                 .await?;
 
@@ -142,15 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Send the prompt
             eprintln!("💬 Sending prompt: \"{}\"", cli.prompt);
             let prompt_response = cx
-                .send_request(PromptRequest {
-                    session_id: session_id.clone(),
-                    prompt: vec![ContentBlock::Text(TextContent {
-                        text: cli.prompt.clone(),
-                        annotations: None,
-                        meta: None,
-                    })],
-                    meta: None,
-                })
+                .send_request(PromptRequest::new(
+                    session_id.clone(),
+                    vec![cli.prompt.into()],
+                ))
                 .block_task()
                 .await?;
 

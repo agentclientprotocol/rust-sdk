@@ -23,7 +23,7 @@ impl Task {
             Ok(()) => Ok(()),
             Err(err) => {
                 let data = err.data.clone();
-                Err(err.with_data(serde_json::json! {
+                Err(err.data(serde_json::json! {
                     {
                         "spawned_at": format!("{}:{}:{}", location.file(), location.line(), location.column()),
                         "data": data,

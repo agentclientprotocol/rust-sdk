@@ -498,7 +498,7 @@ impl ConductorHandlerState {
                 // If message is coming from the conductor's successor,
                 // check whether we have proxy capability and error otherwise.
                 if !self.proxy_mode.load(Ordering::Relaxed) {
-                    return Err(sacp::Error::invalid_request().with_data("cannot accept successor message when not initialized with proxy capability"));
+                    return Err(sacp::Error::invalid_request().data("cannot accept successor message when not initialized with proxy capability"));
                 }
 
                 // Message from conductor's successor goes to the last component (the conductor's successor's predecessor)

@@ -4,10 +4,10 @@
 
 use agent_client_protocol::{Agent, AgentSideConnection, Client};
 use agent_client_protocol_schema::{
-    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, CancelNotification, Error,
-    ExtNotification, ExtRequest, ExtResponse, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, ReadTextFileRequest, ReadTextFileResponse, Result, SetSessionModeRequest,
+    AuthenticateRequest, AuthenticateResponse, CancelNotification, Error, ExtNotification,
+    ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    ReadTextFileRequest, ReadTextFileResponse, Result, SetSessionModeRequest,
     SetSessionModeResponse, StopReason, WriteTextFileRequest, WriteTextFileResponse,
 };
 use futures::FutureExt;
@@ -23,13 +23,7 @@ struct MyAgent {
 impl Agent for MyAgent {
     async fn initialize(&self, args: InitializeRequest) -> Result<InitializeResponse> {
         eprintln!("[{}] Initializing", self.name);
-        Ok(InitializeResponse {
-            protocol_version: args.protocol_version,
-            agent_capabilities: AgentCapabilities::default(),
-            auth_methods: Default::default(),
-            agent_info: Default::default(),
-            meta: Default::default(),
-        })
+        Ok(InitializeResponse::new(args.protocol_version))
     }
 
     async fn authenticate(&self, _args: AuthenticateRequest) -> Result<AuthenticateResponse> {
@@ -38,21 +32,12 @@ impl Agent for MyAgent {
 
     async fn new_session(&self, _args: NewSessionRequest) -> Result<NewSessionResponse> {
         eprintln!("[{}] Creating session", self.name);
-        Ok(NewSessionResponse {
-            session_id: "session-1".into(),
-            modes: None,
-            meta: Default::default(),
-            #[cfg(feature = "unstable")]
-            models: None,
-        })
+        Ok(NewSessionResponse::new("session-1".into()))
     }
 
     async fn prompt(&self, _args: PromptRequest) -> Result<PromptResponse> {
         eprintln!("[{}] Processing prompt", self.name);
-        Ok(PromptResponse {
-            stop_reason: StopReason::EndTurn,
-            meta: Default::default(),
-        })
+        Ok(PromptResponse::new(StopReason::EndTurn))
     }
 
     async fn cancel(&self, _args: CancelNotification) -> Result<()> {

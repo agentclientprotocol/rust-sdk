@@ -2,18 +2,16 @@
 //!
 //! This example shows how to connect to an agent and send requests.
 
-use agent_client_protocol::{Agent, Client, ClientSideConnection};
-use agent_client_protocol_schema::{
-    CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
-    InitializeRequest, KillTerminalCommandRequest, KillTerminalCommandResponse, NewSessionRequest,
-    PromptRequest, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
-    ReleaseTerminalResponse, RequestPermissionRequest, RequestPermissionResponse, Result,
-    SessionNotification, TerminalOutputRequest, TerminalOutputResponse, VERSION,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
+use agent_client_protocol::{
+    Agent, Client, ClientSideConnection, CreateTerminalRequest, CreateTerminalResponse, Error,
+    ExtNotification, ExtRequest, ExtResponse, InitializeRequest, KillTerminalCommandRequest,
+    KillTerminalCommandResponse, NewSessionRequest, PromptRequest, ReadTextFileRequest,
+    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    RequestPermissionRequest, RequestPermissionResponse, Result, SessionNotification,
+    TerminalOutputRequest, TerminalOutputResponse, V1, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use futures::FutureExt;
-use std::path::PathBuf;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 // ANCHOR: client_impl
@@ -127,35 +125,18 @@ async fn main() -> Result<()> {
             // Now we can send requests using the connection
             // ANCHOR: send_requests
             // Initialize the agent
-            let init_response = connection
-                .initialize(InitializeRequest {
-                    protocol_version: VERSION,
-                    client_capabilities: Default::default(),
-                    client_info: Default::default(),
-                    meta: None,
-                })
-                .await?;
+            let init_response = connection.initialize(InitializeRequest::new(V1)).await?;
 
             eprintln!("Agent initialized: {:?}", init_response.agent_info);
 
             // Create a session
-            let session_response = connection
-                .new_session(NewSessionRequest {
-                    mcp_servers: vec![],
-                    cwd: PathBuf::from("/"),
-                    meta: None,
-                })
-                .await?;
+            let session_response = connection.new_session(NewSessionRequest::new("/")).await?;
 
             eprintln!("Session created: {}", session_response.session_id);
 
             // Send a prompt
             let prompt_response = connection
-                .prompt(PromptRequest {
-                    session_id: session_response.session_id,
-                    prompt: vec![],
-                    meta: None,
-                })
+                .prompt(PromptRequest::new(session_response.session_id, vec![]))
                 .await?;
 
             eprintln!("Prompt completed: {:?}", prompt_response.stop_reason);

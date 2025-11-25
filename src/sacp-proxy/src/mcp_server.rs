@@ -2,7 +2,7 @@ use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use fxhash::FxHashMap;
 
-use sacp::schema::NewSessionRequest;
+use sacp::schema::{McpServerHttp, NewSessionRequest};
 use sacp::{
     Channel, Component, DynComponent, Handled, JrConnectionCx, JrHandlerChain, JrMessage,
     JrMessageHandler, JrRequestCx, MessageAndCx, UntypedMessage,
@@ -439,11 +439,7 @@ struct RegisteredMcpServer {
 
 impl RegisteredMcpServer {
     fn acp_mcp_server(&self) -> sacp::schema::McpServer {
-        sacp::schema::McpServer::Http {
-            name: self.name.clone(),
-            url: self.url.clone(),
-            headers: vec![],
-        }
+        sacp::schema::McpServer::Http(McpServerHttp::new(&self.name, &self.url))
     }
 }
 

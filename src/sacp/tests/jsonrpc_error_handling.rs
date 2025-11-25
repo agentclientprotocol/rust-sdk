@@ -283,10 +283,10 @@ async fn test_handler_returns_error() {
             let server = JrHandlerChain::new().on_receive_request(
                 async |_request: ErrorRequest, request_cx: JrRequestCx<SimpleResponse>| {
                     // Explicitly return an error
-                    request_cx.respond_with_error(sacp::Error::new((
+                    request_cx.respond_with_error(sacp::Error::new(
                         -32000,
-                        "This is an intentional error".to_string(),
-                    )))
+                        "This is an intentional error",
+                    ))
                 },
             );
 

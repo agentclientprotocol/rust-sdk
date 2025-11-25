@@ -254,11 +254,8 @@ pub(super) async fn incoming_protocol_actor(
                                 .map_err(crate::Error::into_internal_error)?;
                         } else if let Some(error) = response.error {
                             // Convert jsonrpcmsg::Error to crate::Error
-                            let acp_error = crate::Error {
-                                code: error.code,
-                                message: error.message,
-                                data: error.data,
-                            };
+                            let acp_error =
+                                crate::Error::new(error.code, error.message).data(error.data);
                             reply_tx
                                 .unbounded_send(ReplyMessage::Dispatch(id, Err(acp_error)))
                                 .map_err(crate::Error::into_internal_error)?;

@@ -3,9 +3,8 @@
 //! This example shows the handler-based approach for building agents.
 
 use sacp::schema::{
-    AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, ReadTextFileRequest, StopReason,
-    WriteTextFileRequest,
+    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, ReadTextFileRequest, StopReason, WriteTextFileRequest,
 };
 use sacp::{JrHandlerChain, MessageAndCx, UntypedMessage};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -20,34 +19,19 @@ async fn main() -> Result<(), sacp::Error> {
         // ANCHOR: handler_initialize
         .on_receive_request(async move |req: InitializeRequest, cx| {
             eprintln!("[{}] Initializing", agent_name);
-            cx.respond(InitializeResponse {
-                protocol_version: req.protocol_version,
-                agent_capabilities: AgentCapabilities::default(),
-                auth_methods: Default::default(),
-                agent_info: Default::default(),
-                meta: Default::default(),
-            })
+            cx.respond(InitializeResponse::new(req.protocol_version))
         })
         // ANCHOR_END: handler_initialize
         // ANCHOR: handler_new_session
         .on_receive_request(async move |_req: NewSessionRequest, cx| {
             eprintln!("[{}] Creating session", agent_name);
-            cx.respond(NewSessionResponse {
-                session_id: "session-1".into(),
-                modes: None,
-                #[cfg(feature = "unstable")]
-                models: None,
-                meta: Default::default(),
-            })
+            cx.respond(NewSessionResponse::new("session-1".into()))
         })
         // ANCHOR_END: handler_new_session
         // ANCHOR: handler_prompt
         .on_receive_request(async move |_req: PromptRequest, cx| {
             eprintln!("[{}] Processing prompt", agent_name);
-            cx.respond(PromptResponse {
-                stop_reason: StopReason::EndTurn,
-                meta: Default::default(),
-            })
+            cx.respond(PromptResponse::new(StopReason::EndTurn))
         })
         // ANCHOR_END: handler_prompt
         // ANCHOR: handler_client_requests

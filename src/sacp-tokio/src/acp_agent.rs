@@ -106,12 +106,12 @@ impl AcpAgent {
         sacp::Error,
     > {
         match &self.server {
-            sacp::schema::McpServer::Stdio {
+            sacp::schema::McpServer::Stdio(sacp::schema::McpServerStdio {
                 command,
                 args,
                 env,
-                name: _,
-            } => {
+                ..
+            }) => {
                 let mut cmd = tokio::process::Command::new(command);
                 cmd.args(args);
                 for env_var in env {
@@ -139,6 +139,7 @@ impl AcpAgent {
             sacp::schema::McpServer::Sse { .. } => Err(sacp::util::internal_error(
                 "SSE transport not yet supported by AcpAgent",
             )),
+            _ => Err(sacp::util::internal_error("Unsupported MCP server type")),
         }
     }
 }
@@ -216,12 +217,9 @@ fn parse_command_string(s: &str) -> Result<AcpAgent, sacp::Error> {
         .to_string();
 
     Ok(AcpAgent {
-        server: sacp::schema::McpServer::Stdio {
-            name,
-            command,
-            args,
-            env: vec![],
-        },
+        server: sacp::schema::McpServer::Stdio(
+            sacp::schema::McpServerStdio::new(name, command).args(args),
+        ),
     })
 }
 
@@ -233,12 +231,13 @@ mod tests {
     fn test_parse_simple_command() {
         let agent = AcpAgent::from_str("python agent.py").unwrap();
         match agent.server {
-            sacp::schema::McpServer::Stdio {
+            sacp::schema::McpServer::Stdio(sacp::schema::McpServerStdio {
                 name,
                 command,
                 args,
                 env,
-            } => {
+                ..
+            }) => {
                 assert_eq!(name, "python");
                 assert_eq!(command, PathBuf::from("python"));
                 assert_eq!(args, vec!["agent.py"]);
@@ -252,12 +251,13 @@ mod tests {
     fn test_parse_command_with_args() {
         let agent = AcpAgent::from_str("node server.js --port 8080 --verbose").unwrap();
         match agent.server {
-            sacp::schema::McpServer::Stdio {
+            sacp::schema::McpServer::Stdio(sacp::schema::McpServerStdio {
                 name,
                 command,
                 args,
                 env,
-            } => {
+                ..
+            }) => {
                 assert_eq!(name, "node");
                 assert_eq!(command, PathBuf::from("node"));
                 assert_eq!(args, vec!["server.js", "--port", "8080", "--verbose"]);
@@ -271,12 +271,13 @@ mod tests {
     fn test_parse_command_with_quotes() {
         let agent = AcpAgent::from_str(r#"python "my agent.py" --name "Test Agent""#).unwrap();
         match agent.server {
-            sacp::schema::McpServer::Stdio {
+            sacp::schema::McpServer::Stdio(sacp::schema::McpServerStdio {
                 name,
                 command,
                 args,
                 env,
-            } => {
+                ..
+            }) => {
                 assert_eq!(name, "python");
                 assert_eq!(command, PathBuf::from("python"));
                 assert_eq!(args, vec!["my agent.py", "--name", "Test Agent"]);
@@ -297,12 +298,13 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            sacp::schema::McpServer::Stdio {
+            sacp::schema::McpServer::Stdio(sacp::schema::McpServerStdio {
                 name,
                 command,
                 args,
                 env,
-            } => {
+                ..
+            }) => {
                 assert_eq!(name, "my-agent");
                 assert_eq!(command, PathBuf::from("/usr/bin/python"));
                 assert_eq!(args, vec!["agent.py", "--verbose"]);
@@ -322,7 +324,12 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            sacp::schema::McpServer::Http { name, url, headers } => {
+            sacp::schema::McpServer::Http(sacp::schema::McpServerHttp {
+                name,
+                url,
+                headers,
+                ..
+            }) => {
                 assert_eq!(name, "remote-agent");
                 assert_eq!(url, "https://example.com/agent");
                 assert_eq!(headers, vec![]);

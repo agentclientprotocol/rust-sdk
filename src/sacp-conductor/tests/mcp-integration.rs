@@ -9,13 +9,11 @@ mod mcp_integration;
 
 use std::path::PathBuf;
 
-use agent_client_protocol_schema::{ClientCapabilities, ProtocolVersion};
 use expect_test::expect;
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use sacp::JrHandlerChain;
 use sacp::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification,
-    TextContent,
+    InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification, VERSION,
 };
 use sacp_conductor::conductor::Conductor;
 
@@ -80,13 +78,7 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
         ],
         async |editor_cx| {
             // Send initialization request
-            let init_response = recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: ProtocolVersion::default(),
-                client_capabilities: ClientCapabilities::default(),
-                meta: None,
-                client_info: None,
-            }))
-            .await;
+            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
 
             assert!(
                 init_response.is_ok(),
@@ -94,12 +86,8 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
             );
 
             // Send session/new request
-            let session_response = recv(editor_cx.send_request(NewSessionRequest {
-                cwd: PathBuf::default(),
-                mcp_servers: vec![],
-                meta: None,
-            }))
-            .await;
+            let session_response =
+                recv(editor_cx.send_request(NewSessionRequest::new(PathBuf::default()))).await;
 
             assert!(
                 session_response.is_ok(),
@@ -158,34 +146,19 @@ async fn test_agent_handles_prompt() -> Result<(), sacp::Error> {
         })
         .with_client(transport, async |editor_cx| {
             // Initialize
-            recv(editor_cx.send_request(InitializeRequest {
-                protocol_version: ProtocolVersion::default(),
-                client_capabilities: ClientCapabilities::default(),
-                meta: None,
-                client_info: None,
-            }))
-            .await?;
+            recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await?;
 
             // Create session
-            let session = recv(editor_cx.send_request(NewSessionRequest {
-                cwd: PathBuf::default(),
-                mcp_servers: vec![],
-                meta: None,
-            }))
-            .await?;
+            let session =
+                recv(editor_cx.send_request(NewSessionRequest::new(PathBuf::default()))).await?;
 
             tracing::debug!(session_id = %session.session_id.0, "Session created");
 
             // Send a prompt
-            let prompt_response = recv(editor_cx.send_request(PromptRequest {
-                session_id: session.session_id.clone(),
-                prompt: vec![ContentBlock::Text(TextContent {
-                    annotations: None,
-                    text: "Hello agent!".to_string(),
-                    meta: None,
-                })],
-                meta: None,
-            }))
+            let prompt_response = recv(editor_cx.send_request(PromptRequest::new(
+                session.session_id.clone(),
+                vec!["Hello agent!".into()],
+            )))
             .await?;
 
             // Log the response

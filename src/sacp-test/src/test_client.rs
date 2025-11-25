@@ -6,9 +6,8 @@
 use sacp::{
     JrHandlerChain,
     schema::{
-        ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion, SessionNotification,
-        SessionUpdate, TextContent,
+        ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
+        PromptRequest, PromptResponse, SessionNotification, SessionUpdate, V1,
     },
 };
 
@@ -55,39 +54,21 @@ where
         .with_client(async move |cx| {
             // Initialize
             let InitializeResponse { .. } = cx
-                .send_request(InitializeRequest {
-                    protocol_version: ProtocolVersion::default(),
-                    client_capabilities: ClientCapabilities::default(),
-                    meta: None,
-                    client_info: None,
-                })
+                .send_request(InitializeRequest::new(V1))
                 .block_task()
                 .await?;
 
             // Create session
             let NewSessionResponse { session_id, .. } = cx
-                .send_request(NewSessionRequest {
-                    meta: None,
-                    mcp_servers: vec![],
-                    cwd: std::env::current_dir().unwrap_or_default(),
-                })
+                .send_request(NewSessionRequest::new(
+                    std::env::current_dir().unwrap_or_default(),
+                ))
                 .block_task()
                 .await?;
 
             // Send prompt
-            let PromptResponse {
-                stop_reason,
-                meta: _,
-            } = cx
-                .send_request(PromptRequest {
-                    session_id,
-                    prompt: vec![ContentBlock::Text(TextContent {
-                        text: prompt.to_string(),
-                        annotations: None,
-                        meta: None,
-                    })],
-                    meta: None,
-                })
+            let PromptResponse { stop_reason, .. } = cx
+                .send_request(PromptRequest::new(session_id, vec![prompt.into()]))
                 .block_task()
                 .await?;
 

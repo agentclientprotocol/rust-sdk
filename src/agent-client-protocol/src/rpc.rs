@@ -104,7 +104,7 @@ where
                 method: method.into(),
                 params,
             })
-            .map_err(|_| Error::internal_error().with_data("failed to send notification"))
+            .map_err(|_| Error::internal_error().data("failed to send notification"))
     }
 
     pub(crate) fn request<Out: DeserializeOwned + Send + 'static>(
@@ -121,9 +121,7 @@ where
                 deserialize: |value| {
                     serde_json::from_str::<Out>(value.get())
                         .map(|out| Box::new(out) as _)
-                        .map_err(|_| {
-                            Error::internal_error().with_data("failed to deserialize response")
-                        })
+                        .map_err(|_| Error::internal_error().data("failed to deserialize response"))
                 },
                 respond: tx,
             },
@@ -143,9 +141,9 @@ where
         async move {
             let result = rx
                 .await
-                .map_err(|_| Error::internal_error().with_data("server shut down unexpectedly"))??
+                .map_err(|_| Error::internal_error().data("server shut down unexpectedly"))??
                 .downcast::<Out>()
-                .map_err(|_| Error::internal_error().with_data("failed to deserialize response"))?;
+                .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
 
             Ok(*result)
         }

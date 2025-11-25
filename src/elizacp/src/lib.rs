@@ -3,9 +3,9 @@ pub mod eliza;
 use anyhow::Result;
 use eliza::Eliza;
 use sacp::schema::{
-    AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ContentBlock, ContentChunk, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
+    SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use sacp::{Component, JrHandlerChain};
 use std::collections::HashMap;
@@ -51,16 +51,10 @@ impl ElizaAgent {
         tracing::debug!("New session request with cwd: {:?}", request.cwd);
 
         // Generate a new session ID
-        let session_id = SessionId(Arc::from(uuid::Uuid::new_v4().to_string()));
+        let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
         self.create_session(&session_id);
 
-        let response = NewSessionResponse {
-            session_id,
-            modes: None,
-            #[cfg(feature = "unstable")]
-            models: None,
-            meta: None,
-        };
+        let response = NewSessionResponse::new(session_id);
 
         request_cx.respond(response)
     }
@@ -75,12 +69,7 @@ impl ElizaAgent {
         // For Eliza, we just create a fresh session
         self.create_session(&request.session_id);
 
-        let response = LoadSessionResponse {
-            modes: None,
-            #[cfg(feature = "unstable")]
-            models: None,
-            meta: None,
-        };
+        let response = LoadSessionResponse::new();
 
         request_cx.respond(response)
     }
@@ -112,20 +101,13 @@ impl ElizaAgent {
 
         request_cx
             .connection_cx()
-            .send_notification(SessionNotification {
-                session_id: session_id.clone(),
-                update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: response_text.into(),
-                    meta: None,
-                }),
-                meta: None,
-            })?;
+            .send_notification(SessionNotification::new(
+                session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(response_text.into())),
+            ))?;
 
         // Complete the request
-        request_cx.respond(PromptResponse {
-            stop_reason: StopReason::EndTurn,
-            meta: None,
-        })
+        request_cx.respond(PromptResponse::new(StopReason::EndTurn))
     }
 }
 
@@ -154,13 +136,7 @@ pub async fn run_elizacp(transport: impl Component + 'static) -> Result<(), sacp
             async |initialize: InitializeRequest, request_cx| {
                 tracing::debug!("Received initialize request");
 
-                request_cx.respond(InitializeResponse {
-                    protocol_version: initialize.protocol_version,
-                    agent_capabilities: AgentCapabilities::default(),
-                    auth_methods: Vec::default(),
-                    agent_info: Option::default(),
-                    meta: None,
-                })
+                request_cx.respond(InitializeResponse::new(initialize.protocol_version))
             }
         })
         .on_receive_request({

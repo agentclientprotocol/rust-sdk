@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use futures::{SinkExt, StreamExt as _, channel::mpsc};
 use sacp;
-use sacp::schema::McpServer;
+use sacp::schema::{McpServer, McpServerHttp, McpServerStdio};
 use sacp::{JrConnectionCx, JrHandlerChain, MessageAndCx};
 use sacp_proxy::McpDisconnectNotification;
 use tokio::net::TcpStream;
@@ -53,7 +53,10 @@ impl McpBridgeListeners {
     ) -> Result<(), sacp::Error> {
         use sacp::schema::McpServer;
 
-        let McpServer::Http { name, url, headers } = mcp_server else {
+        let McpServer::Http(McpServerHttp {
+            name, url, headers, ..
+        }) = mcp_server
+        else {
             return Ok(());
         };
 
@@ -94,12 +97,7 @@ impl McpBridgeListeners {
         args.push("mcp".to_string());
         args.push(tcp_port.tcp_port.to_string());
 
-        let transformed = McpServer::Stdio {
-            name: name.clone(),
-            command,
-            args,
-            env: vec![],
-        };
+        let transformed = McpServer::Stdio(McpServerStdio::new(name.clone(), command).args(args));
         *mcp_server = transformed;
 
         Ok(())
