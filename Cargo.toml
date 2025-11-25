@@ -73,8 +73,8 @@ rust_2018_idioms = { level = "warn", priority = -1 }
 unused = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
-# cargo = "warn"
-pedantic ={ level = "warn", priority = -1 }
+# cargo = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
 doc_markdown = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
