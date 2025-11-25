@@ -6,11 +6,11 @@
 //! 3. The full proxy chain works end-to-end
 //!
 //! Chain structure:
-//! test-editor -> conductor -> arrow_proxy1 -> arrow_proxy2 -> eliza
+//! test-editor -> conductor -> `arrow_proxy1` -> `arrow_proxy2` -> eliza
 //!
 //! Expected behavior:
-//! - arrow_proxy2 adds first '>' to eliza's response: ">Hello..."
-//! - arrow_proxy1 adds second '>' to that: ">>Hello..."
+//! - `arrow_proxy2` adds first '>' to eliza's response: ">Hello..."
+//! - `arrow_proxy1` adds second '>' to that: ">>Hello..."
 
 use sacp_conductor::conductor::Conductor;
 use sacp_test::test_client::yolo_prompt;

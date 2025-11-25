@@ -180,7 +180,7 @@ impl AgentComponent {
                 update: SessionUpdate::AgentMessageChunk(ContentChunk {
                     content: ContentBlock::Text(TextContent {
                         annotations: None,
-                        text: format!("MCP tool result: {:?}", tool_result),
+                        text: format!("MCP tool result: {tool_result:?}"),
                         meta: None,
                     }),
                     meta: None,

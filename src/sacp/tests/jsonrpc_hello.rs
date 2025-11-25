@@ -23,7 +23,7 @@ async fn recv<R: JrResponsePayload + Send>(response: JrResponse<R>) -> Result<R,
 }
 
 /// Helper to set up a client-server pair for testing.
-/// Returns (server_reader, server_writer, client_reader, client_writer) for manual setup.
+/// Returns (`server_reader`, `server_writer`, `client_reader`, `client_writer`) for manual setup.
 fn setup_test_streams() -> (
     impl AsyncRead,
     impl AsyncWrite,
@@ -53,7 +53,7 @@ impl JrMessage for PingRequest {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "ping"
     }
 
@@ -122,7 +122,7 @@ async fn test_hello_world() {
             // Spawn the server in the background
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -136,7 +136,7 @@ async fn test_hello_world() {
                     };
 
                     let response = recv(cx.send_request(request)).await.map_err(|e| {
-                        sacp::util::internal_error(format!("Request failed: {:?}", e))
+                        sacp::util::internal_error(format!("Request failed: {e:?}"))
                     })?;
 
                     assert_eq!(response.echo, "pong: hello world");
@@ -145,7 +145,7 @@ async fn test_hello_world() {
                 })
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -162,7 +162,7 @@ impl JrMessage for LogNotification {
         sacp::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "log"
     }
 
@@ -214,7 +214,7 @@ async fn test_notification() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -228,8 +228,7 @@ async fn test_notification() {
                         })
                         .map_err(|e| {
                             sacp::util::internal_error(format!(
-                                "Failed to send notification: {:?}",
-                                e
+                                "Failed to send notification: {e:?}"
                             ))
                         })?;
 
@@ -238,8 +237,7 @@ async fn test_notification() {
                         })
                         .map_err(|e| {
                             sacp::util::internal_error(format!(
-                                "Failed to send notification: {:?}",
-                                e
+                                "Failed to send notification: {e:?}"
                             ))
                         })?;
 
@@ -251,7 +249,7 @@ async fn test_notification() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
             let received_logs = logs.lock().unwrap();
             assert_eq!(received_logs.len(), 2);
@@ -286,7 +284,7 @@ async fn test_multiple_sequential_requests() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -297,14 +295,14 @@ async fn test_multiple_sequential_requests() {
                         // Send multiple requests sequentially
                         for i in 1..=5 {
                             let request = PingRequest {
-                                message: format!("message {}", i),
+                                message: format!("message {i}"),
                             };
 
                             let response = recv(cx.send_request(request)).await.map_err(|e| {
-                                sacp::util::internal_error(format!("Request {} failed: {:?}", i, e))
+                                sacp::util::internal_error(format!("Request {i} failed: {e:?}"))
                             })?;
 
-                            assert_eq!(response.echo, format!("pong: message {}", i));
+                            assert_eq!(response.echo, format!("pong: message {i}"));
                         }
 
                         Ok(())
@@ -312,7 +310,7 @@ async fn test_multiple_sequential_requests() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -342,7 +340,7 @@ async fn test_concurrent_requests() {
 
             tokio::task::spawn_local(async move {
                 if let Err(e) = server.serve(server_transport).await {
-                    eprintln!("Server error: {:?}", e);
+                    eprintln!("Server error: {e:?}");
                 }
             });
 
@@ -355,7 +353,7 @@ async fn test_concurrent_requests() {
 
                         for i in 1..=5 {
                             let request = PingRequest {
-                                message: format!("concurrent message {}", i),
+                                message: format!("concurrent message {i}"),
                             };
 
                             // Start all requests without awaiting
@@ -365,10 +363,10 @@ async fn test_concurrent_requests() {
                         // Now await all responses
                         for (i, response_future) in responses {
                             let response = recv(response_future).await.map_err(|e| {
-                                sacp::util::internal_error(format!("Request {} failed: {:?}", i, e))
+                                sacp::util::internal_error(format!("Request {i} failed: {e:?}"))
                             })?;
 
-                            assert_eq!(response.echo, format!("pong: concurrent message {}", i));
+                            assert_eq!(response.echo, format!("pong: concurrent message {i}"));
                         }
 
                         Ok(())
@@ -376,7 +374,7 @@ async fn test_concurrent_requests() {
                 )
                 .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }

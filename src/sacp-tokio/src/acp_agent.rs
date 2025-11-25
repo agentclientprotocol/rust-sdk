@@ -76,16 +76,19 @@ pub struct AcpAgent {
 
 impl AcpAgent {
     /// Create a new `AcpAgent` from an [`sacp::schema::McpServer`] configuration.
+    #[must_use]
     pub fn new(server: sacp::schema::McpServer) -> Self {
         Self { server }
     }
 
     /// Get the underlying [`sacp::schema::McpServer`] configuration.
+    #[must_use]
     pub fn server(&self) -> &sacp::schema::McpServer {
         &self.server
     }
 
     /// Convert into the underlying [`sacp::schema::McpServer`] configuration.
+    #[must_use]
     pub fn into_server(self) -> sacp::schema::McpServer {
         self.server
     }
@@ -143,7 +146,7 @@ impl AcpAgent {
 /// A future that holds a `Child` process and never resolves.
 /// When dropped, the child process is killed.
 struct ChildHolder {
-    _child: Child,
+    child: Child,
 }
 
 impl Future for ChildHolder {
@@ -157,7 +160,7 @@ impl Future for ChildHolder {
 
 impl Drop for ChildHolder {
     fn drop(&mut self) {
-        drop(self._child.start_kill());
+        drop(self.child.start_kill());
     }
 }
 
@@ -166,7 +169,7 @@ impl sacp::Component for AcpAgent {
         let (child_stdin, child_stdout, child) = self.spawn_process()?;
 
         // Hold the child process - it will be killed when this future completes
-        let _child_holder = ChildHolder { _child: child };
+        let _child_holder = ChildHolder { child };
 
         // Create the ByteStreams component and serve it
         sacp::ByteStreams::new(child_stdin.compat_write(), child_stdout.compat())
@@ -184,7 +187,7 @@ impl FromStr for AcpAgent {
         // If it starts with '{', try to parse as JSON
         if trimmed.starts_with('{') {
             let server: sacp::schema::McpServer = serde_json::from_str(trimmed)
-                .map_err(|e| sacp::util::internal_error(format!("Failed to parse JSON: {}", e)))?;
+                .map_err(|e| sacp::util::internal_error(format!("Failed to parse JSON: {e}")))?;
             return Ok(Self { server });
         }
 
@@ -196,7 +199,7 @@ impl FromStr for AcpAgent {
 fn parse_command_string(s: &str) -> Result<AcpAgent, sacp::Error> {
     // Split the command string into words, respecting quotes
     let parts = shell_words::split(s)
-        .map_err(|e| sacp::util::internal_error(format!("Failed to parse command: {}", e)))?;
+        .map_err(|e| sacp::util::internal_error(format!("Failed to parse command: {e}")))?;
 
     if parts.is_empty() {
         return Err(sacp::util::internal_error("Command string cannot be empty"));

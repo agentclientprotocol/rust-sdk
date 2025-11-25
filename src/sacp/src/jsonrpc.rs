@@ -362,7 +362,7 @@ pub struct JrHandlerChain<H: JrMessageHandler> {
 }
 
 impl JrHandlerChain<NullHandler> {
-    /// Create a new JrConnection.
+    /// Create a new `JrConnection`.
     /// This type follows a builder pattern; use other methods to configure and then invoke
     /// [`Self::serve`] (to use as a server) or [`Self::with_client`] to use as a client.
     pub fn new() -> Self {
@@ -380,9 +380,9 @@ impl<H: JrMessageHandler> JrHandlerChain<H> {
     /// Create a new handler chain with the given handler.
     pub fn new_with(handler: H) -> Self {
         Self {
-            name: Default::default(),
+            name: Option::default(),
             handler,
-            pending_tasks: Default::default(),
+            pending_tasks: Vec::default(),
         }
     }
 
@@ -969,7 +969,7 @@ enum OutgoingMessage {
     Error { error: crate::Error },
 }
 
-/// Return type from JrHandler; indicates whether the request was handled or not.
+/// Return type from `JrHandler`; indicates whether the request was handled or not.
 #[derive(Debug)]
 #[must_use]
 pub enum Handled<T> {
@@ -1367,7 +1367,7 @@ impl<T: JrResponsePayload> std::fmt::Debug for JrRequestCx<T> {
             .field("method", &self.method)
             .field("id", &self.id)
             .field("response_type", &std::any::type_name::<T>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1393,6 +1393,7 @@ impl JrRequestCx<serde_json::Value> {
 
 impl<T: JrResponsePayload> JrRequestCx<T> {
     /// Method of the incoming request
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
@@ -1404,7 +1405,7 @@ impl<T: JrResponsePayload> JrRequestCx<T> {
         self.wrap_params(|method, value| T::from_value(method, value?))
     }
 
-    /// Return a new JrResponse that expects a response of type U and serializes it.
+    /// Return a new `JrResponse` that expects a response of type U and serializes it.
     pub fn wrap_method(self, method: String) -> JrRequestCx<T> {
         JrRequestCx {
             cx: self.cx,
@@ -1414,7 +1415,7 @@ impl<T: JrResponsePayload> JrRequestCx<T> {
         }
     }
 
-    /// Return a new JrResponse that expects a response of type U and serializes it.
+    /// Return a new `JrResponse` that expects a response of type U and serializes it.
     ///
     /// `wrap_fn` will be invoked with the method name and the result of the wrapped function.
     pub fn wrap_params<U: JrResponsePayload>(
@@ -1433,6 +1434,7 @@ impl<T: JrResponsePayload> JrRequestCx<T> {
     }
 
     /// Get the underlying JSON RPC context.
+    #[must_use]
     pub fn connection_cx(&self) -> JrConnectionCx {
         self.cx.clone()
     }
@@ -1592,19 +1594,19 @@ impl<R: JrRequest, N: JrMessage> MessageAndCx<R, N> {
 }
 
 impl MessageAndCx {
-    /// Returns the method of the message (only available for UntypedMessage).
+    /// Returns the method of the message (only available for `UntypedMessage`).
+    #[must_use]
     pub fn method(&self) -> &str {
         match self {
-            MessageAndCx::Request(msg, _) => &msg.method,
-            MessageAndCx::Notification(msg, _) => &msg.method,
+            MessageAndCx::Request(msg, _) | MessageAndCx::Notification(msg, _) => &msg.method,
         }
     }
 
-    /// Returns the message of the message (only available for UntypedMessage).
+    /// Returns the message of the message (only available for `UntypedMessage`).
+    #[must_use]
     pub fn message(&self) -> &UntypedMessage {
         match self {
-            MessageAndCx::Request(msg, _) => msg,
-            MessageAndCx::Notification(msg, _) => msg,
+            MessageAndCx::Request(msg, _) | MessageAndCx::Notification(msg, _) => msg,
         }
     }
 }
@@ -1629,16 +1631,19 @@ impl UntypedMessage {
     }
 
     /// Returns the method name
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
     /// Returns the parameters as a JSON value
+    #[must_use]
     pub fn params(&self) -> &serde_json::Value {
         &self.params
     }
 
     /// Consumes this message and returns the method and params
+    #[must_use]
     pub fn into_parts(self) -> (String, serde_json::Value) {
         (self.method, self.params)
     }
@@ -1764,7 +1769,7 @@ impl<R> std::fmt::Debug for JrResponse<R> {
             .field("method", &self.method)
             .field("connection_cx", &self.connection_cx)
             .field("response_rx", &self.response_rx)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1785,6 +1790,7 @@ impl JrResponse<serde_json::Value> {
 
 impl<R: JrResponsePayload> JrResponse<R> {
     /// The method of the request this is in response to.
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
@@ -2152,8 +2158,7 @@ where
     async fn serve(self, client: impl Component) -> Result<(), crate::Error> {
         let (channel, serve_self) = self.into_server();
         match futures::future::select(Box::pin(client.serve(channel)), serve_self).await {
-            Either::Left((result, _)) => result,
-            Either::Right((result, _)) => result,
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
@@ -2222,6 +2227,7 @@ impl Channel {
     /// # Returns
     ///
     /// A tuple `(channel_a, channel_b)` of connected channel endpoints.
+    #[must_use]
     pub fn duplex() -> (Self, Self) {
         // Create channels: A sends Result<Message> which B receives as Message
         let (a_tx, b_rx) = mpsc::unbounded();

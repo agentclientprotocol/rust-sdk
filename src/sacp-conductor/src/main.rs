@@ -8,16 +8,12 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let pid = std::process::id();
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "<unknown>".to_string());
+    let cwd = std::env::current_dir().map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
 
     // Check for SYMPOSIUM_LOG environment variable
     if let Ok(log_level) = std::env::var("SYMPOSIUM_LOG") {
         // Set up file logging to ~/.symposium/logs.$DATE
-        let home = std::env::var("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("."));
+        let home = std::env::var("HOME").map_or_else(|_| PathBuf::from("."), PathBuf::from);
 
         let log_dir = home.join(".symposium");
         std::fs::create_dir_all(&log_dir)?;

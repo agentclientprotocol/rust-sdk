@@ -97,7 +97,7 @@ async fn connect_with_retry(port: u16) -> Result<TcpStream, sacp::Error> {
     let mut retry_delay_ms = 50;
 
     for attempt in 1..=max_retries {
-        match TcpStream::connect(format!("127.0.0.1:{}", port)).await {
+        match TcpStream::connect(format!("127.0.0.1:{port}")).await {
             Ok(stream) => {
                 tracing::info!("Connected to localhost:{} on attempt {}", port, attempt);
                 return Ok(stream);

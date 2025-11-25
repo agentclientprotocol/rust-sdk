@@ -6,8 +6,9 @@
 use sacp::{
     JrHandlerChain,
     schema::{
-        ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-        PromptRequest, PromptResponse, SessionNotification, SessionUpdate, TextContent,
+        ClientCapabilities, ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest,
+        NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion, SessionNotification,
+        SessionUpdate, TextContent,
     },
 };
 
@@ -18,7 +19,7 @@ use sacp::{
 /// - Initializes the connection
 /// - Creates a new session
 /// - Sends the prompt
-/// - Collects all text from AgentMessageChunk session updates
+/// - Collects all text from `AgentMessageChunk` session updates
 /// - Returns the concatenated result
 ///
 /// # Example
@@ -55,8 +56,8 @@ where
             // Initialize
             let InitializeResponse { .. } = cx
                 .send_request(InitializeRequest {
-                    protocol_version: Default::default(),
-                    client_capabilities: Default::default(),
+                    protocol_version: ProtocolVersion::default(),
+                    client_capabilities: ClientCapabilities::default(),
                     meta: None,
                     client_info: None,
                 })

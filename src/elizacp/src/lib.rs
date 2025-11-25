@@ -43,7 +43,7 @@ impl ElizaAgent {
         tracing::info!("Ended session: {}", session_id);
     }
 
-    async fn handle_new_session(
+    fn handle_new_session(
         &self,
         request: NewSessionRequest,
         request_cx: sacp::JrRequestCx<NewSessionResponse>,
@@ -65,7 +65,7 @@ impl ElizaAgent {
         request_cx.respond(response)
     }
 
-    async fn handle_load_session(
+    fn handle_load_session(
         &self,
         request: LoadSessionRequest,
         request_cx: sacp::JrRequestCx<LoadSessionResponse>,
@@ -85,7 +85,7 @@ impl ElizaAgent {
         request_cx.respond(response)
     }
 
-    async fn handle_prompt_request(
+    fn handle_prompt_request(
         &self,
         request: PromptRequest,
         request_cx: sacp::JrRequestCx<PromptResponse>,
@@ -105,10 +105,7 @@ impl ElizaAgent {
         let response_text = self
             .get_response(session_id, &input_text)
             .unwrap_or_else(|| {
-                format!(
-                    "Error: Session {} not found. Please start a new session.",
-                    session_id
-                )
+                format!("Error: Session {session_id} not found. Please start a new session.")
             });
 
         tracing::debug!("Eliza response: {}", response_text);
@@ -159,34 +156,29 @@ pub async fn run_elizacp(transport: impl Component + 'static) -> Result<(), sacp
 
                 request_cx.respond(InitializeResponse {
                     protocol_version: initialize.protocol_version,
-                    agent_capabilities: AgentCapabilities {
-                        load_session: Default::default(),
-                        prompt_capabilities: Default::default(),
-                        mcp_capabilities: Default::default(),
-                        meta: Default::default(),
-                    },
-                    auth_methods: Default::default(),
-                    agent_info: Default::default(),
-                    meta: Default::default(),
+                    agent_capabilities: AgentCapabilities::default(),
+                    auth_methods: Vec::default(),
+                    agent_info: Option::default(),
+                    meta: None,
                 })
             }
         })
         .on_receive_request({
             let agent = agent.clone();
             async move |request: NewSessionRequest, request_cx| {
-                agent.handle_new_session(request, request_cx).await
+                agent.handle_new_session(request, request_cx)
             }
         })
         .on_receive_request({
             let agent = agent.clone();
             async move |request: LoadSessionRequest, request_cx| {
-                agent.handle_load_session(request, request_cx).await
+                agent.handle_load_session(request, request_cx)
             }
         })
         .on_receive_request({
             let agent = agent.clone();
             async move |request: PromptRequest, request_cx| {
-                agent.handle_prompt_request(request, request_cx).await
+                agent.handle_prompt_request(request, request_cx)
             }
         })
         .connect_to(transport)?

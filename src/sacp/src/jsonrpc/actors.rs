@@ -72,12 +72,12 @@ pub(super) async fn reply_actor(
 // Split Actors for Pluggable Transport
 // ============================================================================
 
-/// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level jsonrpcmsg::Message.
+/// Outgoing protocol actor: Converts application-level `OutgoingMessage` to protocol-level `jsonrpcmsg::Message`.
 ///
 /// This actor handles JSON-RPC protocol semantics:
 /// - Assigns unique IDs to outgoing requests
-/// - Subscribes to reply_actor for response correlation
-/// - Converts OutgoingMessage variants to jsonrpcmsg::Message
+/// - Subscribes to `reply_actor` for response correlation
+/// - Converts `OutgoingMessage` variants to `jsonrpcmsg::Message`
 ///
 /// This is the protocol layer - it has no knowledge of how messages are transported.
 pub(super) async fn outgoing_protocol_actor(
@@ -153,11 +153,11 @@ pub(super) async fn outgoing_protocol_actor(
     Ok(())
 }
 
-/// Transport outgoing actor: Serializes jsonrpcmsg::Message and writes to byte stream.
+/// Transport outgoing actor: Serializes `jsonrpcmsg::Message` and writes to byte stream.
 ///
 /// This actor handles transport mechanics:
 /// - Unwraps Result<Message> from the channel
-/// - Serializes jsonrpcmsg::Message to JSON
+/// - Serializes `jsonrpcmsg::Message` to JSON
 /// - Writes newline-delimited JSON to the stream
 /// - Handles serialization errors
 ///
@@ -219,17 +219,17 @@ pub(super) async fn transport_outgoing_actor(
                     }
                 }
             }
-        };
+        }
     }
     Ok(())
 }
 
-/// Incoming protocol actor: Routes jsonrpcmsg::Message to reply_actor or handler.
+/// Incoming protocol actor: Routes `jsonrpcmsg::Message` to `reply_actor` or handler.
 ///
 /// This actor handles JSON-RPC protocol semantics:
-/// - Routes responses to reply_actor (for request/response correlation)
+/// - Routes responses to `reply_actor` (for request/response correlation)
 /// - Routes requests/notifications to handler chain
-/// - Converts jsonrpcmsg::Request to UntypedMessage for handlers
+/// - Converts `jsonrpcmsg::Request` to `UntypedMessage` for handlers
 ///
 /// This is the protocol layer - it has no knowledge of how messages arrived.
 pub(super) async fn incoming_protocol_actor(
@@ -243,7 +243,7 @@ pub(super) async fn incoming_protocol_actor(
             Ok(message) => match message {
                 jsonrpcmsg::Message::Request(request) => {
                     tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
-                    dispatch_request(json_rpc_cx, request, &mut handler).await?
+                    dispatch_request(json_rpc_cx, request, &mut handler).await?;
                 }
                 jsonrpcmsg::Message::Response(response) => {
                     tracing::trace!(id = ?response.id, has_result = response.result.is_some(), has_error = response.error.is_some(), "Handling response");
@@ -276,11 +276,11 @@ pub(super) async fn incoming_protocol_actor(
     Ok(())
 }
 
-/// Transport incoming actor: Parses bytes into jsonrpcmsg::Message.
+/// Transport incoming actor: Parses bytes into `jsonrpcmsg::Message`.
 ///
 /// This actor handles transport mechanics:
 /// - Reads newline-delimited JSON from the stream
-/// - Parses to jsonrpcmsg::Message
+/// - Parses to `jsonrpcmsg::Message`
 /// - Handles parse errors
 ///
 /// This is the transport layer - it has no knowledge of protocol semantics.

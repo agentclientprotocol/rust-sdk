@@ -342,11 +342,6 @@ where
     H2: JrMessageHandler,
 {
     fn describe_chain(&self) -> impl std::fmt::Debug {
-        return DebugImpl {
-            handler1: &self.handler1,
-            handler2: &self.handler2,
-        };
-
         struct DebugImpl<'h, H1, H2> {
             handler1: &'h H1,
             handler2: &'h H2,
@@ -361,6 +356,11 @@ where
                     self.handler2.describe_chain()
                 )
             }
+        }
+
+        DebugImpl {
+            handler1: &self.handler1,
+            handler2: &self.handler2,
         }
     }
 

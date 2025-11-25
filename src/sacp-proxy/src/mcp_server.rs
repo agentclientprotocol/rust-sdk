@@ -41,6 +41,7 @@ struct McpServiceRegistryData {
 
 impl McpServiceRegistry {
     /// Creates a new empty MCP service registry
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -80,8 +81,7 @@ impl McpServiceRegistry {
         let name = name.to_string();
         if self.get_registered_server_by_name(&name).is_some() {
             return Err(sacp::util::internal_error(format!(
-                "Server with name '{}' already exists",
-                name
+                "Server with name '{name}' already exists"
             )));
         }
 
@@ -147,7 +147,7 @@ impl McpServiceRegistry {
             .is_some()
     }
 
-    async fn handle_connect_request(
+    fn handle_connect_request(
         &self,
         result: Result<SuccessorRequest<McpConnectRequest>, sacp::Error>,
         request_cx: JrRequestCx<serde_json::Value>,
@@ -298,7 +298,7 @@ impl McpServiceRegistry {
         Ok(Handled::Yes)
     }
 
-    async fn handle_mcp_disconnect_notification(
+    fn handle_mcp_disconnect_notification(
         &self,
         result: Result<SuccessorNotification<McpDisconnectNotification>, sacp::Error>,
         notification_cx: JrConnectionCx,
@@ -320,7 +320,7 @@ impl McpServiceRegistry {
         }
     }
 
-    async fn handle_new_session_request(
+    fn handle_new_session_request(
         &self,
         result: Result<NewSessionRequest, sacp::Error>,
         request_cx: JrRequestCx<serde_json::Value>,
@@ -370,7 +370,7 @@ impl JrMessageHandler for McpServiceRegistry {
                 if let Some(result) =
                     <SuccessorRequest<McpConnectRequest>>::parse_request(cx.method(), params)
                 {
-                    cx = match self.handle_connect_request(result, cx).await? {
+                    cx = match self.handle_connect_request(result, cx)? {
                         Handled::Yes => return Ok(Handled::Yes),
                         Handled::No(cx) => cx,
                     };
@@ -389,7 +389,7 @@ impl JrMessageHandler for McpServiceRegistry {
                 }
 
                 if let Some(result) = <NewSessionRequest>::parse_request(cx.method(), params) {
-                    cx = match self.handle_new_session_request(result, cx).await? {
+                    cx = match self.handle_new_session_request(result, cx)? {
                         Handled::Yes => return Ok(Handled::Yes),
                         Handled::No(cx) => cx,
                     };
@@ -418,7 +418,7 @@ impl JrMessageHandler for McpServiceRegistry {
                         params,
                     )
                 {
-                    cx = match self.handle_mcp_disconnect_notification(result, cx).await? {
+                    cx = match self.handle_mcp_disconnect_notification(result, cx)? {
                         Handled::Yes => return Ok(Handled::Yes),
                         Handled::No(cx) => cx,
                     };
@@ -452,7 +452,7 @@ impl std::fmt::Debug for RegisteredMcpServer {
         f.debug_struct("RegisteredMcpServer")
             .field("name", &self.name)
             .field("url", &self.url)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

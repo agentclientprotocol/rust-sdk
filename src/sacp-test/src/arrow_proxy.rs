@@ -19,17 +19,14 @@ pub async fn run_arrow_proxy(transport: impl Component + 'static) -> Result<(), 
         .on_receive_notification_from_successor(
             async |mut notification: SessionNotification, cx| {
                 // Modify the content by adding > prefix
-                match &mut notification.update {
-                    SessionUpdate::AgentMessageChunk(ContentChunk {
+                if let SessionUpdate::AgentMessageChunk(ContentChunk {
                         content: ContentBlock::Text(text_content),
                         ..
-                    }) => {
-                        // Add > prefix to text content
-                        text_content.text = format!(">{}", text_content.text);
-                    }
-                    _ => {
-                        // Don't modify other update types
-                    }
+                    }) = &mut notification.update {
+                    // Add > prefix to text content
+                    text_content.text = format!(">{}", text_content.text);
+                } else {
+                    // Don't modify other update types
                 }
 
                 // Forward modified notification to predecessor

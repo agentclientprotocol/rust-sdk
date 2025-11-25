@@ -18,7 +18,7 @@ impl JrMessage for InitializeRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "initialize"
     }
 
@@ -63,7 +63,7 @@ impl JrMessage for AuthenticateRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "authenticate"
     }
 
@@ -107,7 +107,7 @@ impl JrMessage for LoadSessionRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/load"
     }
 
@@ -151,7 +151,7 @@ impl JrMessage for NewSessionRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/new"
     }
 
@@ -195,7 +195,7 @@ impl JrMessage for PromptRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/prompt"
     }
 
@@ -239,7 +239,7 @@ impl JrMessage for SetSessionModeRequest {
         crate::UntypedMessage::new(&method, self)
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "session/set_mode"
     }
 

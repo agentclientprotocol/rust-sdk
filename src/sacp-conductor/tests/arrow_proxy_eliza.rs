@@ -45,8 +45,7 @@ async fn test_conductor_with_arrow_proxy_and_eliza() -> Result<(), sacp::Error> 
 
         assert!(
             result.starts_with('>'),
-            "Expected response to start with '>' from arrow proxy, got: {}",
-            result
+            "Expected response to start with '>' from arrow proxy, got: {result}"
         );
 
         Ok::<String, sacp::Error>(result)

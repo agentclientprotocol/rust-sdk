@@ -34,6 +34,7 @@ pub struct ExampleMcpServer {
 }
 
 impl ExampleMcpServer {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
