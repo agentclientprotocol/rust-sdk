@@ -62,3 +62,12 @@ jsonrpcmsg = "0.1.2"
 # Testing
 expect-test = "1.5"
 tokio-test = "0.4"
+
+[workspace.lints.rust]
+future_incompatible = { level = "warn", priority = -1 }
+let-underscore = "warn"
+missing_debug_implementations = "warn"
+# missing_docs = "warn"
+nonstandard_style = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+unused = { level = "warn", priority = -1 }
