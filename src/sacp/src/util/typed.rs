@@ -30,22 +30,13 @@ use crate::{
 /// MatchMessage::new(message)
 ///     .if_request(|req: InitializeRequest, cx: sacp::JrRequestCx<InitializeResponse>| async move {
 ///         // Handle initialization
-///         let response = InitializeResponse {
-///             protocol_version: req.protocol_version,
-///             agent_capabilities: Default::default(),
-///             auth_methods: vec![],
-///             meta: None,
-///             agent_info: None,
-///         };
+///         let response = InitializeResponse::new(req.protocol_version);
 ///         cx.respond(response)
 ///     })
 ///     .await
 ///     .if_request(|req: PromptRequest, cx: sacp::JrRequestCx<PromptResponse>| async move {
 ///         // Handle prompts
-///         let response = PromptResponse {
-///             stop_reason: sacp::schema::StopReason::EndTurn,
-///             meta: None,
-///         };
+///         let response = PromptResponse::new(sacp::schema::StopReason::EndTurn);
 ///         cx.respond(response)
 ///     })
 ///     .await

@@ -23,13 +23,7 @@
 //!     // Create one or more request handlers -- these are attempted in order.
 //!     // You can do anything you want in here, but you should eventually
 //!     // respond to the request with `request_cx.respond(...)`:
-//!     request_cx.respond(InitializeResponse {
-//!         protocol_version: initialize.protocol_version,
-//!         agent_capabilities: AgentCapabilities::default(),
-//!         auth_methods: Default::default(),
-//!         agent_info: Default::default(),
-//!         meta: Default::default(),
-//!     })
+//!     request_cx.respond(InitializeResponse::new(initialize.protocol_version))
 //! })
 //! .on_receive_message(async move |message: MessageAndCx<UntypedMessage, UntypedMessage>| {
 //!     // You can also handle any kind of message:
