@@ -2087,7 +2087,7 @@ impl<R: JrResponsePayload> JrResponse<R> {
 const COMMUNICATION_FAILURE: i32 = -32000;
 
 fn communication_failure(err: impl ToString) -> crate::Error {
-    crate::Error::new((COMMUNICATION_FAILURE, err.to_string()))
+    crate::Error::new(COMMUNICATION_FAILURE, err.to_string())
 }
 
 // ============================================================================

@@ -16,12 +16,12 @@ where
 
 /// Creates an internal error with the given message
 pub fn internal_error(message: impl ToString) -> crate::Error {
-    crate::Error::internal_error().with_data(message.to_string())
+    crate::Error::internal_error().data(message.to_string())
 }
 
 /// Creates a parse error with the given message
 pub fn parse_error(message: impl ToString) -> crate::Error {
-    crate::Error::parse_error().with_data(message.to_string())
+    crate::Error::parse_error().data(message.to_string())
 }
 
 pub(crate) fn instrumented_with_connection_name<F>(

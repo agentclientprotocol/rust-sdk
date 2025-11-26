@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicI64, Ordering},
     },
 };
@@ -22,7 +22,6 @@ use futures::{
     io::BufReader,
     select_biased,
 };
-use parking_lot::Mutex;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
@@ -74,7 +73,7 @@ where
                     broadcast_tx,
                 )
                 .await;
-                pending_responses.lock().clear();
+                pending_responses.lock().unwrap().clear();
                 result
             }
         };
@@ -105,7 +104,7 @@ where
                 method: method.into(),
                 params,
             })
-            .map_err(|_| Error::internal_error().with_data("failed to send notification"))
+            .map_err(|_| Error::internal_error().data("failed to send notification"))
     }
 
     pub(crate) fn request<Out: DeserializeOwned + Send + 'static>(
@@ -116,15 +115,13 @@ where
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
-        self.pending_responses.lock().insert(
+        self.pending_responses.lock().unwrap().insert(
             id.clone(),
             PendingResponse {
                 deserialize: |value| {
                     serde_json::from_str::<Out>(value.get())
                         .map(|out| Box::new(out) as _)
-                        .map_err(|_| {
-                            Error::internal_error().with_data("failed to deserialize response")
-                        })
+                        .map_err(|_| Error::internal_error().data("failed to deserialize response"))
                 },
                 respond: tx,
             },
@@ -139,14 +136,14 @@ where
             })
             .is_err()
         {
-            self.pending_responses.lock().remove(&id);
+            self.pending_responses.lock().unwrap().remove(&id);
         }
         async move {
             let result = rx
                 .await
-                .map_err(|_| Error::internal_error().with_data("server shut down unexpectedly"))??
+                .map_err(|_| Error::internal_error().data("server shut down unexpectedly"))??
                 .downcast::<Out>()
-                .map_err(|_| Error::internal_error().with_data("failed to deserialize response"))?;
+                .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
 
             Ok(*result)
         }
@@ -208,7 +205,7 @@ where
                                             broadcast.outgoing(&error_response);
                                         }
                                     }
-                                } else if let Some(pending_response) = pending_responses.lock().remove(&id) {
+                                } else if let Some(pending_response) = pending_responses.lock().unwrap().remove(&id) {
                                     // Response
                                     if let Some(result_value) = message.result {
                                         broadcast.incoming_response(id, Ok(Some(result_value)));

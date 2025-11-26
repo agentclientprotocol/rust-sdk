@@ -591,8 +591,7 @@ impl ProxyHandler {
 
         if !request.has_meta_capability(Proxy) {
             request_cx.respond_with_error(
-                sacp::Error::invalid_params()
-                    .with_data("this command requires the proxy capability"),
+                sacp::Error::invalid_params().data("this command requires the proxy capability"),
             )?;
             return Ok(());
         }

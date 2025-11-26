@@ -105,7 +105,7 @@ impl StreamReceiver {
         self.0
             .recv()
             .await
-            .map_err(|e| Error::internal_error().with_data(e.to_string()))
+            .map_err(|e| Error::internal_error().data(e.to_string()))
     }
 }
 
@@ -136,6 +136,9 @@ impl StreamSender {
                     result: match result {
                         ResponseResult::Result(value) => Ok(serde_json::to_value(value).ok()),
                         ResponseResult::Error(error) => Err(error.clone()),
+                        _ => {
+                            return;
+                        }
                     },
                 },
                 OutgoingMessage::Notification { method, params } => {
@@ -143,6 +146,9 @@ impl StreamSender {
                         method: method.clone(),
                         params: serde_json::to_value(params).ok(),
                     }
+                }
+                _ => {
+                    return;
                 }
             },
         };
@@ -272,6 +278,9 @@ impl<Local: Side, Remote: Side> From<OutgoingMessage<Local, Remote>> for StreamM
                     result: match result {
                         ResponseResult::Result(value) => Ok(serde_json::to_value(value).ok()),
                         ResponseResult::Error(error) => Err(error),
+                        _ => {
+                            unimplemented!()
+                        }
                     },
                 },
                 OutgoingMessage::Notification { method, params } => {
@@ -279,6 +288,9 @@ impl<Local: Side, Remote: Side> From<OutgoingMessage<Local, Remote>> for StreamM
                         method,
                         params: serde_json::to_value(params).ok(),
                     }
+                }
+                _ => {
+                    unimplemented!()
                 }
             },
         }

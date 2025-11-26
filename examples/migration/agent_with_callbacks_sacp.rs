@@ -4,8 +4,8 @@
 //! and the importance of not blocking the message handler.
 
 use sacp::schema::{
-    AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, PromptRequest, PromptResponse, StopReason,
+    InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, StopReason,
 };
 use sacp::{JrHandlerChain, MessageAndCx, UntypedMessage};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -15,22 +15,10 @@ async fn main() -> Result<(), sacp::Error> {
     JrHandlerChain::new()
         .name("callback-agent")
         .on_receive_request(async move |req: InitializeRequest, cx| {
-            cx.respond(InitializeResponse {
-                protocol_version: req.protocol_version,
-                agent_capabilities: AgentCapabilities::default(),
-                auth_methods: Default::default(),
-                agent_info: Default::default(),
-                meta: Default::default(),
-            })
+            cx.respond(InitializeResponse::new(req.protocol_version))
         })
         .on_receive_request(async move |_req: NewSessionRequest, cx| {
-            cx.respond(NewSessionResponse {
-                session_id: "session-1".into(),
-                modes: None,
-                #[cfg(feature = "unstable")]
-                models: None,
-                meta: Default::default(),
-            })
+            cx.respond(NewSessionResponse::new("session-1".into()))
         })
         // ANCHOR: blocking_risk
         .on_receive_request(async move |_req: PromptRequest, cx| {
@@ -47,10 +35,7 @@ async fn main() -> Result<(), sacp::Error> {
             // cx.respond(response)
 
             // ✅ GOOD: Respond immediately
-            cx.respond(PromptResponse {
-                stop_reason: StopReason::EndTurn,
-                meta: Default::default(),
-            })
+            cx.respond(PromptResponse::new(StopReason::EndTurn))
         })
         // ANCHOR_END: blocking_risk
         // ANCHOR: spawn_alternative
@@ -66,10 +51,7 @@ async fn main() -> Result<(), sacp::Error> {
             });
 
             // Respond immediately
-            cx.respond(PromptResponse {
-                stop_reason: StopReason::EndTurn,
-                meta: Default::default(),
-            })
+            cx.respond(PromptResponse::new(StopReason::EndTurn))
         })
         // ANCHOR_END: spawn_alternative
         .on_receive_message(

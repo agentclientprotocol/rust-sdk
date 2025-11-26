@@ -2,9 +2,9 @@
 
 use rmcp::ServiceExt;
 use sacp::schema::{
-    AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
-    McpServer, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SessionNotification, SessionUpdate, StopReason, TextContent,
+    ContentChunk, InitializeRequest, InitializeResponse, McpServer, McpServerStdio,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionNotification,
+    SessionUpdate, StopReason,
 };
 use sacp::{Component, JrHandlerChain, JrRequestCx};
 use std::sync::Arc;
@@ -31,13 +31,7 @@ impl Component for AgentComponent {
             .name("agent-component")
             .on_receive_request(async move |request: InitializeRequest, request_cx| {
                 // Simple initialization response
-                let response = InitializeResponse {
-                    protocol_version: request.protocol_version,
-                    agent_capabilities: AgentCapabilities::default(),
-                    auth_methods: vec![],
-                    meta: None,
-                    agent_info: None,
-                };
+                let response = InitializeResponse::new(request.protocol_version);
                 request_cx.respond(response)
             })
             .on_receive_request({
@@ -54,12 +48,12 @@ impl Component for AgentComponent {
                     );
 
                     // Verify the stdio configuration is correct
-                    if let McpServer::Stdio {
+                    if let McpServer::Stdio(McpServerStdio {
                         name,
                         command,
                         args,
                         ..
-                    } = mcp_server
+                    }) = mcp_server
                     {
                         assert_eq!(name, "test");
                         let conductor_command = conductor_command();
@@ -73,13 +67,7 @@ impl Component for AgentComponent {
                     *state.mcp_servers.lock().await = request.mcp_servers;
 
                     // Simple session response
-                    let response = NewSessionResponse {
-                        session_id: "test-session-123".into(),
-                        modes: None,
-                        #[cfg(feature = "unstable")]
-                        models: None,
-                        meta: None,
-                    };
+                    let response = NewSessionResponse::new("test-session-123".into());
                     request_cx.respond(response)
                 }
             })
@@ -117,25 +105,19 @@ impl AgentComponent {
         let connection_cx = request_cx.connection_cx();
 
         // Send initial message
-        connection_cx.send_notification(SessionNotification {
-            session_id: request.session_id.clone(),
-            update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                content: ContentBlock::Text(TextContent {
-                    annotations: None,
-                    text: "Hello. I will now use the MCP tool".to_string(),
-                    meta: None,
-                }),
-                meta: None,
-            }),
-            meta: None,
-        })?;
+        connection_cx.send_notification(SessionNotification::new(
+            request.session_id.clone(),
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                "Hello. I will now use the MCP tool".into(),
+            )),
+        ))?;
 
         // Get MCP servers
         let mcp_servers = state.mcp_servers.lock().await;
         if let Some(mcp_server) = mcp_servers.first()
-            && let McpServer::Stdio {
+            && let McpServer::Stdio(McpServerStdio {
                 command, args, env, ..
-            } = mcp_server
+            }) = mcp_server
         {
             tracing::debug!(
                 command = ?command,
@@ -175,18 +157,12 @@ impl AgentComponent {
             tracing::debug!("Tool call result: {:?}", tool_result);
 
             // Send the tool result as a message
-            connection_cx.send_notification(SessionNotification {
-                session_id: request.session_id.clone(),
-                update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                    content: ContentBlock::Text(TextContent {
-                        annotations: None,
-                        text: format!("MCP tool result: {tool_result:?}"),
-                        meta: None,
-                    }),
-                    meta: None,
-                }),
-                meta: None,
-            })?;
+            connection_cx.send_notification(SessionNotification::new(
+                request.session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                    format!("MCP tool result: {tool_result:?}").into(),
+                )),
+            ))?;
 
             // Clean up the client
             mcp_client
@@ -195,10 +171,7 @@ impl AgentComponent {
                 .map_err(sacp::Error::into_internal_error)?;
         }
 
-        let response = PromptResponse {
-            stop_reason: StopReason::EndTurn,
-            meta: None,
-        };
+        let response = PromptResponse::new(StopReason::EndTurn);
 
         request_cx.respond(response)
     }

@@ -22,9 +22,9 @@
 
 use sacp::JrHandlerChain;
 use sacp::schema::{
-    ClientCapabilities, ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SessionNotification, TextContent, VERSION as PROTOCOL_VERSION,
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionNotification, TextContent, V1,
 };
 use sacp_tokio::AcpAgent;
 use std::path::PathBuf;
@@ -61,45 +61,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     JrHandlerChain::new()
         .on_receive_notification(async move |notification: SessionNotification, _cx| {
             // Print session updates to stdout (so 2>/dev/null shows only agent output)
-            match notification.update {
-                sacp::schema::SessionUpdate::AgentMessageChunk(content_chunk) => {
-                    match content_chunk.content {
-                        ContentBlock::Text(TextContent {
-                            annotations: _,
-                            text,
-                            meta: _,
-                        }) => print!("{text}"),
-                        ContentBlock::Image(_)
-                        | ContentBlock::Audio(_)
-                        | ContentBlock::ResourceLink(_)
-                        | ContentBlock::Resource(_) => {}
-                    }
-                }
-                sacp::schema::SessionUpdate::UserMessageChunk(_)
-                | sacp::schema::SessionUpdate::AgentThoughtChunk(_)
-                | sacp::schema::SessionUpdate::ToolCall(_)
-                | sacp::schema::SessionUpdate::ToolCallUpdate(_)
-                | sacp::schema::SessionUpdate::Plan(_)
-                | sacp::schema::SessionUpdate::AvailableCommandsUpdate(_)
-                | sacp::schema::SessionUpdate::CurrentModeUpdate(_) => {}
+            if let sacp::schema::SessionUpdate::AgentMessageChunk(content_chunk) =
+                notification.update
+                && let ContentBlock::Text(TextContent { text, .. }) = content_chunk.content
+            {
+                print!("{text}");
             }
             Ok(())
         })
         .on_receive_request(async move |request: RequestPermissionRequest, request_cx| {
             // YOPO: Auto-approve all permission requests by selecting the first option
             eprintln!("✅ Auto-approving permission request: {request:?}");
-            let option_id = request.options.first().map(|opt| opt.id.clone());
+            let option_id = request.options.first().map(|opt| opt.option_id.clone());
             if let Some(id) = option_id {
-                request_cx.respond(RequestPermissionResponse {
-                    outcome: RequestPermissionOutcome::Selected { option_id: id },
-                    meta: None,
-                })
+                request_cx.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
+                ))
             } else {
                 eprintln!("⚠️ No options provided in permission request, cancelling");
-                request_cx.respond(RequestPermissionResponse {
-                    outcome: RequestPermissionOutcome::Cancelled,
-                    meta: None,
-                })
+                request_cx.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ))
             }
         })
         .connect_to(agent)?
@@ -107,12 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Initialize the agent
             eprintln!("🤝 Initializing agent...");
             let init_response = cx
-                .send_request(InitializeRequest {
-                    protocol_version: PROTOCOL_VERSION,
-                    client_capabilities: ClientCapabilities::default(),
-                    client_info: None,
-                    meta: None,
-                })
+                .send_request(InitializeRequest::new(V1))
                 .block_task()
                 .await?;
 
@@ -121,11 +98,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Create a new session
             eprintln!("📝 Creating new session...");
             let new_session_response = cx
-                .send_request(NewSessionRequest {
-                    mcp_servers: vec![],
-                    cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-                    meta: None,
-                })
+                .send_request(NewSessionRequest::new(
+                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+                ))
                 .block_task()
                 .await?;
 
@@ -135,15 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Send the prompt
             eprintln!("💬 Sending prompt: \"{prompt}\"");
             let prompt_response = cx
-                .send_request(PromptRequest {
-                    session_id: session_id.clone(),
-                    prompt: vec![ContentBlock::Text(TextContent {
-                        text: prompt.clone(),
-                        annotations: None,
-                        meta: None,
-                    })],
-                    meta: None,
-                })
+                .send_request(PromptRequest::new(session_id.clone(), vec![prompt.into()]))
                 .block_task()
                 .await?;
 

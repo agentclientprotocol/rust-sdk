@@ -49,10 +49,7 @@ impl Client for TestClient {
         let outcome = responses
             .pop()
             .unwrap_or(RequestPermissionOutcome::Cancelled);
-        Ok(RequestPermissionResponse {
-            outcome,
-            meta: None,
-        })
+        Ok(RequestPermissionResponse::new(outcome))
     }
 
     async fn write_text_file(
@@ -72,10 +69,7 @@ impl Client for TestClient {
             .get(&arguments.path)
             .cloned()
             .unwrap_or_else(|| "default content".to_string());
-        Ok(ReadTextFileResponse {
-            content,
-            meta: None,
-        })
+        Ok(ReadTextFileResponse::new(content))
     }
 
     async fn session_notification(&self, args: SessionNotification) -> Result<()> {
@@ -161,17 +155,8 @@ impl TestAgent {
 #[async_trait::async_trait(?Send)]
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
-        Ok(InitializeResponse {
-            protocol_version: arguments.protocol_version,
-            agent_capabilities: AgentCapabilities::default(),
-            agent_info: Some(Implementation {
-                name: "test-agent".into(),
-                title: Some("Test Agent".into()),
-                version: "0.0.0".into(),
-            }),
-            auth_methods: vec![],
-            meta: None,
-        })
+        Ok(InitializeResponse::new(arguments.protocol_version)
+            .agent_info(Implementation::new("test-agent", "0.0.0").title("Test Agent")))
     }
 
     async fn authenticate(&self, _arguments: AuthenticateRequest) -> Result<AuthenticateResponse> {
@@ -179,31 +164,20 @@ impl Agent for TestAgent {
     }
 
     async fn new_session(&self, _arguments: NewSessionRequest) -> Result<NewSessionResponse> {
-        let session_id = SessionId(Arc::from("test-session-123"));
+        let session_id = SessionId::new("test-session-123");
         self.sessions.lock().unwrap().insert(session_id.clone());
-        Ok(NewSessionResponse {
-            session_id,
-            modes: None,
-            #[cfg(feature = "unstable")]
-            models: None,
-            meta: None,
-        })
+        Ok(NewSessionResponse::new(session_id))
     }
 
     async fn load_session(&self, _: LoadSessionRequest) -> Result<LoadSessionResponse> {
-        Ok(LoadSessionResponse {
-            modes: None,
-            #[cfg(feature = "unstable")]
-            models: None,
-            meta: None,
-        })
+        Ok(LoadSessionResponse::new())
     }
 
     async fn set_session_mode(
         &self,
         _arguments: SetSessionModeRequest,
     ) -> Result<SetSessionModeResponse> {
-        Ok(SetSessionModeResponse { meta: None })
+        Ok(SetSessionModeResponse::new())
     }
 
     async fn prompt(&self, arguments: PromptRequest) -> Result<PromptResponse> {
@@ -211,10 +185,7 @@ impl Agent for TestAgent {
             .lock()
             .unwrap()
             .push((arguments.session_id, arguments.prompt));
-        Ok(PromptResponse {
-            stop_reason: StopReason::EndTurn,
-            meta: None,
-        })
+        Ok(PromptResponse::new(StopReason::EndTurn))
     }
 
     async fn cancel(&self, args: CancelNotification) -> Result<()> {
@@ -299,18 +270,12 @@ async fn test_initialize() {
 
             let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
 
-            let result = agent_conn
-                .initialize(InitializeRequest {
-                    protocol_version: VERSION,
-                    client_capabilities: ClientCapabilities::default(),
-                    client_info: Some(Implementation {
-                        name: "test-client".to_string(),
-                        title: Some("Test Client".to_string()),
-                        version: "0.0.0".to_string(),
-                    }),
-                    meta: None,
-                })
-                .await;
+            let result =
+                agent_conn
+                    .initialize(InitializeRequest::new(V1).client_info(
+                        Implementation::new("test-client", "0.0.0").title("Test Client"),
+                    ))
+                    .await;
 
             assert!(result.is_ok());
             let response = result.unwrap();
@@ -330,11 +295,7 @@ async fn test_basic_session_creation() {
             let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
 
             agent_conn
-                .new_session(NewSessionRequest {
-                    mcp_servers: vec![],
-                    cwd: std::path::PathBuf::from("/test"),
-                    meta: None,
-                })
+                .new_session(NewSessionRequest::new("/test"))
                 .await
                 .expect("new_session failed");
         })
@@ -356,15 +317,9 @@ async fn test_bidirectional_file_operations() {
             let (_agent_conn, client_conn) = create_connection_pair(&client, &agent);
 
             // Test reading a file
-            let session_id = SessionId(Arc::from("test-session"));
+            let session_id = SessionId::new("test-session");
             let read_result = client_conn
-                .read_text_file(ReadTextFileRequest {
-                    session_id: session_id.clone(),
-                    path: test_path.clone(),
-                    line: None,
-                    limit: None,
-                    meta: None,
-                })
+                .read_text_file(ReadTextFileRequest::new(session_id.clone(), &test_path))
                 .await
                 .expect("read_text_file failed");
 
@@ -372,12 +327,11 @@ async fn test_bidirectional_file_operations() {
 
             // Test writing a file
             let write_result = client_conn
-                .write_text_file(WriteTextFileRequest {
-                    session_id: session_id.clone(),
-                    path: test_path.clone(),
-                    content: "Updated content".to_string(),
-                    meta: None,
-                })
+                .write_text_file(WriteTextFileRequest::new(
+                    session_id.clone(),
+                    &test_path,
+                    "Updated content",
+                ))
                 .await;
 
             assert!(write_result.is_ok());
@@ -395,37 +349,21 @@ async fn test_session_notifications() {
 
             let (_agent_conn, client_conn) = create_connection_pair(&client, &agent);
 
-            let session_id = SessionId(Arc::from("test-session"));
+            let session_id = SessionId::new("test-session");
             // Send various session updates
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::UserMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: "Hello from user".to_string(),
-                            meta: None,
-                        }),
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::UserMessageChunk(ContentChunk::new("Hello from user".into())),
+                ))
                 .await
                 .expect("session_notification failed");
 
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: "Hello from agent".to_string(),
-                            meta: None,
-                        }),
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new("Hello from agent".into())),
+                ))
                 .await
                 .expect("session_notification failed");
 
@@ -449,13 +387,10 @@ async fn test_cancel_notification() {
 
             let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
 
-            let session_id = SessionId(Arc::from("test-session"));
+            let session_id = SessionId::new("test-session");
             // Send cancel notification
             agent_conn
-                .cancel(CancelNotification {
-                    session_id: session_id.clone(),
-                    meta: None,
-                })
+                .cancel(CancelNotification::new(session_id.clone()))
                 .await
                 .expect("cancel failed");
 
@@ -484,19 +419,14 @@ async fn test_concurrent_operations() {
 
             let (_agent_conn, client_conn) = create_connection_pair(&client, &agent);
 
-            let session_id = SessionId(Arc::from("test-session"));
+            let session_id = SessionId::new("test-session");
 
             // Launch multiple concurrent read operations
             let mut read_futures = vec![];
             for i in 0..5 {
                 let path = std::path::PathBuf::from(format!("/test/file{i}.txt"));
-                let future = client_conn.read_text_file(ReadTextFileRequest {
-                    session_id: session_id.clone(),
-                    path,
-                    line: None,
-                    limit: None,
-                    meta: None,
-                });
+                let future =
+                    client_conn.read_text_file(ReadTextFileRequest::new(session_id.clone(), path));
                 read_futures.push(future);
             }
 
@@ -521,180 +451,84 @@ async fn test_full_conversation_flow() {
             let agent = TestAgent::new();
 
             // Set up permission to approve the tool call
-            client.add_permission_response(RequestPermissionOutcome::Selected {
-                option_id: PermissionOptionId(Arc::from("allow-once")),
-            });
+            client.add_permission_response(RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(PermissionOptionId::new("allow-once"))));
 
             let (agent_conn, client_conn) = create_connection_pair(&client, &agent);
             // 1. Start new session
             let new_session_result = agent_conn
-                .new_session(NewSessionRequest {
-                    mcp_servers: vec![],
-                    cwd: std::path::PathBuf::from("/test"),
-                    meta: None,
-                })
+                .new_session(NewSessionRequest::new("/test"))
                 .await
                 .expect("new_session failed");
 
             let session_id = new_session_result.session_id;
 
             // 2. Send user message
-            let user_prompt = vec![ContentBlock::Text(TextContent {
-                annotations: None,
-                text: "Please analyze the file and summarize it".to_string(),
-                meta: None,
-            })];
+            let user_prompt = vec!["Please analyze the file and summarize it".into()];
 
             agent_conn
-                .prompt(PromptRequest {
-                    session_id: session_id.clone(),
-                    prompt: user_prompt,
-                    meta: None,
-                })
+                .prompt(PromptRequest::new(session_id.clone(), user_prompt))
                 .await
                 .expect("prompt failed");
 
             // 3. Agent starts responding
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: "I'll analyze the file for you. ".to_string(),
-                            meta: None,
-                        }),
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(session_id.clone(), SessionUpdate::AgentMessageChunk(ContentChunk::new("I'll analyze the file for you. ".into()))))
                 .await
                 .expect("session_notification failed");
 
             // 4. Agent creates a tool call
-            let tool_call_id = ToolCallId(Arc::from("read-file-001"));
+            let tool_call_id = ToolCallId::new("read-file-001");
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::ToolCall(ToolCall {
-                        id: tool_call_id.clone(),
-                        title: "Reading file".to_string(),
-                        kind: ToolKind::Read,
-                        status: ToolCallStatus::Pending,
-                        content: vec![],
-                        locations: vec![ToolCallLocation {
-                            path: std::path::PathBuf::from("/test/data.txt"),
-                            line: None,
-                            meta: None,
-                        }],
-                        raw_input: None,
-                        raw_output: None,
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(session_id.clone(), SessionUpdate::ToolCall(ToolCall::new(tool_call_id.clone(), "Reading file").kind(ToolKind::Read).locations(vec![ToolCallLocation::new("/test/data.txt")]))))
                 .await
                 .expect("session_notification failed");
 
             // 5. Agent requests permission for the tool call
             let permission_result = client_conn
-                .request_permission(RequestPermissionRequest {
-                    session_id: session_id.clone(),
-                    tool_call: ToolCallUpdate {
-                        id: tool_call_id.clone(),
-                        fields: ToolCallUpdateFields {
-                            title: Some("Read /test/data.txt".to_string()),
-                            locations: Some(vec![ToolCallLocation {
-                                path: std::path::PathBuf::from("/test/data.txt"),
-                                line: None,
-                                meta: None,
-                            }]),
-                            ..Default::default()
-                        },
-                        meta: None,
-                    },
-                    options: vec![
-                        PermissionOption {
-                            id: PermissionOptionId(Arc::from("allow-once")),
-                            name: "Allow once".to_string(),
-                            kind: PermissionOptionKind::AllowOnce,
-                            meta: None,
-                        },
-                        PermissionOption {
-                            id: PermissionOptionId(Arc::from("reject-once")),
-                            name: "Reject".to_string(),
-                            kind: PermissionOptionKind::RejectOnce,
-                            meta: None,
-                        },
+                .request_permission(RequestPermissionRequest::new(session_id.clone(), ToolCallUpdate::new(tool_call_id.clone(), ToolCallUpdateFields::new().title("Read /test/data.txt").locations(vec![ToolCallLocation::new("/test/data.txt")])), vec![
+                        PermissionOption::new(PermissionOptionId::new("allow-once"), "Allow once", PermissionOptionKind::AllowOnce),
+                        PermissionOption::new(
+                            PermissionOptionId::new("reject-once"),
+                             "Reject",
+                             PermissionOptionKind::RejectOnce,
+                        ),
                     ],
-                    meta: None,
-                })
+                ))
                 .await
                 .expect("request_permission failed");
 
             // Verify permission was granted
             match permission_result.outcome {
-                RequestPermissionOutcome::Selected { option_id } => {
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome { option_id, .. }) => {
                     assert_eq!(option_id.0.as_ref(), "allow-once");
                 }
-                RequestPermissionOutcome::Cancelled => panic!("Expected permission to be granted"),
+                _ => panic!("Expected permission to be granted"),
             }
 
             // 6. Update tool call status
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::ToolCallUpdate(ToolCallUpdate {
-                        id: tool_call_id.clone(),
-                        fields: ToolCallUpdateFields {
-                            status: Some(ToolCallStatus::InProgress),
-                            ..Default::default()
-                        },
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(
+                     session_id.clone(),
+                     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                         tool_call_id.clone(),
+                         ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
+                    ))))
                 .await
                 .expect("session_notification failed");
 
             // 7. Tool call completes with content
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::ToolCallUpdate(ToolCallUpdate {
-                        id: tool_call_id.clone(),
-                        fields: ToolCallUpdateFields {
-                            status: Some(ToolCallStatus::Completed),
-                            content: Some(vec![ToolCallContent::Content {
-                                content: ContentBlock::Text(TextContent {
-                                    annotations: None,
-                                    text: "File contents: Lorem ipsum dolor sit amet".to_string(),
-                                    meta: None,
-                                }),
-                            }]),
-                            ..Default::default()
-                        },
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(
+                     session_id.clone(),
+                     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(tool_call_id.clone(), ToolCallUpdateFields::new().status(ToolCallStatus::Completed).content(vec!["File contents: Lorem ipsum dolor sit amet".into()])))))
                 .await
                 .expect("session_notification failed");
 
             // 8. Agent sends more text after tool completion
             client_conn
-                .session_notification(SessionNotification {
-                    session_id: session_id.clone(),
-                    update: SessionUpdate::AgentMessageChunk(ContentChunk {
-                        content: ContentBlock::Text(TextContent {
-                            annotations: None,
-                            text: "Based on the file contents, here's my summary: The file contains placeholder text commonly used in the printing industry.".to_string(),
-                            meta: None,
-                        }),
-                        meta: None,
-                    }),
-                    meta: None,
-                })
+                .session_notification(SessionNotification::new(
+                     session_id.clone(),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new("Based on the file contents, here's my summary: The file contains placeholder text commonly used in the printing industry.".into()))))
                 .await
                 .expect("session_notification failed");
 
@@ -754,13 +588,10 @@ async fn test_extension_methods_and_notifications() {
             let agent_ref = agent.clone();
 
             let (client_conn, agent_conn) = create_connection_pair(&client, &agent);
-
             // Test agent calling client extension method
+            let params: Arc<_> = raw_json!({ "data": "test" });
             let client_response = agent_conn
-                .ext_method(ExtRequest {
-                    method: "example.com/ping".into(),
-                    params: raw_json!({"data": "test"}),
-                })
+                .ext_method(ExtRequest::new("example.com/ping", params))
                 .await
                 .unwrap();
 
@@ -773,11 +604,9 @@ async fn test_extension_methods_and_notifications() {
             );
 
             // Test client calling agent extension method
+            let params: Arc<_> = raw_json!({ "message": "hello" });
             let agent_response = client_conn
-                .ext_method(ExtRequest {
-                    method: "example.com/echo".into(),
-                    params: raw_json!({"message": "hello"}),
-                })
+                .ext_method(ExtRequest::new("example.com/echo", params))
                 .await
                 .unwrap();
 
@@ -789,19 +618,15 @@ async fn test_extension_methods_and_notifications() {
             );
 
             // Test extension notifications
+            let params: Arc<_> = raw_json!({ "info": "client notification" });
             agent_conn
-                .ext_notification(ExtNotification {
-                    method: "example.com/client/notify".into(),
-                    params: raw_json!({"info": "client notification"}),
-                })
+                .ext_notification(ExtNotification::new("example.com/client/notify", params))
                 .await
                 .unwrap();
 
+            let params: Arc<_> = raw_json!({ "info": "agent notification" });
             client_conn
-                .ext_notification(ExtNotification {
-                    method: "example.com/agent/notify".into(),
-                    params: raw_json!({"info": "agent notification"}),
-                })
+                .ext_notification(ExtNotification::new("example.com/agent/notify", params))
                 .await
                 .unwrap();
 

@@ -7,7 +7,6 @@ use sacp::schema::{
     InitializeRequest, NewSessionRequest, PromptRequest, ReadTextFileRequest,
     RequestPermissionRequest, SessionNotification, VERSION, WriteTextFileRequest,
 };
-use std::path::PathBuf;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 // ANCHOR: setup
@@ -49,12 +48,7 @@ async fn main() -> Result<(), sacp::Error> {
                 // ANCHOR: send_requests
                 // Initialize the agent
                 let init_response = cx
-                    .send_request(InitializeRequest {
-                        protocol_version: VERSION,
-                        client_capabilities: Default::default(),
-                        client_info: Default::default(),
-                        meta: None,
-                    })
+                    .send_request(InitializeRequest::new(VERSION))
                     .block_task()
                     .await?;
 
@@ -62,11 +56,7 @@ async fn main() -> Result<(), sacp::Error> {
 
                 // Create a session
                 let session_response = cx
-                    .send_request(NewSessionRequest {
-                        mcp_servers: vec![],
-                        cwd: PathBuf::from("/"),
-                        meta: None,
-                    })
+                    .send_request(NewSessionRequest::new("/"))
                     .block_task()
                     .await?;
 
@@ -74,11 +64,7 @@ async fn main() -> Result<(), sacp::Error> {
 
                 // Send a prompt
                 let prompt_response = cx
-                    .send_request(PromptRequest {
-                        session_id: session_response.session_id,
-                        prompt: vec![],
-                        meta: None,
-                    })
+                    .send_request(PromptRequest::new(session_response.session_id, vec![]))
                     .block_task()
                     .await?;
 
