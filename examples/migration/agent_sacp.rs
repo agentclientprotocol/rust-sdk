@@ -25,7 +25,7 @@ async fn main() -> Result<(), sacp::Error> {
         // ANCHOR: handler_new_session
         .on_receive_request(async move |_req: NewSessionRequest, cx| {
             eprintln!("[{}] Creating session", agent_name);
-            cx.respond(NewSessionResponse::new("session-1".into()))
+            cx.respond(NewSessionResponse::new("session-1"))
         })
         // ANCHOR_END: handler_new_session
         // ANCHOR: handler_prompt

@@ -27,7 +27,7 @@ tokio = { version = "1.48", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 # Protocol
-agent-client-protocol-schema = "0.7.0"
+agent-client-protocol-schema = { version = "0.8.0" }
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }

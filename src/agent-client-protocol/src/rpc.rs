@@ -9,7 +9,8 @@ use std::{
 };
 
 use agent_client_protocol_schema::{
-    Error, JsonRpcMessage, OutgoingMessage, RequestId, ResponseResult, Result, Side,
+    Error, JsonRpcMessage, Notification, OutgoingMessage, Request, RequestId, Response, Result,
+    Side,
 };
 use futures::{
     AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _, FutureExt as _,
@@ -100,10 +101,10 @@ where
         params: Option<Remote::InNotification>,
     ) -> Result<()> {
         self.outgoing_tx
-            .unbounded_send(OutgoingMessage::Notification {
+            .unbounded_send(OutgoingMessage::Notification(Notification {
                 method: method.into(),
                 params,
-            })
+            }))
             .map_err(|_| Error::internal_error().data("failed to send notification"))
     }
 
@@ -129,11 +130,11 @@ where
 
         if self
             .outgoing_tx
-            .unbounded_send(OutgoingMessage::Request {
+            .unbounded_send(OutgoingMessage::Request(Request {
                 id: id.clone(),
                 method: method.into(),
                 params,
-            })
+            }))
             .is_err()
         {
             self.pending_responses.lock().unwrap().remove(&id);
@@ -191,12 +192,12 @@ where
                                             broadcast.incoming_request(id.clone(), method, &request);
                                             incoming_tx.unbounded_send(IncomingMessage::Request { id, request }).ok();
                                         }
-                                        Err(err) => {
+                                        Err(error) => {
                                             outgoing_line.clear();
-                                            let error_response = OutgoingMessage::<Local, Remote>::Response {
+                                            let error_response = OutgoingMessage::<Local, Remote>::Response(Response::Error {
                                                 id,
-                                                result: ResponseResult::Error(err),
-                                            };
+                                                error,
+                                            });
 
                                             serde_json::to_writer(&mut outgoing_line, &JsonRpcMessage::wrap(&error_response))?;
                                             log::trace!("send: {}", String::from_utf8_lossy(&outgoing_line));
@@ -269,9 +270,11 @@ where
                             let handler = handler.clone();
                             spawn(
                                 async move {
-                                    let result = handler.handle_request(request).await.into();
+                                    let result = handler.handle_request(request).await;
                                     outgoing_tx
-                                        .unbounded_send(OutgoingMessage::Response { id, result })
+                                        .unbounded_send(OutgoingMessage::Response(Response::new(
+                                            id, result,
+                                        )))
                                         .ok();
                                 }
                                 .boxed_local(),

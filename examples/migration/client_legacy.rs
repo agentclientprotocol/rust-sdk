@@ -5,10 +5,10 @@
 use agent_client_protocol::{
     Agent, Client, ClientSideConnection, CreateTerminalRequest, CreateTerminalResponse, Error,
     ExtNotification, ExtRequest, ExtResponse, InitializeRequest, KillTerminalCommandRequest,
-    KillTerminalCommandResponse, NewSessionRequest, PromptRequest, ReadTextFileRequest,
-    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+    KillTerminalCommandResponse, NewSessionRequest, PromptRequest, ProtocolVersion,
+    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionRequest, RequestPermissionResponse, Result, SessionNotification,
-    TerminalOutputRequest, TerminalOutputResponse, V1, WaitForTerminalExitRequest,
+    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use futures::FutureExt;
@@ -125,7 +125,9 @@ async fn main() -> Result<()> {
             // Now we can send requests using the connection
             // ANCHOR: send_requests
             // Initialize the agent
-            let init_response = connection.initialize(InitializeRequest::new(V1)).await?;
+            let init_response = connection
+                .initialize(InitializeRequest::new(ProtocolVersion::LATEST))
+                .await?;
 
             eprintln!("Agent initialized: {:?}", init_response.agent_info);
 

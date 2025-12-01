@@ -18,7 +18,7 @@ async fn main() -> Result<(), sacp::Error> {
             cx.respond(InitializeResponse::new(req.protocol_version))
         })
         .on_receive_request(async move |_req: NewSessionRequest, cx| {
-            cx.respond(NewSessionResponse::new("session-1".into()))
+            cx.respond(NewSessionResponse::new("session-1"))
         })
         // ANCHOR: blocking_risk
         .on_receive_request(async move |_req: PromptRequest, cx| {

@@ -133,7 +133,7 @@ pub trait Agent {
     ///
     /// See protocol docs: [Extensibility](https://agentclientprotocol.com/protocol/extensibility)
     async fn ext_method(&self, _args: ExtRequest) -> Result<ExtResponse> {
-        Ok(RawValue::NULL.to_owned().into())
+        Ok(ExtResponse::new(RawValue::NULL.to_owned().into()))
     }
 
     /// Handles extension notifications from the client.

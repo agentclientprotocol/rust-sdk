@@ -32,7 +32,7 @@ impl Agent for MyAgent {
 
     async fn new_session(&self, _args: NewSessionRequest) -> Result<NewSessionResponse> {
         eprintln!("[{}] Creating session", self.name);
-        Ok(NewSessionResponse::new("session-1".into()))
+        Ok(NewSessionResponse::new("session-1"))
     }
 
     async fn prompt(&self, _args: PromptRequest) -> Result<PromptResponse> {

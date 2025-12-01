@@ -114,10 +114,10 @@ impl Client for TestClient {
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         match dbg!(args.method.as_ref()) {
-            "example.com/ping" => Ok(raw_json!({
+            "example.com/ping" => Ok(ExtResponse::new(raw_json!({
                 "response": "pong",
                 "params": args.params
-            })),
+            }))),
             _ => Err(Error::method_not_found()),
         }
     }
@@ -212,7 +212,9 @@ impl Agent for TestAgent {
                 let response = serde_json::json!({
                     "echo": args.params
                 });
-                Ok(serde_json::value::to_raw_value(&response)?.into())
+                Ok(ExtResponse::new(
+                    serde_json::value::to_raw_value(&response)?.into(),
+                ))
             }
             _ => Err(Error::method_not_found()),
         }
@@ -272,14 +274,14 @@ async fn test_initialize() {
 
             let result =
                 agent_conn
-                    .initialize(InitializeRequest::new(V1).client_info(
+                    .initialize(InitializeRequest::new(ProtocolVersion::LATEST).client_info(
                         Implementation::new("test-client", "0.0.0").title("Test Client"),
                     ))
                     .await;
 
             assert!(result.is_ok());
             let response = result.unwrap();
-            assert_eq!(response.protocol_version, VERSION);
+            assert_eq!(response.protocol_version, ProtocolVersion::LATEST);
         })
         .await;
 }

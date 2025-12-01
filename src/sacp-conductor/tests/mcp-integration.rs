@@ -9,12 +9,11 @@ mod mcp_integration;
 
 use std::path::PathBuf;
 
+use agent_client_protocol_schema::ProtocolVersion;
 use expect_test::expect;
 use futures::{SinkExt, StreamExt, channel::mpsc};
 use sacp::JrHandlerChain;
-use sacp::schema::{
-    InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification, VERSION,
-};
+use sacp::schema::{InitializeRequest, NewSessionRequest, PromptRequest, SessionNotification};
 use sacp_conductor::conductor::Conductor;
 
 use tokio::io::duplex;
@@ -78,7 +77,8 @@ async fn test_proxy_provides_mcp_tools() -> Result<(), sacp::Error> {
         ],
         async |editor_cx| {
             // Send initialization request
-            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
+            let init_response =
+                recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await;
 
             assert!(
                 init_response.is_ok(),
@@ -146,7 +146,7 @@ async fn test_agent_handles_prompt() -> Result<(), sacp::Error> {
         })
         .with_client(transport, async |editor_cx| {
             // Initialize
-            recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await?;
+            recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await?;
 
             // Create session
             let session =

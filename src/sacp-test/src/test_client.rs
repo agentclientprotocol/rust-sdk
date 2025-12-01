@@ -7,7 +7,7 @@ use sacp::{
     JrHandlerChain,
     schema::{
         ContentBlock, InitializeRequest, InitializeResponse, NewSessionRequest, NewSessionResponse,
-        PromptRequest, PromptResponse, SessionNotification, SessionUpdate, V1,
+        PromptRequest, PromptResponse, ProtocolVersion, SessionNotification, SessionUpdate,
     },
 };
 
@@ -54,7 +54,7 @@ where
         .with_client(async move |cx| {
             // Initialize
             let InitializeResponse { .. } = cx
-                .send_request(InitializeRequest::new(V1))
+                .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
                 .block_task()
                 .await?;
 

@@ -67,7 +67,7 @@ impl Component for AgentComponent {
                     *state.mcp_servers.lock().await = request.mcp_servers;
 
                     // Simple session response
-                    let response = NewSessionResponse::new("test-session-123".into());
+                    let response = NewSessionResponse::new("test-session-123");
                     request_cx.respond(response)
                 }
             })
