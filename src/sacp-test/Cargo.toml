@@ -2,6 +2,7 @@
 name = "sacp-test"
 version = "1.0.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 sacp = { path = "../sacp" }

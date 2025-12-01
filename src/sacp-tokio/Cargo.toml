@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/symposium-dev/symposium-acp"
 keywords = ["acp", "agent", "protocol", "ai", "tokio"]
 categories = ["development-tools"]
+publish = false
 
 [dependencies]
 sacp = { version = "1.0.0", path = "../sacp" }

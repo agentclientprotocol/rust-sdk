@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/symposium-dev/symposium-acp"
 keywords = ["acp", "agent", "protocol", "ai"]
 categories = ["development-tools"]
+publish = false
 
 [features]
 unstable = ["agent-client-protocol-schema/unstable"]
