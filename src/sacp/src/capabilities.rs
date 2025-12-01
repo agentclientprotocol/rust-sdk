@@ -84,15 +84,13 @@ impl MetaCapabilityExt for InitializeRequest {
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
-        let mut meta = self.client_capabilities.meta.take().unwrap_or(json!({}));
+        let mut meta = self.client_capabilities.meta.take().unwrap_or_default();
 
-        if let Some(obj) = meta.as_object_mut() {
-            let symposium = obj.entry("symposium").or_insert_with(|| json!({}));
+        let symposium = meta.entry("symposium").or_insert_with(|| json!({}));
 
-            if let Some(symposium_obj) = symposium.as_object_mut() {
-                symposium_obj.insert("version".to_string(), json!("1.0"));
-                symposium_obj.insert(capability.key().to_string(), capability.value());
-            }
+        if let Some(symposium_obj) = symposium.as_object_mut() {
+            symposium_obj.insert("version".to_string(), json!("1.0"));
+            symposium_obj.insert(capability.key().to_string(), capability.value());
         }
 
         self.client_capabilities.meta = Some(meta);
@@ -101,8 +99,7 @@ impl MetaCapabilityExt for InitializeRequest {
 
     fn remove_meta_capability(mut self, capability: impl MetaCapability) -> Self {
         if let Some(ref mut meta) = self.client_capabilities.meta
-            && let Some(obj) = meta.as_object_mut()
-            && let Some(symposium) = obj.get_mut("symposium")
+            && let Some(symposium) = meta.get_mut("symposium")
             && let Some(symposium_obj) = symposium.as_object_mut()
         {
             symposium_obj.remove(capability.key());
@@ -122,15 +119,13 @@ impl MetaCapabilityExt for InitializeResponse {
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
-        let mut meta = self.agent_capabilities.meta.take().unwrap_or(json!({}));
+        let mut meta = self.agent_capabilities.meta.take().unwrap_or_default();
 
-        if let Some(obj) = meta.as_object_mut() {
-            let symposium = obj.entry("symposium").or_insert_with(|| json!({}));
+        let symposium = meta.entry("symposium").or_insert_with(|| json!({}));
 
-            if let Some(symposium_obj) = symposium.as_object_mut() {
-                symposium_obj.insert("version".to_string(), json!("1.0"));
-                symposium_obj.insert(capability.key().to_string(), capability.value());
-            }
+        if let Some(symposium_obj) = symposium.as_object_mut() {
+            symposium_obj.insert("version".to_string(), json!("1.0"));
+            symposium_obj.insert(capability.key().to_string(), capability.value());
         }
 
         self.agent_capabilities.meta = Some(meta);
@@ -139,8 +134,7 @@ impl MetaCapabilityExt for InitializeResponse {
 
     fn remove_meta_capability(mut self, capability: impl MetaCapability) -> Self {
         if let Some(ref mut meta) = self.agent_capabilities.meta
-            && let Some(obj) = meta.as_object_mut()
-            && let Some(symposium) = obj.get_mut("symposium")
+            && let Some(symposium) = meta.get_mut("symposium")
             && let Some(symposium_obj) = symposium.as_object_mut()
         {
             symposium_obj.remove(capability.key());
@@ -153,7 +147,7 @@ impl MetaCapabilityExt for InitializeResponse {
 mod tests {
     use super::*;
     use crate::schema::ClientCapabilities;
-    use agent_client_protocol_schema::ProtocolVersion;
+    use agent_client_protocol_schema::{Meta, ProtocolVersion};
     use serde_json::json;
 
     #[test]
@@ -171,11 +165,10 @@ mod tests {
 
     #[test]
     fn test_remove_proxy_capability() {
-        let client_capabilities = ClientCapabilities::new().meta(json!({
-            "symposium": {
-                "proxy": true
-            }
-        }));
+        let client_capabilities = ClientCapabilities::new().meta(Meta::from_iter([(
+            "symposium".into(),
+            json!({"proxy": true}),
+        )]));
 
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(client_capabilities);
@@ -187,11 +180,10 @@ mod tests {
 
     #[test]
     fn test_has_proxy_capability() {
-        let client_capabilities = ClientCapabilities::new().meta(json!({
-            "symposium": {
-                "proxy": true
-            }
-        }));
+        let client_capabilities = ClientCapabilities::new().meta(Meta::from_iter([(
+            "symposium".into(),
+            json!({"proxy": true}),
+        )]));
 
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(client_capabilities);
