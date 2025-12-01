@@ -5,6 +5,7 @@ edition = "2024"
 description = "YOPO (You Only Prompt Once) - A simple ACP client for one-shot prompts"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/symposium-dev/symposium-acp"
+publish = false
 
 [dependencies]
 sacp = { version = "1.0.0", path = "../sacp" }

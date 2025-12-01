@@ -9,6 +9,7 @@ keywords = ["acp", "agent", "eliza", "testing"]
 categories = ["development-tools"]
 authors = ["Niko Matsakis <niko@alum.mit.edu>"]
 readme = "README.md"
+publish = false
 
 [[bin]]
 name = "elizacp"

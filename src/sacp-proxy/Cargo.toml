@@ -7,6 +7,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/symposium-dev/symposium-acp"
 keywords = ["acp", "agent", "proxy", "ai"]
 categories = ["development-tools"]
+publish = false
 
 [dependencies]
 agent-client-protocol-schema.workspace = true

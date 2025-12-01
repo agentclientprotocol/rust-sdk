@@ -1,8 +1,6 @@
 [workspace]
 git_release_type = "auto"
-publish = false
 
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
-publish = true
