@@ -11,12 +11,13 @@
 //! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
+use agent_client_protocol_schema::ProtocolVersion;
 use clap::Parser;
 use sacp::JrHandlerChain;
 use sacp::schema::{
     InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, VERSION as PROTOCOL_VERSION,
+    SessionNotification,
 };
 use std::path::PathBuf;
 use tokio::process::Child;
@@ -111,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Initialize the agent
             eprintln!("🤝 Initializing agent...");
             let init_response = cx
-                .send_request(InitializeRequest::new(PROTOCOL_VERSION))
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
 

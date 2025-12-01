@@ -22,9 +22,9 @@
 
 use sacp::JrHandlerChain;
 use sacp::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, TextContent, V1,
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, TextContent,
 };
 use sacp_tokio::AcpAgent;
 use std::path::PathBuf;
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Initialize the agent
             eprintln!("🤝 Initializing agent...");
             let init_response = cx
-                .send_request(InitializeRequest::new(V1))
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
 

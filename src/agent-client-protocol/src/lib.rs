@@ -222,7 +222,7 @@ impl Side for ClientSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(AgentRequest::ExtMethodRequest(ExtRequest::new(
                         custom_method,
-                        params.to_owned(),
+                        params.to_owned().into(),
                     )))
                 } else {
                     Err(Error::method_not_found())
@@ -242,7 +242,7 @@ impl Side for ClientSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(AgentNotification::ExtNotification(ExtNotification::new(
                         custom_method,
-                        RawValue::from_string(params.get().to_string())?,
+                        RawValue::from_string(params.get().to_string())?.into(),
                     )))
                 } else {
                     Err(Error::method_not_found())
@@ -525,7 +525,7 @@ impl Side for AgentSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(ClientRequest::ExtMethodRequest(ExtRequest::new(
                         custom_method,
-                        params.to_owned(),
+                        params.to_owned().into(),
                     )))
                 } else {
                     Err(Error::method_not_found())
@@ -545,7 +545,7 @@ impl Side for AgentSide {
                 if let Some(custom_method) = method.strip_prefix('_') {
                     Ok(ClientNotification::ExtNotification(ExtNotification::new(
                         custom_method,
-                        RawValue::from_string(params.get().to_string())?,
+                        RawValue::from_string(params.get().to_string())?.into(),
                     )))
                 } else {
                     Err(Error::method_not_found())

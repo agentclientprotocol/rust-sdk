@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol_schema::{
-    Error, OutgoingMessage, RequestId, ResponseResult, Result, Side,
+    Error, Notification, OutgoingMessage, Request, RequestId, Response, Result, Side,
 };
 use derive_more::From;
 use serde::Serialize;
@@ -126,29 +126,30 @@ impl StreamSender {
         let message = StreamMessage {
             direction: StreamMessageDirection::Outgoing,
             message: match message {
-                OutgoingMessage::Request { id, method, params } => StreamMessageContent::Request {
-                    id: id.clone(),
-                    method: method.clone(),
-                    params: serde_json::to_value(params).ok(),
-                },
-                OutgoingMessage::Response { id, result } => StreamMessageContent::Response {
-                    id: id.clone(),
-                    result: match result {
-                        ResponseResult::Result(value) => Ok(serde_json::to_value(value).ok()),
-                        ResponseResult::Error(error) => Err(error.clone()),
-                        _ => {
-                            return;
-                        }
-                    },
-                },
-                OutgoingMessage::Notification { method, params } => {
-                    StreamMessageContent::Notification {
+                OutgoingMessage::Request(Request { id, method, params }) => {
+                    StreamMessageContent::Request {
+                        id: id.clone(),
                         method: method.clone(),
                         params: serde_json::to_value(params).ok(),
                     }
                 }
-                _ => {
-                    return;
+                OutgoingMessage::Response(Response::Result { id, result }) => {
+                    StreamMessageContent::Response {
+                        id: id.clone(),
+                        result: Ok(serde_json::to_value(result).ok()),
+                    }
+                }
+                OutgoingMessage::Response(Response::Error { id, error }) => {
+                    StreamMessageContent::Response {
+                        id: id.clone(),
+                        result: Err(error.clone()),
+                    }
+                }
+                OutgoingMessage::Notification(Notification { method, params }) => {
+                    StreamMessageContent::Notification {
+                        method: method.clone(),
+                        params: serde_json::to_value(params).ok(),
+                    }
                 }
             },
         };
@@ -268,29 +269,30 @@ impl<Local: Side, Remote: Side> From<OutgoingMessage<Local, Remote>> for StreamM
         Self {
             direction: StreamMessageDirection::Outgoing,
             message: match message {
-                OutgoingMessage::Request { id, method, params } => StreamMessageContent::Request {
-                    id,
-                    method,
-                    params: serde_json::to_value(params).ok(),
-                },
-                OutgoingMessage::Response { id, result } => StreamMessageContent::Response {
-                    id,
-                    result: match result {
-                        ResponseResult::Result(value) => Ok(serde_json::to_value(value).ok()),
-                        ResponseResult::Error(error) => Err(error),
-                        _ => {
-                            unimplemented!()
-                        }
-                    },
-                },
-                OutgoingMessage::Notification { method, params } => {
-                    StreamMessageContent::Notification {
+                OutgoingMessage::Request(Request { id, method, params }) => {
+                    StreamMessageContent::Request {
+                        id,
                         method,
                         params: serde_json::to_value(params).ok(),
                     }
                 }
-                _ => {
-                    unimplemented!()
+                OutgoingMessage::Response(Response::Result { id, result }) => {
+                    StreamMessageContent::Response {
+                        id,
+                        result: Ok(serde_json::to_value(result).ok()),
+                    }
+                }
+                OutgoingMessage::Response(Response::Error { id, error }) => {
+                    StreamMessageContent::Response {
+                        id,
+                        result: Err(error),
+                    }
+                }
+                OutgoingMessage::Notification(Notification { method, params }) => {
+                    StreamMessageContent::Notification {
+                        method,
+                        params: serde_json::to_value(params).ok(),
+                    }
                 }
             },
         }

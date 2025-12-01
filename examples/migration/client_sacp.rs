@@ -2,10 +2,11 @@
 //!
 //! This example shows how to connect to an agent and send requests using the handler chain API.
 
+use agent_client_protocol::ProtocolVersion;
 use sacp::JrHandlerChain;
 use sacp::schema::{
     InitializeRequest, NewSessionRequest, PromptRequest, ReadTextFileRequest,
-    RequestPermissionRequest, SessionNotification, VERSION, WriteTextFileRequest,
+    RequestPermissionRequest, SessionNotification, WriteTextFileRequest,
 };
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -48,7 +49,7 @@ async fn main() -> Result<(), sacp::Error> {
                 // ANCHOR: send_requests
                 // Initialize the agent
                 let init_response = cx
-                    .send_request(InitializeRequest::new(VERSION))
+                    .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
                     .block_task()
                     .await?;
 

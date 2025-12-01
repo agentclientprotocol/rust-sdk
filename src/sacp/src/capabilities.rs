@@ -152,12 +152,13 @@ impl MetaCapabilityExt for InitializeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{ClientCapabilities, VERSION};
+    use crate::schema::ClientCapabilities;
+    use agent_client_protocol_schema::ProtocolVersion;
     use serde_json::json;
 
     #[test]
     fn test_add_proxy_capability() {
-        let request = InitializeRequest::new(VERSION);
+        let request = InitializeRequest::new(ProtocolVersion::LATEST);
 
         let request = request.add_meta_capability(Proxy);
 
@@ -176,7 +177,8 @@ mod tests {
             }
         }));
 
-        let request = InitializeRequest::new(VERSION).client_capabilities(client_capabilities);
+        let request = InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(client_capabilities);
 
         let request = request.remove_meta_capability(Proxy);
 
@@ -191,7 +193,8 @@ mod tests {
             }
         }));
 
-        let request = InitializeRequest::new(VERSION).client_capabilities(client_capabilities);
+        let request = InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(client_capabilities);
 
         assert!(request.has_meta_capability(Proxy));
         assert!(!request.has_meta_capability(McpAcpTransport));
@@ -199,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_response_capabilities() {
-        let response = InitializeResponse::new(VERSION);
+        let response = InitializeResponse::new(ProtocolVersion::LATEST);
 
         let response = response.add_meta_capability(McpAcpTransport);
 

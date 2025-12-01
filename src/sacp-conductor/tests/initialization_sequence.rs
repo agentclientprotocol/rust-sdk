@@ -6,7 +6,8 @@
 //! 3. Proxy components must accept the capability or initialization fails
 //! 4. Last component (agent) never receives proxy capability offer
 
-use sacp::schema::{InitializeRequest, InitializeResponse, VERSION};
+use agent_client_protocol_schema::ProtocolVersion;
+use sacp::schema::{InitializeRequest, InitializeResponse};
 use sacp::{Component, JrHandlerChain, MetaCapabilityExt, Proxy};
 use sacp_conductor::conductor::Conductor;
 use sacp_proxy::JrCxExt;
@@ -137,7 +138,8 @@ async fn test_single_component_no_proxy_offer() -> Result<(), sacp::Error> {
     let component1 = InitConfig::new(false);
 
     run_test_with_components(vec![InitComponent::new(&component1)], async |editor_cx| {
-        let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
+        let init_response =
+            recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await;
 
         assert!(
             init_response.is_ok(),
@@ -165,7 +167,8 @@ async fn test_two_components() -> Result<(), sacp::Error> {
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
+            let init_response =
+                recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await;
 
             assert!(
                 init_response.is_ok(),
@@ -195,7 +198,8 @@ async fn test_proxy_component_must_respond_with_proxy() -> Result<(), sacp::Erro
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
+            let init_response =
+                recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await;
 
             // Should fail because component1 was offered proxy but didn't respond with it
             assert!(
@@ -234,7 +238,8 @@ async fn test_proxy_component_must_strip_proxy_when_forwarding() -> Result<(), s
             InitComponent::new(&component2),
         ],
         async |editor_cx| {
-            let init_response = recv(editor_cx.send_request(InitializeRequest::new(VERSION))).await;
+            let init_response =
+                recv(editor_cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await;
 
             // Should fail because component1 forwarded request with proxy capability still attached
             assert!(
