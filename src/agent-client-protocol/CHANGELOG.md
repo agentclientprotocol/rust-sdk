@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 (2025-12-01)
+
+The types from the Rust crate, `agent-client-protocol-schema` has major breaking changes. All exported type are now marked as `#[non_exhaustive]`. Since the schema itself is JSON, and we can introduce new fields and variants in a non-breaking way, we wanted to allow for the same behavior in the Rust library.
+
+All enum variants are also tuple variants now, with their own structs. This made it nicer to represent in the JSON Schema, and also made sure we have `_meta` fields on all variants.
+
+This upgrade will likely come with a lot of compilation errors, but ideally upgrading will be more painless in the future.
+
 ## 0.7.0 (2025-10-24)
 
 - Add ability for agents and clients to provide information about their implementation
