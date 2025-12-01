@@ -8,10 +8,10 @@ description = "A protocol for standardizing communication between code editors a
 repository = "https://github.com/agentclientprotocol/rust-sdk"
 homepage = "https://github.com/agentclientprotocol/rust-sdk"
 documentation = "https://docs.rs/agent-client-protocol"
-readme = "../../README.md"
+readme = "README.md"
 keywords = ["agent", "client", "protocol", "ai", "editor"]
 categories = ["development-tools", "api-bindings"]
-include = ["/src/**/*.rs", "../../README.md", "../../LICENSE", "/Cargo.toml"]
+include = ["/src/**/*.rs", "/README.md", "/LICENSE", "/Cargo.toml"]
 
 [features]
 unstable = ["agent-client-protocol-schema/unstable"]
