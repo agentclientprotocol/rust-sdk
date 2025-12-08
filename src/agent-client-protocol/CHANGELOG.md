@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.8.0...v0.8.1) - 2025-12-08
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## 0.8.0 (2025-12-01)
 
 The types from the Rust crate, `agent-client-protocol-schema` has major breaking changes. All exported type are now marked as `#[non_exhaustive]`. Since the schema itself is JSON, and we can introduce new fields and variants in a non-breaking way, we wanted to allow for the same behavior in the Rust library.
