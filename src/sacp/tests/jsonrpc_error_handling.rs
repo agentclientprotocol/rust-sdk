@@ -216,7 +216,7 @@ async fn test_unknown_method() {
                     assert!(result.is_err());
                     if let Err(err) = result {
                         // Should be "method not found" or similar error
-                        assert!(err.code < 0); // JSON-RPC error codes are negative
+                        assert!(i32::from(err.code) < 0); // JSON-RPC error codes are negative
                     }
                     Ok(())
                 })
@@ -308,7 +308,7 @@ async fn test_handler_returns_error() {
                     // Should get the error the handler returned
                     assert!(result.is_err());
                     if let Err(err) = result {
-                        assert_eq!(err.code, -32000);
+                        assert_eq!(i32::from(err.code), -32000);
                         assert_eq!(err.message, "This is an intentional error");
                     }
                     Ok(())
@@ -401,7 +401,7 @@ async fn test_missing_required_params() {
                     // Should get invalid_params error
                     assert!(result.is_err());
                     if let Err(err) = result {
-                        assert_eq!(err.code, -32602); // JSONRPC_INVALID_PARAMS
+                        assert_eq!(i32::from(err.code), -32602); // JSONRPC_INVALID_PARAMS
                     }
                     Ok(())
                 })
