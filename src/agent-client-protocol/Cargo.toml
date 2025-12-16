@@ -13,7 +13,22 @@ keywords = ["agent", "client", "protocol", "ai", "editor"]
 categories = ["development-tools", "api-bindings"]
 
 [features]
-unstable = ["agent-client-protocol-schema/unstable"]
+unstable = [
+    "unstable_cancel_request",
+    "unstable_session_config_options",
+    "unstable_session_fork",
+    "unstable_session_info_update",
+    "unstable_session_list",
+    "unstable_session_model",
+    "unstable_session_resume",
+]
+unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
+unstable_session_config_options = ["agent-client-protocol-schema/unstable_session_config_options"]
+unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
+unstable_session_info_update = ["agent-client-protocol-schema/unstable_session_info_update"]
+unstable_session_list = ["agent-client-protocol-schema/unstable_session_list"]
+unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
+unstable_session_resume = ["agent-client-protocol-schema/unstable_session_resume"]
 
 [dependencies]
 agent-client-protocol-schema.workspace = true

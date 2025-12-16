@@ -6,7 +6,9 @@ use agent_client_protocol_schema::{
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
     Result, SetSessionModeRequest, SetSessionModeResponse,
 };
-#[cfg(feature = "unstable")]
+#[cfg(feature = "unstable_session_list")]
+use agent_client_protocol_schema::{ListSessionsRequest, ListSessionsResponse};
+#[cfg(feature = "unstable_session_model")]
 use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 use serde_json::value::RawValue;
 
@@ -118,11 +120,23 @@ pub trait Agent {
     /// This capability is not part of the spec yet, and may be removed or changed at any point.
     ///
     /// Select a model for a given session.
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         _args: SetSessionModelRequest,
     ) -> Result<SetSessionModelResponse> {
+        Err(Error::method_not_found())
+    }
+
+    /// **UNSTABLE**
+    ///
+    /// This capability is not part of the spec yet, and may be removed or changed at any point.
+    ///
+    /// Lists existing sessions known to the agent.
+    ///
+    /// Only available if the Agent supports the `sessionCapabilities.list` capability.
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(&self, _args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         Err(Error::method_not_found())
     }
 
@@ -173,12 +187,16 @@ impl<T: Agent> Agent for Rc<T> {
     async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.as_ref().cancel(args).await
     }
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
     ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
+    }
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
+        self.as_ref().list_sessions(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
@@ -214,12 +232,16 @@ impl<T: Agent> Agent for Arc<T> {
     async fn cancel(&self, args: CancelNotification) -> Result<()> {
         self.as_ref().cancel(args).await
     }
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
     ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
+    }
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
+        self.as_ref().list_sessions(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await

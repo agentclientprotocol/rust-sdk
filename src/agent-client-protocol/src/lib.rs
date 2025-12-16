@@ -142,7 +142,7 @@ impl Agent for ClientSideConnection {
         )
     }
 
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: SetSessionModelRequest,
@@ -151,6 +151,16 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_set_model,
                 Some(ClientRequest::SetSessionModelRequest(args)),
+            )
+            .await
+    }
+
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
+        self.conn
+            .request(
+                AGENT_METHOD_NAMES.session_list,
+                Some(ClientRequest::ListSessionsRequest(args)),
             )
             .await
     }
@@ -514,9 +524,13 @@ impl Side for AgentSide {
             m if m == AGENT_METHOD_NAMES.session_set_mode => serde_json::from_str(params.get())
                 .map(ClientRequest::SetSessionModeRequest)
                 .map_err(Into::into),
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             m if m == AGENT_METHOD_NAMES.session_set_model => serde_json::from_str(params.get())
                 .map(ClientRequest::SetSessionModelRequest)
+                .map_err(Into::into),
+            #[cfg(feature = "unstable_session_list")]
+            m if m == AGENT_METHOD_NAMES.session_list => serde_json::from_str(params.get())
+                .map(ClientRequest::ListSessionsRequest)
                 .map_err(Into::into),
             m if m == AGENT_METHOD_NAMES.session_prompt => serde_json::from_str(params.get())
                 .map(ClientRequest::PromptRequest)
@@ -582,10 +596,15 @@ impl<T: Agent> MessageHandler<AgentSide> for T {
                 let response = self.set_session_mode(args).await?;
                 Ok(AgentResponse::SetSessionModeResponse(response))
             }
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             ClientRequest::SetSessionModelRequest(args) => {
                 let response = self.set_session_model(args).await?;
                 Ok(AgentResponse::SetSessionModelResponse(response))
+            }
+            #[cfg(feature = "unstable_session_list")]
+            ClientRequest::ListSessionsRequest(args) => {
+                let response = self.list_sessions(args).await?;
+                Ok(AgentResponse::ListSessionsResponse(response))
             }
             ClientRequest::ExtMethodRequest(args) => {
                 let response = self.ext_method(args).await?;
