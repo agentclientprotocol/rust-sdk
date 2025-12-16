@@ -165,6 +165,16 @@ impl Agent for ClientSideConnection {
             .await
     }
 
+    #[cfg(feature = "unstable_session_fork")]
+    async fn fork_session(&self, args: ForkSessionRequest) -> Result<ForkSessionResponse> {
+        self.conn
+            .request(
+                AGENT_METHOD_NAMES.session_fork,
+                Some(ClientRequest::ForkSessionRequest(args)),
+            )
+            .await
+    }
+
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.conn
             .request(
@@ -532,6 +542,10 @@ impl Side for AgentSide {
             m if m == AGENT_METHOD_NAMES.session_list => serde_json::from_str(params.get())
                 .map(ClientRequest::ListSessionsRequest)
                 .map_err(Into::into),
+            #[cfg(feature = "unstable_session_fork")]
+            m if m == AGENT_METHOD_NAMES.session_fork => serde_json::from_str(params.get())
+                .map(ClientRequest::ForkSessionRequest)
+                .map_err(Into::into),
             m if m == AGENT_METHOD_NAMES.session_prompt => serde_json::from_str(params.get())
                 .map(ClientRequest::PromptRequest)
                 .map_err(Into::into),
@@ -605,6 +619,11 @@ impl<T: Agent> MessageHandler<AgentSide> for T {
             ClientRequest::ListSessionsRequest(args) => {
                 let response = self.list_sessions(args).await?;
                 Ok(AgentResponse::ListSessionsResponse(response))
+            }
+            #[cfg(feature = "unstable_session_fork")]
+            ClientRequest::ForkSessionRequest(args) => {
+                let response = self.fork_session(args).await?;
+                Ok(AgentResponse::ForkSessionResponse(response))
             }
             ClientRequest::ExtMethodRequest(args) => {
                 let response = self.ext_method(args).await?;

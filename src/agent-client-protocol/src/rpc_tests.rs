@@ -133,7 +133,7 @@ impl Client for TestClient {
 
 #[derive(Clone)]
 struct TestAgent {
-    sessions: Arc<Mutex<std::collections::HashSet<SessionId>>>,
+    sessions: Arc<Mutex<std::collections::HashMap<SessionId, std::path::PathBuf>>>,
     prompts_received: Arc<Mutex<Vec<PromptReceived>>>,
     cancellations_received: Arc<Mutex<Vec<SessionId>>>,
     extension_notifications: Arc<Mutex<Vec<(String, ExtNotification)>>>,
@@ -144,7 +144,7 @@ type PromptReceived = (SessionId, Vec<ContentBlock>);
 impl TestAgent {
     fn new() -> Self {
         Self {
-            sessions: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             prompts_received: Arc::new(Mutex::new(Vec::new())),
             cancellations_received: Arc::new(Mutex::new(Vec::new())),
             extension_notifications: Arc::new(Mutex::new(Vec::new())),
@@ -163,9 +163,12 @@ impl Agent for TestAgent {
         Ok(AuthenticateResponse::default())
     }
 
-    async fn new_session(&self, _arguments: NewSessionRequest) -> Result<NewSessionResponse> {
+    async fn new_session(&self, arguments: NewSessionRequest) -> Result<NewSessionResponse> {
         let session_id = SessionId::new("test-session-123");
-        self.sessions.lock().unwrap().insert(session_id.clone());
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(session_id.clone(), arguments.cwd);
         Ok(NewSessionResponse::new(session_id))
     }
 
@@ -210,8 +213,30 @@ impl Agent for TestAgent {
         &self,
         _args: agent_client_protocol_schema::ListSessionsRequest,
     ) -> Result<agent_client_protocol_schema::ListSessionsResponse> {
+        let sessions = self.sessions.lock().unwrap();
+        let session_infos: Vec<_> = sessions
+            .iter()
+            .map(|(id, cwd)| {
+                agent_client_protocol_schema::SessionInfo::new(id.clone(), cwd.clone())
+            })
+            .collect();
         Ok(agent_client_protocol_schema::ListSessionsResponse::new(
-            vec![],
+            session_infos,
+        ))
+    }
+
+    #[cfg(feature = "unstable_session_fork")]
+    async fn fork_session(
+        &self,
+        args: agent_client_protocol_schema::ForkSessionRequest,
+    ) -> Result<agent_client_protocol_schema::ForkSessionResponse> {
+        let new_session_id = SessionId::new(format!("fork-of-{}", args.session_id.0));
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(new_session_id.clone(), args.cwd);
+        Ok(agent_client_protocol_schema::ForkSessionResponse::new(
+            new_session_id,
         ))
     }
 
@@ -662,6 +687,89 @@ async fn test_extension_methods_and_notifications() {
                 serde_json::to_value(&agent_notifications[0].1).unwrap(),
                 serde_json::json!({"info": "agent notification"})
             );
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable_session_fork")]
+#[tokio::test]
+async fn test_fork_session() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
+
+            // First create a session
+            let new_session_response = agent_conn
+                .new_session(NewSessionRequest::new("/test"))
+                .await
+                .expect("new_session failed");
+
+            let original_session_id = new_session_response.session_id;
+
+            // Fork the session
+            let fork_response = agent_conn
+                .fork_session(agent_client_protocol_schema::ForkSessionRequest::new(
+                    original_session_id.clone(),
+                    "/test",
+                ))
+                .await
+                .expect("fork_session failed");
+
+            // Verify the forked session has a different ID
+            assert_ne!(fork_response.session_id, original_session_id);
+            assert_eq!(
+                fork_response.session_id.0.as_ref(),
+                format!("fork-of-{}", original_session_id.0)
+            );
+
+            // Verify the forked session was added to the agent's sessions
+            let sessions = agent.sessions.lock().unwrap();
+            assert!(sessions.contains_key(&fork_response.session_id));
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable_session_list")]
+#[tokio::test]
+async fn test_list_sessions() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
+
+            // First create a session
+            let new_session_response = agent_conn
+                .new_session(NewSessionRequest::new("/test"))
+                .await
+                .expect("new_session failed");
+
+            // Verify the session was created
+            assert!(!new_session_response.session_id.0.is_empty());
+
+            // List sessions
+            let list_response = agent_conn
+                .list_sessions(agent_client_protocol_schema::ListSessionsRequest::new())
+                .await
+                .expect("list_sessions failed");
+
+            // Verify the response contains our session
+            assert_eq!(list_response.sessions.len(), 1);
+            assert_eq!(
+                list_response.sessions[0].session_id,
+                new_session_response.session_id
+            );
+            assert_eq!(
+                list_response.sessions[0].cwd,
+                std::path::PathBuf::from("/test")
+            );
+            assert!(list_response.next_cursor.is_none());
         })
         .await;
 }
