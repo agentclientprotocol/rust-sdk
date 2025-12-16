@@ -142,15 +142,6 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModelResponse::default())
     }
 
-    #[cfg(feature = "unstable_session_list")]
-    async fn list_sessions(
-        &self,
-        args: acp::ListSessionsRequest,
-    ) -> Result<acp::ListSessionsResponse, acp::Error> {
-        log::info!("Received list sessions request {args:?}");
-        Ok(acp::ListSessionsResponse::new(vec![]))
-    }
-
     async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         log::info!(
             "Received extension method call: method={}, params={:?}",

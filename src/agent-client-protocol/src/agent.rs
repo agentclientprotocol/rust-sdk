@@ -6,6 +6,8 @@ use agent_client_protocol_schema::{
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
     Result, SetSessionModeRequest, SetSessionModeResponse,
 };
+#[cfg(feature = "unstable_session_fork")]
+use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
 #[cfg(feature = "unstable_session_list")]
 use agent_client_protocol_schema::{ListSessionsRequest, ListSessionsResponse};
 #[cfg(feature = "unstable_session_model")]
@@ -140,6 +142,18 @@ pub trait Agent {
         Err(Error::method_not_found())
     }
 
+    /// **UNSTABLE**
+    ///
+    /// This capability is not part of the spec yet, and may be removed or changed at any point.
+    ///
+    /// Forks an existing session, creating a new session with the same conversation history.
+    ///
+    /// Only available if the Agent supports the `sessionCapabilities.fork` capability.
+    #[cfg(feature = "unstable_session_fork")]
+    async fn fork_session(&self, _args: ForkSessionRequest) -> Result<ForkSessionResponse> {
+        Err(Error::method_not_found())
+    }
+
     /// Handles extension method requests from the client.
     ///
     /// Extension methods provide a way to add custom functionality while maintaining
@@ -198,6 +212,10 @@ impl<T: Agent> Agent for Rc<T> {
     async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         self.as_ref().list_sessions(args).await
     }
+    #[cfg(feature = "unstable_session_fork")]
+    async fn fork_session(&self, args: ForkSessionRequest) -> Result<ForkSessionResponse> {
+        self.as_ref().fork_session(args).await
+    }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
@@ -242,6 +260,10 @@ impl<T: Agent> Agent for Arc<T> {
     #[cfg(feature = "unstable_session_list")]
     async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         self.as_ref().list_sessions(args).await
+    }
+    #[cfg(feature = "unstable_session_fork")]
+    async fn fork_session(&self, args: ForkSessionRequest) -> Result<ForkSessionResponse> {
+        self.as_ref().fork_session(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
