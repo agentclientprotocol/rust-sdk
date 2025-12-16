@@ -73,7 +73,7 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::NewSessionResponse {
             session_id: acp::SessionId(session_id.to_string().into()),
             modes: None,
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             models: None,
             meta: None,
         })
@@ -86,7 +86,7 @@ impl acp::Agent for ExampleAgent {
         log::info!("Received load session request {arguments:?}");
         Ok(acp::LoadSessionResponse {
             modes: None,
-            #[cfg(feature = "unstable")]
+            #[cfg(feature = "unstable_session_model")]
             models: None,
             meta: None,
         })
@@ -133,13 +133,22 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModeResponse::default())
     }
 
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: acp::SetSessionModelRequest,
     ) -> Result<acp::SetSessionModelResponse, acp::Error> {
         log::info!("Received select model request {args:?}");
         Ok(acp::SetSessionModelResponse::default())
+    }
+
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(
+        &self,
+        args: acp::ListSessionsRequest,
+    ) -> Result<acp::ListSessionsResponse, acp::Error> {
+        log::info!("Received list sessions request {args:?}");
+        Ok(acp::ListSessionsResponse::new(vec![]))
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {

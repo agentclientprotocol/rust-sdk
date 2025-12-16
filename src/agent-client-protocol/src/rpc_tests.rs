@@ -196,13 +196,23 @@ impl Agent for TestAgent {
         Ok(())
     }
 
-    #[cfg(feature = "unstable")]
+    #[cfg(feature = "unstable_session_model")]
     async fn set_session_model(
         &self,
         args: agent_client_protocol_schema::SetSessionModelRequest,
     ) -> Result<agent_client_protocol_schema::SetSessionModelResponse> {
         log::info!("Received select model request {args:?}");
         Ok(agent_client_protocol_schema::SetSessionModelResponse::default())
+    }
+
+    #[cfg(feature = "unstable_session_list")]
+    async fn list_sessions(
+        &self,
+        _args: agent_client_protocol_schema::ListSessionsRequest,
+    ) -> Result<agent_client_protocol_schema::ListSessionsResponse> {
+        Ok(agent_client_protocol_schema::ListSessionsResponse::new(
+            vec![],
+        ))
     }
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
