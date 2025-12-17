@@ -185,6 +185,19 @@ impl Agent for ClientSideConnection {
             .await
     }
 
+    #[cfg(feature = "unstable_session_config_options")]
+    async fn set_session_config_option(
+        &self,
+        args: SetSessionConfigOptionRequest,
+    ) -> Result<SetSessionConfigOptionResponse> {
+        self.conn
+            .request(
+                AGENT_METHOD_NAMES.session_set_config_option,
+                Some(ClientRequest::SetSessionConfigOptionRequest(args)),
+            )
+            .await
+    }
+
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.conn
             .request(
@@ -560,6 +573,12 @@ impl Side for AgentSide {
             m if m == AGENT_METHOD_NAMES.session_resume => serde_json::from_str(params.get())
                 .map(ClientRequest::ResumeSessionRequest)
                 .map_err(Into::into),
+            #[cfg(feature = "unstable_session_config_options")]
+            m if m == AGENT_METHOD_NAMES.session_set_config_option => {
+                serde_json::from_str(params.get())
+                    .map(ClientRequest::SetSessionConfigOptionRequest)
+                    .map_err(Into::into)
+            }
             m if m == AGENT_METHOD_NAMES.session_prompt => serde_json::from_str(params.get())
                 .map(ClientRequest::PromptRequest)
                 .map_err(Into::into),
@@ -643,6 +662,11 @@ impl<T: Agent> MessageHandler<AgentSide> for T {
             ClientRequest::ResumeSessionRequest(args) => {
                 let response = self.resume_session(args).await?;
                 Ok(AgentResponse::ResumeSessionResponse(response))
+            }
+            #[cfg(feature = "unstable_session_config_options")]
+            ClientRequest::SetSessionConfigOptionRequest(args) => {
+                let response = self.set_session_config_option(args).await?;
+                Ok(AgentResponse::SetSessionConfigOptionResponse(response))
             }
             ClientRequest::ExtMethodRequest(args) => {
                 let response = self.ext_method(args).await?;

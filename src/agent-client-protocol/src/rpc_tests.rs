@@ -252,6 +252,30 @@ impl Agent for TestAgent {
         Ok(agent_client_protocol_schema::ResumeSessionResponse::new())
     }
 
+    #[cfg(feature = "unstable_session_config_options")]
+    async fn set_session_config_option(
+        &self,
+        args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
+    ) -> Result<agent_client_protocol_schema::SetSessionConfigOptionResponse> {
+        Ok(
+            agent_client_protocol_schema::SetSessionConfigOptionResponse::new(vec![
+                agent_client_protocol_schema::SessionConfigOption::select(
+                    args.config_id,
+                    "Test Option",
+                    args.value,
+                    vec![
+                        agent_client_protocol_schema::SessionConfigSelectOption::new(
+                            "value1", "Value 1",
+                        ),
+                        agent_client_protocol_schema::SessionConfigSelectOption::new(
+                            "value2", "Value 2",
+                        ),
+                    ],
+                ),
+            ]),
+        )
+    }
+
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         dbg!();
         match dbg!(args.method.as_ref()) {
@@ -869,6 +893,39 @@ async fn test_session_info_update() {
             } else {
                 panic!("Expected SessionInfoUpdate variant");
             }
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable_session_config_options")]
+#[tokio::test]
+async fn test_set_session_config_option() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
+
+            // Set a config option
+            let response = agent_conn
+                .set_session_config_option(
+                    agent_client_protocol_schema::SetSessionConfigOptionRequest::new(
+                        "test-session",
+                        "mode",
+                        "value2",
+                    ),
+                )
+                .await
+                .expect("set_session_config_option failed");
+
+            // Verify we got config options back
+            assert_eq!(response.config_options.len(), 1);
+            assert_eq!(
+                response.config_options[0].id,
+                agent_client_protocol_schema::SessionConfigId::new("mode")
+            );
         })
         .await;
 }

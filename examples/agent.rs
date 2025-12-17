@@ -142,6 +142,25 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModelResponse::default())
     }
 
+    #[cfg(feature = "unstable_session_config_options")]
+    async fn set_session_config_option(
+        &self,
+        args: acp::SetSessionConfigOptionRequest,
+    ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
+        log::info!("Received set session config option request {args:?}");
+        Ok(acp::SetSessionConfigOptionResponse::new(vec![
+            acp::SessionConfigOption::select(
+                args.config_id,
+                "Example Option",
+                args.value,
+                vec![
+                    acp::SessionConfigSelectOption::new("option1", "Option 1"),
+                    acp::SessionConfigSelectOption::new("option2", "Option 2"),
+                ]),
+            ),
+        ]))
+    }
+
     async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
         log::info!(
             "Received extension method call: method={}, params={:?}",
