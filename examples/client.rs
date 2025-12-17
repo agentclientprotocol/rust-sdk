@@ -90,13 +90,7 @@ impl acp::Client for ExampleClient {
                 };
                 println!("| Agent: {text}");
             }
-            acp::SessionUpdate::UserMessageChunk { .. }
-            | acp::SessionUpdate::AgentThoughtChunk { .. }
-            | acp::SessionUpdate::ToolCall(_)
-            | acp::SessionUpdate::ToolCallUpdate(_)
-            | acp::SessionUpdate::Plan(_)
-            | acp::SessionUpdate::CurrentModeUpdate { .. }
-            | acp::SessionUpdate::AvailableCommandsUpdate { .. } => {}
+            _ => {} // Handle future variants gracefully
         }
         Ok(())
     }

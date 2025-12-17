@@ -819,3 +819,56 @@ async fn test_resume_session() {
         })
         .await;
 }
+
+#[cfg(feature = "unstable_session_info_update")]
+#[tokio::test]
+async fn test_session_info_update() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (_agent_conn, client_conn) = create_connection_pair(&client, &agent);
+
+            let session_id = SessionId::new("test-session");
+
+            // Send a session info update notification
+            client_conn
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::SessionInfoUpdate(
+                        agent_client_protocol_schema::SessionInfoUpdate::new()
+                            .title("Test Session Title")
+                            .updated_at("2025-01-15T12:00:00Z"),
+                    ),
+                ))
+                .await
+                .expect("session_notification failed");
+
+            tokio::task::yield_now().await;
+
+            // Verify client received the notification
+            let notifications = client.session_notifications.lock().unwrap();
+            assert_eq!(notifications.len(), 1);
+            assert_eq!(notifications[0].session_id, session_id);
+
+            if let SessionUpdate::SessionInfoUpdate(info_update) = &notifications[0].update {
+                assert_eq!(
+                    info_update.title,
+                    agent_client_protocol_schema::MaybeUndefined::Value(
+                        "Test Session Title".to_string()
+                    )
+                );
+                assert_eq!(
+                    info_update.updated_at,
+                    agent_client_protocol_schema::MaybeUndefined::Value(
+                        "2025-01-15T12:00:00Z".to_string()
+                    )
+                );
+            } else {
+                panic!("Expected SessionInfoUpdate variant");
+            }
+        })
+        .await;
+}
