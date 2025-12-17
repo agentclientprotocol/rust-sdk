@@ -391,7 +391,20 @@ impl<H: JrMessageHandler> JrHandlerChain<H> {
         self.name = Some(name.to_string());
         self
     }
-
+    /// Proxy all existing [`JrMessageHandler`]s through the given function.
+    ///
+    /// Prefer [`Self::on_receive_request`] or [`Self::on_receive_notification`].
+    /// This is a low-level method that is not intended for general use.
+    pub fn with_proxy<H1>(self, proxy: impl FnOnce(H) -> H1) -> JrHandlerChain<H1>
+    where
+        H1: JrMessageHandler,
+    {
+        JrHandlerChain {
+            name: self.name,
+            handler: proxy(self.handler),
+            pending_tasks: self.pending_tasks,
+        }
+    }
     /// Add a new [`JrMessageHandler`] to the chain.
     ///
     /// Prefer [`Self::on_receive_request`] or [`Self::on_receive_notification`].
