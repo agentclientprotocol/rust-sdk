@@ -240,6 +240,18 @@ impl Agent for TestAgent {
         ))
     }
 
+    #[cfg(feature = "unstable_session_resume")]
+    async fn resume_session(
+        &self,
+        args: agent_client_protocol_schema::ResumeSessionRequest,
+    ) -> Result<agent_client_protocol_schema::ResumeSessionResponse> {
+        // Check if session exists
+        if !self.sessions.lock().unwrap().contains_key(&args.session_id) {
+            return Err(Error::invalid_params());
+        }
+        Ok(agent_client_protocol_schema::ResumeSessionResponse::new())
+    }
+
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         dbg!();
         match dbg!(args.method.as_ref()) {
@@ -770,6 +782,40 @@ async fn test_list_sessions() {
                 std::path::PathBuf::from("/test")
             );
             assert!(list_response.next_cursor.is_none());
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable_session_resume")]
+#[tokio::test]
+async fn test_resume_session() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
+
+            // First create a session
+            let new_session_response = agent_conn
+                .new_session(NewSessionRequest::new("/test"))
+                .await
+                .expect("new_session failed");
+
+            let session_id = new_session_response.session_id;
+
+            // Resume the session
+            let resume_response = agent_conn
+                .resume_session(agent_client_protocol_schema::ResumeSessionRequest::new(
+                    session_id.clone(),
+                    "/test",
+                ))
+                .await
+                .expect("resume_session failed");
+
+            // Verify we got a valid response (no modes by default in TestAgent)
+            assert!(resume_response.modes.is_none());
         })
         .await;
 }

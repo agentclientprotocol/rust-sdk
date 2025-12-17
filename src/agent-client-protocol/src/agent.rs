@@ -10,6 +10,8 @@ use agent_client_protocol_schema::{
 use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
 #[cfg(feature = "unstable_session_list")]
 use agent_client_protocol_schema::{ListSessionsRequest, ListSessionsResponse};
+#[cfg(feature = "unstable_session_resume")]
+use agent_client_protocol_schema::{ResumeSessionRequest, ResumeSessionResponse};
 #[cfg(feature = "unstable_session_model")]
 use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 use serde_json::value::RawValue;
@@ -154,6 +156,21 @@ pub trait Agent {
         Err(Error::method_not_found())
     }
 
+    /// **UNSTABLE**
+    ///
+    /// This capability is not part of the spec yet, and may be removed or changed at any point.
+    ///
+    /// Resumes an existing session without replaying message history.
+    ///
+    /// This is similar to `load_session`, except it does not return previous messages.
+    /// Useful for agents that support continuing conversations but don't store full history.
+    ///
+    /// Only available if the Agent supports the `sessionCapabilities.resume` capability.
+    #[cfg(feature = "unstable_session_resume")]
+    async fn resume_session(&self, _args: ResumeSessionRequest) -> Result<ResumeSessionResponse> {
+        Err(Error::method_not_found())
+    }
+
     /// Handles extension method requests from the client.
     ///
     /// Extension methods provide a way to add custom functionality while maintaining
@@ -216,6 +233,10 @@ impl<T: Agent> Agent for Rc<T> {
     async fn fork_session(&self, args: ForkSessionRequest) -> Result<ForkSessionResponse> {
         self.as_ref().fork_session(args).await
     }
+    #[cfg(feature = "unstable_session_resume")]
+    async fn resume_session(&self, args: ResumeSessionRequest) -> Result<ResumeSessionResponse> {
+        self.as_ref().resume_session(args).await
+    }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
     }
@@ -264,6 +285,10 @@ impl<T: Agent> Agent for Arc<T> {
     #[cfg(feature = "unstable_session_fork")]
     async fn fork_session(&self, args: ForkSessionRequest) -> Result<ForkSessionResponse> {
         self.as_ref().fork_session(args).await
+    }
+    #[cfg(feature = "unstable_session_resume")]
+    async fn resume_session(&self, args: ResumeSessionRequest) -> Result<ResumeSessionResponse> {
+        self.as_ref().resume_session(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
