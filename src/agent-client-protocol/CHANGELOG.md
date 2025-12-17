@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.0...v0.9.1) - 2025-12-17
+
+### Added
+
+- *(unstable)* Add initial support for resuming sessions ([#34](https://github.com/agentclientprotocol/rust-sdk/pull/34))
+- *(unstable)* Add initial support for forking sessions ([#33](https://github.com/agentclientprotocol/rust-sdk/pull/33))
+- *(unstable)* Add initial support for listing sessions ([#31](https://github.com/agentclientprotocol/rust-sdk/pull/31))
+
+### Other
+
+- Add test for unstable session info feature ([#35](https://github.com/agentclientprotocol/rust-sdk/pull/35))
+
 ## [0.9.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.8.0...v0.9.0) - 2025-12-08
 
 Update to v0.10.0 of agent-client-protocol-schema
