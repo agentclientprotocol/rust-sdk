@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.3](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.2...v0.9.3) - 2026-01-09
+
+### Other
+
+- update Cargo.toml dependencies
+
 ## [0.9.2](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.1...v0.9.2) - 2025-12-17
 
 ### Added
