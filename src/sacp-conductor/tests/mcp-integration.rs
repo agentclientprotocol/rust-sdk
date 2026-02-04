@@ -183,7 +183,7 @@ async fn test_agent_handles_prompt() -> Result<(), sacp::Error> {
         [
             "SessionNotification { session_id: SessionId(\"test-session-123\"), update: AgentMessageChunk(ContentChunk { content: Text(TextContent { annotations: None, text: \"Hello. I will now use the MCP tool\", meta: None }), meta: None }), meta: None }",
             "SessionNotification { session_id: SessionId(\"test-session-123\"), update: AgentMessageChunk(ContentChunk { content: Text(TextContent { annotations: None, text: \"MCP tool result: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \\\"Echo: Hello from the agent!\\\", meta: None }), annotations: None }], structured_content: None, is_error: Some(false), meta: None }\", meta: None }), meta: None }), meta: None }",
-            "PromptResponse { stop_reason: EndTurn, meta: None }",
+            "PromptResponse { stop_reason: EndTurn, usage: None, meta: None }",
         ]
     "#]]
     .assert_debug_eq(&log_entries);

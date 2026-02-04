@@ -252,7 +252,6 @@ impl Agent for TestAgent {
         Ok(agent_client_protocol_schema::ResumeSessionResponse::new())
     }
 
-    #[cfg(feature = "unstable_session_config_options")]
     async fn set_session_config_option(
         &self,
         args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
@@ -897,7 +896,6 @@ async fn test_session_info_update() {
         .await;
 }
 
-#[cfg(feature = "unstable_session_config_options")]
 #[tokio::test]
 async fn test_set_session_config_option() {
     let local_set = tokio::task::LocalSet::new();

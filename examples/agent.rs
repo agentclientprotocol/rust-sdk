@@ -142,7 +142,6 @@ impl acp::Agent for ExampleAgent {
         Ok(acp::SetSessionModelResponse::default())
     }
 
-    #[cfg(feature = "unstable_session_config_options")]
     async fn set_session_config_option(
         &self,
         args: acp::SetSessionConfigOptionRequest,
