@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.3...v0.9.4) - 2026-02-04
+
+### Added
+
+- Update to 0.10.8 of the schema ([#51](https://github.com/agentclientprotocol/rust-sdk/pull/51))
+
 ## [0.9.3](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.2...v0.9.3) - 2026-01-09
 
 ### Other
