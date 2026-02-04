@@ -4,7 +4,8 @@ use agent_client_protocol_schema::{
     AuthenticateRequest, AuthenticateResponse, CancelNotification, Error, ExtNotification,
     ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    Result, SetSessionModeRequest, SetSessionModeResponse,
+    Result, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
+    SetSessionModeResponse,
 };
 #[cfg(feature = "unstable_session_fork")]
 use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
@@ -12,8 +13,6 @@ use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
 use agent_client_protocol_schema::{ListSessionsRequest, ListSessionsResponse};
 #[cfg(feature = "unstable_session_resume")]
 use agent_client_protocol_schema::{ResumeSessionRequest, ResumeSessionResponse};
-#[cfg(feature = "unstable_session_config_options")]
-use agent_client_protocol_schema::{SetSessionConfigOptionRequest, SetSessionConfigOptionResponse};
 #[cfg(feature = "unstable_session_model")]
 use agent_client_protocol_schema::{SetSessionModelRequest, SetSessionModelResponse};
 use serde_json::value::RawValue;
@@ -134,10 +133,6 @@ pub trait Agent {
         Err(Error::method_not_found())
     }
 
-    /// **UNSTABLE**
-    ///
-    /// This capability is not part of the spec yet, and may be removed or changed at any point.
-    ///
     /// Sets the current value for a session configuration option.
     ///
     /// Configuration options allow agents to expose arbitrary selectors (like model choice,
@@ -145,7 +140,6 @@ pub trait Agent {
     ///
     /// The response returns the full list of configuration options with their current values,
     /// as changing one option may affect others.
-    #[cfg(feature = "unstable_session_config_options")]
     async fn set_session_config_option(
         &self,
         _args: SetSessionConfigOptionRequest,
@@ -246,7 +240,6 @@ impl<T: Agent> Agent for Rc<T> {
     ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
     }
-    #[cfg(feature = "unstable_session_config_options")]
     async fn set_session_config_option(
         &self,
         args: SetSessionConfigOptionRequest,
@@ -306,7 +299,6 @@ impl<T: Agent> Agent for Arc<T> {
     ) -> Result<SetSessionModelResponse> {
         self.as_ref().set_session_model(args).await
     }
-    #[cfg(feature = "unstable_session_config_options")]
     async fn set_session_config_option(
         &self,
         args: SetSessionConfigOptionRequest,
