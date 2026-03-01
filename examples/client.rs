@@ -90,7 +90,12 @@ impl acp::Client for ExampleClient {
                 };
                 println!("| Agent: {text}");
             }
-            _ => {} // Handle future variants gracefully
+            acp::SessionUpdate::AgentMessageClear => {
+                // Clear accumulated streamed content for the current agent message.
+                // Subsequent agent_message_chunk will append from empty.
+                println!("| Agent: (message cleared)");
+            }
+            _ => {} // Handle other variants gracefully
         }
         Ok(())
     }

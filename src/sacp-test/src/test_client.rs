@@ -42,11 +42,17 @@ where
     JrHandlerChain::new()
         .name("test-client")
         .on_receive_notification(async |notif: SessionNotification, _cx| {
-            // Collect text from AgentMessageChunk updates
-            if let SessionUpdate::AgentMessageChunk(chunk) = &notif.update
-                && let ContentBlock::Text(text_content) = &chunk.content
-            {
-                collected_text.push_str(&text_content.text);
+            // Collect text from AgentMessageChunk updates; clear on AgentMessageClear
+            match &notif.update {
+                SessionUpdate::AgentMessageChunk(chunk) => {
+                    if let ContentBlock::Text(text_content) = &chunk.content {
+                        collected_text.push_str(&text_content.text);
+                    }
+                }
+                SessionUpdate::AgentMessageClear => {
+                    collected_text.clear();
+                }
+                _ => {}
             }
             Ok(())
         })

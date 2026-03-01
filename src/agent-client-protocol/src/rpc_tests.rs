@@ -627,6 +627,9 @@ async fn test_full_conversation_flow() {
                             found_final_message = true;
                         }
                     }
+                    SessionUpdate::AgentMessageClear => {
+                        // Client would clear accumulated message; test just verifies we receive it.
+                    }
                     SessionUpdate::ToolCall(_) => {
                         found_tool_call = true;
                     }
@@ -643,6 +646,71 @@ async fn test_full_conversation_flow() {
             assert!(found_tool_call, "Should have tool call");
             assert!(found_tool_update, "Should have tool call completion");
             assert!(found_final_message, "Should have final agent message");
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn test_agent_message_clear_sequence() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+            let (agent_conn, client_conn) = create_connection_pair(&client, &agent);
+
+            let session_id = SessionId::new("clear-test-session");
+            agent_conn
+                .prompt(PromptRequest::new(
+                    session_id.clone(),
+                    vec!["Say hello then replace with goodbye".into()],
+                ))
+                .await
+                .expect("prompt failed");
+
+            // Agent sends draft, then clear, then final (RFD agent_message_clear usage pattern)
+            client_conn
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new("Drafting...".into())),
+                ))
+                .await
+                .expect("session_notification failed");
+            client_conn
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::AgentMessageClear,
+                ))
+                .await
+                .expect("session_notification failed");
+            client_conn
+                .session_notification(SessionNotification::new(
+                    session_id.clone(),
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new("Here is the final result.".into())),
+                ))
+                .await
+                .expect("session_notification failed");
+
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+            }
+
+            let updates = client.session_notifications.lock().unwrap();
+            let mut clear_seen = false;
+            let mut final_chunk_seen = false;
+            for n in updates.iter() {
+                match &n.update {
+                    SessionUpdate::AgentMessageClear => clear_seen = true,
+                    SessionUpdate::AgentMessageChunk(ContentChunk { content: ContentBlock::Text(t), .. }) => {
+                        if t.text.contains("final result") {
+                            final_chunk_seen = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(clear_seen, "Client should receive agent_message_clear");
+            assert!(final_chunk_seen, "Client should receive final chunk after clear");
         })
         .await;
 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Support for `agent_message_clear` session update (RFD [agent_message_clear](https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/rfds/agent_message_clear.md)): clients can clear accumulated streamed content for the current agent message; example client and tests updated.
+
 ## [0.9.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.3...v0.9.4) - 2026-02-04
 
 ### Added
