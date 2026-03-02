@@ -33,14 +33,14 @@ pub(super) async fn reply_actor(
             ReplyMessage::Subscribe(id, message_tx) => {
                 // total hack: id's don't implement Eq
                 tracing::trace!(?id, "reply_actor: subscribing to response");
-                let id = serde_json::to_value(&id).unwrap();
+                let id = serde_json::to_value(&id).map_err(crate::Error::into_internal_error)?;
                 map.insert(id, message_tx);
             }
             ReplyMessage::Dispatch(id, value) => {
                 let id_debug = &id;
                 let is_ok = value.is_ok();
                 tracing::trace!(?id_debug, is_ok, "reply_actor: dispatching response");
-                let id = serde_json::to_value(&id).unwrap();
+                let id = serde_json::to_value(&id).map_err(crate::Error::into_internal_error)?;
                 if let Some(message_tx) = map.remove(&id) {
                     // If the receiver is no longer interested in the reply,
                     // that's ok with us.
@@ -212,7 +212,7 @@ pub(super) async fn transport_outgoing_actor(
                                     jsonrpc_error,
                                     response.id,
                                 ))
-                                .unwrap(),
+                                .map_err(crate::Error::into_internal_error)?,
                             )
                             .await
                             .map_err(crate::Error::into_internal_error)?;
