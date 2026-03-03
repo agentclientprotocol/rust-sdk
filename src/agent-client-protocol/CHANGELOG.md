@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.9.5](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.4...v0.9.5) - 2026-03-03
+
+### Fixed
+
+- handle escaped forward slashes in JSON-RPC method names ([#65](https://github.com/agentclientprotocol/rust-sdk/pull/65))
+
 ## [0.9.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.3...v0.9.4) - 2026-02-04
 
 ### Added
