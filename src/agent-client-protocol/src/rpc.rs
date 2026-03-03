@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    borrow::Cow,
     collections::HashMap,
     rc::Rc,
     sync::{
@@ -187,9 +188,9 @@ where
                             if let Some(id) = message.id {
                                 if let Some(method) = message.method {
                                     // Request
-                                    match Local::decode_request(method, message.params) {
+                                    match Local::decode_request(&method, message.params) {
                                         Ok(request) => {
-                                            broadcast.incoming_request(id.clone(), method, &request);
+                                            broadcast.incoming_request(id.clone(), &*method, &request);
                                             incoming_tx.unbounded_send(IncomingMessage::Request { id, request }).ok();
                                         }
                                         Err(error) => {
@@ -228,9 +229,9 @@ where
                                 }
                             } else if let Some(method) = message.method {
                                 // Notification
-                                match Local::decode_notification(method, message.params) {
+                                match Local::decode_notification(&method, message.params) {
                                     Ok(notification) => {
-                                        broadcast.incoming_notification(method, &notification);
+                                        broadcast.incoming_notification(&*method, &notification);
                                         incoming_tx.unbounded_send(IncomingMessage::Notification { notification }).ok();
                                     }
                                     Err(err) => {
@@ -304,7 +305,8 @@ where
 #[derive(Debug, Deserialize)]
 pub struct RawIncomingMessage<'a> {
     id: Option<RequestId>,
-    method: Option<&'a str>,
+    #[serde(borrow)]
+    method: Option<Cow<'a, str>>,
     params: Option<&'a RawValue>,
     result: Option<&'a RawValue>,
     error: Option<Error>,
