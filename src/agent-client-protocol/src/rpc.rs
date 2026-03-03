@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicI64, Ordering},
     },
 };
@@ -76,7 +76,7 @@ where
                 .await;
                 pending_responses
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .unwrap_or_else(PoisonError::into_inner)
                     .clear();
                 result
             }
@@ -121,7 +121,7 @@ where
         let id = RequestId::Number(id);
         self.pending_responses
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(
                 id.clone(),
                 PendingResponse {
@@ -147,7 +147,7 @@ where
         {
             self.pending_responses
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .remove(&id);
         }
         async move {
