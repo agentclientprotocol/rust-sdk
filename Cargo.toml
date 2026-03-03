@@ -1,16 +1,6 @@
 [workspace]
 members = [
     "src/agent-client-protocol",
-    "src/sacp",
-    "src/sacp-tokio",
-    "src/sacp-proxy",
-    "src/sacp-rmcp",
-    "src/sacp-conductor",
-    "src/sacp-test",
-    "src/sacp-tee",
-    "src/elizacp",
-    "src/yopo",
-    "examples/migration",
 ]
 resolver = "3"
 
