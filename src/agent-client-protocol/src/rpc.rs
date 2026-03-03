@@ -74,7 +74,10 @@ where
                     broadcast_tx,
                 )
                 .await;
-                pending_responses.lock().unwrap().clear();
+                pending_responses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clear();
                 result
             }
         };
@@ -116,17 +119,22 @@ where
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
-        self.pending_responses.lock().unwrap().insert(
-            id.clone(),
-            PendingResponse {
-                deserialize: |value| {
-                    serde_json::from_str::<Out>(value.get())
-                        .map(|out| Box::new(out) as _)
-                        .map_err(|_| Error::internal_error().data("failed to deserialize response"))
+        self.pending_responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                id.clone(),
+                PendingResponse {
+                    deserialize: |value| {
+                        serde_json::from_str::<Out>(value.get())
+                            .map(|out| Box::new(out) as _)
+                            .map_err(|_| {
+                                Error::internal_error().data("failed to deserialize response")
+                            })
+                    },
+                    respond: tx,
                 },
-                respond: tx,
-            },
-        );
+            );
 
         if self
             .outgoing_tx
@@ -137,7 +145,10 @@ where
             }))
             .is_err()
         {
-            self.pending_responses.lock().unwrap().remove(&id);
+            self.pending_responses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&id);
         }
         async move {
             let result = rx
@@ -206,7 +217,7 @@ where
                                             broadcast.outgoing(&error_response);
                                         }
                                     }
-                                } else if let Some(pending_response) = pending_responses.lock().unwrap().remove(&id) {
+                                } else if let Some(pending_response) = pending_responses.lock().map_err(Error::into_internal_error)?.remove(&id) {
                                     // Response
                                     if let Some(result_value) = message.result {
                                         broadcast.incoming_response(id, Ok(Some(result_value)));
@@ -220,7 +231,7 @@ where
                                     } else {
                                         broadcast.incoming_response(id, Ok(None));
 
-                                        let result = (pending_response.deserialize)(&RawValue::from_string("null".into()).unwrap());
+                                        let result = (pending_response.deserialize)(&RawValue::from_string("null".into()).expect("\"null\" is valid JSON"));
                                         pending_response.respond.send(result).ok();
                                     }
                                 } else {
