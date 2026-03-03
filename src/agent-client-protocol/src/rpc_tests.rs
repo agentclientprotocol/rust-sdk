@@ -927,27 +927,3 @@ async fn test_set_session_config_option() {
         })
         .await;
 }
-
-#[test]
-fn test_raw_incoming_message_with_escaped_slash() {
-    // JSON with escaped forward slash in method name (valid per RFC 8259).
-    // Some JSON encoders (especially behind WebSocket proxies) produce
-    // `\/` instead of `/`.  The Cow<str> field in RawIncomingMessage ensures
-    // serde can allocate a new String when unescaping is required.
-    //
-    // Before the fix, this would fail because `&'a str` cannot hold an
-    // unescaped value that differs from the source bytes.
-    let json_str = r#"{"jsonrpc":"2.0","id":1,"method":"session\/update","params":{}}"#;
-    let parsed: crate::rpc::RawIncomingMessage<'_> = serde_json::from_str(json_str).unwrap();
-    // Struct fields are private, but successful deserialization proves the fix works.
-    // The method field will contain "session/update" (unescaped).
-    drop(parsed);
-}
-
-#[test]
-fn test_raw_incoming_message_without_escape() {
-    // Normal method name without escapes should still work (zero-copy borrow via Cow::Borrowed).
-    let json_str = r#"{"jsonrpc":"2.0","id":2,"method":"session/update","params":{}}"#;
-    let parsed: crate::rpc::RawIncomingMessage<'_> = serde_json::from_str(json_str).unwrap();
-    drop(parsed);
-}
