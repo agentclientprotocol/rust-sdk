@@ -1,5 +1,6 @@
 use std::{
     any::Any,
+    borrow::Cow,
     collections::HashMap,
     rc::Rc,
     sync::{
@@ -187,9 +188,9 @@ where
                             if let Some(id) = message.id {
                                 if let Some(method) = message.method {
                                     // Request
-                                    match Local::decode_request(method, message.params) {
+                                    match Local::decode_request(&method, message.params) {
                                         Ok(request) => {
-                                            broadcast.incoming_request(id.clone(), method, &request);
+                                            broadcast.incoming_request(id.clone(), &*method, &request);
                                             incoming_tx.unbounded_send(IncomingMessage::Request { id, request }).ok();
                                         }
                                         Err(error) => {
@@ -228,9 +229,9 @@ where
                                 }
                             } else if let Some(method) = message.method {
                                 // Notification
-                                match Local::decode_notification(method, message.params) {
+                                match Local::decode_notification(&method, message.params) {
                                     Ok(notification) => {
-                                        broadcast.incoming_notification(method, &notification);
+                                        broadcast.incoming_notification(&*method, &notification);
                                         incoming_tx.unbounded_send(IncomingMessage::Notification { notification }).ok();
                                     }
                                     Err(err) => {
@@ -304,8 +305,11 @@ where
 #[derive(Debug, Deserialize)]
 pub struct RawIncomingMessage<'a> {
     id: Option<RequestId>,
-    method: Option<&'a str>,
+    #[serde(borrow)]
+    method: Option<Cow<'a, str>>,
+    #[serde(borrow)]
     params: Option<&'a RawValue>,
+    #[serde(borrow)]
     result: Option<&'a RawValue>,
     error: Option<Error>,
 }
@@ -331,4 +335,33 @@ pub trait MessageHandler<Local: Side> {
         &self,
         notification: Local::InNotification,
     ) -> impl Future<Output = Result<()>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_raw_incoming_message_with_escaped_slash() {
+        // JSON with escaped forward slash in method name (valid per RFC 8259).
+        // Some JSON encoders (especially behind WebSocket proxies) produce
+        // `\/` instead of `/`.  The Cow<str> field in RawIncomingMessage ensures
+        // serde can allocate a new String when unescaping is required.
+        //
+        // Before the fix, this would fail because `&'a str` cannot hold an
+        // unescaped value that differs from the source bytes.
+        let json_str = r#"{"jsonrpc":"2.0","id":1,"method":"session\/update","params":{}}"#;
+        let parsed: RawIncomingMessage<'_> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(parsed.method.unwrap(), "session/update");
+        assert_eq!(parsed.params.unwrap().to_string(), "{}");
+    }
+
+    #[test]
+    fn test_raw_incoming_message_without_escape() {
+        // Normal method name without escapes should still work (zero-copy borrow via Cow::Borrowed).
+        let json_str = r#"{"jsonrpc":"2.0","id":2,"method":"session/update","params":{}}"#;
+        let parsed: RawIncomingMessage<'_> = serde_json::from_str(json_str).unwrap();
+        assert_eq!(parsed.method.unwrap(), "session/update");
+        assert_eq!(parsed.params.unwrap().to_string(), "{}");
+    }
 }
