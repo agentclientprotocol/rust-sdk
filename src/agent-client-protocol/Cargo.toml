@@ -14,6 +14,7 @@ categories = ["development-tools", "api-bindings"]
 
 [features]
 unstable = [
+    "unstable_auth_methods"
     "unstable_cancel_request",
     "unstable_session_fork",
     "unstable_session_info_update",
@@ -21,7 +22,10 @@ unstable = [
     "unstable_session_model",
     "unstable_session_resume",
     "unstable_session_usage",
+    "unstable_session_stop",
+    "unstable_message_id",
 ]
+unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_session_info_update = ["agent-client-protocol-schema/unstable_session_info_update"]
@@ -29,6 +33,8 @@ unstable_session_list = ["agent-client-protocol-schema/unstable_session_list"]
 unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
 unstable_session_resume = ["agent-client-protocol-schema/unstable_session_resume"]
 unstable_session_usage = ["agent-client-protocol-schema/unstable_session_usage"]
+unstable_session_stop = ["agent-client-protocol-schema/unstable_session_stop"]
+unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
 
 [dependencies]
 agent-client-protocol-schema.workspace = true
