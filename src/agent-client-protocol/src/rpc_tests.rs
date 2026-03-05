@@ -91,10 +91,7 @@ impl Client for TestClient {
         unimplemented!()
     }
 
-    async fn kill_terminal_command(
-        &self,
-        _args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse> {
+    async fn kill_terminal(&self, _args: KillTerminalRequest) -> Result<KillTerminalResponse> {
         unimplemented!()
     }
 

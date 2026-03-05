@@ -2,11 +2,11 @@ use std::{rc::Rc, sync::Arc};
 
 use agent_client_protocol_schema::{
     CreateTerminalRequest, CreateTerminalResponse, Error, ExtNotification, ExtRequest, ExtResponse,
-    KillTerminalCommandRequest, KillTerminalCommandResponse, ReadTextFileRequest,
-    ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-    RequestPermissionRequest, RequestPermissionResponse, Result, SessionNotification,
-    TerminalOutputRequest, TerminalOutputResponse, WaitForTerminalExitRequest,
-    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+    KillTerminalRequest, KillTerminalResponse, ReadTextFileRequest, ReadTextFileResponse,
+    ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionRequest,
+    RequestPermissionResponse, Result, SessionNotification, TerminalOutputRequest,
+    TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
+    WriteTextFileRequest, WriteTextFileResponse,
 };
 use serde_json::value::RawValue;
 
@@ -140,10 +140,7 @@ pub trait Client {
     /// Note: `terminal/release` when `TerminalId` is no longer needed.
     ///
     /// See protocol docs: [Terminals](https://agentclientprotocol.com/protocol/terminals)
-    async fn kill_terminal_command(
-        &self,
-        _args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse> {
+    async fn kill_terminal(&self, _args: KillTerminalRequest) -> Result<KillTerminalResponse> {
         Err(Error::method_not_found())
     }
 
@@ -205,11 +202,8 @@ impl<T: Client> Client for Rc<T> {
     ) -> Result<WaitForTerminalExitResponse> {
         self.as_ref().wait_for_terminal_exit(args).await
     }
-    async fn kill_terminal_command(
-        &self,
-        args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse> {
-        self.as_ref().kill_terminal_command(args).await
+    async fn kill_terminal(&self, args: KillTerminalRequest) -> Result<KillTerminalResponse> {
+        self.as_ref().kill_terminal(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await
@@ -254,11 +248,8 @@ impl<T: Client> Client for Arc<T> {
     ) -> Result<WaitForTerminalExitResponse> {
         self.as_ref().wait_for_terminal_exit(args).await
     }
-    async fn kill_terminal_command(
-        &self,
-        args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse> {
-        self.as_ref().kill_terminal_command(args).await
+    async fn kill_terminal(&self, args: KillTerminalRequest) -> Result<KillTerminalResponse> {
+        self.as_ref().kill_terminal(args).await
     }
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
         self.as_ref().ext_method(args).await

@@ -250,7 +250,7 @@ impl Side for ClientSide {
                 .map(AgentRequest::TerminalOutputRequest)
                 .map_err(Into::into),
             m if m == CLIENT_METHOD_NAMES.terminal_kill => serde_json::from_str(params.get())
-                .map(AgentRequest::KillTerminalCommandRequest)
+                .map(AgentRequest::KillTerminalRequest)
                 .map_err(Into::into),
             m if m == CLIENT_METHOD_NAMES.terminal_release => serde_json::from_str(params.get())
                 .map(AgentRequest::ReleaseTerminalRequest)
@@ -325,8 +325,8 @@ impl<T: Client> MessageHandler<ClientSide> for T {
                 let response = self.wait_for_terminal_exit(args).await?;
                 Ok(ClientResponse::WaitForTerminalExitResponse(response))
             }
-            AgentRequest::KillTerminalCommandRequest(args) => {
-                let response = self.kill_terminal_command(args).await?;
+            AgentRequest::KillTerminalRequest(args) => {
+                let response = self.kill_terminal(args).await?;
                 Ok(ClientResponse::KillTerminalResponse(response))
             }
             AgentRequest::ExtMethodRequest(args) => {
@@ -486,14 +486,11 @@ impl Client for AgentSideConnection {
             .await
     }
 
-    async fn kill_terminal_command(
-        &self,
-        args: KillTerminalCommandRequest,
-    ) -> Result<KillTerminalCommandResponse> {
+    async fn kill_terminal(&self, args: KillTerminalRequest) -> Result<KillTerminalResponse> {
         self.conn
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.terminal_kill,
-                Some(AgentRequest::KillTerminalCommandRequest(args)),
+                Some(AgentRequest::KillTerminalRequest(args)),
             )
             .await
             .map(Option::unwrap_or_default)
