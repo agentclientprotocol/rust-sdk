@@ -14,7 +14,7 @@ categories = ["development-tools", "api-bindings"]
 
 [features]
 unstable = [
-    "unstable_auth_methods"
+    "unstable_auth_methods",
     "unstable_cancel_request",
     "unstable_session_fork",
     "unstable_session_info_update",
