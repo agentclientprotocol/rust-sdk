@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.5...v0.10.0) - 2026-03-05
+
+### Added
+
+- Add more unstable feature flags from schema ([#71](https://github.com/agentclientprotocol/rust-sdk/pull/71))
+- [**breaking**] Update to schema crate v0.11.0 ([#69](https://github.com/agentclientprotocol/rust-sdk/pull/69))
+
 ## [0.9.5](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.4...v0.9.5) - 2026-03-03
 
 ### Fixed
