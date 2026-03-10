@@ -2,15 +2,13 @@ use std::{rc::Rc, sync::Arc};
 
 use agent_client_protocol_schema::{
     AuthenticateRequest, AuthenticateResponse, CancelNotification, Error, ExtNotification,
-    ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
-    LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    Result, SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse,
+    ExtRequest, ExtResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
+    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    NewSessionResponse, PromptRequest, PromptResponse, Result, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
 #[cfg(feature = "unstable_session_fork")]
 use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
-#[cfg(feature = "unstable_session_list")]
-use agent_client_protocol_schema::{ListSessionsRequest, ListSessionsResponse};
 #[cfg(feature = "unstable_session_resume")]
 use agent_client_protocol_schema::{ResumeSessionRequest, ResumeSessionResponse};
 #[cfg(feature = "unstable_session_model")]
@@ -154,7 +152,6 @@ pub trait Agent {
     /// Lists existing sessions known to the agent.
     ///
     /// Only available if the Agent supports the `sessionCapabilities.list` capability.
-    #[cfg(feature = "unstable_session_list")]
     async fn list_sessions(&self, _args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         Err(Error::method_not_found())
     }
@@ -246,7 +243,7 @@ impl<T: Agent> Agent for Rc<T> {
     ) -> Result<SetSessionConfigOptionResponse> {
         self.as_ref().set_session_config_option(args).await
     }
-    #[cfg(feature = "unstable_session_list")]
+
     async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         self.as_ref().list_sessions(args).await
     }
@@ -305,7 +302,6 @@ impl<T: Agent> Agent for Arc<T> {
     ) -> Result<SetSessionConfigOptionResponse> {
         self.as_ref().set_session_config_option(args).await
     }
-    #[cfg(feature = "unstable_session_list")]
     async fn list_sessions(&self, args: ListSessionsRequest) -> Result<ListSessionsResponse> {
         self.as_ref().list_sessions(args).await
     }
