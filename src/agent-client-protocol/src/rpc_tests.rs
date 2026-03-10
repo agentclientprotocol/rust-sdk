@@ -205,7 +205,6 @@ impl Agent for TestAgent {
         Ok(agent_client_protocol_schema::SetSessionModelResponse::default())
     }
 
-    #[cfg(feature = "unstable_session_list")]
     async fn list_sessions(
         &self,
         _args: agent_client_protocol_schema::ListSessionsRequest,
@@ -253,23 +252,19 @@ impl Agent for TestAgent {
         &self,
         args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
     ) -> Result<agent_client_protocol_schema::SetSessionConfigOptionResponse> {
-        Ok(
-            agent_client_protocol_schema::SetSessionConfigOptionResponse::new(vec![
-                agent_client_protocol_schema::SessionConfigOption::select(
-                    args.config_id,
-                    "Test Option",
-                    args.value,
-                    vec![
-                        agent_client_protocol_schema::SessionConfigSelectOption::new(
-                            "value1", "Value 1",
-                        ),
-                        agent_client_protocol_schema::SessionConfigSelectOption::new(
-                            "value2", "Value 2",
-                        ),
-                    ],
-                ),
-            ]),
-        )
+        let SessionConfigOptionValue::ValueId { value } = args.value else {
+            return Err(Error::invalid_params());
+        };
+        let option = agent_client_protocol_schema::SessionConfigOption::select(
+            args.config_id,
+            "Test Option",
+            value,
+            vec![
+                agent_client_protocol_schema::SessionConfigSelectOption::new("value1", "Value 1"),
+                agent_client_protocol_schema::SessionConfigSelectOption::new("value2", "Value 2"),
+            ],
+        );
+        Ok(agent_client_protocol_schema::SetSessionConfigOptionResponse::new(vec![option]))
     }
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
@@ -765,7 +760,6 @@ async fn test_fork_session() {
         .await;
 }
 
-#[cfg(feature = "unstable_session_list")]
 #[tokio::test]
 async fn test_list_sessions() {
     let local_set = tokio::task::LocalSet::new();
@@ -840,7 +834,6 @@ async fn test_resume_session() {
         .await;
 }
 
-#[cfg(feature = "unstable_session_info_update")]
 #[tokio::test]
 async fn test_session_info_update() {
     let local_set = tokio::task::LocalSet::new();
