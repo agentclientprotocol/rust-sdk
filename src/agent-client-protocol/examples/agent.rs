@@ -14,7 +14,7 @@
 
 use std::cell::Cell;
 
-use agent_client_protocol::{self as acp, Client as _};
+use agent_client_protocol::{self as acp, Client as _, SessionConfigOptionValue};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -42,17 +42,8 @@ impl acp::Agent for ExampleAgent {
         arguments: acp::InitializeRequest,
     ) -> Result<acp::InitializeResponse, acp::Error> {
         log::info!("Received initialize request {arguments:?}");
-        Ok(acp::InitializeResponse {
-            protocol_version: acp::V1,
-            agent_capabilities: acp::AgentCapabilities::default(),
-            auth_methods: Vec::new(),
-            agent_info: Some(acp::Implementation {
-                name: "example-agent".to_string(),
-                title: Some("Example Agent".to_string()),
-                version: "0.1.0".to_string(),
-            }),
-            meta: None,
-        })
+        Ok(acp::InitializeResponse::new(acp::ProtocolVersion::V1)
+            .agent_info(acp::Implementation::new("example-agent", "0.1.0").title("Example Agent")))
     }
 
     async fn authenticate(
@@ -70,13 +61,7 @@ impl acp::Agent for ExampleAgent {
         log::info!("Received new session request {arguments:?}");
         let session_id = self.next_session_id.get();
         self.next_session_id.set(session_id + 1);
-        Ok(acp::NewSessionResponse {
-            session_id: acp::SessionId(session_id.to_string().into()),
-            modes: None,
-            #[cfg(feature = "unstable_session_model")]
-            models: None,
-            meta: None,
-        })
+        Ok(acp::NewSessionResponse::new(session_id.to_string()))
     }
 
     async fn load_session(
@@ -84,12 +69,7 @@ impl acp::Agent for ExampleAgent {
         arguments: acp::LoadSessionRequest,
     ) -> Result<acp::LoadSessionResponse, acp::Error> {
         log::info!("Received load session request {arguments:?}");
-        Ok(acp::LoadSessionResponse {
-            modes: None,
-            #[cfg(feature = "unstable_session_model")]
-            models: None,
-            meta: None,
-        })
+        Ok(acp::LoadSessionResponse::new())
     }
 
     async fn prompt(
@@ -101,23 +81,16 @@ impl acp::Agent for ExampleAgent {
             let (tx, rx) = oneshot::channel();
             self.session_update_tx
                 .send((
-                    acp::SessionNotification {
-                        session_id: arguments.session_id.clone(),
-                        update: acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk {
-                            content,
-                            meta: None,
-                        }),
-                        meta: None,
-                    },
+                    acp::SessionNotification::new(
+                        arguments.session_id.clone(),
+                        acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(content)),
+                    ),
                     tx,
                 ))
                 .map_err(|_| acp::Error::internal_error())?;
             rx.await.map_err(|_| acp::Error::internal_error())?;
         }
-        Ok(acp::PromptResponse {
-            stop_reason: acp::StopReason::EndTurn,
-            meta: None,
-        })
+        Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
     }
 
     async fn cancel(&self, args: acp::CancelNotification) -> Result<(), acp::Error> {
@@ -147,17 +120,19 @@ impl acp::Agent for ExampleAgent {
         args: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
         log::info!("Received set session config option request {args:?}");
-        Ok(acp::SetSessionConfigOptionResponse::new(vec![
-            acp::SessionConfigOption::select(
-                args.config_id,
-                "Example Option",
-                args.value,
-                vec![
-                    acp::SessionConfigSelectOption::new("option1", "Option 1"),
-                    acp::SessionConfigSelectOption::new("option2", "Option 2"),
-                ]),
-            ),
-        ]))
+        let SessionConfigOptionValue::ValueId { value } = args.value else {
+            return Err(acp::Error::invalid_params());
+        };
+        let option = acp::SessionConfigOption::select(
+            args.config_id,
+            "Example Option",
+            value,
+            vec![
+                acp::SessionConfigSelectOption::new("option1", "Option 1"),
+                acp::SessionConfigSelectOption::new("option2", "Option 2"),
+            ],
+        );
+        Ok(acp::SetSessionConfigOptionResponse::new(vec![option]))
     }
 
     async fn ext_method(&self, args: acp::ExtRequest) -> Result<acp::ExtResponse, acp::Error> {
@@ -166,7 +141,9 @@ impl acp::Agent for ExampleAgent {
             args.method,
             args.params
         );
-        Ok(serde_json::value::to_raw_value(&json!({"example": "response"}))?.into())
+        Ok(acp::ExtResponse::new(
+            serde_json::value::to_raw_value(&json!({"example": "response"}))?.into(),
+        ))
     }
 
     async fn ext_notification(&self, args: acp::ExtNotification) -> Result<(), acp::Error> {

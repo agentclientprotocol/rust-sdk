@@ -68,10 +68,10 @@ impl acp::Client for ExampleClient {
         Err(acp::Error::method_not_found())
     }
 
-    async fn kill_terminal_command(
+    async fn kill_terminal(
         &self,
-        _args: acp::KillTerminalCommandRequest,
-    ) -> acp::Result<acp::KillTerminalCommandResponse> {
+        _args: acp::KillTerminalRequest,
+    ) -> acp::Result<acp::KillTerminalResponse> {
         Err(acp::Error::method_not_found())
     }
 
@@ -79,18 +79,18 @@ impl acp::Client for ExampleClient {
         &self,
         args: acp::SessionNotification,
     ) -> acp::Result<(), acp::Error> {
-        match args.update {
-            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk { content, .. }) => {
-                let text = match content {
-                    acp::ContentBlock::Text(text_content) => text_content.text,
-                    acp::ContentBlock::Image(_) => "<image>".into(),
-                    acp::ContentBlock::Audio(_) => "<audio>".into(),
-                    acp::ContentBlock::ResourceLink(resource_link) => resource_link.uri,
-                    acp::ContentBlock::Resource(_) => "<resource>".into(),
-                };
-                println!("| Agent: {text}");
-            }
-            _ => {} // Handle future variants gracefully
+        if let acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk { content, .. }) =
+            args.update
+        {
+            let text = match content {
+                acp::ContentBlock::Text(text_content) => text_content.text,
+                acp::ContentBlock::Image(_) => "<image>".into(),
+                acp::ContentBlock::Audio(_) => "<audio>".into(),
+                acp::ContentBlock::ResourceLink(resource_link) => resource_link.uri,
+                acp::ContentBlock::Resource(_) => "<resource>".into(),
+                _ => "Unknown chunk".into(),
+            };
+            println!("| Agent: {text}");
         }
         Ok(())
     }
@@ -142,34 +142,24 @@ async fn main() -> anyhow::Result<()> {
             tokio::task::spawn_local(handle_io);
 
             // Connect to the agent and set up a session.
-            conn.initialize(acp::InitializeRequest {
-                protocol_version: acp::V1,
-                client_capabilities: acp::ClientCapabilities::default(),
-                client_info: Some(acp::Implementation {
-                    name: "example-client".to_string(),
-                    title: Some("Example Client".to_string()),
-                    version: "0.1.0".to_string(),
-                }),
-                meta: None,
-            })
+            conn.initialize(
+                acp::InitializeRequest::new(acp::ProtocolVersion::V1).client_info(
+                    acp::Implementation::new("example-client", "0.1.0").title("Example Client"),
+                ),
+            )
             .await?;
             let response = conn
-                .new_session(acp::NewSessionRequest {
-                    mcp_servers: Vec::new(),
-                    cwd: std::env::current_dir()?,
-                    meta: None,
-                })
+                .new_session(acp::NewSessionRequest::new(std::env::current_dir()?))
                 .await?;
 
             // Send prompts to the agent until stdin is closed.
             let mut rl = rustyline::DefaultEditor::new()?;
             while let Ok(line) = rl.readline("> ") {
                 let result = conn
-                    .prompt(acp::PromptRequest {
-                        session_id: response.session_id.clone(),
-                        prompt: vec![line.into()],
-                        meta: None,
-                    })
+                    .prompt(acp::PromptRequest::new(
+                        response.session_id.clone(),
+                        vec![line.into()],
+                    ))
                     .await;
                 if let Err(e) = result {
                     log::error!("{e}");
