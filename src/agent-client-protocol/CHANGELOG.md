@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.10.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.0...v0.10.1) - 2026-03-10
+
+### Added
+
+- Stabilize session_list and session_info_update ([#74](https://github.com/agentclientprotocol/rust-sdk/pull/74))
+
+### Fixed
+
+- Make examples compile again ([#76](https://github.com/agentclientprotocol/rust-sdk/pull/76))
+
 ## [0.10.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.5...v0.10.0) - 2026-03-05
 
 ### Added
