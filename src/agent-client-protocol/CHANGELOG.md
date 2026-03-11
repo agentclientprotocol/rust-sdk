@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.10.2](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.1...v0.10.2) - 2026-03-11
+
+### Added
+
+- *(unstable)* Add support for session/close methods ([#77](https://github.com/agentclientprotocol/rust-sdk/pull/77))
+
 ## [0.10.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.0...v0.10.1) - 2026-03-10
 
 ### Added
