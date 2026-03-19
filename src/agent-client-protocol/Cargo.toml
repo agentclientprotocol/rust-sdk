@@ -16,6 +16,8 @@ categories = ["development-tools", "api-bindings"]
 unstable = [
     "unstable_auth_methods",
     "unstable_cancel_request",
+    "unstable_elicitation",
+    "unstable_logout",
     "unstable_session_fork",
     "unstable_session_close",
     "unstable_session_model",
@@ -26,6 +28,8 @@ unstable = [
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
+unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
+unstable_logout = ["agent-client-protocol-schema/unstable_logout"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
 unstable_session_resume = ["agent-client-protocol-schema/unstable_session_resume"]
