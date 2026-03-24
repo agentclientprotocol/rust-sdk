@@ -157,7 +157,6 @@ impl TestAgent {
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
         Ok(InitializeResponse::new(arguments.protocol_version)
-            #[cfg(feature = "unstable_logout")]
             .agent_capabilities(
                 AgentCapabilities::new().auth(
                     agent_client_protocol_schema::AgentAuthCapabilities::new()
