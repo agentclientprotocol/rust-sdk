@@ -133,6 +133,8 @@ struct TestAgent {
     sessions: Arc<Mutex<std::collections::HashMap<SessionId, std::path::PathBuf>>>,
     prompts_received: Arc<Mutex<Vec<PromptReceived>>>,
     cancellations_received: Arc<Mutex<Vec<SessionId>>>,
+    #[cfg(feature = "unstable_logout")]
+    logout_count: Arc<Mutex<u32>>,
     extension_notifications: Arc<Mutex<Vec<(String, ExtNotification)>>>,
 }
 
@@ -144,6 +146,8 @@ impl TestAgent {
             sessions: Arc::new(Mutex::new(std::collections::HashMap::new())),
             prompts_received: Arc::new(Mutex::new(Vec::new())),
             cancellations_received: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(feature = "unstable_logout")]
+            logout_count: Arc::new(Mutex::new(0)),
             extension_notifications: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -153,11 +157,27 @@ impl TestAgent {
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
         Ok(InitializeResponse::new(arguments.protocol_version)
+            #[cfg(feature = "unstable_logout")]
+            .agent_capabilities(
+                AgentCapabilities::new().auth(
+                    agent_client_protocol_schema::AgentAuthCapabilities::new()
+                        .logout(agent_client_protocol_schema::LogoutCapabilities::new()),
+                ),
+            )
             .agent_info(Implementation::new("test-agent", "0.0.0").title("Test Agent")))
     }
 
     async fn authenticate(&self, _arguments: AuthenticateRequest) -> Result<AuthenticateResponse> {
         Ok(AuthenticateResponse::default())
+    }
+
+    #[cfg(feature = "unstable_logout")]
+    async fn logout(
+        &self,
+        _arguments: agent_client_protocol_schema::LogoutRequest,
+    ) -> Result<agent_client_protocol_schema::LogoutResponse> {
+        *self.logout_count.lock().unwrap() += 1;
+        Ok(agent_client_protocol_schema::LogoutResponse::default())
     }
 
     async fn new_session(&self, arguments: NewSessionRequest) -> Result<NewSessionResponse> {
@@ -882,6 +902,44 @@ async fn test_session_info_update() {
             } else {
                 panic!("Expected SessionInfoUpdate variant");
             }
+        })
+        .await;
+}
+
+#[cfg(feature = "unstable_logout")]
+#[tokio::test]
+async fn test_logout() {
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let client = TestClient::new();
+            let agent = TestAgent::new();
+
+            let (agent_conn, _client_conn) = create_connection_pair(&client, &agent);
+
+            let initialize_response =
+                agent_conn
+                    .initialize(InitializeRequest::new(ProtocolVersion::LATEST).client_info(
+                        Implementation::new("test-client", "0.0.0").title("Test Client"),
+                    ))
+                    .await
+                    .expect("initialize failed");
+
+            assert!(
+                initialize_response.agent_capabilities.auth.logout.is_some(),
+                "agent should advertise auth.logout capability"
+            );
+
+            let response = agent_conn
+                .logout(agent_client_protocol_schema::LogoutRequest::new())
+                .await
+                .expect("logout failed");
+
+            assert_eq!(
+                response,
+                agent_client_protocol_schema::LogoutResponse::default()
+            );
+            assert_eq!(*agent.logout_count.lock().unwrap(), 1);
         })
         .await;
 }
