@@ -95,6 +95,17 @@ impl Agent for ClientSideConnection {
             .map(Option::unwrap_or_default)
     }
 
+    #[cfg(feature = "unstable_logout")]
+    async fn logout(&self, args: LogoutRequest) -> Result<LogoutResponse> {
+        self.conn
+            .request::<Option<_>>(
+                AGENT_METHOD_NAMES.logout,
+                Some(ClientRequest::LogoutRequest(args)),
+            )
+            .await
+            .map(Option::unwrap_or_default)
+    }
+
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.conn
             .request(
@@ -554,6 +565,10 @@ impl Side for AgentSide {
             m if m == AGENT_METHOD_NAMES.authenticate => serde_json::from_str(params.get())
                 .map(ClientRequest::AuthenticateRequest)
                 .map_err(Into::into),
+            #[cfg(feature = "unstable_logout")]
+            m if m == AGENT_METHOD_NAMES.logout => serde_json::from_str(params.get())
+                .map(ClientRequest::LogoutRequest)
+                .map_err(Into::into),
             m if m == AGENT_METHOD_NAMES.session_new => serde_json::from_str(params.get())
                 .map(ClientRequest::NewSessionRequest)
                 .map_err(Into::into),
@@ -634,6 +649,11 @@ impl<T: Agent> MessageHandler<AgentSide> for T {
             ClientRequest::AuthenticateRequest(args) => {
                 let response = self.authenticate(args).await?;
                 Ok(AgentResponse::AuthenticateResponse(response))
+            }
+            #[cfg(feature = "unstable_logout")]
+            ClientRequest::LogoutRequest(args) => {
+                let response = self.logout(args).await?;
+                Ok(AgentResponse::LogoutResponse(response))
             }
             ClientRequest::NewSessionRequest(args) => {
                 let response = self.new_session(args).await?;

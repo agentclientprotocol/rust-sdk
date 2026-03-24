@@ -11,6 +11,8 @@ use agent_client_protocol_schema::{
 use agent_client_protocol_schema::{CloseSessionRequest, CloseSessionResponse};
 #[cfg(feature = "unstable_session_fork")]
 use agent_client_protocol_schema::{ForkSessionRequest, ForkSessionResponse};
+#[cfg(feature = "unstable_logout")]
+use agent_client_protocol_schema::{LogoutRequest, LogoutResponse};
 #[cfg(feature = "unstable_session_resume")]
 use agent_client_protocol_schema::{ResumeSessionRequest, ResumeSessionResponse};
 #[cfg(feature = "unstable_session_model")]
@@ -45,6 +47,21 @@ pub trait Agent {
     ///
     /// See protocol docs: [Initialization](https://agentclientprotocol.com/protocol/initialization)
     async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse>;
+
+    /// **UNSTABLE**
+    ///
+    /// This capability is not part of the spec yet, and may be removed or changed at any point.
+    ///
+    /// Logs out of the current authenticated state.
+    ///
+    /// After a successful logout, all new sessions will require authentication.
+    /// There is no guarantee about the behavior of already running sessions.
+    ///
+    /// Only available if the Agent supports the `auth.logout` capability.
+    #[cfg(feature = "unstable_logout")]
+    async fn logout(&self, _args: LogoutRequest) -> Result<LogoutResponse> {
+        Err(Error::method_not_found())
+    }
 
     /// Creates a new conversation session with the agent.
     ///
@@ -229,6 +246,10 @@ impl<T: Agent> Agent for Rc<T> {
     async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse> {
         self.as_ref().authenticate(args).await
     }
+    #[cfg(feature = "unstable_logout")]
+    async fn logout(&self, args: LogoutRequest) -> Result<LogoutResponse> {
+        self.as_ref().logout(args).await
+    }
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.as_ref().new_session(args).await
     }
@@ -291,6 +312,10 @@ impl<T: Agent> Agent for Arc<T> {
     }
     async fn authenticate(&self, args: AuthenticateRequest) -> Result<AuthenticateResponse> {
         self.as_ref().authenticate(args).await
+    }
+    #[cfg(feature = "unstable_logout")]
+    async fn logout(&self, args: LogoutRequest) -> Result<LogoutResponse> {
+        self.as_ref().logout(args).await
     }
     async fn new_session(&self, args: NewSessionRequest) -> Result<NewSessionResponse> {
         self.as_ref().new_session(args).await
