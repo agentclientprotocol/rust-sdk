@@ -271,9 +271,7 @@ impl Agent for TestAgent {
         &self,
         args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
     ) -> Result<agent_client_protocol_schema::SetSessionConfigOptionResponse> {
-        let SessionConfigOptionValue::ValueId { value } = args.value else {
-            return Err(Error::invalid_params());
-        };
+        let value = args.value;
         let option = agent_client_protocol_schema::SessionConfigOption::select(
             args.config_id,
             "Test Option",
