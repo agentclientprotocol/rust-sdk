@@ -158,10 +158,7 @@ impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
         Ok(InitializeResponse::new(arguments.protocol_version)
             .agent_capabilities(
-                AgentCapabilities::new().auth(
-                    agent_client_protocol_schema::AgentAuthCapabilities::new()
-                        .logout(agent_client_protocol_schema::LogoutCapabilities::new()),
-                ),
+                AgentCapabilities::new()
             )
             .agent_info(Implementation::new("test-agent", "0.0.0").title("Test Agent")))
     }
@@ -271,9 +268,7 @@ impl Agent for TestAgent {
         &self,
         args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
     ) -> Result<agent_client_protocol_schema::SetSessionConfigOptionResponse> {
-        let SessionConfigOptionValue::ValueId { value } = args.value else {
-            return Err(Error::invalid_params());
-        };
+        let value = args.value.0;
         let option = agent_client_protocol_schema::SessionConfigOption::select(
             args.config_id,
             "Test Option",

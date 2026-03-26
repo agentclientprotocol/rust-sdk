@@ -14,7 +14,7 @@
 
 use std::cell::Cell;
 
-use agent_client_protocol::{self as acp, Client as _, SessionConfigOptionValue};
+use agent_client_protocol::{self as acp, Client as _};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -120,9 +120,7 @@ impl acp::Agent for ExampleAgent {
         args: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
         log::info!("Received set session config option request {args:?}");
-        let SessionConfigOptionValue::ValueId { value } = args.value else {
-            return Err(acp::Error::invalid_params());
-        };
+        let value = args.value.0;
         let option = acp::SessionConfigOption::select(
             args.config_id,
             "Example Option",
