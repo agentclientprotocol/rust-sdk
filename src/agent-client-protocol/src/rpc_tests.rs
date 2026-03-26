@@ -157,9 +157,7 @@ impl TestAgent {
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
         Ok(InitializeResponse::new(arguments.protocol_version)
-            .agent_capabilities(
-                AgentCapabilities::new()
-            )
+            .agent_capabilities(AgentCapabilities::new())
             .agent_info(Implementation::new("test-agent", "0.0.0").title("Test Agent")))
     }
 
