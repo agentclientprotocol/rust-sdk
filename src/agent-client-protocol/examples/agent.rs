@@ -120,7 +120,11 @@ impl acp::Agent for ExampleAgent {
         args: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
         log::info!("Received set session config option request {args:?}");
-        let value = args.value.as_value_id().ok_or(acp::Error::invalid_params())?.clone();
+        let value = args
+            .value
+            .as_value_id()
+            .ok_or(acp::Error::invalid_params())?
+            .clone();
         let option = acp::SessionConfigOption::select(
             args.config_id,
             "Example Option",
