@@ -117,17 +117,6 @@ where
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
-        self.pending_responses.lock().unwrap().insert(
-            id.clone(),
-            PendingResponse {
-                deserialize: |value| {
-                    serde_json::from_str::<Out>(value.get())
-                        .map(|out| Box::new(out) as _)
-                        .map_err(|_| Error::internal_error().data("failed to deserialize response"))
-                },
-                respond: tx,
-            },
-        );
 
         if self
             .outgoing_tx
@@ -138,8 +127,24 @@ where
             }))
             .is_err()
         {
-            self.pending_responses.lock().unwrap().remove(&id);
+            return async move {
+                drop(rx.await);
+                Err(Error::internal_error().data("connection closed before request could be sent"))
+            }.boxed();
         }
+
+        self.pending_responses.lock().unwrap().insert(
+            id,
+            PendingResponse {
+                deserialize: |value| {
+                    serde_json::from_str::<Out>(value.get())
+                        .map(|out| Box::new(out) as _)
+                        .map_err(|_| Error::internal_error().data("failed to deserialize response"))
+                },
+                respond: tx,
+            },
+        );
+
         async move {
             let result = rx
                 .await
@@ -148,7 +153,7 @@ where
                 .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
 
             Ok(*result)
-        }
+        }.boxed()
     }
 
     async fn handle_io(
