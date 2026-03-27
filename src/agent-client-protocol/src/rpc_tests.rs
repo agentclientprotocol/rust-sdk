@@ -159,7 +159,8 @@ impl Agent for TestAgent {
         let mut capabilities = AgentCapabilities::new();
         #[cfg(feature = "unstable_logout")]
         {
-            capabilities.auth.logout = Some(agent_client_protocol_schema::LogoutCapabilities::default());
+            capabilities.auth.logout =
+                Some(agent_client_protocol_schema::LogoutCapabilities::default());
         }
         Ok(InitializeResponse::new(arguments.protocol_version)
             .agent_capabilities(capabilities)
