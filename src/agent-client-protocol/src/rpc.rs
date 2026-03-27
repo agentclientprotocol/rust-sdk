@@ -130,7 +130,8 @@ where
             return async move {
                 drop(rx.await);
                 Err(Error::internal_error().data("connection closed before request could be sent"))
-            }.boxed();
+            }
+            .boxed();
         }
 
         self.pending_responses.lock().unwrap().insert(
@@ -153,7 +154,8 @@ where
                 .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
 
             Ok(*result)
-        }.boxed()
+        }
+        .boxed()
     }
 
     async fn handle_io(
