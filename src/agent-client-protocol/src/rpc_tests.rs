@@ -156,8 +156,13 @@ impl TestAgent {
 #[async_trait::async_trait(?Send)]
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
+        let mut capabilities = AgentCapabilities::new();
+        #[cfg(feature = "unstable_logout")]
+        {
+            capabilities.auth.logout = Some(agent_client_protocol_schema::LogoutCapabilities::default());
+        }
         Ok(InitializeResponse::new(arguments.protocol_version)
-            .agent_capabilities(AgentCapabilities::new())
+            .agent_capabilities(capabilities)
             .agent_info(Implementation::new("test-agent", "0.0.0").title("Test Agent")))
     }
 
