@@ -113,28 +113,12 @@ where
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InRequest>,
-    ) -> impl Future<Output = Result<Out>> {
+    ) -> Result<impl Future<Output = Result<Out>>> {
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
-
-        if self
-            .outgoing_tx
-            .unbounded_send(OutgoingMessage::Request(Request {
-                id: id.clone(),
-                method: method.into(),
-                params,
-            }))
-            .is_err()
-        {
-            return async move {
-                Err(Error::internal_error().data("connection closed before request could be sent"))
-            }
-            .boxed();
-        }
-
         self.pending_responses.lock().unwrap().insert(
-            id,
+            id.clone(),
             PendingResponse {
                 deserialize: |value| {
                     serde_json::from_str::<Out>(value.get())
@@ -145,7 +129,21 @@ where
             },
         );
 
-        async move {
+        if self
+            .outgoing_tx
+            .unbounded_send(OutgoingMessage::Request(Request {
+                id: id.clone(),
+                method: method.into(),
+                params,
+            }))
+            .is_err()
+        {
+            self.pending_responses.lock().unwrap().remove(&id);
+            return Err(
+                Error::internal_error().data("connection closed before request could be sent")
+            );
+        }
+        Ok(async move {
             let result = rx
                 .await
                 .map_err(|_| Error::internal_error().data("server shut down unexpectedly"))??
@@ -153,8 +151,7 @@ where
                 .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
 
             Ok(*result)
-        }
-        .boxed()
+        })
     }
 
     async fn handle_io(
