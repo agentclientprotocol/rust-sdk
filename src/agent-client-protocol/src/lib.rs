@@ -81,7 +81,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.initialize,
                 Some(ClientRequest::InitializeRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -90,7 +90,7 @@ impl Agent for ClientSideConnection {
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.authenticate,
                 Some(ClientRequest::AuthenticateRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -101,7 +101,7 @@ impl Agent for ClientSideConnection {
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.logout,
                 Some(ClientRequest::LogoutRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -111,7 +111,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_new,
                 Some(ClientRequest::NewSessionRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -120,7 +120,7 @@ impl Agent for ClientSideConnection {
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.session_load,
                 Some(ClientRequest::LoadSessionRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -133,7 +133,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_set_mode,
                 Some(ClientRequest::SetSessionModeRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -142,7 +142,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_prompt,
                 Some(ClientRequest::PromptRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -162,7 +162,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_set_model,
                 Some(ClientRequest::SetSessionModelRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -171,7 +171,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_list,
                 Some(ClientRequest::ListSessionsRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -181,7 +181,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_fork,
                 Some(ClientRequest::ForkSessionRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -191,7 +191,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_resume,
                 Some(ClientRequest::ResumeSessionRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -201,7 +201,7 @@ impl Agent for ClientSideConnection {
             .request::<Option<_>>(
                 AGENT_METHOD_NAMES.session_close,
                 Some(ClientRequest::CloseSessionRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -214,7 +214,7 @@ impl Agent for ClientSideConnection {
             .request(
                 AGENT_METHOD_NAMES.session_set_config_option,
                 Some(ClientRequest::SetSessionConfigOptionRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -223,7 +223,7 @@ impl Agent for ClientSideConnection {
             .request(
                 format!("_{}", args.method),
                 Some(ClientRequest::ExtMethodRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -441,7 +441,7 @@ impl Client for AgentSideConnection {
             .request(
                 CLIENT_METHOD_NAMES.session_request_permission,
                 Some(AgentRequest::RequestPermissionRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -450,7 +450,7 @@ impl Client for AgentSideConnection {
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.fs_write_text_file,
                 Some(AgentRequest::WriteTextFileRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -460,7 +460,7 @@ impl Client for AgentSideConnection {
             .request(
                 CLIENT_METHOD_NAMES.fs_read_text_file,
                 Some(AgentRequest::ReadTextFileRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -469,7 +469,7 @@ impl Client for AgentSideConnection {
             .request(
                 CLIENT_METHOD_NAMES.terminal_create,
                 Some(AgentRequest::CreateTerminalRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -478,7 +478,7 @@ impl Client for AgentSideConnection {
             .request(
                 CLIENT_METHOD_NAMES.terminal_output,
                 Some(AgentRequest::TerminalOutputRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -490,7 +490,7 @@ impl Client for AgentSideConnection {
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.terminal_release,
                 Some(AgentRequest::ReleaseTerminalRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -503,7 +503,7 @@ impl Client for AgentSideConnection {
             .request(
                 CLIENT_METHOD_NAMES.terminal_wait_for_exit,
                 Some(AgentRequest::WaitForTerminalExitRequest(args)),
-            )
+            )?
             .await
     }
 
@@ -512,7 +512,7 @@ impl Client for AgentSideConnection {
             .request::<Option<_>>(
                 CLIENT_METHOD_NAMES.terminal_kill,
                 Some(AgentRequest::KillTerminalRequest(args)),
-            )
+            )?
             .await
             .map(Option::unwrap_or_default)
     }
@@ -529,7 +529,7 @@ impl Client for AgentSideConnection {
             .request(
                 format!("_{}", args.method),
                 Some(AgentRequest::ExtMethodRequest(args)),
-            )
+            )?
             .await
     }
 
