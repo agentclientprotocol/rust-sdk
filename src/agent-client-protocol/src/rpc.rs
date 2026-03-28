@@ -128,7 +128,6 @@ where
             .is_err()
         {
             return async move {
-                drop(rx.await);
                 Err(Error::internal_error().data("connection closed before request could be sent"))
             }
             .boxed();
