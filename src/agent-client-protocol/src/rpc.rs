@@ -9,6 +9,8 @@ use std::{
     },
 };
 
+use std::sync::Arc as StdArc;
+
 use agent_client_protocol_schema::{
     Error, JsonRpcMessage, Notification, OutgoingMessage, Request, RequestId, Response, Result,
     Side,
@@ -27,7 +29,7 @@ use futures::{
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
 
-use super::stream_broadcast::{StreamBroadcast, StreamReceiver, StreamSender};
+use super::stream_broadcast::{MessageBroadcaster, StreamBroadcast, StreamReceiver};
 
 #[derive(Debug)]
 pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
@@ -39,6 +41,7 @@ pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
 
 #[derive(Debug)]
 struct PendingResponse {
+    method: Option<StdArc<str>>,
     deserialize: fn(&serde_json::value::RawValue) -> Result<Box<dyn Any + Send>>,
     respond: oneshot::Sender<Result<Box<dyn Any + Send>>>,
 }
@@ -117,9 +120,12 @@ where
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
+        let method: Arc<str> = method.into();
+        let method_for_response = method.clone();
         self.pending_responses.lock().unwrap().insert(
             id.clone(),
             PendingResponse {
+                method: Some(method_for_response),
                 deserialize: |value| {
                     serde_json::from_str::<Out>(value.get())
                         .map(|out| Box::new(out) as _)
@@ -133,7 +139,7 @@ where
             .outgoing_tx
             .unbounded_send(OutgoingMessage::Request(Request {
                 id: id.clone(),
-                method: method.into(),
+                method,
                 params,
             }))
             .is_err()
@@ -160,9 +166,8 @@ where
         mut outgoing_bytes: impl Unpin + AsyncWrite,
         incoming_bytes: impl Unpin + AsyncRead,
         pending_responses: Arc<Mutex<HashMap<RequestId, PendingResponse>>>,
-        broadcast: StreamSender,
+        broadcaster: MessageBroadcaster,
     ) -> Result<()> {
-        // TODO: Create nicer abstraction for broadcast
         let mut input_reader = BufReader::new(incoming_bytes);
         let mut outgoing_line = Vec::new();
         let mut incoming_line = String::new();
@@ -177,7 +182,7 @@ where
                         if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
                             log::warn!("failed to send message to peer: {e}");
                         }
-                        broadcast.outgoing(&message);
+                        broadcaster.outgoing(&message);
                     } else {
                         break;
                     }
@@ -195,7 +200,7 @@ where
                                     // Request
                                     match Local::decode_request(&method, message.params) {
                                         Ok(request) => {
-                                            broadcast.incoming_request(id.clone(), &*method, &request);
+                                            broadcaster.incoming_request(id.clone(), &*method, &request);
                                             if let Err(e) = incoming_tx.unbounded_send(IncomingMessage::Request { id, request }) {
                                                 log::warn!("failed to send request to handler, channel full: {e:?}");
                                             }
@@ -213,22 +218,23 @@ where
                                             if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
                                                 log::warn!("failed to send error response to peer: {e}");
                                             }
-                                            broadcast.outgoing(&error_response);
+                                            broadcaster.outgoing(&error_response);
                                         }
                                     }
                                 } else if let Some(pending_response) = pending_responses.lock().unwrap().remove(&id) {
                                     // Response
+                                    let method = pending_response.method;
                                     if let Some(result_value) = message.result {
-                                        broadcast.incoming_response(id, Ok(Some(result_value)));
+                                        broadcaster.incoming_response(id, method.clone(), Ok(Some(result_value)));
 
                                         let result = (pending_response.deserialize)(result_value);
                                         pending_response.respond.send(result).ok();
                                     } else if let Some(error) = message.error {
-                                        broadcast.incoming_response(id, Err(&error));
+                                        broadcaster.incoming_response(id, method.clone(), Err(&error));
 
                                         pending_response.respond.send(Err(error)).ok();
                                     } else {
-                                        broadcast.incoming_response(id, Ok(None));
+                                        broadcaster.incoming_response(id, method.clone(), Ok(None));
 
                                         let result = (pending_response.deserialize)(&RawValue::from_string("null".into()).unwrap());
                                         pending_response.respond.send(result).ok();
@@ -240,7 +246,7 @@ where
                                 // Notification
                                 match Local::decode_notification(&method, message.params) {
                                     Ok(notification) => {
-                                        broadcast.incoming_notification(&*method, &notification);
+                                        broadcaster.incoming_notification(&*method, &notification);
                                         if let Err(e) = incoming_tx.unbounded_send(IncomingMessage::Notification { notification }) {
                                             log::warn!("failed to send notification to handler, channel full: {e:?}");
                                         }

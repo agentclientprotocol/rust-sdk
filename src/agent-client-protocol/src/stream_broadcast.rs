@@ -5,6 +5,7 @@
 //! development tools that need to monitor the protocol communication.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use agent_client_protocol_schema::{
     Error, Notification, OutgoingMessage, Request, RequestId, Response, Result, Side,
@@ -16,16 +17,69 @@ use serde_json::value::RawValue;
 /// A message that flows through the RPC stream.
 ///
 /// This represents any JSON-RPC message (request, response, or notification)
-/// along with its direction (incoming or outgoing).
+/// along with its direction (incoming or outgoing) and metadata.
 ///
 /// Stream messages are used for observing and debugging the protocol communication
 /// without interfering with the actual message handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamMessage {
+    /// Metadata about the message.
+    pub metadata: StreamMessageMetadata,
     /// The direction of the message relative to this side of the connection.
     pub direction: StreamMessageDirection,
     /// The actual content of the message.
     pub message: StreamMessageContent,
+}
+
+/// Metadata about a stream message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamMessageMetadata {
+    /// Timestamp when the message was observed.
+    pub timestamp: Duration,
+}
+
+/// Filter configuration for stream messages.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct MessageFilter {
+    excluded_methods: Vec<Arc<str>>,
+    excluded_directions: Vec<StreamMessageDirection>,
+}
+
+impl MessageFilter {
+    /// Creates a new empty filter.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a method to exclude from broadcasting.
+    #[must_use]
+    pub fn exclude_method(mut self, method: impl Into<Arc<str>>) -> Self {
+        self.excluded_methods.push(method.into());
+        self
+    }
+
+    /// Adds a direction to exclude from broadcasting.
+    #[must_use]
+    pub fn exclude_direction(mut self, direction: StreamMessageDirection) -> Self {
+        self.excluded_directions.push(direction);
+        self
+    }
+
+    /// Checks if a message should be broadcast based on this filter.
+    #[allow(clippy::trivially_copy_pass_by_ref, clippy::collapsible_if)]
+    fn should_broadcast(&self, direction: StreamMessageDirection, method: Option<&Arc<str>>) -> bool {
+        if self.excluded_directions.contains(&direction) {
+            return false;
+        }
+        if let Some(m) = method {
+            if self.excluded_methods.contains(m) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// The direction of a message in the RPC stream.
@@ -60,6 +114,8 @@ pub enum StreamMessageContent {
         id: RequestId,
         /// The result of the request (success or error).
         result: Result<Option<serde_json::Value>>,
+        /// The method that this response is for (if known).
+        method: Option<Arc<str>>,
     },
     /// A JSON-RPC notification message.
     Notification {
@@ -68,6 +124,17 @@ pub enum StreamMessageContent {
         /// Optional parameters for the notification.
         params: Option<serde_json::Value>,
     },
+}
+
+impl StreamMessageContent {
+    /// Returns the method name if this message has one.
+    #[allow(clippy::match_same_arms, clippy::must_use_candidate)]
+    pub fn method(&self) -> Option<&Arc<str>> {
+        match self {
+            StreamMessageContent::Request { method, .. } | StreamMessageContent::Notification { method, .. } => Some(method),
+            StreamMessageContent::Response { method, .. } => method.as_ref(),
+        }
+    }
 }
 
 /// A receiver for observing the message stream.
@@ -114,16 +181,22 @@ impl StreamReceiver {
 /// This is used internally by the RPC system to broadcast messages to all receivers.
 /// You typically won't interact with this directly.
 #[derive(Clone, Debug, From)]
-pub(crate) struct StreamSender(async_broadcast::Sender<StreamMessage>);
+pub(crate) struct StreamSender {
+    sender: async_broadcast::Sender<StreamMessage>,
+    start_time: Instant,
+}
 
 impl StreamSender {
     /// Broadcasts an outgoing message to all receivers.
     pub(crate) fn outgoing<L: Side, R: Side>(&self, message: &OutgoingMessage<L, R>) {
-        if self.0.receiver_count() == 0 {
+        if self.sender.receiver_count() == 0 {
             return;
         }
 
+        let timestamp = self.start_time.elapsed();
+
         let message = StreamMessage {
+            metadata: StreamMessageMetadata { timestamp },
             direction: StreamMessageDirection::Outgoing,
             message: match message {
                 OutgoingMessage::Request(Request { id, method, params }) => {
@@ -137,12 +210,14 @@ impl StreamSender {
                     StreamMessageContent::Response {
                         id: id.clone(),
                         result: Ok(serde_json::to_value(result).ok()),
+                        method: None,
                     }
                 }
                 OutgoingMessage::Response(Response::Error { id, error }) => {
                     StreamMessageContent::Response {
                         id: id.clone(),
                         result: Err(error.clone()),
+                        method: None,
                     }
                 }
                 OutgoingMessage::Notification(Notification { method, params }) => {
@@ -154,7 +229,7 @@ impl StreamSender {
             },
         };
 
-        self.0.try_broadcast(message).ok();
+        self.sender.try_broadcast(message).ok();
     }
 
     /// Broadcasts an incoming request to all receivers.
@@ -164,31 +239,38 @@ impl StreamSender {
         method: impl Into<Arc<str>>,
         params: &impl Serialize,
     ) {
-        if self.0.receiver_count() == 0 {
+        if self.sender.receiver_count() == 0 {
             return;
         }
 
+        let timestamp = self.start_time.elapsed();
+        let method: Arc<str> = method.into();
+
         let message = StreamMessage {
+            metadata: StreamMessageMetadata { timestamp },
             direction: StreamMessageDirection::Incoming,
             message: StreamMessageContent::Request {
                 id,
-                method: method.into(),
+                method: method.clone(),
                 params: serde_json::to_value(params).ok(),
             },
         };
 
-        self.0.try_broadcast(message).ok();
+        self.sender.try_broadcast(message).ok();
     }
 
     /// Broadcasts an incoming response to all receivers.
     pub(crate) fn incoming_response(
         &self,
         id: RequestId,
+        method: Option<Arc<str>>,
         result: Result<Option<&RawValue>, &Error>,
     ) {
-        if self.0.receiver_count() == 0 {
+        if self.sender.receiver_count() == 0 {
             return;
         }
+
+        let timestamp = self.start_time.elapsed();
 
         let result = match result {
             Ok(Some(value)) => Ok(serde_json::from_str(value.get()).ok()),
@@ -197,11 +279,12 @@ impl StreamSender {
         };
 
         let message = StreamMessage {
+            metadata: StreamMessageMetadata { timestamp },
             direction: StreamMessageDirection::Incoming,
-            message: StreamMessageContent::Response { id, result },
+            message: StreamMessageContent::Response { id, result, method },
         };
 
-        self.0.try_broadcast(message).ok();
+        self.sender.try_broadcast(message).ok();
     }
 
     /// Broadcasts an incoming notification to all receivers.
@@ -210,11 +293,14 @@ impl StreamSender {
         method: impl Into<Arc<str>>,
         params: &impl Serialize,
     ) {
-        if self.0.receiver_count() == 0 {
+        if self.sender.receiver_count() == 0 {
             return;
         }
 
+        let timestamp = self.start_time.elapsed();
+
         let message = StreamMessage {
+            metadata: StreamMessageMetadata { timestamp },
             direction: StreamMessageDirection::Incoming,
             message: StreamMessageContent::Notification {
                 method: method.into(),
@@ -222,7 +308,109 @@ impl StreamSender {
             },
         };
 
-        self.0.try_broadcast(message).ok();
+        self.sender.try_broadcast(message).ok();
+    }
+}
+
+impl From<async_broadcast::Sender<StreamMessage>> for StreamSender {
+    fn from(sender: async_broadcast::Sender<StreamMessage>) -> Self {
+        Self {
+            sender,
+            start_time: Instant::now(),
+        }
+    }
+}
+
+/// A message broadcaster for broadcasting RPC messages with filtering support.
+///
+/// This provides a cleaner abstraction over the raw StreamSender,
+/// allowing the RPC IO loop to broadcast messages without coupling
+/// to the underlying broadcast implementation. It supports filtering
+/// messages by method name or direction.
+#[derive(Clone, Debug)]
+pub(crate) struct MessageBroadcaster {
+    sender: StreamSender,
+    filter: MessageFilter,
+}
+
+#[allow(dead_code)]
+impl MessageBroadcaster {
+    /// Creates a new message broadcaster from a stream sender.
+    pub(crate) fn new(sender: StreamSender) -> Self {
+        Self {
+            sender,
+            filter: MessageFilter::new(),
+        }
+    }
+
+    /// Creates a new message broadcaster with a custom filter.
+    pub(crate) fn with_filter(sender: StreamSender, filter: MessageFilter) -> Self {
+        Self { sender, filter }
+    }
+
+    /// Updates the filter for this broadcaster.
+    pub(crate) fn set_filter(&mut self, filter: MessageFilter) {
+        self.filter = filter;
+    }
+
+    /// Returns a reference to the current filter.
+    pub(crate) fn filter(&self) -> &MessageFilter {
+        &self.filter
+    }
+
+    /// Checks if a message should be broadcast based on the current filter.
+    fn should_broadcast(&self, direction: StreamMessageDirection, method: Option<&Arc<str>>) -> bool {
+        self.filter.should_broadcast(direction, method)
+    }
+
+    /// Broadcasts an outgoing message.
+    #[allow(clippy::match_same_arms)]
+    pub(crate) fn outgoing<L: Side, R: Side>(&self, message: &OutgoingMessage<L, R>) {
+        let method = match message {
+            OutgoingMessage::Response(_) => None,
+            OutgoingMessage::Request(Request { method, .. }) | OutgoingMessage::Notification(Notification { method, .. }) => Some(method),
+        };
+
+        if self.should_broadcast(StreamMessageDirection::Outgoing, method) {
+            self.sender.outgoing(message);
+        }
+    }
+
+    /// Broadcasts an incoming request.
+    pub(crate) fn incoming_request(
+        &self,
+        id: RequestId,
+        method: impl Into<Arc<str>>,
+        params: &impl Serialize,
+    ) {
+        let method: Arc<str> = method.into();
+        if self.should_broadcast(StreamMessageDirection::Incoming, Some(&method)) {
+            self.sender.incoming_request(id, method, params);
+        }
+    }
+
+    /// Broadcasts an incoming response.
+    pub(crate) fn incoming_response(
+        &self,
+        id: RequestId,
+        method: Option<Arc<str>>,
+        result: Result<Option<&RawValue>, &Error>,
+    ) {
+        if self.should_broadcast(StreamMessageDirection::Incoming, method.as_ref()) {
+            self.sender.incoming_response(id, method, result);
+        }
+    }
+
+    /// Broadcasts an incoming notification.
+    pub(crate) fn incoming_notification(
+        &self,
+        method: impl Into<Arc<str>>,
+        params: &impl Serialize,
+    ) {
+        let method: Arc<str> = method.into();
+        if self.should_broadcast(StreamMessageDirection::Incoming, Some(&method)) {
+            self.sender.incoming_notification(method, params);
+        }
     }
 }
 
@@ -238,12 +426,12 @@ pub(crate) struct StreamBroadcast {
 impl StreamBroadcast {
     /// Creates a new broadcast.
     ///
-    /// Returns a sender for broadcasting messages and the broadcast instance
+    /// Returns a message broadcaster for broadcasting messages and the broadcast instance
     /// for creating receivers.
-    pub(crate) fn new() -> (StreamSender, Self) {
+    pub(crate) fn new() -> (MessageBroadcaster, Self) {
         let (sender, receiver) = async_broadcast::broadcast(1);
         (
-            sender.into(),
+            MessageBroadcaster::new(sender.into()),
             Self {
                 receiver: receiver.deactivate(),
             },
@@ -264,9 +452,18 @@ impl StreamBroadcast {
     }
 }
 
+impl Default for StreamMessageMetadata {
+    fn default() -> Self {
+        Self {
+            timestamp: Duration::ZERO,
+        }
+    }
+}
+
 impl<Local: Side, Remote: Side> From<OutgoingMessage<Local, Remote>> for StreamMessage {
     fn from(message: OutgoingMessage<Local, Remote>) -> Self {
         Self {
+            metadata: StreamMessageMetadata::default(),
             direction: StreamMessageDirection::Outgoing,
             message: match message {
                 OutgoingMessage::Request(Request { id, method, params }) => {
@@ -280,12 +477,14 @@ impl<Local: Side, Remote: Side> From<OutgoingMessage<Local, Remote>> for StreamM
                     StreamMessageContent::Response {
                         id,
                         result: Ok(serde_json::to_value(result).ok()),
+                        method: None,
                     }
                 }
                 OutgoingMessage::Response(Response::Error { id, error }) => {
                     StreamMessageContent::Response {
                         id,
                         result: Err(error),
+                        method: None,
                     }
                 }
                 OutgoingMessage::Notification(Notification { method, params }) => {

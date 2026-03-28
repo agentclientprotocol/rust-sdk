@@ -13,7 +13,8 @@ pub use agent_client_protocol_schema::*;
 pub use client::*;
 pub use rpc::*;
 pub use stream_broadcast::{
-    StreamMessage, StreamMessageContent, StreamMessageDirection, StreamReceiver,
+    MessageFilter, StreamMessage, StreamMessageContent, StreamMessageDirection,
+    StreamMessageMetadata, StreamReceiver,
 };
 
 // Client to Agent
