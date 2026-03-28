@@ -174,7 +174,9 @@ where
                         serde_json::to_writer(&mut outgoing_line, &JsonRpcMessage::wrap(&message)).map_err(Error::into_internal_error)?;
                         log::trace!("send: {}", String::from_utf8_lossy(&outgoing_line));
                         outgoing_line.push(b'\n');
-                        outgoing_bytes.write_all(&outgoing_line).await.ok();
+                        if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
+                            log::warn!("failed to send message to peer: {e}");
+                        }
                         broadcast.outgoing(&message);
                     } else {
                         break;
@@ -194,7 +196,9 @@ where
                                     match Local::decode_request(&method, message.params) {
                                         Ok(request) => {
                                             broadcast.incoming_request(id.clone(), &*method, &request);
-                                            incoming_tx.unbounded_send(IncomingMessage::Request { id, request }).ok();
+                                            if let Err(e) = incoming_tx.unbounded_send(IncomingMessage::Request { id, request }) {
+                                                log::warn!("failed to send request to handler, channel full: {e:?}");
+                                            }
                                         }
                                         Err(error) => {
                                             outgoing_line.clear();
@@ -206,7 +210,9 @@ where
                                             serde_json::to_writer(&mut outgoing_line, &JsonRpcMessage::wrap(&error_response))?;
                                             log::trace!("send: {}", String::from_utf8_lossy(&outgoing_line));
                                             outgoing_line.push(b'\n');
-                                            outgoing_bytes.write_all(&outgoing_line).await.ok();
+                                            if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
+                                                log::warn!("failed to send error response to peer: {e}");
+                                            }
                                             broadcast.outgoing(&error_response);
                                         }
                                     }
@@ -235,7 +241,9 @@ where
                                 match Local::decode_notification(&method, message.params) {
                                     Ok(notification) => {
                                         broadcast.incoming_notification(&*method, &notification);
-                                        incoming_tx.unbounded_send(IncomingMessage::Notification { notification }).ok();
+                                        if let Err(e) = incoming_tx.unbounded_send(IncomingMessage::Notification { notification }) {
+                                            log::warn!("failed to send notification to handler, channel full: {e:?}");
+                                        }
                                     }
                                     Err(err) => {
                                         log::error!("failed to decode {:?}: {err}", message.params);
