@@ -156,7 +156,10 @@ impl TestAgent {
 #[async_trait::async_trait(?Send)]
 impl Agent for TestAgent {
     async fn initialize(&self, arguments: InitializeRequest) -> Result<InitializeResponse> {
+        #[cfg(feature = "unstable_logout")]
         let mut capabilities = AgentCapabilities::new();
+        #[cfg(not(feature = "unstable_logout"))]
+        let capabilities = AgentCapabilities::new();
         #[cfg(feature = "unstable_logout")]
         {
             capabilities.auth.logout =
@@ -272,11 +275,14 @@ impl Agent for TestAgent {
         &self,
         args: agent_client_protocol_schema::SetSessionConfigOptionRequest,
     ) -> Result<agent_client_protocol_schema::SetSessionConfigOptionResponse> {
+        #[cfg(feature = "unstable_boolean_config")]
         let value = args
             .value
             .as_value_id()
             .ok_or(agent_client_protocol_schema::Error::invalid_params())?
             .clone();
+        #[cfg(not(feature = "unstable_boolean_config"))]
+        let value: agent_client_protocol_schema::SessionConfigValueId = args.value.into();
         let option = agent_client_protocol_schema::SessionConfigOption::select(
             args.config_id,
             "Test Option",
