@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.3...v0.10.4) - 2026-03-31
+
+### Added
+
+- *(schema)* Update schema to 0.11.4 ([#95](https://github.com/agentclientprotocol/rust-sdk/pull/95))
+
+### Fixed
+
+- add warning logs for silent failures in RPC message handling ([#92](https://github.com/agentclientprotocol/rust-sdk/pull/92))
+- Clearer error message when connection is broken before messages are sent ([#89](https://github.com/agentclientprotocol/rust-sdk/pull/89))
+
+### Other
+
+- Fix the rpc_test and example use following the new schema api ([#88](https://github.com/agentclientprotocol/rust-sdk/pull/88))
+
 ## [0.10.3](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.2...v0.10.3) - 2026-03-25
 
 ### Added
