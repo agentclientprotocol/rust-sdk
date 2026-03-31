@@ -230,7 +230,7 @@ where
                                     } else {
                                         broadcast.incoming_response(id, Ok(None));
 
-                                        let result = (pending_response.deserialize)(&RawValue::from_string("null".into()).unwrap());
+                                        let result = (pending_response.deserialize)(RawValue::NULL);
                                         pending_response.respond.send(result).ok();
                                     }
                                 } else {
