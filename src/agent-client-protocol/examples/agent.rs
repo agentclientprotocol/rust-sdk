@@ -120,11 +120,14 @@ impl acp::Agent for ExampleAgent {
         args: acp::SetSessionConfigOptionRequest,
     ) -> Result<acp::SetSessionConfigOptionResponse, acp::Error> {
         log::info!("Received set session config option request {args:?}");
+        #[cfg(feature = "unstable_boolean_config")]
         let value = args
             .value
             .as_value_id()
             .ok_or(acp::Error::invalid_params())?
             .clone();
+        #[cfg(not(feature = "unstable_boolean_config"))]
+        let value: acp::SessionConfigValueId = args.value.into();
         let option = acp::SessionConfigOption::select(
             args.config_id,
             "Example Option",
