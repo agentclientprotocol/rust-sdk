@@ -175,7 +175,8 @@ where
                         log::trace!("send: {}", String::from_utf8_lossy(&outgoing_line));
                         outgoing_line.push(b'\n');
                         if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
-                            log::warn!("failed to send message to peer: {e}");
+                            log::error!("failed to send message to peer: {e}");
+                            break;
                         }
                         broadcast.outgoing(&message);
                     } else {
@@ -211,7 +212,8 @@ where
                                             log::trace!("send: {}", String::from_utf8_lossy(&outgoing_line));
                                             outgoing_line.push(b'\n');
                                             if let Err(e) = outgoing_bytes.write_all(&outgoing_line).await {
-                                                log::warn!("failed to send error response to peer: {e}");
+                                                log::error!("failed to send error response to peer: {e}");
+                                                break;
                                             }
                                             broadcast.outgoing(&error_response);
                                         }
