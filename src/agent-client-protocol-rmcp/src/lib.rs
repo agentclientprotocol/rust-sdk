@@ -100,7 +100,7 @@ where
         let (mcp_server_read, mcp_server_write) = tokio::io::split(mcp_server_stream);
         let (mcp_client_read, mcp_client_write) = tokio::io::split(mcp_client_stream);
 
-        let bytes_to_sacp = async {
+        let bytes_to_acp = async {
             // Create ByteStreams component for the client side
             let byte_streams =
                 ByteStreams::new(mcp_client_write.compat_write(), mcp_client_read.compat());
@@ -127,7 +127,7 @@ where
                 .map_err(agent_client_protocol_core::Error::into_internal_error)
         };
 
-        (bytes_to_sacp, bytes_to_rmcp).try_join().await?;
+        (bytes_to_acp, bytes_to_rmcp).try_join().await?;
         Ok(())
     }
 }

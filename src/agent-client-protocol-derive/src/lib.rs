@@ -46,7 +46,7 @@ use syn::{DeriveInput, Expr, Lit, Path, Type, parse_macro_input};
 /// # Attributes
 ///
 /// - `#[request(method = "method_name", response = ResponseType)]`
-/// - `#[request(method = "method_name", response = ResponseType, crate = crate)]` - for use within sacp
+/// - `#[request(method = "method_name", response = ResponseType, crate = crate)]` - for use within the `agent_client_protocol_core` crate
 ///
 /// # Example
 ///
@@ -106,7 +106,7 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `#[notification(method = "method_name")]`
-/// - `#[notification(method = "method_name", crate = crate)]` - for use within sacp
+/// - `#[notification(method = "method_name", crate = crate)]` - for use within the `agent_client_protocol_core` crate
 ///
 /// # Example
 ///
@@ -163,7 +163,7 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
 ///
 /// # Attributes
 ///
-/// - `#[response(crate = crate)]` - for use within sacp crate
+/// - `#[response(crate = crate)]` - for use within the `agent_client_protocol_core` crate
 ///
 /// # Example
 ///

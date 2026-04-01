@@ -77,7 +77,7 @@ pub enum LineDirection {
 /// # }
 /// ```
 ///
-/// [`agent_client_protocol_conductor::Conductor`]: https://docs.rs/agent-client-protocol-conductor/latest/sacp_conductor/struct.Conductor.html
+/// [`agent_client_protocol_conductor::Conductor`]: https://docs.rs/agent-client-protocol-conductor/latest/agent_client_protocol_conductor/struct.Conductor.html
 pub struct AcpAgent {
     server: agent_client_protocol_core::schema::McpServer,
     debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
