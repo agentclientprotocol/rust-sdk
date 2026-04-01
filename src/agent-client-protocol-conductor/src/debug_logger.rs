@@ -27,7 +27,7 @@ impl DebugLogger {
 
         // Create timestamped log file
         let timestamp = Local::now().format("%Y%m%d-%H%M%S");
-        let log_file = log_dir.join(format!("{}.log", timestamp));
+        let log_file = log_dir.join(format!("{timestamp}.log"));
 
         let file = OpenOptions::new()
             .create(true)
@@ -45,7 +45,7 @@ impl DebugLogger {
         writer.write_all(b"Components:\n").await?;
         for (i, cmd) in component_commands.iter().enumerate() {
             writer
-                .write_all(format!("  {}: {}\n", i, cmd).as_bytes())
+                .write_all(format!("  {i}: {cmd}\n").as_bytes())
                 .await?;
         }
         writer.write_all(b"========================\n").await?;
@@ -84,17 +84,18 @@ impl DebugLogger {
                 };
 
                 // Strip ANSI escape codes from stderr to keep logs clean
-                let cleaned_line = if matches!(direction, agent_client_protocol_tokio::LineDirection::Stderr) {
+                let cleaned_line = if matches!(
+                    direction,
+                    agent_client_protocol_tokio::LineDirection::Stderr
+                ) {
                     let bytes = strip_ansi_escapes::strip(&line);
                     String::from_utf8_lossy(&bytes).to_string()
                 } else {
                     line
                 };
 
-                let log_line = format!(
-                    "{} {} +{}ms {}\n",
-                    component_label, arrow, elapsed_ms, cleaned_line
-                );
+                let log_line =
+                    format!("{component_label} {arrow} +{elapsed_ms}ms {cleaned_line}\n");
                 let mut writer = writer.lock().await;
                 let _ = writer.write_all(log_line.as_bytes()).await;
                 let _ = writer.flush().await;

@@ -112,10 +112,6 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use futures::{
-    SinkExt, StreamExt,
-    channel::mpsc::{self},
-};
 use agent_client_protocol_core::{
     Agent, BoxFuture, Client, Conductor, ConnectTo, Dispatch, DynConnectTo, Error, JsonRpcMessage,
     Proxy, Role, RunWithConnectionTo, role::HasPeer, util::MatchDispatch,
@@ -134,6 +130,10 @@ use agent_client_protocol_core::{
         McpConnectRequest, McpConnectResponse, McpDisconnectNotification, McpOverAcpMessage,
         SuccessorMessage,
     },
+};
+use futures::{
+    SinkExt, StreamExt,
+    channel::mpsc::{self},
 };
 use tracing::{debug, info};
 
@@ -220,22 +220,21 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     }
 
     /// Run the conductor with a transport.
-    pub async fn run(self, transport: impl ConnectTo<Host>) -> Result<(), agent_client_protocol_core::Error> {
+    pub async fn run(
+        self,
+        transport: impl ConnectTo<Host>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         let (conductor_tx, conductor_rx) = mpsc::channel(128 /* chosen arbitrarily */);
 
         // Set up tracing if enabled - spawn writer task and get handle
         let trace_handle;
         let trace_future: BoxFuture<'static, Result<(), agent_client_protocol_core::Error>>;
-        match self.trace_writer.map(|w| w.spawn()) {
-            Some((h, f)) => {
-                trace_handle = Some(h);
-                trace_future = Box::pin(f);
-            }
-
-            None => {
-                trace_handle = None;
-                trace_future = Box::pin(std::future::ready(Ok(())));
-            }
+        if let Some((h, f)) = self.trace_writer.map(super::trace::TraceWriter::spawn) {
+            trace_handle = Some(h);
+            trace_future = Box::pin(f);
+        } else {
+            trace_handle = None;
+            trace_future = Box::pin(std::future::ready(Ok(())));
         }
 
         let responder = ConductorResponder {
@@ -246,8 +245,10 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             bridge_connections: Default::default(),
             mcp_bridge_mode: self.mcp_bridge_mode,
             proxies: Default::default(),
-            successor: Arc::new(agent_client_protocol_core::util::internal_error("successor not initialized")),
-            trace_handle: trace_handle,
+            successor: Arc::new(agent_client_protocol_core::util::internal_error(
+                "successor not initialized",
+            )),
+            trace_handle,
             host: self.host.clone(),
         };
 
@@ -293,7 +294,10 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
 }
 
 impl<Host: ConductorHostRole> ConnectTo<Host::Counterpart> for ConductorImpl<Host> {
-    async fn connect_to(self, client: impl ConnectTo<Host>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Host>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         self.run(client).await
     }
 }
@@ -310,7 +314,8 @@ impl<Host: ConductorHostRole> HandleDispatchFrom<Host::Counterpart>
         &mut self,
         message: Dispatch,
         connection: agent_client_protocol_core::ConnectionTo<Host::Counterpart>,
-    ) -> Result<agent_client_protocol_core::Handled<Dispatch>, agent_client_protocol_core::Error> {
+    ) -> Result<agent_client_protocol_core::Handled<Dispatch>, agent_client_protocol_core::Error>
+    {
         self.host
             .handle_dispatch(message, connection, &mut self.conductor_tx)
             .await
@@ -783,7 +788,7 @@ where
         let mut conductor_tx = self.conductor_tx.clone();
         Conductor
             .builder()
-            .name(format!("conductor-to-component({})", component_index))
+            .name(format!("conductor-to-component({component_index})"))
             // Intercept messages sent by the proxy.
             .on_receive_dispatch(
                 async move |dispatch: Dispatch, _connection| {
@@ -933,8 +938,7 @@ where
                         .get_mut(&connection_id)
                         .ok_or_else(|| {
                             agent_client_protocol_core::util::internal_error(format!(
-                                "unknown connection id: {}",
-                                connection_id
+                                "unknown connection id: {connection_id}"
                             ))
                         })?
                         .send(Dispatch::Request(mcp_request, responder))
@@ -952,8 +956,7 @@ where
                     .get_mut(&connection_id)
                     .ok_or_else(|| {
                         agent_client_protocol_core::util::internal_error(format!(
-                            "unknown connection id: {}",
-                            connection_id
+                            "unknown connection id: {connection_id}"
                         ))
                     })?
                     .send(Dispatch::Notification(mcp_notification))
@@ -985,6 +988,7 @@ pub enum ComponentIndex {
 
 impl ComponentIndex {
     /// Return the index for the predecessor of `proxy_index`, which might be `Client`.
+    #[must_use]
     pub fn predecessor_of(proxy_index: usize) -> Self {
         match proxy_index.checked_sub(1) {
             Some(p_i) => ComponentIndex::Proxy(p_i),
@@ -993,6 +997,7 @@ impl ComponentIndex {
     }
 
     /// Return the index for the predecessor of `proxy_index`, which might be `Client`.
+    #[must_use]
     pub fn successor_of(proxy_index: usize, num_proxies: usize) -> Self {
         if proxy_index == num_proxies {
             ComponentIndex::Agent
@@ -1030,7 +1035,10 @@ pub trait InstantiateProxies: Send {
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol_core::Error>,
+        Result<
+            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
+            agent_client_protocol_core::Error,
+        >,
     >;
 }
 
@@ -1046,7 +1054,10 @@ where
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol_core::Error>,
+        Result<
+            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
+            agent_client_protocol_core::Error,
+        >,
     > {
         Box::pin(async move {
             let components: Vec<DynConnectTo<Conductor>> =
@@ -1061,7 +1072,10 @@ impl<F, Fut> InstantiateProxies for F
 where
     F: FnOnce(InitializeRequest) -> Fut + Send + 'static,
     Fut: std::future::Future<
-            Output = Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol_core::Error>,
+            Output = Result<
+                (InitializeRequest, Vec<DynConnectTo<Conductor>>),
+                agent_client_protocol_core::Error,
+            >,
         > + Send
         + 'static,
 {
@@ -1070,7 +1084,10 @@ where
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol_core::Error>,
+        Result<
+            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
+            agent_client_protocol_core::Error,
+        >,
     > {
         Box::pin(async move { (*self)(req).await })
     }

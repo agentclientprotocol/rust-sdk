@@ -3,10 +3,10 @@
 //! These tests verify that `McpServer` can be used directly with MCP clients
 //! via the `Component<McpServerToClient>` implementation.
 
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo};
 use agent_client_protocol_core::{
     ByteStreams, ConnectTo, RunWithConnectionTo, mcp_server::McpServer, role::mcp, util::run_until,
 };
+use rmcp::{ClientHandler, ServiceExt, model::ClientInfo};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -100,7 +100,10 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
             assert!(tool_names.contains(&"add"));
 
             // Clean up
-            client.cancel().await.map_err(agent_client_protocol_core::util::internal_error)?;
+            client
+                .cancel()
+                .await
+                .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
     )
@@ -147,7 +150,10 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
 
             assert_eq!(text, r#""Echo: hello world""#, "Unexpected echo response");
 
-            client.cancel().await.map_err(agent_client_protocol_core::util::internal_error)?;
+            client
+                .cancel()
+                .await
+                .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
     )
@@ -192,12 +198,15 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
             let content = result.content.first().expect("Expected content");
             let text = content.raw.as_text().expect("Expected text content");
             assert!(
-                text.text.contains("8") || text.text.contains("result"),
+                text.text.contains('8') || text.text.contains("result"),
                 "Expected result to contain 8, got: {}",
                 text.text
             );
 
-            client.cancel().await.map_err(agent_client_protocol_core::util::internal_error)?;
+            client
+                .cancel()
+                .await
+                .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
     )
@@ -229,7 +238,10 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
             // Should get an error
             assert!(result.is_err(), "Expected error for non-existent tool");
 
-            client.cancel().await.map_err(agent_client_protocol_core::util::internal_error)?;
+            client
+                .cancel()
+                .await
+                .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
     )
@@ -237,7 +249,8 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
 }
 
 #[tokio::test]
-async fn test_standalone_server_with_disabled_tools() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_with_disabled_tools()
+-> Result<(), agent_client_protocol_core::Error> {
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
@@ -295,7 +308,10 @@ async fn test_standalone_server_with_disabled_tools() -> Result<(), agent_client
 
             assert!(result.is_err(), "Expected error for disabled tool");
 
-            client.cancel().await.map_err(agent_client_protocol_core::util::internal_error)?;
+            client
+                .cancel()
+                .await
+                .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
     )

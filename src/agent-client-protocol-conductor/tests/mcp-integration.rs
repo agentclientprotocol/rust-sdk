@@ -7,15 +7,15 @@
 
 mod mcp_integration;
 
-use futures::{SinkExt, StreamExt, channel::mpsc};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::Agent;
 use agent_client_protocol_core::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     SessionNotification, TextContent,
 };
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -26,9 +26,11 @@ async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
 ) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 fn conductor_command() -> Vec<String> {
@@ -39,7 +41,9 @@ fn conductor_command() -> Vec<String> {
 async fn run_test_with_mode(
     mode: McpBridgeMode,
     components: ProxiesAndAgent,
-    editor_task: impl AsyncFnOnce(agent_client_protocol_core::ConnectionTo<Agent>) -> Result<(), agent_client_protocol_core::Error>,
+    editor_task: impl AsyncFnOnce(
+        agent_client_protocol_core::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error>,
 ) -> Result<(), agent_client_protocol_core::Error> {
     // Initialize tracing for debug output
     let _ = tracing_subscriber::fmt()
@@ -51,7 +55,8 @@ async fn run_test_with_mode(
     let (editor_out, conductor_in) = duplex(1024);
     let (conductor_out, editor_in) = duplex(1024);
 
-    let transport = agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol_core::Client
         .builder()
@@ -85,8 +90,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             // Send session/new request
@@ -98,8 +102,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 
             assert!(
                 session_response.is_ok(),
-                "Session/new should succeed: {:?}",
-                session_response
+                "Session/new should succeed: {session_response:?}"
             );
 
             let session = session_response.unwrap();
@@ -129,8 +132,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             // Send session/new request
@@ -142,8 +144,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 
             assert!(
                 session_response.is_ok(),
-                "Session/new should succeed: {:?}",
-                session_response
+                "Session/new should succeed: {session_response:?}"
             );
 
             let session = session_response.unwrap();
@@ -194,7 +195,8 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
         .on_receive_notification(
             {
                 let mut log_tx = log_tx.clone();
-                async move |notification: SessionNotification, _cx: agent_client_protocol_core::ConnectionTo<Agent>| {
+                async move |notification: SessionNotification,
+                            _cx: agent_client_protocol_core::ConnectionTo<Agent>| {
                     // Log the notification in debug format
                     log_tx
                         .send(format!("{notification:?}"))
@@ -205,7 +207,10 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
             agent_client_protocol_core::on_receive_notification!(),
         )
         .connect_with(
-            agent_client_protocol_core::ByteStreams::new(client_write.compat_write(), client_read.compat()),
+            agent_client_protocol_core::ByteStreams::new(
+                client_write.compat_write(),
+                client_read.compat(),
+            ),
             async |connection_to_editor| {
                 // Initialize
                 recv(

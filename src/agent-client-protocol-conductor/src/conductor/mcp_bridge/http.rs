@@ -1,3 +1,4 @@
+use agent_client_protocol_core::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
 use axum::{
     Router,
     extract::State,
@@ -9,7 +10,6 @@ use futures::{SinkExt, StreamExt as _, channel::mpsc, future::Either, stream::St
 use futures_concurrency::future::FutureExt as _;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
-use agent_client_protocol_core::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
 use std::{collections::VecDeque, pin::pin, sync::Arc};
 use tokio::net::TcpListener;
 
@@ -32,7 +32,7 @@ pub async fn run_http_listener(
     // back and forth.
     conductor_tx
         .send(ConductorMessage::McpConnectionReceived {
-            acp_url: acp_url,
+            acp_url,
             actor: McpBridgeConnectionActor::new(
                 HttpMcpBridge::new(tcp_listener),
                 conductor_tx.clone(),
@@ -59,7 +59,10 @@ impl HttpMcpBridge {
 }
 
 impl ConnectTo<mcp::Client> for HttpMcpBridge {
-    async fn connect_to(self, client: impl ConnectTo<mcp::Server>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<mcp::Server>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
             Either::Left((result, _)) => result,
@@ -67,7 +70,12 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), agent_client_protocol_core::Error>>)
+    fn into_channel_and_future(
+        self,
+    ) -> (
+        Channel,
+        BoxFuture<'static, Result<(), agent_client_protocol_core::Error>>,
+    )
     where
         Self: Sized,
     {
@@ -96,7 +104,10 @@ impl IntoResponse for HttpError {
 
 /// Run a webserver listening on `listener` for HTTP requests at `/`
 /// and communicating those requests over `channel` to the JSON-RPC server.
-async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client_protocol_core::Error> {
+async fn run(
+    listener: TcpListener,
+    channel: Channel,
+) -> Result<(), agent_client_protocol_core::Error> {
     let (registration_tx, registration_rx) = mpsc::unbounded();
 
     let state = BridgeState { registration_tx };
@@ -209,7 +220,12 @@ impl RunningServer {
         #[derive(Debug)]
         enum MultiplexMessage {
             FromHttpToChannel(HttpMessage),
-            FromChannelToHttp(Result<agent_client_protocol_core::jsonrpcmsg::Message, agent_client_protocol_core::Error>),
+            FromChannelToHttp(
+                Result<
+                    agent_client_protocol_core::jsonrpcmsg::Message,
+                    agent_client_protocol_core::Error,
+                >,
+            ),
         }
 
         let mut merged_stream = http_rx
@@ -222,15 +238,17 @@ impl RunningServer {
             match message {
                 MultiplexMessage::FromHttpToChannel(http_message) => {
                     self.handle_http_message(http_message, &mut channel.tx)
-                        .await?
+                        .await?;
                 }
 
                 MultiplexMessage::FromChannelToHttp(message) => {
                     let message = message.unwrap_or_else(|err| {
-                        agent_client_protocol_core::jsonrpcmsg::Message::Response(agent_client_protocol_core::jsonrpcmsg::Response::error(
-                            agent_client_protocol_core::util::into_jsonrpc_error(err),
-                            None,
-                        ))
+                        agent_client_protocol_core::jsonrpcmsg::Message::Response(
+                            agent_client_protocol_core::jsonrpcmsg::Response::error(
+                                agent_client_protocol_core::util::into_jsonrpc_error(err),
+                                None,
+                            ),
+                        )
                     });
                     tracing::debug!(
                         queue_len = self.message_deque.len() + 1,
@@ -253,7 +271,12 @@ impl RunningServer {
     async fn handle_http_message(
         &mut self,
         message: HttpMessage,
-        channel_tx: &mut mpsc::UnboundedSender<Result<agent_client_protocol_core::jsonrpcmsg::Message, agent_client_protocol_core::Error>>,
+        channel_tx: &mut mpsc::UnboundedSender<
+            Result<
+                agent_client_protocol_core::jsonrpcmsg::Message,
+                agent_client_protocol_core::Error,
+            >,
+        >,
     ) -> Result<(), agent_client_protocol_core::Error> {
         match message {
             HttpMessage::Request {
@@ -367,13 +390,13 @@ impl RunningServer {
     async fn try_dispatch_jsonrpc_message(
         &mut self,
         mut message: agent_client_protocol_core::jsonrpcmsg::Message,
-    ) -> Result<Option<agent_client_protocol_core::jsonrpcmsg::Message>, agent_client_protocol_core::Error> {
+    ) -> Result<
+        Option<agent_client_protocol_core::jsonrpcmsg::Message>,
+        agent_client_protocol_core::Error,
+    > {
         // Extract the id of the message we are replying to, if any
         let message_id = match &message {
-            Message::Response(response) => match &response.id {
-                Some(v) => Some(v.clone().into()),
-                None => None,
-            },
+            Message::Response(response) => response.id.as_ref().map(|v| v.clone().into()),
             Message::Request(_) => None,
         };
 
@@ -381,25 +404,25 @@ impl RunningServer {
 
         // If there is a specific id, try to send the message to that sender.
         // This also removes them from the list of waiting sessions.
-        if let Some(ref message_id) = message_id {
-            if let Some(session) = self.waiting_sessions.remove(message_id) {
-                tracing::debug!(session_id = %session.id, "found waiting session, attempting send");
+        if let Some(ref message_id) = message_id
+            && let Some(session) = self.waiting_sessions.remove(message_id)
+        {
+            tracing::debug!(session_id = %session.id, "found waiting session, attempting send");
 
-                match session.outgoing_tx.unbounded_send(message) {
-                    // Successfully sent the message, return
-                    Ok(()) => {
-                        tracing::debug!(session_id = %session.id, "sent to waiting session");
-                        return Ok(None);
-                    }
+            match session.outgoing_tx.unbounded_send(message) {
+                // Successfully sent the message, return
+                Ok(()) => {
+                    tracing::debug!(session_id = %session.id, "sent to waiting session");
+                    return Ok(None);
+                }
 
-                    // If the sender died, just recover the message and send it to anyone.
-                    Err(m) => {
-                        tracing::debug!(session_id = %session.id, "waiting session disconnected");
-                        // If that sender is dead, remove them from the list
-                        // and recover the message.
-                        assert!(m.is_disconnected());
-                        message = m.into_inner();
-                    }
+                // If the sender died, just recover the message and send it to anyone.
+                Err(m) => {
+                    tracing::debug!(session_id = %session.id, "waiting session disconnected");
+                    // If that sender is dead, remove them from the list
+                    // and recover the message.
+                    assert!(m.is_disconnected());
+                    message = m.into_inner();
                 }
             }
         }
@@ -451,7 +474,9 @@ struct RegisteredSession {
 }
 
 impl RegisteredSession {
-    fn new(outgoing_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>) -> Self {
+    fn new(
+        outgoing_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             outgoing_tx,

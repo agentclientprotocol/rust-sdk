@@ -5,12 +5,12 @@
 //! 2. Multi-component chains: proxies receive `InitializeProxyRequest`
 //! 3. Last component (agent) receives `InitializeRequest`
 
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::schema::{
     AgentCapabilities, InitializeProxyRequest, InitializeRequest, InitializeResponse,
     ProtocolVersion,
 };
 use agent_client_protocol_core::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::Testy;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -24,9 +24,11 @@ async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
 ) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 /// Tracks what type of initialization request was received
@@ -69,7 +71,10 @@ impl InitComponent {
 }
 
 impl ConnectTo<Conductor> for InitComponent {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         let config = self.config;
         let config2 = Arc::clone(&config);
 
@@ -114,13 +119,16 @@ impl ConnectTo<Conductor> for InitComponent {
 
 async fn run_test_with_components(
     proxies: Vec<InitComponent>,
-    editor_task: impl AsyncFnOnce(agent_client_protocol_core::ConnectionTo<Agent>) -> Result<(), agent_client_protocol_core::Error>,
+    editor_task: impl AsyncFnOnce(
+        agent_client_protocol_core::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error>,
 ) -> Result<(), agent_client_protocol_core::Error> {
     // Set up editor <-> conductor communication
     let (editor_out, conductor_in) = duplex(1024);
     let (conductor_out, editor_in) = duplex(1024);
 
-    let transport = agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol_core::Client
         .builder()
@@ -142,7 +150,8 @@ async fn run_test_with_components(
 }
 
 #[tokio::test]
-async fn test_single_component_gets_initialize_request() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_single_component_gets_initialize_request()
+-> Result<(), agent_client_protocol_core::Error> {
     // Single component (agent) should receive InitializeRequest - we use ElizaAgent
     // which properly handles InitializeRequest
     run_test_with_components(vec![], async |connection_to_editor| {
@@ -153,8 +162,7 @@ async fn test_single_component_gets_initialize_request() -> Result<(), agent_cli
 
         assert!(
             init_response.is_ok(),
-            "Initialize should succeed: {:?}",
-            init_response
+            "Initialize should succeed: {init_response:?}"
         );
 
         Ok::<(), agent_client_protocol_core::Error>(())
@@ -165,7 +173,8 @@ async fn test_single_component_gets_initialize_request() -> Result<(), agent_cli
 }
 
 #[tokio::test]
-async fn test_two_components_proxy_gets_initialize_proxy() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_two_components_proxy_gets_initialize_proxy()
+-> Result<(), agent_client_protocol_core::Error> {
     // First component (proxy) gets InitializeProxyRequest
     // Second component (agent, ElizaAgent) gets InitializeRequest
     let component1 = InitConfig::new();
@@ -180,8 +189,7 @@ async fn test_two_components_proxy_gets_initialize_proxy() -> Result<(), agent_c
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             Ok::<(), agent_client_protocol_core::Error>(())
@@ -202,7 +210,8 @@ async fn test_two_components_proxy_gets_initialize_proxy() -> Result<(), agent_c
 }
 
 #[tokio::test]
-async fn test_three_components_all_proxies_get_initialize_proxy() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_three_components_all_proxies_get_initialize_proxy()
+-> Result<(), agent_client_protocol_core::Error> {
     // First two components (proxies) get InitializeProxyRequest
     // Third component (agent, ElizaAgent) gets InitializeRequest
     let component1 = InitConfig::new();
@@ -221,8 +230,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy() -> Result<(), 
 
             assert!(
                 init_response.is_ok(),
-                "Initialize should succeed: {:?}",
-                init_response
+                "Initialize should succeed: {init_response:?}"
             );
 
             Ok::<(), agent_client_protocol_core::Error>(())
@@ -252,7 +260,10 @@ async fn test_three_components_all_proxies_get_initialize_proxy() -> Result<(), 
 struct BadProxy;
 
 impl ConnectTo<Conductor> for BadProxy {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         Proxy
             .builder()
             .name("bad-proxy")
@@ -277,12 +288,15 @@ impl ConnectTo<Conductor> for BadProxy {
 async fn run_bad_proxy_test(
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,
-    editor_task: impl AsyncFnOnce(agent_client_protocol_core::ConnectionTo<Agent>) -> Result<(), agent_client_protocol_core::Error>,
+    editor_task: impl AsyncFnOnce(
+        agent_client_protocol_core::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error>,
 ) -> Result<(), agent_client_protocol_core::Error> {
     let (editor_out, conductor_in) = duplex(1024);
     let (conductor_out, editor_in) = duplex(1024);
 
-    let transport = agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol_core::Client
         .builder()
@@ -304,7 +318,8 @@ async fn run_bad_proxy_test(
 }
 
 #[tokio::test]
-async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
+-> Result<(), agent_client_protocol_core::Error> {
     // BadProxy incorrectly forwards InitializeProxyRequest to the agent.
     // The conductor should reject this with an error.
     let result = run_bad_proxy_test(
@@ -319,8 +334,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent() -> Result<
             if let Err(err) = init_response {
                 assert!(
                     err.to_string().contains("initialize/proxy"),
-                    "Error should mention initialize/proxy: {:?}",
-                    err
+                    "Error should mention initialize/proxy: {err:?}"
                 );
             }
 
@@ -334,8 +348,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent() -> Result<
         Err(err) => {
             assert!(
                 err.to_string().contains("initialize/proxy"),
-                "Error should mention initialize/proxy: {:?}",
-                err
+                "Error should mention initialize/proxy: {err:?}"
             );
         }
     }
@@ -344,7 +357,8 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent() -> Result<
 }
 
 #[tokio::test]
-async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
+-> Result<(), agent_client_protocol_core::Error> {
     // BadProxy incorrectly forwards InitializeProxyRequest to another proxy.
     // The conductor should reject this with an error.
     let result = run_bad_proxy_test(
@@ -363,8 +377,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy() -> Result<
             if let Err(err) = init_response {
                 assert!(
                     err.to_string().contains("initialize/proxy"),
-                    "Error should mention initialize/proxy: {:?}",
-                    err
+                    "Error should mention initialize/proxy: {err:?}"
                 );
             }
 
@@ -379,8 +392,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy() -> Result<
         Err(err) => {
             assert!(
                 err.to_string().contains("initialize/proxy"),
-                "Error should mention initialize/proxy: {:?}",
-                err
+                "Error should mention initialize/proxy: {err:?}"
             );
         }
     }

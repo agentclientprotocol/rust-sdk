@@ -21,14 +21,19 @@ impl JsonRpcMessage for EchoRequestResponse {
         "echo"
     }
 
-    fn to_untyped_message(&self) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
         Ok(agent_client_protocol_core::UntypedMessage {
             method: self.method().to_string(),
             params: agent_client_protocol_core::util::json_cast(self)?,
         })
     }
 
-    fn parse_message(method: &str, params: &impl serde::Serialize) -> Result<Self, agent_client_protocol_core::Error> {
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
         if !<Self as JsonRpcMessage>::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
@@ -37,11 +42,17 @@ impl JsonRpcMessage for EchoRequestResponse {
 }
 
 impl JsonRpcResponse for EchoRequestResponse {
-    fn into_json(self, _method: &str) -> Result<serde_json::Value, agent_client_protocol_core::Error> {
+    fn into_json(
+        self,
+        _method: &str,
+    ) -> Result<serde_json::Value, agent_client_protocol_core::Error> {
         agent_client_protocol_core::util::json_cast(self)
     }
 
-    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, agent_client_protocol_core::Error> {
+    fn from_value(
+        _method: &str,
+        value: serde_json::Value,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
         agent_client_protocol_core::util::json_cast(value)
     }
 }
@@ -79,7 +90,10 @@ async fn modify_message_en_route() -> Result<(), agent_client_protocol_core::Err
     struct TestComponent;
 
     impl ConnectTo<UntypedRole> for TestComponent {
-        async fn connect_to(self, client: impl ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol_core::Error> {
+        async fn connect_to(
+            self,
+            client: impl ConnectTo<UntypedRole>,
+        ) -> Result<(), agent_client_protocol_core::Error> {
             UntypedRole
                 .builder()
                 .with_handler(PushHandler {
@@ -149,7 +163,10 @@ async fn modify_message_en_route_inline() -> Result<(), agent_client_protocol_co
     struct TestComponent;
 
     impl ConnectTo<UntypedRole> for TestComponent {
-        async fn connect_to(self, client: impl ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol_core::Error> {
+        async fn connect_to(
+            self,
+            client: impl ConnectTo<UntypedRole>,
+        ) -> Result<(), agent_client_protocol_core::Error> {
             UntypedRole
                 .builder()
                 .on_receive_request(
@@ -202,7 +219,10 @@ async fn modify_message_and_stop() -> Result<(), agent_client_protocol_core::Err
     struct TestComponent;
 
     impl ConnectTo<UntypedRole> for TestComponent {
-        async fn connect_to(self, client: impl ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol_core::Error> {
+        async fn connect_to(
+            self,
+            client: impl ConnectTo<UntypedRole>,
+        ) -> Result<(), agent_client_protocol_core::Error> {
             UntypedRole
                 .builder()
                 .on_receive_request(

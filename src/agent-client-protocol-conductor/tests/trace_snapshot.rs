@@ -5,14 +5,14 @@
 //!
 //! Run `just prep-tests` before running this test.
 
-use expect_test::expect;
-use futures::StreamExt;
-use futures::channel::mpsc;
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use agent_client_protocol_tokio::AcpAgent;
+use expect_test::expect;
+use futures::StreamExt;
+use futures::channel::mpsc;
 use std::collections::HashMap;
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -160,7 +160,10 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> 
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         agent_client_protocol_yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+            agent_client_protocol_core::ByteStreams::new(
+                editor_write.compat_write(),
+                editor_read.compat(),
+            ),
             TestyCommand::Greet.to_prompt(),
         )
         .await
@@ -308,7 +311,7 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> 
     "#]]
     .assert_debug_eq(&events);
 
-    println!("Response: {}", result);
+    println!("Response: {result}");
 
     Ok(())
 }

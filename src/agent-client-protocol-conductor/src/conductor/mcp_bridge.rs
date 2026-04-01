@@ -5,9 +5,9 @@ pub mod stdio;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use futures::{SinkExt, channel::mpsc};
 use agent_client_protocol_core::schema::{McpServer, McpServerHttp, McpServerStdio};
 use agent_client_protocol_core::{ConnectionTo, Dispatch, Role};
+use futures::{SinkExt, channel::mpsc};
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -40,7 +40,10 @@ impl McpBridgeConnection {
         Self { to_mcp_client_tx }
     }
 
-    pub async fn send(&mut self, message: Dispatch) -> Result<(), agent_client_protocol_core::Error> {
+    pub async fn send(
+        &mut self,
+        message: Dispatch,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         self.to_mcp_client_tx
             .send(message)
             .await

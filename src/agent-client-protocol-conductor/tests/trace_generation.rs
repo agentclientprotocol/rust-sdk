@@ -55,7 +55,10 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = agent_client_protocol_yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+            agent_client_protocol_core::ByteStreams::new(
+                editor_write.compat_write(),
+                editor_read.compat(),
+            ),
             TestyCommand::Greet.to_prompt(),
         )
         .await?;
@@ -89,10 +92,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
             .get("protocol")
             .and_then(|v| v.as_str())
             .unwrap_or("acp");
-        println!(
-            "  [{}] {} {} -> {} {} ({})",
-            i, event_type, from, to, method, protocol
-        );
+        println!("  [{i}] {event_type} {from} -> {to} {method} ({protocol})");
     }
 
     // Verify we got some events
@@ -113,20 +113,18 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
     for event in &events {
         assert!(
             event.get("ts").is_some(),
-            "Event missing 'ts' field: {:?}",
-            event
+            "Event missing 'ts' field: {event:?}"
         );
         assert!(
             event.get("type").is_some(),
-            "Event missing 'type' field: {:?}",
-            event
+            "Event missing 'type' field: {event:?}"
         );
     }
 
     // Clean up
     let _ = std::fs::remove_file(&trace_path);
 
-    println!("Test passed! Response: {}", result);
+    println!("Test passed! Response: {result}");
 
     Ok(())
 }

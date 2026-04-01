@@ -280,10 +280,11 @@ where
             .if_message_from(Agent, async |message| {
                 // If this is for our session-id, proxy it to the client.
                 if let Some(session_id) = message.get_session_id()?
-                    && session_id == self.session_id {
-                        connection.send_proxied_message_to(Client, message)?;
-                        return Ok(Handled::Yes);
-                    }
+                    && session_id == self.session_id
+                {
+                    connection.send_proxied_message_to(Client, message)?;
+                    return Ok(Handled::Yes);
+                }
 
                 // Otherwise, leave it alone.
                 Ok(Handled::No {

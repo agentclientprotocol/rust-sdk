@@ -5,13 +5,13 @@
 //! `Handled::No`, which prevented downstream `.on_receive_request_from()` handlers
 //! from being invoked.
 
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
     NewSessionResponse, ProtocolVersion, SessionId,
 };
 use agent_client_protocol_core::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -39,9 +39,11 @@ async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
 ) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 /// Tracks whether the NewSessionRequest handler was invoked
@@ -68,7 +70,10 @@ struct ProxyWithMcpAndHandler {
 }
 
 impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         let config = Arc::clone(&self.config);
 
         // Create an MCP server with a simple tool
@@ -118,7 +123,10 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
 struct SimpleAgent;
 
 impl ConnectTo<Client> for SimpleAgent {
-    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         Agent
             .builder()
             .name("simple-agent")
@@ -147,12 +155,15 @@ impl ConnectTo<Client> for SimpleAgent {
 async fn run_test(
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,
-    editor_task: impl AsyncFnOnce(agent_client_protocol_core::ConnectionTo<Agent>) -> Result<(), agent_client_protocol_core::Error>,
+    editor_task: impl AsyncFnOnce(
+        agent_client_protocol_core::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error>,
 ) -> Result<(), agent_client_protocol_core::Error> {
     let (editor_out, conductor_in) = duplex(1024);
     let (conductor_out, editor_in) = duplex(1024);
 
-    let transport = agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol_core::Client
         .builder()
@@ -175,7 +186,8 @@ async fn run_test(
 
 /// Regression test: NewSessionRequest handler should be invoked even when MCP server is present
 #[tokio::test]
-async fn test_new_session_handler_invoked_with_mcp_server() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_new_session_handler_invoked_with_mcp_server()
+-> Result<(), agent_client_protocol_core::Error> {
     let handler_config = HandlerConfig::new();
     let handler_config_clone = Arc::clone(&handler_config);
 

@@ -3,9 +3,9 @@
 //! This test verifies that `tool_fn` works correctly for stateless tools
 //! that don't need mutable state.
 
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -40,7 +40,10 @@ struct ProxyWithGreetServer<R: RunWithConnectionTo<Conductor>> {
 impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
     for ProxyWithGreetServer<R>
 {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         Proxy
             .builder()
             .name("greet-proxy")

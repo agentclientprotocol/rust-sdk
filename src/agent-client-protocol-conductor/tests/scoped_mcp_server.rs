@@ -4,9 +4,9 @@
 //! can capture references to stack-local data (like a Vec) and push to it
 //! when the tool is invoked.
 
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Agent, Conductor, ConnectTo, Proxy, Role, RunWithConnectionTo};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -95,8 +95,8 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
 
 struct ScopedProxy;
 
-fn make_mcp_server<'a, Counterpart: Role>(
-    values: &'a Mutex<Vec<String>>,
+fn make_mcp_server<Counterpart: Role>(
+    values: &Mutex<Vec<String>>,
 ) -> McpServer<Counterpart, impl RunWithConnectionTo<Counterpart>> {
     #[derive(Serialize, Deserialize, JsonSchema)]
     struct PushInput {
@@ -128,7 +128,10 @@ fn make_mcp_server<'a, Counterpart: Role>(
 }
 
 impl ConnectTo<Conductor> for ScopedProxy {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         // Stack-local data that the MCP tool will push to
         let values: Mutex<Vec<String>> = Mutex::new(Vec::new());
 

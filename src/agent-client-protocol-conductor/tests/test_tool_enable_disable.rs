@@ -3,9 +3,9 @@
 //! These tests verify that `disable_tool`, `enable_tool`, `disable_all_tools`,
 //! and `enable_all_tools` correctly filter which tools are visible and callable.
 
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,8 @@ struct GreetInput {
 struct EmptyInput {}
 
 /// Create a proxy with multiple tools, some disabled via deny-list
-fn create_proxy_with_disabled_tool() -> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
+fn create_proxy_with_disabled_tool()
+-> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
     let mcp_server = McpServer::builder("test_server".to_string())
         .instructions("Test MCP server with some disabled tools")
         .tool_fn(
@@ -55,7 +56,8 @@ fn create_proxy_with_disabled_tool() -> Result<DynConnectTo<Conductor>, agent_cl
 }
 
 /// Create a proxy where all tools are disabled except specific ones (allow-list)
-fn create_proxy_with_allowlist() -> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
+fn create_proxy_with_allowlist()
+-> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
     let mcp_server = McpServer::builder("allowlist_server".to_string())
         .instructions("Test MCP server with allow-list")
         .tool_fn(
@@ -88,7 +90,10 @@ struct TestProxy<R: RunWithConnectionTo<Conductor>> {
 }
 
 impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor> for TestProxy<R> {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         agent_client_protocol_core::Proxy
             .builder()
             .name("test-proxy")
@@ -147,8 +152,7 @@ async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_c
 
     assert!(
         result.contains("Echo: hello"),
-        "Expected echo response, got: {}",
-        result
+        "Expected echo response, got: {result}"
     );
 
     Ok(())
@@ -174,8 +178,7 @@ async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_proto
     // Should get an error about tool not found
     assert!(
         result.contains("not found") || result.contains("error"),
-        "Expected error for disabled tool, got: {}",
-        result
+        "Expected error for disabled tool, got: {result}"
     );
 
     Ok(())
@@ -186,7 +189,8 @@ async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_proto
 // ============================================================================
 
 #[tokio::test]
-async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_protocol_core::Error>
+{
     let result = agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
@@ -233,15 +237,15 @@ async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol
 
     assert!(
         result.contains("Echo: allowed"),
-        "Expected echo response, got: {}",
-        result
+        "Expected echo response, got: {result}"
     );
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_allowlist_non_enabled_tool_returns_not_found() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_allowlist_non_enabled_tool_returns_not_found()
+-> Result<(), agent_client_protocol_core::Error> {
     let result = agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
@@ -260,8 +264,7 @@ async fn test_allowlist_non_enabled_tool_returns_not_found() -> Result<(), agent
     // greet is registered but not enabled, should error
     assert!(
         result.contains("not found") || result.contains("error"),
-        "Expected error for non-enabled tool, got: {}",
-        result
+        "Expected error for non-enabled tool, got: {result}"
     );
 
     Ok(())

@@ -195,8 +195,6 @@ fn dispatch_from_request<Counterpart: Role>(
 ) -> Dispatch {
     let message = UntypedMessage::new(&request.method, &request.params).expect("well-formed JSON");
 
-    
-
     match &request.id {
         Some(id) => Dispatch::Request(
             message,

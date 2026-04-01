@@ -1,5 +1,5 @@
-use futures::{SinkExt, channel::mpsc};
 use agent_client_protocol_core::Dispatch;
+use futures::{SinkExt, channel::mpsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
@@ -47,7 +47,8 @@ fn make_stdio_actor(
     // Establish bidirectional JSON-RPC connection
     // The bridge will send MCP requests (tools/call, etc.) to the conductor
     // The conductor can also send responses back
-    let transport = agent_client_protocol_core::ByteStreams::new(write_half.compat_write(), read_half.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(write_half.compat_write(), read_half.compat());
 
     McpBridgeConnectionActor::new(transport, conductor_tx, to_mcp_client_rx)
 }

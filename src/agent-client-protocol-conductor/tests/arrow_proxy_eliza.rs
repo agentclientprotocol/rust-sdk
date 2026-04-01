@@ -15,7 +15,8 @@ use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test]
-async fn test_conductor_with_arrow_proxy_and_test_agent() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_conductor_with_arrow_proxy_and_test_agent()
+-> Result<(), agent_client_protocol_core::Error> {
     // Create the component chain: arrow_proxy -> test_agent
     // Uses pre-built binaries to avoid cargo run races during `cargo test --all`
     let arrow_proxy_agent =
@@ -43,7 +44,10 @@ async fn test_conductor_with_arrow_proxy_and_test_agent() -> Result<(), agent_cl
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = agent_client_protocol_yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+            agent_client_protocol_core::ByteStreams::new(
+                editor_write.compat_write(),
+                editor_read.compat(),
+            ),
             TestyCommand::Greet.to_prompt(),
         )
         .await?;
@@ -52,8 +56,7 @@ async fn test_conductor_with_arrow_proxy_and_test_agent() -> Result<(), agent_cl
 
         assert!(
             result.starts_with('>'),
-            "Expected response to start with '>' from arrow proxy, got: {}",
-            result
+            "Expected response to start with '>' from arrow proxy, got: {result}"
         );
 
         Ok::<String, agent_client_protocol_core::Error>(result)

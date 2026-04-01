@@ -9,15 +9,15 @@
 //! Unlike trace_mcp_tool_call.rs which tests proxy-hosted MCP servers, this test
 //! verifies that MCP requests travel all the way back to the client.
 
-use expect_test::expect;
-use futures::StreamExt;
-use futures::channel::mpsc;
+use agent_client_protocol_conductor::trace::TraceEvent;
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
 use agent_client_protocol_core::{Client, Role, RunWithConnectionTo};
-use agent_client_protocol_conductor::trace::TraceEvent;
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use expect_test::expect;
+use futures::StreamExt;
+use futures::channel::mpsc;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -246,7 +246,10 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core
             .builder()
             .name("test-client")
             .connect_with(
-                agent_client_protocol_core::ByteStreams::new(client_write.compat_write(), client_read.compat()),
+                agent_client_protocol_core::ByteStreams::new(
+                    client_write.compat_write(),
+                    client_read.compat(),
+                ),
                 async |cx| {
                     // Initialize
                     cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))

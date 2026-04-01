@@ -8,10 +8,10 @@
 //! 5. The tool returns the session_id in its response
 //! 6. We verify the session_ids match
 
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::RunWithConnectionTo;
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,10 @@ struct ProxyWithEchoServer<R: RunWithConnectionTo<Conductor>> {
 impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
     for ProxyWithEchoServer<R>
 {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         agent_client_protocol_core::Proxy
             .builder()
             .name("echo-proxy")
@@ -82,9 +85,9 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_c
     .await?;
 
     // Check the response using expect_test
-    expect![[r#"
+    expect![[r"
         Available tools:
-          - echo: Returns the current session_id"#]]
+          - echo: Returns the current session_id"]]
     .assert_eq(&result);
 
     Ok(())

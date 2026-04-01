@@ -8,9 +8,9 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use rustc_hash::FxHashMap;
 use agent_client_protocol_core::schema::{McpOverAcpMessage, SuccessorMessage};
 use agent_client_protocol_core::{DynConnectTo, JsonRpcMessage, Role, UntypedMessage, jsonrpcmsg};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::ComponentIndex;
@@ -141,8 +141,7 @@ impl<W: Write> EventWriter<W> {
 
 impl<W: Write + Send + 'static> WriteEvent for EventWriter<W> {
     fn write_event(&mut self, event: &TraceEvent) -> std::io::Result<()> {
-        serde_json::to_writer(&mut self.writer, event)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        serde_json::to_writer(&mut self.writer, event).map_err(std::io::Error::other)?;
         self.writer.write_all(b"\n")?;
         self.writer.flush()
     }
@@ -234,7 +233,7 @@ impl TraceWriter {
             from: format!("{from:?}"),
             to: format!("{to:?}"),
             id,
-            method: method.into(),
+            method,
             session,
             params,
         }));
@@ -339,7 +338,7 @@ impl TraceWriter {
 
                 match id {
                     Some(id) => {
-                        self.request(protocol, from, to, id_to_json(&id), method, None, params)
+                        self.request(protocol, from, to, id_to_json(&id), method, None, params);
                     }
                     None => {
                         self.notification(protocol, from, to, method, None, params);

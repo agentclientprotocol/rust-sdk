@@ -1,5 +1,7 @@
+use agent_client_protocol_core::{
+    ConnectTo, Dispatch, DynConnectTo, role::mcp, schema::McpDisconnectNotification,
+};
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
-use agent_client_protocol_core::{ConnectTo, Dispatch, DynConnectTo, role::mcp, schema::McpDisconnectNotification};
 use tracing::info;
 
 use crate::conductor::ConductorMessage;

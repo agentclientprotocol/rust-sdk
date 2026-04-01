@@ -22,7 +22,10 @@ struct EchoOutput {
 pub struct ProxyComponent;
 
 impl ConnectTo<Conductor> for ProxyComponent {
-    async fn connect_to(self, client: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         let test_server = McpServer::builder("test")
             .instructions("A simple test MCP server with an echo tool")
             .tool_fn_mut(

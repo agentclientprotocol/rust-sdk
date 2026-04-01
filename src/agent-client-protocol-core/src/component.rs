@@ -230,7 +230,7 @@ impl<R: Role> DynConnectTo<R> {
     }
 
     /// Returns the type name of the wrapped component.
-    #[must_use] 
+    #[must_use]
     pub fn type_name(&self) -> String {
         self.inner.type_name()
     }

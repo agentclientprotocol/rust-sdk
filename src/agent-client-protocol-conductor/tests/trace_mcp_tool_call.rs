@@ -10,16 +10,16 @@
 
 mod mcp_integration;
 
-use expect_test::expect;
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
+use agent_client_protocol_conductor::trace::TraceEvent;
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_core::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     SessionNotification, TextContent,
 };
-use agent_client_protocol_conductor::trace::TraceEvent;
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use expect_test::expect;
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -188,9 +188,11 @@ async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
 ) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 #[tokio::test]
@@ -241,7 +243,10 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Er
                 agent_client_protocol_core::on_receive_notification!(),
             )
             .connect_with(
-                agent_client_protocol_core::ByteStreams::new(client_write.compat_write(), client_read.compat()),
+                agent_client_protocol_core::ByteStreams::new(
+                    client_write.compat_write(),
+                    client_read.compat(),
+                ),
                 async |cx| {
                     // Initialize
                     recv(cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await?;

@@ -116,7 +116,7 @@ impl InstantiateProxies for CommandLineComponents {
         >,
     > {
         Box::pin(async move {
-            let proxies = self.0.into_iter().map(|c| DynConnectTo::new(c)).collect();
+            let proxies = self.0.into_iter().map(DynConnectTo::new).collect();
             Ok((req, proxies))
         })
     }
@@ -164,15 +164,14 @@ struct TraceHandleWriter(agent_client_protocol_trace_viewer::TraceHandle);
 
 impl trace::WriteEvent for TraceHandleWriter {
     fn write_event(&mut self, event: &trace::TraceEvent) -> std::io::Result<()> {
-        let value = serde_json::to_value(event)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let value = serde_json::to_value(event).map_err(std::io::Error::other)?;
         self.0.push(value);
         Ok(())
     }
 }
 
 /// Mode for the MCP bridge.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum McpBridgeMode {
     /// Use stdio-based MCP bridge with a conductor subprocess.
     Stdio {
@@ -182,13 +181,8 @@ pub enum McpBridgeMode {
     },
 
     /// Use HTTP-based MCP bridge
+    #[default]
     Http,
-}
-
-impl Default for McpBridgeMode {
-    fn default() -> Self {
-        McpBridgeMode::Http
-    }
 }
 
 #[derive(Parser, Debug)]
@@ -255,8 +249,7 @@ impl ConductorArgs {
     pub async fn main(self) -> anyhow::Result<()> {
         let pid = std::process::id();
         let cwd = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string());
+            .map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
 
         // Only set up tracing if --debug is enabled
         let debug_logger = if self.debug {
@@ -271,7 +264,7 @@ impl ConductorArgs {
             Some(
                 debug_logger::DebugLogger::new(self.debug_dir.clone(), &components)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create debug logger: {}", e))?,
+                    .map_err(|e| anyhow::anyhow!("Failed to create debug logger: {e}"))?,
             )
         } else {
             None
@@ -293,14 +286,14 @@ impl ConductorArgs {
                 .init();
 
             tracing::info!(pid = %pid, cwd = %cwd, level = %log_level, "Conductor starting with debug logging");
-        };
+        }
 
         // Set up tracing based on --trace and --serve flags
         let (trace_writer, _viewer_server) = match (&self.trace, self.serve) {
             // --trace only: write to file
             (Some(trace_path), false) => {
                 let writer = trace::TraceWriter::from_path(trace_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to create trace writer: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to create trace writer: {e}"))?;
                 (Some(writer), None)
             }
             // --serve only: in-memory with viewer
@@ -314,7 +307,7 @@ impl ConductorArgs {
             // --trace --serve: write to file and serve it
             (Some(trace_path), true) => {
                 let writer = trace::TraceWriter::from_path(trace_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to create trace writer: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Failed to create trace writer: {e}"))?;
                 let server = agent_client_protocol_trace_viewer::serve_file(
                     trace_path.clone(),
                     agent_client_protocol_trace_viewer::TraceViewerConfig::default(),
@@ -343,7 +336,7 @@ impl ConductorArgs {
                     trace_writer,
                     name,
                     components,
-                    |name, providers, mcp_mode| ConductorImpl::new_agent(name, providers, mcp_mode),
+                    ConductorImpl::new_agent,
                 )
                 .await
             }
@@ -353,7 +346,7 @@ impl ConductorArgs {
                     trace_writer,
                     name,
                     proxies,
-                    |name, providers, mcp_mode| ConductorImpl::new_proxy(name, providers, mcp_mode),
+                    ConductorImpl::new_proxy,
                 )
                 .await
             }
