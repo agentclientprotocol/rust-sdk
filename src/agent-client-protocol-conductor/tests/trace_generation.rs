@@ -58,7 +58,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
 
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(agent_client_protocol_yopo::prompt(
+        let result = Box::pin(yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),

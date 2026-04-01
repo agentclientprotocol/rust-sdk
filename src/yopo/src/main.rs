@@ -68,14 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("🚀 Spawning agent and running prompt...");
 
     // Use the library function with callback to print progressively
-    Box::pin(agent_client_protocol_yopo::prompt_with_callback(
+    Box::pin(yopo::prompt_with_callback(
         agent,
         prompt.as_str(),
         |block| async move {
-            print!(
-                "{}",
-                agent_client_protocol_yopo::content_block_to_string(&block)
-            );
+            print!("{}", yopo::content_block_to_string(&block));
         },
     ))
     .await?;

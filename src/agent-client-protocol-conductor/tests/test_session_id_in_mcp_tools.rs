@@ -71,7 +71,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_core::Error> {
     use expect_test::expect;
 
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
@@ -95,7 +95,7 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_c
 
 #[tokio::test]
 async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),

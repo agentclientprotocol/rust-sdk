@@ -29,7 +29,7 @@ agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version 
 agent-client-protocol-test = { path = "src/agent-client-protocol-test", version = "0.1.0" }
 agent-client-protocol-tokio = { path = "src/agent-client-protocol-tokio", version = "0.1.0" }
 agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.1.0" }
-agent-client-protocol-yopo = { path = "src/yopo", version = "0.1.0" }
+yopo = { package = "agent-client-protocol-yopo", path = "src/yopo", version = "0.1.0" }
 
 # Core async runtime
 tokio = { version = "1.48", features = ["full"] }

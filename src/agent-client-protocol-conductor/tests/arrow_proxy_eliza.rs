@@ -45,7 +45,7 @@ async fn test_conductor_with_arrow_proxy_and_test_agent()
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(agent_client_protocol_yopo::prompt(
+        let result = Box::pin(yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),

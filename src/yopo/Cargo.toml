@@ -9,6 +9,7 @@ homepage.workspace = true
 description = "YOPO (You Only Prompt Once) - A simple ACP client for one-shot prompts"
 
 [lib]
+name = "yopo"
 path = "src/lib.rs"
 
 [[bin]]

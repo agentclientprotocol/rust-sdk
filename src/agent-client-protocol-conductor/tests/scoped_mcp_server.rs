@@ -24,7 +24,7 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
         McpBridgeMode::default(),
     );
 
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         conductor,
         TestyCommand::CallTool {
             server: "test".to_string(),

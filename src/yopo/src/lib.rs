@@ -23,7 +23,7 @@ use std::path::PathBuf;
 /// # Example
 ///
 /// ```no_run
-/// use agent_client_protocol_yopo::content_block_to_string;
+/// use yopo::content_block_to_string;
 /// use agent_client_protocol_core::schema::{ContentBlock, TextContent};
 ///
 /// let block = ContentBlock::Text(TextContent::new("Hello".to_string()));
@@ -66,7 +66,7 @@ pub fn content_block_to_string(block: &ContentBlock) -> String {
 /// # Example
 ///
 /// ```ignore
-/// use agent_client_protocol_yopo::{prompt_with_callback, content_block_to_string};
+/// use yopo::{prompt_with_callback, content_block_to_string};
 /// use agent_client_protocol_tokio::AcpAgent;
 /// use std::str::FromStr;
 ///
@@ -199,7 +199,7 @@ pub async fn prompt_with_callback(
 /// # Example
 ///
 /// ```ignore
-/// use agent_client_protocol_yopo::prompt;
+/// use yopo::prompt;
 /// use agent_client_protocol_tokio::AcpAgent;
 /// use std::str::FromStr;
 ///

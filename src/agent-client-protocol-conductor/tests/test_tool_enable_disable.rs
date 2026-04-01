@@ -109,7 +109,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor> fo
 
 #[tokio::test]
 async fn test_list_tools_excludes_disabled() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -135,7 +135,7 @@ async fn test_list_tools_excludes_disabled() -> Result<(), agent_client_protocol
 
 #[tokio::test]
 async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -160,7 +160,7 @@ async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_c
 
 #[tokio::test]
 async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -191,7 +191,7 @@ async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_proto
 #[tokio::test]
 async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_protocol_core::Error>
 {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
@@ -220,7 +220,7 @@ async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_pr
 
 #[tokio::test]
 async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
@@ -246,7 +246,7 @@ async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol
 #[tokio::test]
 async fn test_allowlist_non_enabled_tool_returns_not_found()
 -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(agent_client_protocol_yopo::prompt(
+    let result = Box::pin(yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
