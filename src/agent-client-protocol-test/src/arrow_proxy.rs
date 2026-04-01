@@ -26,16 +26,14 @@ pub async fn run_arrow_proxy(
             Agent,
             async |mut notification: SessionNotification, cx| {
                 // Modify the content by adding > prefix
-                match &mut notification.update {
-                    SessionUpdate::AgentMessageChunk(ContentChunk { content, .. }) => {
-                        // Add > prefix to text content
-                        if let ContentBlock::Text(text_content) = content {
-                            text_content.text = format!(">{}", text_content.text);
-                        }
-                    }
-                    _ => {
-                        // Don't modify other update types
-                    }
+                if let SessionUpdate::AgentMessageChunk(ContentChunk { content, .. }) =
+                    &mut notification.update
+                    // Add > prefix to text content
+                    && let ContentBlock::Text(text_content) = content
+                {
+                    text_content.text = format!(">{}", text_content.text);
+                } else {
+                    // Don't modify other update types
                 }
 
                 // Forward modified notification to predecessor (client)

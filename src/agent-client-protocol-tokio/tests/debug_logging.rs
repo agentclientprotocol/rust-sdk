@@ -12,9 +12,11 @@ async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
 ) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 #[tokio::test]
@@ -55,15 +57,19 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
     let (client_out, agent_in) = duplex(1024);
     let (agent_out, client_in) = duplex(1024);
 
-    let transport = agent_client_protocol_core::ByteStreams::new(client_out.compat_write(), client_in.compat());
+    let transport =
+        agent_client_protocol_core::ByteStreams::new(client_out.compat_write(), client_in.compat());
 
-    Client
+    let client = Client
         .builder()
         .name("test-client")
         .with_spawned(|_cx| async move {
             ConnectTo::<Client>::connect_to(
                 agent,
-                agent_client_protocol_core::ByteStreams::new(agent_out.compat_write(), agent_in.compat()),
+                agent_client_protocol_core::ByteStreams::new(
+                    agent_out.compat_write(),
+                    agent_in.compat(),
+                ),
             )
             .await
         })
@@ -75,8 +81,8 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
             .await?;
 
             Ok(())
-        })
-        .await?;
+        });
+    Box::pin(client).await?;
 
     // Verify debug output was captured
     let logged_lines = debug_log.get_lines();
@@ -93,13 +99,11 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
 
     assert!(
         stdin_count > 0,
-        "Expected at least one stdin line, got {}",
-        stdin_count
+        "Expected at least one stdin line, got {stdin_count}"
     );
     assert!(
         stdout_count > 0,
-        "Expected at least one stdout line, got {}",
-        stdout_count
+        "Expected at least one stdout line, got {stdout_count}"
     );
 
     // Check that we logged the initialize request (contains "initialize" method)

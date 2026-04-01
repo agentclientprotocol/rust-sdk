@@ -7,6 +7,7 @@ pub mod testy;
 
 /// A mock transport for doctests that panics if actually used.
 /// This is only for documentation examples that don't actually run.
+#[derive(Debug)]
 pub struct MockTransport;
 
 impl<R: Role> ConnectTo<R> for MockTransport {
@@ -191,10 +192,12 @@ impl_jr_response_payload!(ExecuteResponse, "executeRequest");
 impl_jr_response_payload!(OtherResponse, "otherRequest");
 
 // Mock async functions
+#[expect(clippy::unused_async)]
 pub async fn expensive_analysis(_data: &str) -> Result<String, crate::Error> {
     Ok("analysis result".into())
 }
 
+#[expect(clippy::unused_async)]
 pub async fn expensive_operation(_data: &str) -> Result<String, crate::Error> {
     Ok("operation result".into())
 }

@@ -2,13 +2,13 @@
 //!
 //! The agent accepts JSON-serialized [`TestyCommand`] values as prompt text.
 
-use anyhow::Result;
 use agent_client_protocol_core::schema::{
     AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     McpServer, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
     SessionNotification, SessionUpdate, StopReason, TextContent,
 };
 use agent_client_protocol_core::{Agent, Client, ConnectTo, ConnectionTo, Responder};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -41,13 +41,14 @@ pub enum TestyCommand {
 
 impl TestyCommand {
     /// Serialize this command to a JSON string suitable for use as prompt text.
+    #[must_use]
     pub fn to_prompt(&self) -> String {
         serde_json::to_string(self).expect("TestyCommand serialization should not fail")
     }
 }
 
 /// Session data for each active session.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct SessionData {
     mcp_servers: Vec<McpServer>,
 }
@@ -57,12 +58,13 @@ struct SessionData {
 /// Implements `ConnectTo<Client>` and handles `InitializeRequest`, `NewSessionRequest`,
 /// and `PromptRequest`. Prompt text is parsed as a JSON [`TestyCommand`]; if parsing fails,
 /// the agent responds with `"Hello, world!"` (equivalent to [`TestyCommand::Greet`]).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Testy {
     sessions: Arc<Mutex<HashMap<SessionId, SessionData>>>,
 }
 
 impl Testy {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -106,14 +108,14 @@ impl Testy {
                 .execute_tool_call(&session_id, &server, &tool, params)
                 .await
             {
-                Ok(result) => format!("OK: {}", result),
-                Err(e) => format!("ERROR: {}", e),
+                Ok(result) => format!("OK: {result}"),
+                Err(e) => format!("ERROR: {e}"),
             },
 
             TestyCommand::ListTools { server } => {
                 match self.list_tools(&session_id, &server).await {
-                    Ok(tools) => format!("Available tools:\n{}", tools),
-                    Err(e) => format!("ERROR: {}", e),
+                    Ok(tools) => format!("Available tools:\n{tools}"),
+                    Err(e) => format!("ERROR: {e}"),
                 }
             }
         };
@@ -155,7 +157,7 @@ impl Testy {
                 McpServer::Sse(sse) => sse.name == server_name,
                 _ => false,
             })
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not found", server_name))?;
+            .ok_or_else(|| anyhow::anyhow!("MCP server '{server_name}' not found"))?;
 
         match mcp_server {
             McpServer::Stdio(stdio) => {
@@ -228,9 +230,15 @@ impl Testy {
 
             mcp_client.cancel().await?;
 
-            Ok(format!("{:?}", tool_result))
+            Ok(format!("{tool_result:?}"))
         })
         .await
+    }
+}
+
+impl Default for Testy {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -247,7 +255,10 @@ fn extract_text_from_prompt(blocks: &[ContentBlock]) -> String {
 }
 
 impl ConnectTo<Client> for Testy {
-    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol_core::Error> {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Agent>,
+    ) -> Result<(), agent_client_protocol_core::Error> {
         Agent
             .builder()
             .name("test-agent")
