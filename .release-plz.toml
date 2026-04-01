@@ -10,44 +10,12 @@ dependencies_update = true
 # Tag release PRs for visibility
 pr_labels = ["release"]
 
+# Override the default tag format for the original crate to preserve existing tag history
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
 
-[[package]]
-name = "agent-client-protocol-conductor"
-git_tag_name = "agent-client-protocol-conductor-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-cookbook"
-git_tag_name = "agent-client-protocol-cookbook-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-core"
-git_tag_name = "agent-client-protocol-core-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-derive"
-git_tag_name = "agent-client-protocol-derive-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-rmcp"
-git_tag_name = "agent-client-protocol-rmcp-v{{ version }}"
-
+# Don't publish test utilities to crates.io
 [[package]]
 name = "agent-client-protocol-test"
-git_tag_name = "agent-client-protocol-test-v{{ version }}"
-# Don't publish test utilities to crates.io
 publish = false
-
-[[package]]
-name = "agent-client-protocol-tokio"
-git_tag_name = "agent-client-protocol-tokio-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-trace-viewer"
-git_tag_name = "agent-client-protocol-trace-viewer-v{{ version }}"
-
-[[package]]
-name = "agent-client-protocol-yopo"
-git_tag_name = "agent-client-protocol-yopo-v{{ version }}"
