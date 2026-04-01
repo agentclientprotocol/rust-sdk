@@ -2,6 +2,7 @@
 members = [
     "src/agent-client-protocol",
     "src/agent-client-protocol-conductor",
+    "src/agent-client-protocol-cookbook",
     "src/agent-client-protocol-core",
     "src/agent-client-protocol-derive",
     "src/agent-client-protocol-rmcp",

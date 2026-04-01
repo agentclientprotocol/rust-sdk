@@ -62,6 +62,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-client-protocol-cookbook"
+version = "0.1.0"
+dependencies = [
+ "agent-client-protocol-conductor",
+ "agent-client-protocol-core",
+ "agent-client-protocol-rmcp",
+ "agent-client-protocol-tokio",
+ "rmcp",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "agent-client-protocol-core"
 version = "0.1.0"
 dependencies = [
