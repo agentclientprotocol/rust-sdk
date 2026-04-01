@@ -25,6 +25,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-client-protocol-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "agent-client-protocol-schema"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

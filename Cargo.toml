@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "src/agent-client-protocol",
+    "src/agent-client-protocol-derive",
 ]
 resolver = "3"
 
@@ -54,6 +55,11 @@ futures = "0.3.31"
 fxhash = "0.2.1"
 jsonrpcmsg = "0.1.2"
 
+
+# Proc macros
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
 
 # Testing
 expect-test = "1.5"

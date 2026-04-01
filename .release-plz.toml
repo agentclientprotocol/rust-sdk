@@ -4,3 +4,7 @@ git_release_type = "auto"
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
+
+[[package]]
+name = "agent-client-protocol-derive"
+git_tag_name = "agent-client-protocol-derive-v{{ version }}"
