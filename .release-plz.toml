@@ -8,3 +8,7 @@ git_tag_name = "v{{ version }}"
 [[package]]
 name = "agent-client-protocol-derive"
 git_tag_name = "agent-client-protocol-derive-v{{ version }}"
+
+[[package]]
+name = "agent-client-protocol-trace-viewer"
+git_tag_name = "agent-client-protocol-trace-viewer-v{{ version }}"

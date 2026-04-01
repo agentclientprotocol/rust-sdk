@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>SACP Trace Viewer</title>
+        <style>
+            * {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+
+            body {
+                font-family:
+                    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                    "Helvetica Neue", Arial, sans-serif;
+                background: #1e1e1e;
+                color: #d4d4d4;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+            }
+
+            header {
+                background: #252526;
+                padding: 12px 20px;
+                border-bottom: 1px solid #3c3c3c;
+                display: flex;
+                align-items: center;
+                gap: 20px;
+            }
+
+            header h1 {
+                font-size: 16px;
+                font-weight: 500;
+                color: #cccccc;
+            }
+
+            .controls {
+                display: flex;
+                gap: 12px;
+                align-items: center;
+            }
+
+            .controls label {
+                font-size: 13px;
+                color: #9d9d9d;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+
+            .controls input[type="checkbox"] {
+                accent-color: #0078d4;
+            }
+
+            .main-container {
+                display: flex;
+                flex-direction: column;
+                flex: 1;
+                overflow: hidden;
+            }
+
+            #diagram-container {
+                flex: 1;
+                overflow: auto;
+                padding: 20px;
+            }
+
+            #diagram {
+                min-width: 100%;
+            }
+
+            #detail-panel {
+                height: 200px;
+                background: #252526;
+                border-top: 1px solid #3c3c3c;
+                display: none;
+                flex-direction: column;
+                flex-shrink: 0;
+                position: relative;
+            }
+
+            #resize-handle {
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                height: 6px;
+                cursor: ns-resize;
+                background: transparent;
+            }
+
+            #resize-handle:hover {
+                background: #0078d4;
+            }
+
+            #detail-panel.visible {
+                display: flex;
+            }
+
+            #detail-panel header {
+                padding: 10px 16px;
+                border-bottom: 1px solid #3c3c3c;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+
+            #detail-panel header h2 {
+                font-size: 14px;
+                font-weight: 500;
+            }
+
+            #detail-panel .close-btn {
+                background: none;
+                border: none;
+                color: #9d9d9d;
+                cursor: pointer;
+                font-size: 18px;
+                padding: 4px 8px;
+            }
+
+            #detail-panel .close-btn:hover {
+                color: #ffffff;
+            }
+
+            #detail-content {
+                flex: 1;
+                overflow: auto;
+                padding: 16px;
+            }
+
+            #detail-content pre {
+                font-family:
+                    "SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas,
+                    monospace;
+                font-size: 12px;
+                line-height: 1.5;
+                white-space: pre-wrap;
+                word-break: break-all;
+            }
+
+            /* SVG styles */
+            .swimlane-header {
+                font-size: 12px;
+                font-weight: 600;
+                fill: #cccccc;
+            }
+
+            .swimlane-line {
+                stroke: #3c3c3c;
+                stroke-width: 1;
+            }
+
+            .active-span {
+                stroke-width: 4;
+                opacity: 0.6;
+            }
+
+            .message-arrow {
+                stroke-width: 2;
+                fill: none;
+                cursor: pointer;
+            }
+
+            .message-arrow:hover {
+                stroke-width: 3;
+            }
+
+            .hit-area {
+                stroke: transparent;
+                stroke-width: 16;
+                cursor: pointer;
+            }
+
+            .message-arrow.response {
+                stroke-dasharray: 5, 3;
+            }
+
+            .arrow-head {
+                fill: currentColor;
+            }
+
+            .message-label {
+                font-size: 11px;
+                fill: #d4d4d4;
+                cursor: pointer;
+            }
+
+            .message-label:hover {
+                fill: #ffffff;
+            }
+
+            .delta-time {
+                font-size: 9px;
+                fill: #6d6d6d;
+            }
+
+            .content-preview {
+                font-size: 10px;
+                color: #9d9d9d;
+                font-style: italic;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                text-align: center;
+            }
+
+            .selected .message-arrow {
+                stroke-width: 3;
+            }
+
+            .selected .message-label {
+                fill: #ffffff;
+                font-weight: 600;
+            }
+
+            /* Loading state */
+            .loading {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                height: 100%;
+                color: #9d9d9d;
+            }
+
+            .error-message {
+                color: #ef5350;
+                padding: 20px;
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <h1>SACP Trace Viewer</h1>
+            <div class="controls">
+                <label>
+                    <input type="checkbox" id="show-acp" checked />
+                    ACP
+                </label>
+                <label>
+                    <input type="checkbox" id="show-mcp" checked />
+                    MCP
+                </label>
+                <label>
+                    <input type="checkbox" id="show-responses" checked />
+                    Responses
+                </label>
+                <label>
+                    Width
+                    <input
+                        type="range"
+                        id="swimlane-width"
+                        min="80"
+                        max="300"
+                        value="150"
+                    />
+                </label>
+            </div>
+        </header>
+
+        <div class="main-container">
+            <div id="diagram-container">
+                <div class="loading">Loading trace...</div>
+            </div>
+
+            <div id="detail-panel">
+                <div id="resize-handle"></div>
+                <header>
+                    <h2 id="detail-title">Message Details</h2>
+                    <button class="close-btn" onclick="closeDetailPanel()">
+                        &times;
+                    </button>
+                </header>
+                <div id="detail-content">
+                    <pre id="detail-json"></pre>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            // Configuration
+            let SWIMLANE_WIDTH = 150;
+            const ROW_HEIGHT = 40;
+            const HEADER_HEIGHT = 40;
+            const PADDING = 20;
+
+            // State
+            let events = [];
+            let components = [];
+            let selectedEvent = null;
+
+            // Fetch and render events
+            async function loadEvents() {
+                try {
+                    const response = await fetch("/events");
+                    if (!response.ok) {
+                        throw new Error(
+                            `HTTP ${response.status}: ${await response.text()}`,
+                        );
+                    }
+                    events = await response.json();
+
+                    // Extract unique components in order of appearance
+                    const componentSet = new Set();
+                    for (const event of events) {
+                        if (event.from) componentSet.add(event.from);
+                        if (event.to) componentSet.add(event.to);
+                    }
+                    components = Array.from(componentSet);
+
+                    // Sort to put client first, agent last
+                    components.sort((a, b) => {
+                        if (a === "client") return -1;
+                        if (b === "client") return 1;
+                        if (a === "agent") return 1;
+                        if (b === "agent") return -1;
+                        return a.localeCompare(b);
+                    });
+
+                    render();
+                } catch (error) {
+                    document.getElementById("diagram-container").innerHTML =
+                        `<div class="error-message">Failed to load trace: ${error.message}</div>`;
+                }
+            }
+
+            // Rainbow color palette for request/response pairs
+            const RAINBOW_COLORS = [
+                "#ff6b6b", // red
+                "#ffa94d", // orange
+                "#ffd43b", // yellow
+                "#69db7c", // green
+                "#4dabf7", // blue
+                "#9775fa", // purple
+                "#f783ac", // pink
+                "#20c997", // teal
+                "#a9e34b", // lime
+                "#e599f7", // violet
+            ];
+
+            function getColor(index) {
+                return RAINBOW_COLORS[index % RAINBOW_COLORS.length];
+            }
+
+            // Render the sequence diagram
+            function render() {
+                const container = document.getElementById("diagram-container");
+                const showAcp = document.getElementById("show-acp").checked;
+                const showMcp = document.getElementById("show-mcp").checked;
+                const showResponses =
+                    document.getElementById("show-responses").checked;
+
+                // Filter events based on checkboxes
+                const filteredEvents = events.filter((event) => {
+                    if (event.type === "response" && !showResponses)
+                        return false;
+                    if (event.protocol === "acp" && !showAcp) return false;
+                    if (event.protocol === "mcp" && !showMcp) return false;
+                    // Responses inherit protocol from their request - for now show based on response checkbox
+                    if (event.type === "response") return showResponses;
+                    return true;
+                });
+
+                // Build request/response pairs and assign colors
+                const requestMap = new Map(); // id -> { request, requestIndex, response, responseIndex, color }
+                let colorIndex = 0;
+
+                filteredEvents.forEach((event, i) => {
+                    if (event.type === "request") {
+                        const key = `${event.to}:${JSON.stringify(event.id)}`;
+                        requestMap.set(key, {
+                            request: event,
+                            requestIndex: i,
+                            response: null,
+                            responseIndex: -1,
+                            color: getColor(colorIndex++),
+                        });
+                    } else if (event.type === "response") {
+                        const key = `${event.from}:${JSON.stringify(event.id)}`;
+                        if (requestMap.has(key)) {
+                            const pair = requestMap.get(key);
+                            pair.response = event;
+                            pair.responseIndex = i;
+                        }
+                    }
+                });
+
+                // Create a map from event index to its pair info
+                const eventToPair = new Map();
+                requestMap.forEach((pair) => {
+                    eventToPair.set(pair.requestIndex, pair);
+                    if (pair.responseIndex >= 0) {
+                        eventToPair.set(pair.responseIndex, pair);
+                    }
+                });
+
+                const width = components.length * SWIMLANE_WIDTH + PADDING * 2;
+                const height =
+                    HEADER_HEIGHT +
+                    filteredEvents.length * ROW_HEIGHT +
+                    PADDING * 2;
+
+                let svg = `<svg id="diagram" width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">`;
+
+                // Draw swimlane headers and base lines
+                components.forEach((comp, i) => {
+                    const x = PADDING + i * SWIMLANE_WIDTH + SWIMLANE_WIDTH / 2;
+                    svg += `<text x="${x}" y="${PADDING + 15}" text-anchor="middle" class="swimlane-header">${comp}</text>`;
+                    // Draw vertical line
+                    svg += `<line x1="${x}" y1="${HEADER_HEIGHT}" x2="${x}" y2="${height}" class="swimlane-line"/>`;
+                });
+
+                // Draw active spans (thickened timeline between request and response)
+                requestMap.forEach((pair) => {
+                    if (pair.response && pair.responseIndex >= 0) {
+                        const component = pair.request.to;
+                        const compIndex = components.indexOf(component);
+                        if (compIndex >= 0) {
+                            const x =
+                                PADDING +
+                                compIndex * SWIMLANE_WIDTH +
+                                SWIMLANE_WIDTH / 2;
+                            const y1 =
+                                HEADER_HEIGHT +
+                                pair.requestIndex * ROW_HEIGHT +
+                                ROW_HEIGHT / 2;
+                            const y2 =
+                                HEADER_HEIGHT +
+                                pair.responseIndex * ROW_HEIGHT +
+                                ROW_HEIGHT / 2;
+                            svg += `<line x1="${x}" y1="${y1}" x2="${x}" y2="${y2}" class="active-span" style="stroke: ${pair.color}"/>`;
+                        }
+                    }
+                });
+
+                // Track last event index for each component to show delta times
+                const lastEventIndex = new Map(); // component -> { index, ts }
+
+                // First pass: record which components are involved in each event
+                const eventComponents = filteredEvents.map((event) => {
+                    const involved = new Set();
+                    if (event.from) involved.add(event.from);
+                    if (event.to) involved.add(event.to);
+                    return involved;
+                });
+
+                // Draw delta times on component timelines
+                filteredEvents.forEach((event, i) => {
+                    const involved = eventComponents[i];
+                    const ts = event.ts || 0;
+
+                    involved.forEach((component) => {
+                        const compIndex = components.indexOf(component);
+                        if (compIndex < 0) return;
+
+                        const last = lastEventIndex.get(component);
+                        if (last && ts > last.ts) {
+                            const delta = ts - last.ts;
+                            const x =
+                                PADDING +
+                                compIndex * SWIMLANE_WIDTH +
+                                SWIMLANE_WIDTH / 2;
+                            const y1 =
+                                HEADER_HEIGHT +
+                                last.index * ROW_HEIGHT +
+                                ROW_HEIGHT / 2 +
+                                8;
+                            const y2 =
+                                HEADER_HEIGHT +
+                                i * ROW_HEIGHT +
+                                ROW_HEIGHT / 2 -
+                                8;
+                            const yMid = (y1 + y2) / 2;
+
+                            svg += `<text x="${x + 8}" y="${yMid + 3}" text-anchor="start" class="delta-time">${formatDelta(delta)}</text>`;
+                        }
+
+                        // Update last event for this component
+                        lastEventIndex.set(component, { index: i, ts });
+                    });
+                });
+
+                // Draw messages
+                filteredEvents.forEach((event, i) => {
+                    const y = HEADER_HEIGHT + i * ROW_HEIGHT + ROW_HEIGHT / 2;
+                    const pair = eventToPair.get(i);
+                    const pairColor = pair ? pair.color : "#4fc3f7";
+
+                    if (
+                        event.type === "request" ||
+                        event.type === "notification"
+                    ) {
+                        const fromX =
+                            PADDING +
+                            components.indexOf(event.from) * SWIMLANE_WIDTH +
+                            SWIMLANE_WIDTH / 2;
+                        const toX =
+                            PADDING +
+                            components.indexOf(event.to) * SWIMLANE_WIDTH +
+                            SWIMLANE_WIDTH / 2;
+                        const direction = toX > fromX ? 1 : -1;
+                        const arrowX = toX - direction * 8;
+
+                        const isMcp = event.protocol === "mcp";
+
+                        svg += `<g class="message-group" data-index="${events.indexOf(event)}" onclick="selectEvent(${events.indexOf(event)})">`;
+
+                        // Arrow line
+                        svg += `<line x1="${fromX}" y1="${y}" x2="${arrowX}" y2="${y}" class="message-arrow" style="stroke: ${pairColor}"/>`;
+
+                        // Arrow head - triangle for ACP, circle for MCP
+                        if (isMcp) {
+                            svg += `<circle cx="${toX - direction * 4}" cy="${y}" r="4" style="fill: ${pairColor}"/>`;
+                        } else {
+                            svg += `<polygon points="${toX},${y} ${arrowX},${y - 5} ${arrowX},${y + 5}" class="arrow-head" style="fill: ${pairColor}"/>`;
+                        }
+
+                        // Label
+                        const labelX = (fromX + toX) / 2;
+                        const label = event.method || event.type;
+                        svg += `<text x="${labelX}" y="${y - 8}" text-anchor="middle" class="message-label" style="fill: ${pairColor}">${truncate(label, 20)}</text>`;
+
+                        // Content preview for various message types
+                        const contentPreview = getContentPreview(event);
+                        if (contentPreview) {
+                            const contentWidth = Math.abs(toX - fromX);
+                            const contentX = Math.min(fromX, toX);
+                            svg += `<foreignObject x="${contentX}" y="${y + 4}" width="${contentWidth}" height="18">
+                                <div xmlns="http://www.w3.org/1999/xhtml" class="content-preview">${escapeHtml(contentPreview)}</div>
+                            </foreignObject>`;
+                        }
+
+                        svg += `</g>`;
+                    } else if (event.type === "response") {
+                        const fromX =
+                            PADDING +
+                            components.indexOf(event.from) * SWIMLANE_WIDTH +
+                            SWIMLANE_WIDTH / 2;
+                        const toX =
+                            PADDING +
+                            components.indexOf(event.to) * SWIMLANE_WIDTH +
+                            SWIMLANE_WIDTH / 2;
+                        const direction = toX > fromX ? 1 : -1;
+                        const arrowX = toX - direction * 8;
+
+                        const color = event.is_error ? "#ef5350" : pairColor;
+
+                        svg += `<g class="message-group" data-index="${events.indexOf(event)}" onclick="selectEvent(${events.indexOf(event)})">`;
+
+                        // Invisible wider hit area for easier clicking
+                        svg += `<line x1="${fromX}" y1="${y}" x2="${toX}" y2="${y}" class="hit-area"/>`;
+
+                        // Dashed arrow line
+                        svg += `<line x1="${fromX}" y1="${y}" x2="${arrowX}" y2="${y}" class="message-arrow response" style="stroke: ${color}"/>`;
+
+                        // Arrow head
+                        svg += `<polygon points="${toX},${y} ${arrowX},${y - 5} ${arrowX},${y + 5}" class="arrow-head" style="fill: ${color}"/>`;
+
+                        svg += `</g>`;
+                    }
+                });
+
+                svg += `</svg>`;
+                container.innerHTML = svg;
+            }
+
+            function truncate(str, maxLen) {
+                if (str.length <= maxLen) return str;
+                return str.substring(0, maxLen - 1) + "\u2026";
+            }
+
+            function formatDelta(seconds) {
+                if (seconds < 0.001) return "<1ms";
+                if (seconds < 1) return Math.round(seconds * 1000) + "ms";
+                return seconds.toFixed(2) + "s";
+            }
+
+            function escapeHtml(str) {
+                return str
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/"/g, "&quot;");
+            }
+
+            function getContentPreview(event) {
+                // session/prompt - show the prompt text
+                if (event.method === "session/prompt") {
+                    const promptText = event.params?.prompt?.[0]?.text;
+                    if (promptText) return promptText;
+                }
+
+                // session/update - varies by update type
+                if (event.method === "session/update") {
+                    const update = event.params?.update;
+                    if (!update) return null;
+
+                    switch (update.sessionUpdate) {
+                        case "agent_message_chunk":
+                            return update.content?.text;
+
+                        case "tool_call":
+                            const toolName =
+                                update._meta?.claudeCode?.toolName ||
+                                update.title;
+                            return toolName ? `📦 ${toolName}` : null;
+
+                        case "tool_call_update":
+                            const tool = update._meta?.claudeCode?.toolName;
+                            const status = update.status;
+                            if (tool && status) return `${status}: ${tool}`;
+                            return status;
+
+                        case "available_commands_update":
+                            const count = update.availableCommands?.length;
+                            return count ? `${count} commands` : null;
+                    }
+                }
+
+                return null;
+            }
+
+            function selectEvent(index) {
+                selectedEvent = events[index];
+
+                // Update selection visual
+                document
+                    .querySelectorAll(".message-group")
+                    .forEach((g) => g.classList.remove("selected"));
+                const group = document.querySelector(
+                    `.message-group[data-index="${index}"]`,
+                );
+                if (group) group.classList.add("selected");
+
+                // Show detail panel
+                const panel = document.getElementById("detail-panel");
+                const title = document.getElementById("detail-title");
+                const json = document.getElementById("detail-json");
+
+                panel.classList.add("visible");
+
+                if (selectedEvent.type === "response") {
+                    title.textContent = selectedEvent.is_error
+                        ? "Error Response"
+                        : "Response";
+                } else {
+                    title.textContent =
+                        selectedEvent.method || selectedEvent.type;
+                }
+
+                json.textContent = JSON.stringify(selectedEvent, null, 2);
+            }
+
+            function closeDetailPanel() {
+                document
+                    .getElementById("detail-panel")
+                    .classList.remove("visible");
+                document
+                    .querySelectorAll(".message-group")
+                    .forEach((g) => g.classList.remove("selected"));
+                selectedEvent = null;
+            }
+
+            // Event listeners
+            document
+                .getElementById("show-acp")
+                .addEventListener("change", render);
+            document
+                .getElementById("show-mcp")
+                .addEventListener("change", render);
+            document
+                .getElementById("show-responses")
+                .addEventListener("change", render);
+            document
+                .getElementById("swimlane-width")
+                .addEventListener("input", (e) => {
+                    SWIMLANE_WIDTH = parseInt(e.target.value, 10);
+                    render();
+                });
+
+            // Resize handle for detail panel
+            const resizeHandle = document.getElementById("resize-handle");
+            const detailPanel = document.getElementById("detail-panel");
+            let isResizing = false;
+
+            resizeHandle.addEventListener("mousedown", (e) => {
+                isResizing = true;
+                document.body.style.cursor = "ns-resize";
+                document.body.style.userSelect = "none";
+                e.preventDefault();
+            });
+
+            document.addEventListener("mousemove", (e) => {
+                if (!isResizing) return;
+                const containerRect = document
+                    .querySelector(".main-container")
+                    .getBoundingClientRect();
+                const newHeight = containerRect.bottom - e.clientY;
+                detailPanel.style.height =
+                    Math.max(
+                        100,
+                        Math.min(newHeight, containerRect.height - 100),
+                    ) + "px";
+            });
+
+            document.addEventListener("mouseup", () => {
+                if (isResizing) {
+                    isResizing = false;
+                    document.body.style.cursor = "";
+                    document.body.style.userSelect = "";
+                }
+            });
+
+            // Initial load
+            loadEvents();
+
+            // Live polling - check for updates every 500ms
+            let livePolling = true;
+            async function pollForUpdates() {
+                if (!livePolling) return;
+
+                try {
+                    const response = await fetch("/events");
+                    if (response.ok) {
+                        const newEvents = await response.json();
+                        // Only re-render if event count changed
+                        if (newEvents.length !== events.length) {
+                            events = newEvents;
+
+                            // Re-extract components
+                            const componentSet = new Set();
+                            for (const event of events) {
+                                if (event.from) componentSet.add(event.from);
+                                if (event.to) componentSet.add(event.to);
+                            }
+                            components = Array.from(componentSet);
+                            components.sort((a, b) => {
+                                if (a === "client") return -1;
+                                if (b === "client") return 1;
+                                if (a === "agent") return 1;
+                                if (b === "agent") return -1;
+                                return a.localeCompare(b);
+                            });
+
+                            render();
+
+                            // Auto-scroll to bottom to show new events
+                            const container =
+                                document.getElementById("diagram-container");
+                            container.scrollTop = container.scrollHeight;
+                        }
+                    }
+                } catch (e) {
+                    // Ignore polling errors
+                }
+
+                setTimeout(pollForUpdates, 500);
+            }
+
+            // Start polling after initial load
+            setTimeout(pollForUpdates, 500);
+        </script>
+    </body>
+</html>

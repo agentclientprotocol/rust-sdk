@@ -2,6 +2,7 @@
 members = [
     "src/agent-client-protocol",
     "src/agent-client-protocol-derive",
+    "src/agent-client-protocol-trace-viewer",
 ]
 resolver = "3"
 
@@ -45,6 +46,11 @@ rmcp = { version = "0.8.3", features = ["server", "transport-io", "schemars"] }
 # CLI parsing
 clap = { version = "4.5", features = ["derive"] }
 
+# HTTP
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs"] }
+
 # Other dependencies
 async-broadcast = "0.7"
 async-trait = "0.1"
@@ -54,6 +60,7 @@ derive_more = { version = "2", features = ["from"] }
 futures = "0.3.31"
 fxhash = "0.2.1"
 jsonrpcmsg = "0.1.2"
+open = "5"
 
 
 # Proc macros
