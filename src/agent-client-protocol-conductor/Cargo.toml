@@ -1,0 +1,57 @@
+[package]
+name = "agent-client-protocol-conductor"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Conductor for orchestrating Agent Client Protocol proxy chains"
+keywords = ["acp", "agent", "conductor", "ai"]
+categories = ["development-tools"]
+
+[[bin]]
+name = "agent-client-protocol-conductor"
+path = "src/main.rs"
+
+[features]
+test-support = []
+
+[dependencies]
+agent-client-protocol-core = { path = "../agent-client-protocol-core" }
+agent-client-protocol-schema.workspace = true
+agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
+agent-client-protocol-trace-viewer = { path = "../agent-client-protocol-trace-viewer" }
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+futures-concurrency.workspace = true
+hyper.workspace = true
+rustc-hash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shell-words.workspace = true
+strip-ansi-escapes.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agent-client-protocol-test = { path = "../agent-client-protocol-test" }
+agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
+agent-client-protocol-yopo = { path = "../yopo" }
+expect-test.workspace = true
+regex.workspace = true
+rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
+schemars.workspace = true
+
+[lints]
+workspace = true

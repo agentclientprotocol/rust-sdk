@@ -6,6 +6,10 @@ name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
 
 [[package]]
+name = "agent-client-protocol-conductor"
+git_tag_name = "agent-client-protocol-conductor-v{{ version }}"
+
+[[package]]
 name = "agent-client-protocol-core"
 git_tag_name = "agent-client-protocol-core-v{{ version }}"
 
