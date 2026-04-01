@@ -24,3 +24,7 @@ git_tag_name = "agent-client-protocol-tokio-v{{ version }}"
 [[package]]
 name = "agent-client-protocol-trace-viewer"
 git_tag_name = "agent-client-protocol-trace-viewer-v{{ version }}"
+
+[[package]]
+name = "agent-client-protocol-yopo"
+git_tag_name = "agent-client-protocol-yopo-v{{ version }}"

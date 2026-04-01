@@ -6,6 +6,7 @@ members = [
     "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-tokio",
     "src/agent-client-protocol-trace-viewer",
+    "src/yopo",
 ]
 resolver = "3"
 
