@@ -1,0 +1,28 @@
+[package]
+name = "agent-client-protocol-rmcp"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "rmcp integration for Agent Client Protocol MCP servers"
+keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
+categories = ["development-tools"]
+
+[dependencies]
+agent-client-protocol-core.workspace = true
+futures.workspace = true
+futures-concurrency.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+schemars.workspace = true
+serde.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
