@@ -1,10 +1,11 @@
-# sacp -- the Symposium Agent Client Protocol (ACP) SDK
+# agent-client-protocol-core
 
-**sacp** is a Rust SDK for building [Agent-Client Protocol (ACP)](https://agentclientprotocol.com/) applications.
+Core protocol types and traits for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/).
+
 ACP is a protocol for communication between AI agents and their clients (IDEs, CLIs, etc.),
 enabling features like tool use, permission requests, and streaming responses.
 
-## What can you build with sacp?
+## What can you build with this crate?
 
 - **Clients** that talk to ACP agents (like building your own Claude Code interface)
 - **Proxies** that add capabilities to existing agents (like adding custom tools via MCP)
@@ -15,52 +16,35 @@ enabling features like tool use, permission requests, and streaming responses.
 The most common use case is connecting to an existing ACP agent as a client:
 
 ```rust
-use sacp::ClientToAgent;
-use sacp::schema::{InitializeRequest, VERSION as PROTOCOL_VERSION};
+use agent_client_protocol_core::{Client, Agent, ConnectTo};
+use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
 
 Client.builder()
     .name("my-client")
-    .run_until(transport, async |cx| {
+    .connect_with(transport, async |cx| {
         // Initialize the connection
-        cx.send_request(InitializeRequest {
-            protocol_version: PROTOCOL_VERSION,
-            client_capabilities: Default::default(),
-            client_info: Default::default(),
-            meta: None,
-        }).block_task().await?;
-
-        // Create a session and send a prompt
-        cx.build_session_cwd()?
+        cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
             .block_task()
-            .run_until(async |mut session| {
-                session.send_prompt("What is 2 + 2?")?;
-                let response = session.read_to_string().await?;
-                println!("{}", response);
-                Ok(())
-            })
-            .await
+            .await?;
+
+        Ok(())
     })
-    .await
+    .await?;
 ```
 
 ## Learning More
 
-See the [crate documentation](https://docs.rs/sacp) for:
+See the [crate documentation](https://docs.rs/agent-client-protocol-core) for:
 
-- **[Cookbook](https://docs.rs/sacp/latest/sacp/cookbook/)** - Patterns for building clients, proxies, and agents
-- **[Examples](https://github.com/agentclientprotocol/symposium-acp/tree/main/src/sacp/examples)** - Working code you can run
-
-You may also enjoy looking at:
-
-- **[`yolo_one_shot_client.rs`](examples/yolo_one_shot_client.rs)** - Complete client that spawns an agent and sends a prompt
-- **[`sacp-conductor`](https://crates.io/crates/sacp-conductor)** - Orchestrates proxy chains with a final agent
+- **[Cookbook](https://docs.rs/agent-client-protocol-core/latest/agent_client_protocol_core/cookbook/)** — Patterns for building clients, proxies, and agents
+- **[Examples](https://github.com/agentclientprotocol/rust-sdk/tree/main/src/agent-client-protocol-core/examples)** — Working code you can run
 
 ## Related Crates
 
-- **[sacp-tokio](../sacp-tokio/)** - Tokio utilities for spawning agent processes
-- **[sacp-proxy](../sacp-proxy/)** - Framework for building proxy components
-- **[sacp-conductor](../sacp-conductor/)** - Binary for running proxy chains
+- **[agent-client-protocol-tokio](../agent-client-protocol-tokio/)** — Tokio utilities for spawning agent processes
+- **[agent-client-protocol-derive](../agent-client-protocol-derive/)** — Derive macros for JSON-RPC traits
+- **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 
 ## License
 
-MIT OR Apache-2.0
+Apache-2.0

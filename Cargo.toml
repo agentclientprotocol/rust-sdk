@@ -3,6 +3,7 @@ members = [
     "src/agent-client-protocol",
     "src/agent-client-protocol-core",
     "src/agent-client-protocol-derive",
+    "src/agent-client-protocol-tokio",
     "src/agent-client-protocol-trace-viewer",
 ]
 resolver = "3"
