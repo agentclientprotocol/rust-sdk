@@ -14,6 +14,10 @@ name = "agent-client-protocol-derive"
 git_tag_name = "agent-client-protocol-derive-v{{ version }}"
 
 [[package]]
+name = "agent-client-protocol-rmcp"
+git_tag_name = "agent-client-protocol-rmcp-v{{ version }}"
+
+[[package]]
 name = "agent-client-protocol-tokio"
 git_tag_name = "agent-client-protocol-tokio-v{{ version }}"
 
