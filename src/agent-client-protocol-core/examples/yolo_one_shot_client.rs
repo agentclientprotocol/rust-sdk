@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
 
             let session_id = new_session_response.session_id;
-            eprintln!("✓ Session created: {session_id}");
+            eprintln!("✓ Session created");
 
             // Send the prompt
             eprintln!("💬 Sending prompt: \"{}\"", cli.prompt);
