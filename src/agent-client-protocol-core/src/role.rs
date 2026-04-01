@@ -159,7 +159,7 @@ where
 
     // Responses are different from other messages.
     //
-    // For normal incoming messages, mesages from non-default
+    // For normal incoming messages, messages from non-default
     // peers are tagged with special method names and carry
     // special payload that have be "unwrapped".
     //

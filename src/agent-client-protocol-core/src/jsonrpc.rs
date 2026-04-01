@@ -1348,7 +1348,7 @@ enum OutgoingMessage {
         untyped: UntypedMessage,
     },
 
-    /// Send a reponse to a message from the server
+    /// Send a response to a message from the server
     Response {
         id: jsonrpcmsg::Id,
 

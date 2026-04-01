@@ -44,7 +44,7 @@ impl Client {
     }
 
     /// Connect to `agent` and run `main_fn` with the [`ConnectionTo`].
-    /// Returns the result of `main_fn` (or an error if sometihng goes wrong).
+    /// Returns the result of `main_fn` (or an error if something goes wrong).
     ///
     /// Equivalent to `self.builder().connect_with(agent, main_fn)`.
     pub async fn connect_with<R>(

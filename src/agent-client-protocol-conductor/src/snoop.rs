@@ -69,7 +69,7 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
 
         // Read messages send by `base`. These are 'outgoing' from our wrapped
         // component.
-        let snoop_outoing = async {
+        let snoop_outgoing = async {
             while let Some(msg) = base_channel.rx.next().await {
                 if let Ok(msg) = &msg {
                     (self.outgoing_message)(msg)?;
@@ -83,7 +83,7 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
             Ok(())
         };
 
-        (client_future, base_future, snoop_incoming, snoop_outoing)
+        (client_future, base_future, snoop_incoming, snoop_outgoing)
             .try_join()
             .await?;
         Ok(())
