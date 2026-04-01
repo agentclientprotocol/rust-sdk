@@ -542,6 +542,7 @@ where
 /// # }
 /// ```
 #[must_use]
+#[derive(Debug)]
 pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun>
 where
     Handler: HandleDispatchFrom<Host::Counterpart>,
@@ -567,7 +568,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun> {
     pub fn new(role: Host) -> Self {
         Self {
             host: role,
-            name: Default::default(),
+            name: None,
             handler: NullHandler,
             responder: NullRun,
         }
@@ -582,7 +583,7 @@ where
     pub fn new_with(role: Host, handler: Handler) -> Self {
         Self {
             host: role,
-            name: Default::default(),
+            name: None,
             handler,
             responder: NullRun,
         }
@@ -1360,6 +1361,7 @@ enum OutgoingMessage {
 
 /// Return type from JrHandler; indicates whether the request was handled or not.
 #[must_use]
+#[derive(Debug)]
 pub enum Handled<T> {
     /// The message was handled
     Yes,
@@ -1404,20 +1406,6 @@ impl<T> IntoHandled<T> for Handled<T> {
         self
     }
 }
-
-/// Trait for types that can provide transport for JSON-RPC messages.
-///
-/// Implementations of this trait bridge between the internal protocol channels
-/// (which carry `jsonrpcmsg::Message`) and the actual I/O mechanism (byte streams,
-/// in-process channels, network sockets, etc.).
-///
-/// The transport layer is responsible only for moving `jsonrpcmsg::Message` in and out.
-/// It has no knowledge of protocol semantics like request/response correlation, ID assignment,
-/// or handler dispatch - those are handled by the protocol layer in [`Builder`].
-///
-/// # Example
-///
-/// See [`ByteStreams`] for the standard byte stream implementation.
 
 /// Connection context for sending messages and spawning tasks.
 ///
@@ -1817,7 +1805,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let uuid = Uuid::new_v4();
         self.dynamic_handler_tx
             .unbounded_send(DynamicHandlerMessage::AddDynamicHandler(
-                uuid.clone(),
+                uuid,
                 Box::new(handler),
             ))
             .map_err(crate::util::internal_error)?;
@@ -1826,13 +1814,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     fn remove_dynamic_handler(&self, uuid: Uuid) {
-        match self
-            .dynamic_handler_tx
-            .unbounded_send(DynamicHandlerMessage::RemoveDynamicHandler(uuid))
-        {
-            Ok(_) => (),
-            Err(_) => ( /* ignore errors */),
-        }
+        // Ignore errors
+        drop(
+            self.dynamic_handler_tx
+                .unbounded_send(DynamicHandlerMessage::RemoveDynamicHandler(uuid)),
+        );
     }
 }
 
@@ -1849,13 +1835,13 @@ impl<R: Role> DynamicHandlerRegistration<R> {
 
     /// Prevents the dynamic handler from being removed when dropped.
     pub fn run_indefinitely(self) {
-        std::mem::forget(self)
+        std::mem::forget(self);
     }
 }
 
 impl<R: Role> Drop for DynamicHandlerRegistration<R> {
     fn drop(&mut self) {
-        self.cx.remove_dynamic_handler(self.uuid.clone());
+        self.cx.remove_dynamic_handler(self.uuid);
     }
 }
 
@@ -1922,7 +1908,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
             .field("method", &self.method)
             .field("id", &self.id)
             .field("response_type", &std::any::type_name::<T>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1954,7 +1940,7 @@ impl Responder<serde_json::Value> {
     /// The provided type `T` will be serialized to JSON before sending.
     pub fn cast<T: JsonRpcResponse>(self) -> Responder<T> {
         self.wrap_params(move |method, value| match value {
-            Ok(value) => T::into_json(value, &method),
+            Ok(value) => T::into_json(value, method),
             Err(e) => Err(e),
         })
     }
@@ -1962,11 +1948,13 @@ impl Responder<serde_json::Value> {
 
 impl<T: JsonRpcResponse> Responder<T> {
     /// Method of the incoming request
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
     /// ID of the incoming request/response as a JSON value
+    #[must_use]
     pub fn id(&self) -> serde_json::Value {
         crate::util::id_to_json(&self.id)
     }
@@ -1975,7 +1963,7 @@ impl<T: JsonRpcResponse> Responder<T> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> Responder<serde_json::Value> {
-        self.wrap_params(|method, value| T::from_value(&method, value?))
+        self.wrap_params(|method, value| T::from_value(method, value?))
     }
 
     /// Return a new Responder with a different method name.
@@ -2062,7 +2050,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
             .field("method", &self.method)
             .field("id", &self.id)
             .field("response_type", &std::any::type_name::<T>())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -2101,7 +2089,7 @@ impl ResponseRouter<serde_json::Value> {
     /// The provided type `T` will be serialized to JSON before sending.
     pub fn cast<T: JsonRpcResponse>(self) -> ResponseRouter<T> {
         self.wrap_params(move |method, value| match value {
-            Ok(value) => T::into_json(value, &method),
+            Ok(value) => T::into_json(value, method),
             Err(e) => Err(e),
         })
     }
@@ -2109,11 +2097,13 @@ impl ResponseRouter<serde_json::Value> {
 
 impl<T: JsonRpcResponse> ResponseRouter<T> {
     /// Method of the original request
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
     /// ID of the original request as a JSON value
+    #[must_use]
     pub fn id(&self) -> serde_json::Value {
         crate::util::id_to_json(&self.id)
     }
@@ -2121,6 +2111,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
     /// The peer to which the original request was sent.
     ///
     /// This is the peer from which we expect to receive the response.
+    #[must_use]
     pub fn role_id(&self) -> RoleId {
         self.role_id.clone()
     }
@@ -2129,7 +2120,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> ResponseRouter<serde_json::Value> {
-        self.wrap_params(|method, value| T::from_value(&method, value?))
+        self.wrap_params(|method, value| T::from_value(method, value?))
     }
 
     /// Return a new ResponseRouter that expects a response of type U.
@@ -2444,10 +2435,7 @@ impl Dispatch {
         );
         match self {
             Dispatch::Request(message, responder) => {
-                if !Req::matches_method(&message.method) {
-                    tracing::trace!("method doesn't match");
-                    Ok(Err(Dispatch::Request(message, responder)))
-                } else {
+                if Req::matches_method(&message.method) {
                     match Req::parse_message(&message.method, &message.params) {
                         Ok(req) => {
                             tracing::trace!(?req, "parsed ok");
@@ -2458,14 +2446,14 @@ impl Dispatch {
                             Err(err)
                         }
                     }
+                } else {
+                    tracing::trace!("method doesn't match");
+                    Ok(Err(Dispatch::Request(message, responder)))
                 }
             }
 
             Dispatch::Notification(message) => {
-                if !Notif::matches_method(&message.method) {
-                    tracing::trace!("method doesn't match");
-                    Ok(Err(Dispatch::Notification(message)))
-                } else {
+                if Notif::matches_method(&message.method) {
                     match Notif::parse_message(&message.method, &message.params) {
                         Ok(notif) => {
                             tracing::trace!(?notif, "parse ok");
@@ -2476,15 +2464,15 @@ impl Dispatch {
                             Err(err)
                         }
                     }
+                } else {
+                    tracing::trace!("method doesn't match");
+                    Ok(Err(Dispatch::Notification(message)))
                 }
             }
 
             Dispatch::Response(result, cx) => {
                 let method = cx.method();
-                if !Req::matches_method(method) {
-                    tracing::trace!("method doesn't match");
-                    Ok(Err(Dispatch::Response(result, cx)))
-                } else {
+                if Req::matches_method(method) {
                     // Parse the response result
                     let typed_result = match result {
                         Ok(value) => {
@@ -2505,6 +2493,9 @@ impl Dispatch {
                         }
                     };
                     Ok(Ok(Dispatch::Response(typed_result, cx.cast())))
+                } else {
+                    tracing::trace!("method doesn't match");
+                    Ok(Err(Dispatch::Response(result, cx)))
                 }
             }
         }
@@ -2513,6 +2504,7 @@ impl Dispatch {
     /// True if this message has a field with the given name.
     ///
     /// Returns `false` for Response variants.
+    #[must_use]
     pub fn has_field(&self, field_name: &str) -> bool {
         self.message()
             .and_then(|m| m.params().get(field_name))
@@ -2530,13 +2522,11 @@ impl Dispatch {
     ///
     /// Returns `Ok(None)` for Response variants.
     pub(crate) fn get_session_id(&self) -> Result<Option<SessionId>, crate::Error> {
-        let message = match self.message() {
-            Some(m) => m,
-            None => return Ok(None),
+        let Some(message) = self.message() else {
+            return Ok(None);
         };
-        let value = match message.params().get("sessionId") {
-            Some(value) => value,
-            None => return Ok(None),
+        let Some(value) = message.params().get("sessionId") else {
+            return Ok(None);
         };
         let session_id = serde_json::from_value(value.clone())?;
         Ok(Some(session_id))
@@ -2553,7 +2543,6 @@ impl Dispatch {
         self,
     ) -> Result<Result<N, Dispatch>, crate::Error> {
         match self {
-            Dispatch::Request(..) => Ok(Err(self)),
             Dispatch::Notification(msg) => {
                 if !N::matches_method(&msg.method) {
                     return Ok(Err(Dispatch::Notification(msg)));
@@ -2563,7 +2552,7 @@ impl Dispatch {
                     Err(err) => Err(err),
                 }
             }
-            Dispatch::Response(..) => Ok(Err(self)),
+            Dispatch::Request(..) | Dispatch::Response(..) => Ok(Err(self)),
         }
     }
 
@@ -2587,8 +2576,7 @@ impl Dispatch {
                     Err(err) => Err(err),
                 }
             }
-            Dispatch::Notification(..) => Ok(Err(self)),
-            Dispatch::Response(..) => Ok(Err(self)),
+            Dispatch::Notification(..) | Dispatch::Response(..) => Ok(Err(self)),
         }
     }
 }
@@ -2599,8 +2587,7 @@ impl<M: JsonRpcRequest + JsonRpcNotification> Dispatch<M, M> {
     /// Returns `None` for Response variants since they don't contain a message payload.
     pub fn message(&self) -> Option<&M> {
         match self {
-            Dispatch::Request(msg, _) => Some(msg),
-            Dispatch::Notification(msg) => Some(msg),
+            Dispatch::Request(msg, _) | Dispatch::Notification(msg) => Some(msg),
             Dispatch::Response(_, _) => None,
         }
     }
@@ -2642,16 +2629,19 @@ impl UntypedMessage {
     }
 
     /// Returns the method name
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
     /// Returns the parameters as a JSON value
+    #[must_use]
     pub fn params(&self) -> &serde_json::Value {
         &self.params
     }
 
     /// Consumes this message and returns the method and params
+    #[must_use]
     pub fn into_parts(self) -> (String, serde_json::Value) {
         (self.method, self.params)
     }
@@ -2779,6 +2769,17 @@ pub struct SentRequest<T> {
     to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
 }
 
+impl<T: Debug> Debug for SentRequest<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SentRequest")
+            .field("id", &self.id)
+            .field("method", &self.method)
+            .field("task_tx", &self.task_tx)
+            .field("response_rx", &self.response_rx)
+            .finish_non_exhaustive()
+    }
+}
+
 impl SentRequest<serde_json::Value> {
     fn new(
         id: jsonrpcmsg::Id,
@@ -2798,11 +2799,13 @@ impl SentRequest<serde_json::Value> {
 
 impl<T: JsonRpcResponse> SentRequest<T> {
     /// The id of the outgoing request.
+    #[must_use]
     pub fn id(&self) -> serde_json::Value {
         crate::util::id_to_json(&self.id)
     }
 
     /// The method of the request this is in response to.
+    #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
@@ -3145,8 +3148,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
                     outcome
                 }
                 Err(err) => Err(crate::util::internal_error(format!(
-                    "response to `{}` never received: {}",
-                    method, err
+                    "response to `{method}` never received: {err}"
                 ))),
             }
         })
@@ -3180,6 +3182,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
 /// for byte-based I/O.
 ///
 /// [`ConnectTo`]: crate::ConnectTo
+#[derive(Debug)]
 pub struct Lines<OutgoingSink, IncomingStream> {
     /// Outgoing line sink (where we write serialized JSON-RPC messages)
     pub outgoing: OutgoingSink,
@@ -3206,8 +3209,7 @@ where
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (channel, serve_self) = ConnectTo::<R>::into_channel_and_future(self);
         match futures::future::select(Box::pin(client.connect_to(channel)), serve_self).await {
-            Either::Left((result, _)) => result,
-            Either::Right((result, _)) => result,
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
@@ -3273,6 +3275,7 @@ where
 /// ```
 ///
 /// [`ConnectTo`]: crate::ConnectTo
+#[derive(Debug)]
 pub struct ByteStreams<OB, IB> {
     /// Outgoing byte stream (where we write serialized messages)
     pub outgoing: OB,
@@ -3299,8 +3302,7 @@ where
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (channel, serve_self) = ConnectTo::<R>::into_channel_and_future(self);
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
-            Either::Left((result, _)) => result,
-            Either::Right((result, _)) => result,
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
@@ -3353,6 +3355,7 @@ where
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Debug)]
 pub struct Channel {
     /// Receives messages (or errors) from the counterpart.
     pub rx: mpsc::UnboundedReceiver<Result<jsonrpcmsg::Message, crate::Error>>,
@@ -3370,6 +3373,7 @@ impl Channel {
     /// # Returns
     ///
     /// A tuple `(channel_a, channel_b)` of connected channel endpoints.
+    #[must_use]
     pub fn duplex() -> (Self, Self) {
         // Create channels: A sends Result<Message> which B receives as Message
         let (a_tx, b_rx) = mpsc::unbounded();

@@ -126,7 +126,7 @@ where
                     Box::pin(async move {
                         let result = tool_future_fn(func, params, mcp_connection).await;
                         // Ignore send errors - the receiver may have been dropped
-                        let _ = result_tx.send(result);
+                        drop(result_tx.send(result));
                     })
                 }
 

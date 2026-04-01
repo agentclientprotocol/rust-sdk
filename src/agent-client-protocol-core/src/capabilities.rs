@@ -37,6 +37,7 @@ pub trait MetaCapability {
 ///
 /// When present in `_meta.symposium.mcp_acp_transport`, signals that the agent
 /// supports having MCP servers with `acp:UUID` transport proxied through the conductor.
+#[derive(Debug)]
 pub struct McpAcpTransport;
 
 impl MetaCapability for McpAcpTransport {
@@ -51,9 +52,11 @@ pub trait MetaCapabilityExt {
     fn has_meta_capability(&self, capability: impl MetaCapability) -> bool;
 
     /// Add a capability to `_meta.symposium`, creating the structure if needed
+    #[must_use]
     fn add_meta_capability(self, capability: impl MetaCapability) -> Self;
 
     /// Remove a capability from `_meta.symposium` if present
+    #[must_use]
     fn remove_meta_capability(self, capability: impl MetaCapability) -> Self;
 }
 
@@ -84,12 +87,11 @@ impl MetaCapabilityExt for InitializeRequest {
     }
 
     fn remove_meta_capability(mut self, capability: impl MetaCapability) -> Self {
-        if let Some(ref mut meta) = self.client_capabilities.meta {
-            if let Some(symposium) = meta.get_mut("symposium") {
-                if let Some(symposium_obj) = symposium.as_object_mut() {
-                    symposium_obj.remove(capability.key());
-                }
-            }
+        if let Some(ref mut meta) = self.client_capabilities.meta
+            && let Some(symposium) = meta.get_mut("symposium")
+            && let Some(symposium_obj) = symposium.as_object_mut()
+        {
+            symposium_obj.remove(capability.key());
         }
         self
     }
@@ -122,12 +124,11 @@ impl MetaCapabilityExt for InitializeResponse {
     }
 
     fn remove_meta_capability(mut self, capability: impl MetaCapability) -> Self {
-        if let Some(ref mut meta) = self.agent_capabilities.meta {
-            if let Some(symposium) = meta.get_mut("symposium") {
-                if let Some(symposium_obj) = symposium.as_object_mut() {
-                    symposium_obj.remove(capability.key());
-                }
-            }
+        if let Some(ref mut meta) = self.agent_capabilities.meta
+            && let Some(symposium) = meta.get_mut("symposium")
+            && let Some(symposium_obj) = symposium.as_object_mut()
+        {
+            symposium_obj.remove(capability.key());
         }
         self
     }

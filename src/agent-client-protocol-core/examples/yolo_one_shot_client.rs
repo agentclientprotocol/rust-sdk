@@ -11,13 +11,13 @@
 //! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
-use clap::Parser;
 use agent_client_protocol_core::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, TextContent,
 };
 use agent_client_protocol_core::{Agent, Client, ConnectionTo};
+use clap::Parser;
 use std::path::PathBuf;
 use tokio::process::Child;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -82,10 +82,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (child_stdin, child_stdout, mut child) = spawn_agent_process(command, args)?;
 
     // Create transport and connection
-    let transport = agent_client_protocol_core::ByteStreams::new(child_stdin.compat_write(), child_stdout.compat());
+    let transport = agent_client_protocol_core::ByteStreams::new(
+        child_stdin.compat_write(),
+        child_stdout.compat(),
+    );
 
     // Run the client
-    Client
+    let client = Client
         .builder()
         .on_receive_notification(
             async move |notification: SessionNotification, _cx| {
@@ -98,18 +101,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
                 // YOLO: Auto-approve all permission requests by selecting the first option
-                eprintln!("✅ Auto-approving permission request: {:?}", request);
+                eprintln!("✅ Auto-approving permission request: {request:?}");
                 let option_id = request.options.first().map(|opt| opt.option_id.clone());
-                match option_id {
-                    Some(id) => responder.respond(RequestPermissionResponse::new(
+                if let Some(id) = option_id {
+                    responder.respond(RequestPermissionResponse::new(
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
-                    )),
-                    None => {
-                        eprintln!("⚠️ No options provided in permission request, cancelling");
-                        responder.respond(RequestPermissionResponse::new(
-                            RequestPermissionOutcome::Cancelled,
-                        ))
-                    }
+                    ))
+                } else {
+                    eprintln!("⚠️ No options provided in permission request, cancelling");
+                    responder.respond(RequestPermissionResponse::new(
+                        RequestPermissionOutcome::Cancelled,
+                    ))
                 }
             },
             agent_client_protocol_core::on_receive_request!(),
@@ -134,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .await?;
 
             let session_id = new_session_response.session_id;
-            eprintln!("✓ Session created: {}", session_id);
+            eprintln!("✓ Session created: {session_id}");
 
             // Send the prompt
             eprintln!("💬 Sending prompt: \"{}\"", cli.prompt);
@@ -150,11 +152,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Stop reason: {:?}", prompt_response.stop_reason);
 
             Ok(())
-        })
-        .await?;
+        });
+    Box::pin(client).await?;
 
     // Kill the child process when done
-    let _ = child.kill().await;
+    drop(child.kill().await);
 
     Ok(())
 }

@@ -45,7 +45,7 @@ pub(super) async fn outgoing_protocol_actor(
                     .unbounded_send(ReplyMessage::Subscribe {
                         id: id.clone(),
                         role_id,
-                        method: method,
+                        method,
                         sender: response_tx,
                     })
                     .map_err(crate::Error::into_internal_error)?;

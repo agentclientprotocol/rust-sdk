@@ -44,7 +44,7 @@ where
 
     /// Handle connection requests for our MCP server by creating a new connection.
     /// A *connection* is an actual running instance of this MCP server.
-    async fn handle_connect_request(
+    fn handle_connect_request(
         &mut self,
         request: McpConnectRequest,
         responder: Responder<McpConnectResponse>,
@@ -188,21 +188,22 @@ where
     }
 
     /// Disconnect a connection.
-    async fn handle_mcp_disconnect_notification(
+    fn handle_mcp_disconnect_notification(
         &mut self,
         successor_notification: McpDisconnectNotification,
-    ) -> Result<Handled<McpDisconnectNotification>, crate::Error> {
+    ) -> Handled<McpDisconnectNotification> {
         // Remove connection if we have it. Otherwise, do not handle the notification.
-        if let Some(_) = self
+        if self
             .connections
             .remove(&successor_notification.connection_id)
+            .is_some()
         {
-            Ok(Handled::Yes)
+            Handled::Yes
         } else {
-            Ok(Handled::No {
+            Handled::No {
                 message: successor_notification,
                 retry: false,
-            })
+            }
         }
     }
 }
@@ -224,7 +225,6 @@ where
             // MCP connect requests come from the Agent direction (wrapped in SuccessorMessage)
             .if_request_from(Agent, async |request, responder| {
                 self.handle_connect_request(request, responder, &connection)
-                    .await
             })
             .await
             // MCP over ACP requests come from the Agent direction
@@ -239,7 +239,7 @@ where
             .await
             // MCP disconnect notifications come from the Agent direction
             .if_notification_from(Agent, async |notification| {
-                self.handle_mcp_disconnect_notification(notification).await
+                Ok(self.handle_mcp_disconnect_notification(notification))
             })
             .await
             .done()

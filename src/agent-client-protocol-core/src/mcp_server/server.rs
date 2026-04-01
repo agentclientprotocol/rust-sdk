@@ -63,6 +63,18 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     responder: Run,
 }
 
+impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
+    for McpServer<Counterpart, Run>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("McpServer")
+            .field("phantom", &self.phantom)
+            .field("acp_url", &self.acp_url)
+            .field("responder", &self.responder)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<Host: Role> McpServer<Host, NullRun> {
     /// Create an empty server with no content.
     pub fn builder(name: impl ToString) -> McpServerBuilder<Host, NullRun> {
@@ -221,7 +233,7 @@ where
                         connection: connection_to_client.clone(),
                     });
 
-                role::mcp::Client
+                let client = role::mcp::Client
                     .builder()
                     .on_receive_dispatch(
                         async |message_from_server: Dispatch, _| {
@@ -235,8 +247,8 @@ where
                             connection_to_server.send_proxied_message(message_from_client)?;
                         }
                         Ok(())
-                    })
-                    .await
+                    });
+                Box::pin(client).await
             })
             .connect_to(client)
             .await

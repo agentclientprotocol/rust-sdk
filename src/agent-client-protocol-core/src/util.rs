@@ -70,6 +70,7 @@ pub(crate) async fn instrument_with_connection_name<R>(
 }
 
 /// Convert a `crate::Error` into a `crate::jsonrpcmsg::Error`
+#[must_use]
 pub fn into_jsonrpc_error(err: crate::Error) -> crate::jsonrpcmsg::Error {
     crate::jsonrpcmsg::Error {
         code: err.code.into(),
@@ -134,6 +135,11 @@ where
     use futures::stream::{FusedStream, FuturesUnordered};
     use futures_concurrency::future::Race;
 
+    enum Event<T> {
+        NewItem(Option<T>),
+        FutureCompleted(Option<Result<(), crate::Error>>),
+    }
+
     let mut stream = pin!(stream.fuse());
     let mut futures: FuturesUnordered<_> = FuturesUnordered::new();
 
@@ -156,11 +162,6 @@ where
         }
 
         // Otherwise, race between getting a new item and completing a future.
-        enum Event<T> {
-            NewItem(Option<T>),
-            FutureCompleted(Option<Result<(), crate::Error>>),
-        }
-
         let event = (async { Event::NewItem(stream.next().await) }, async {
             Event::FutureCompleted(futures.next().await)
         })
@@ -171,13 +172,11 @@ where
             Event::NewItem(Some(item)) => {
                 futures.push(process_fn_hack(&process_fn, item));
             }
-            Event::NewItem(None) => {
-                // Stream closed, loop will catch is_terminated
-            }
             Event::FutureCompleted(Some(result)) => {
                 result?;
             }
-            Event::FutureCompleted(None) => {
+            Event::NewItem(None) | Event::FutureCompleted(None) => {
+                // Stream closed, loop will catch is_terminated
                 // No futures were pending, shouldn't happen since we checked is_empty
             }
         }

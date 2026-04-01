@@ -189,8 +189,7 @@ impl Role for Conductor {
         MatchDispatchFrom::new(message, &cx)
             .if_request_from(Client, async |_req: InitializeRequest, responder| {
                 responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                    "proxies must be initialized with `{}`",
-                    METHOD_INITIALIZE_PROXY
+                    "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
                 )))
             })
             .await
@@ -280,12 +279,11 @@ where
         MatchDispatchFrom::new(message, &connection)
             .if_message_from(Agent, async |message| {
                 // If this is for our session-id, proxy it to the client.
-                if let Some(session_id) = message.get_session_id()? {
-                    if session_id == self.session_id {
+                if let Some(session_id) = message.get_session_id()?
+                    && session_id == self.session_id {
                         connection.send_proxied_message_to(Client, message)?;
                         return Ok(Handled::Yes);
                     }
-                }
 
                 // Otherwise, leave it alone.
                 Ok(Handled::No {

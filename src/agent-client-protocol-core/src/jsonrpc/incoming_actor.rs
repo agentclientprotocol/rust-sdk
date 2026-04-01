@@ -132,7 +132,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             &mut handler,
                             &mut pending_messages,
                         )
-                        .await?
+                        .await?;
                     }
                     jsonrpcmsg::Message::Response(response) => {
                         tracing::trace!(id = ?response.id, has_result = response.result.is_some(), has_error = response.error.is_some(), "Handling response");
@@ -195,7 +195,9 @@ fn dispatch_from_request<Counterpart: Role>(
 ) -> Dispatch {
     let message = UntypedMessage::new(&request.method, &request.params).expect("well-formed JSON");
 
-    let dispatch = match &request.id {
+    
+
+    match &request.id {
         Some(id) => Dispatch::Request(
             message,
             Responder::new(
@@ -205,9 +207,7 @@ fn dispatch_from_request<Counterpart: Role>(
             ),
         ),
         None => Dispatch::Notification(message),
-    };
-
-    dispatch
+    }
 }
 
 /// Dispatches a JSON-RPC response through the handler chain.

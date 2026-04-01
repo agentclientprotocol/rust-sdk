@@ -61,6 +61,7 @@ use crate::{
 /// # }
 /// ```
 #[must_use]
+#[derive(Debug)]
 pub struct MatchDispatch {
     state: Result<Handled<Dispatch>, crate::Error>,
 }
@@ -103,12 +104,7 @@ impl MatchDispatch {
         {
             self.state = match dispatch {
                 Dispatch::Request(untyped_request, untyped_responder) => {
-                    if !Req::matches_method(untyped_request.method()) {
-                        Ok(Handled::No {
-                            message: Dispatch::Request(untyped_request, untyped_responder),
-                            retry,
-                        })
-                    } else {
+                    if Req::matches_method(untyped_request.method()) {
                         match Req::parse_message(untyped_request.method(), untyped_request.params())
                         {
                             Ok(typed_request) => {
@@ -135,6 +131,11 @@ impl MatchDispatch {
                             }
                             Err(err) => Err(err),
                         }
+                    } else {
+                        Ok(Handled::No {
+                            message: Dispatch::Request(untyped_request, untyped_responder),
+                            retry,
+                        })
                     }
                 }
                 Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(Handled::No {
@@ -164,12 +165,7 @@ impl MatchDispatch {
         {
             self.state = match dispatch {
                 Dispatch::Notification(untyped_notification) => {
-                    if !N::matches_method(untyped_notification.method()) {
-                        Ok(Handled::No {
-                            message: Dispatch::Notification(untyped_notification),
-                            retry,
-                        })
-                    } else {
+                    if N::matches_method(untyped_notification.method()) {
                         match N::parse_message(
                             untyped_notification.method(),
                             untyped_notification.params(),
@@ -192,6 +188,11 @@ impl MatchDispatch {
                             },
                             Err(err) => Err(err),
                         }
+                    } else {
+                        Ok(Handled::No {
+                            message: Dispatch::Notification(untyped_notification),
+                            retry,
+                        })
                     }
                 }
                 Dispatch::Request(_, _) | Dispatch::Response(_, _) => Ok(Handled::No {
@@ -300,13 +301,7 @@ impl MatchDispatch {
             self.state = match dispatch {
                 Dispatch::Response(result, router) => {
                     // Check if the request type matches this method
-                    if !Req::matches_method(router.method()) {
-                        // Method doesn't match, return unhandled
-                        Ok(Handled::No {
-                            message: Dispatch::Response(result, router),
-                            retry,
-                        })
-                    } else {
+                    if Req::matches_method(router.method()) {
                         // Method matches, parse the response
                         let typed_router: ResponseRouter<Req::Response> = router.cast();
                         let typed_result = match result {
@@ -337,6 +332,12 @@ impl MatchDispatch {
                             },
                             Err(err) => Err(err),
                         }
+                    } else {
+                        // Method doesn't match, return unhandled
+                        Ok(Handled::No {
+                            message: Dispatch::Response(result, router),
+                            retry,
+                        })
                     }
                 }
                 Dispatch::Request(_, _) | Dispatch::Notification(_) => Ok(Handled::No {
@@ -457,6 +458,7 @@ impl MatchDispatch {
 /// # }
 /// ```
 #[must_use]
+#[derive(Debug)]
 pub struct MatchDispatchFrom<Counterpart: Role> {
     state: Result<Handled<Dispatch>, crate::Error>,
     connection: ConnectionTo<Counterpart>,
@@ -844,11 +846,13 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 /// Since notifications don't expect responses, handlers only receive the parsed
 /// notification (not a request context).
 #[must_use]
+#[derive(Debug)]
 pub struct TypeNotification<R: Role> {
     cx: ConnectionTo<R>,
     state: Option<TypeNotificationState>,
 }
 
+#[derive(Debug)]
 enum TypeNotificationState {
     Unhandled(String, Option<Params>),
     Handled(Result<(), crate::Error>),
@@ -878,15 +882,15 @@ impl<R: Role> TypeNotification<R> {
     ) -> Self {
         self.state = Some(match self.state.take().expect("valid state") {
             TypeNotificationState::Unhandled(method, params) => {
-                if !N::matches_method(&method) {
-                    TypeNotificationState::Unhandled(method, params)
-                } else {
+                if N::matches_method(&method) {
                     match N::parse_message(&method, &params) {
                         Ok(request) => TypeNotificationState::Handled(op(request).await),
                         Err(err) => {
                             TypeNotificationState::Handled(self.cx.send_error_notification(err))
                         }
                     }
+                } else {
+                    TypeNotificationState::Unhandled(method, params)
                 }
             }
 

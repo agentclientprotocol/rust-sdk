@@ -6,21 +6,25 @@
 //! - Server shutdown scenarios
 //! - Client disconnect handling
 
-use futures::{AsyncRead, AsyncWrite};
 use agent_client_protocol_core::{
     ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder, SentRequest,
     role::UntypedRole,
 };
+use futures::{AsyncRead, AsyncWrite};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to block and wait for a JSON-RPC response.
-async fn recv<T: JsonRpcResponse + Send>(response: SentRequest<T>) -> Result<T, agent_client_protocol_core::Error> {
+async fn recv<T: JsonRpcResponse + Send>(
+    response: SentRequest<T>,
+) -> Result<T, agent_client_protocol_core::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
-        tx.send(result).map_err(|_| agent_client_protocol_core::Error::internal_error())
+        tx.send(result)
+            .map_err(|_| agent_client_protocol_core::Error::internal_error())
     })?;
-    rx.await.map_err(|_| agent_client_protocol_core::Error::internal_error())?
+    rx.await
+        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
 }
 
 /// Helper to set up test streams.
@@ -53,15 +57,20 @@ impl JsonRpcMessage for EmptyRequest {
         method == "empty_method"
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "empty_method"
     }
 
-    fn to_untyped_message(&self) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
         agent_client_protocol_core::UntypedMessage::new(self.method(), self)
     }
 
-    fn parse_message(method: &str, _params: &impl serde::Serialize) -> Result<Self, agent_client_protocol_core::Error> {
+    fn parse_message(
+        method: &str,
+        _params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
@@ -84,15 +93,20 @@ impl JsonRpcMessage for OptionalParamsRequest {
         method == "optional_params_method"
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "optional_params_method"
     }
 
-    fn to_untyped_message(&self) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
         agent_client_protocol_core::UntypedMessage::new(self.method(), self)
     }
 
-    fn parse_message(method: &str, params: &impl serde::Serialize) -> Result<Self, agent_client_protocol_core::Error> {
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
@@ -110,11 +124,17 @@ struct SimpleResponse {
 }
 
 impl JsonRpcResponse for SimpleResponse {
-    fn into_json(self, _method: &str) -> Result<serde_json::Value, agent_client_protocol_core::Error> {
+    fn into_json(
+        self,
+        _method: &str,
+    ) -> Result<serde_json::Value, agent_client_protocol_core::Error> {
         serde_json::to_value(self).map_err(agent_client_protocol_core::Error::into_internal_error)
     }
 
-    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, agent_client_protocol_core::Error> {
+    fn from_value(
+        _method: &str,
+        value: serde_json::Value,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
         agent_client_protocol_core::util::json_cast(&value)
     }
 }
@@ -129,31 +149,34 @@ async fn test_empty_request() {
 
     let local = LocalSet::new();
 
-    local
-        .run_until(async {
-            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    Box::pin(local.run_until(async {
+        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-            let server_transport = agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-            let server = UntypedRole.builder().on_receive_request(
-                async |_request: EmptyRequest,
-                       responder: Responder<SimpleResponse>,
-                       _connection: ConnectionTo<UntypedRole>| {
-                    responder.respond(SimpleResponse {
-                        result: "Got empty request".to_string(),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            );
+        let server_transport =
+            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+        let server = UntypedRole.builder().on_receive_request(
+            async |_request: EmptyRequest,
+                   responder: Responder<SimpleResponse>,
+                   _connection: ConnectionTo<UntypedRole>| {
+                responder.respond(SimpleResponse {
+                    result: "Got empty request".to_string(),
+                })
+            },
+            agent_client_protocol_core::on_receive_request!(),
+        );
 
-            let client_transport = agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-            let client = UntypedRole.builder();
+        let client_transport =
+            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+        let client = UntypedRole.builder();
 
-            tokio::task::spawn_local(async move {
-                server.connect_to(server_transport).await.ok();
-            });
+        tokio::task::spawn_local(async move {
+            Box::pin(server.connect_to(server_transport)).await.ok();
+        });
 
-            let result = client
-                .connect_with(client_transport, async |cx| -> Result<(), agent_client_protocol_core::Error> {
+        let result = client
+            .connect_with(
+                client_transport,
+                async |cx| -> Result<(), agent_client_protocol_core::Error> {
                     let request = EmptyRequest;
 
                     let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
@@ -164,12 +187,13 @@ async fn test_empty_request() {
                         assert_eq!(response.result, "Got empty request");
                     }
                     Ok(())
-                })
-                .await;
+                },
+            )
+            .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
-        })
-        .await;
+        assert!(result.is_ok(), "Test failed: {result:?}");
+    }))
+    .await;
 }
 
 // ============================================================================
@@ -182,31 +206,34 @@ async fn test_null_params() {
 
     let local = LocalSet::new();
 
-    local
-        .run_until(async {
-            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    Box::pin(local.run_until(async {
+        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-            let server_transport = agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-            let server = UntypedRole.builder().on_receive_request(
-                async |_request: OptionalParamsRequest,
-                       responder: Responder<SimpleResponse>,
-                       _connection: ConnectionTo<UntypedRole>| {
-                    responder.respond(SimpleResponse {
-                        result: "Has params: true".to_string(),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            );
+        let server_transport =
+            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+        let server = UntypedRole.builder().on_receive_request(
+            async |_request: OptionalParamsRequest,
+                   responder: Responder<SimpleResponse>,
+                   _connection: ConnectionTo<UntypedRole>| {
+                responder.respond(SimpleResponse {
+                    result: "Has params: true".to_string(),
+                })
+            },
+            agent_client_protocol_core::on_receive_request!(),
+        );
 
-            let client_transport = agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-            let client = UntypedRole.builder();
+        let client_transport =
+            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+        let client = UntypedRole.builder();
 
-            tokio::task::spawn_local(async move {
-                server.connect_to(server_transport).await.ok();
-            });
+        tokio::task::spawn_local(async move {
+            Box::pin(server.connect_to(server_transport)).await.ok();
+        });
 
-            let result = client
-                .connect_with(client_transport, async |cx| -> Result<(), agent_client_protocol_core::Error> {
+        let result = client
+            .connect_with(
+                client_transport,
+                async |cx| -> Result<(), agent_client_protocol_core::Error> {
                     let request = OptionalParamsRequest { value: None };
 
                     let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
@@ -214,12 +241,13 @@ async fn test_null_params() {
                     // Should succeed - handler should handle null/missing params
                     assert!(result.is_ok());
                     Ok(())
-                })
-                .await;
+                },
+            )
+            .await;
 
-            assert!(result.is_ok(), "Test failed: {:?}", result);
-        })
-        .await;
+        assert!(result.is_ok(), "Test failed: {result:?}");
+    }))
+    .await;
 }
 
 // ============================================================================
@@ -236,7 +264,8 @@ async fn test_server_shutdown() {
         .run_until(async {
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-            let server_transport = agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
             let server = UntypedRole.builder().on_receive_request(
                 async |_request: EmptyRequest,
                        responder: Responder<SimpleResponse>,
@@ -248,31 +277,35 @@ async fn test_server_shutdown() {
                 agent_client_protocol_core::on_receive_request!(),
             );
 
-            let client_transport = agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
             let client = UntypedRole.builder();
 
             let server_handle = tokio::task::spawn_local(async move {
-                server.connect_to(server_transport).await.ok();
+                Box::pin(server.connect_to(server_transport)).await.ok();
             });
 
             let client_result = tokio::task::spawn_local(async move {
                 client
-                    .connect_with(client_transport, async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                        let request = EmptyRequest;
+                    .connect_with(
+                        client_transport,
+                        async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                            let request = EmptyRequest;
 
-                        // Send request and get future for response
-                        let response_future = recv(cx.send_request(request));
+                            // Send request and get future for response
+                            let response_future = recv(cx.send_request(request));
 
-                        // Give the request time to be sent over the wire
-                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                            // Give the request time to be sent over the wire
+                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
 
-                        // Try to get response (server should still be running briefly)
-                        let _result: Result<SimpleResponse, _> = response_future.await;
+                            // Try to get response (server should still be running briefly)
+                            let _result: Result<SimpleResponse, _> = response_future.await;
 
-                        // Could succeed or fail depending on timing
-                        // The important thing is that it doesn't hang
-                        Ok(())
-                    })
+                            // Could succeed or fail depending on timing
+                            // The important thing is that it doesn't hang
+                            Ok(())
+                        },
+                    )
                     .await
             });
 
@@ -284,7 +317,7 @@ async fn test_server_shutdown() {
 
             // Wait for client to finish
             let result = client_result.await;
-            assert!(result.is_ok(), "Test failed: {:?}", result);
+            assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
 }
@@ -308,7 +341,8 @@ async fn test_client_disconnect() {
             let server_reader = server_reader.compat();
             let server_writer = server_writer.compat_write();
 
-            let server_transport = agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
             let server = UntypedRole.builder().on_receive_request(
                 async |_request: EmptyRequest,
                        responder: Responder<SimpleResponse>,
@@ -321,7 +355,7 @@ async fn test_client_disconnect() {
             );
 
             tokio::task::spawn_local(async move {
-                let _ = server.connect_to(server_transport).await;
+                drop(Box::pin(server.connect_to(server_transport)).await);
             });
 
             // Send partial request and then disconnect

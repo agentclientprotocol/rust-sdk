@@ -8,10 +8,12 @@ use std::marker::PhantomData;
 use std::ops::AsyncFnMut;
 
 /// Null handler that accepts no messages.
+#[derive(Debug)]
 pub struct NullHandler;
 
 impl NullHandler {
     /// Creates a new null handler.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -113,13 +115,7 @@ where
                             message = ?message,
                             "RequestHandler::handle_request"
                         );
-                        if !Req::matches_method(&message.method) {
-                            tracing::trace!("RequestHandler::handle_request: method doesn't match");
-                            Ok(Handled::No {
-                                message: Dispatch::Request(message, responder),
-                                retry: false,
-                            })
-                        } else {
+                        if Req::matches_method(&message.method) {
                             match Req::parse_message(&message.method, &message.params) {
                                 Ok(req) => {
                                     tracing::trace!(
@@ -160,6 +156,12 @@ where
                                     Err(err)
                                 }
                             }
+                        } else {
+                            tracing::trace!("RequestHandler::handle_request: method doesn't match");
+                            Ok(Handled::No {
+                                message: Dispatch::Request(message, responder),
+                                retry: false,
+                            })
                         }
                     }
 
@@ -241,15 +243,7 @@ where
                             message = ?message,
                             "NotificationHandler::handle_dispatch"
                         );
-                        if !Notif::matches_method(&message.method) {
-                            tracing::trace!(
-                                "NotificationHandler::handle_notification: method doesn't match"
-                            );
-                            Ok(Handled::No {
-                                message: Dispatch::Notification(message),
-                                retry: false,
-                            })
-                        } else {
+                        if Notif::matches_method(&message.method) {
                             match Notif::parse_message(&message.method, &message.params) {
                                 Ok(notif) => {
                                     tracing::trace!(
@@ -282,6 +276,14 @@ where
                                     Err(err)
                                 }
                             }
+                        } else {
+                            tracing::trace!(
+                                "NotificationHandler::handle_notification: method doesn't match"
+                            );
+                            Ok(Handled::No {
+                                message: Dispatch::Notification(message),
+                                retry: false,
+                            })
                         }
                     }
 

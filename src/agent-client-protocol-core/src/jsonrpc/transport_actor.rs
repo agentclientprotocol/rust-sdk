@@ -71,7 +71,7 @@ pub(super) async fn transport_outgoing_lines_actor(
                     }
                 }
             }
-        };
+        }
     }
     Ok(())
 }

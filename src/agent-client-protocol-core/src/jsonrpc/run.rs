@@ -24,7 +24,7 @@ pub trait RunWithConnectionTo<Counterpart: Role>: Send {
 }
 
 /// A no-op RunIn that completes immediately.
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct NullRun;
 
 impl<Counterpart: Role> RunWithConnectionTo<Counterpart> for NullRun {
@@ -37,6 +37,7 @@ impl<Counterpart: Role> RunWithConnectionTo<Counterpart> for NullRun {
 }
 
 /// Chains two RunIn implementations to run in parallel.
+#[derive(Debug)]
 pub struct ChainRun<A, B> {
     a: A,
     b: B,

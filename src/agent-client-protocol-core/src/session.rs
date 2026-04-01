@@ -114,6 +114,7 @@ where
 /// - `Blocking` (after calling [`block_task`](Self::block_task)):
 ///   [`run_until`](Self::run_until) and [`start_session`](Self::start_session) become available
 #[must_use = "use `start_session`, `run_until`, or `on_session_start` to start the session"]
+#[derive(Debug)]
 pub struct SessionBuilder<
     Counterpart,
     Run: RunWithConnectionTo<Counterpart> = NullRun,
@@ -136,7 +137,7 @@ where
         SessionBuilder {
             connection: connection.clone(),
             request,
-            dynamic_handler_registrations: Default::default(),
+            dynamic_handler_registrations: Vec::default(),
             run: NullRun,
             block_state: PhantomData,
         }
@@ -303,7 +304,7 @@ where
         connection.spawn(run.run_with_connection_to(connection.clone()))?;
         dynamic_handler_registrations
             .into_iter()
-            .for_each(|handler| handler.run_indefinitely());
+            .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
 
         // Send the "new session" request to the agent
         connection
@@ -483,6 +484,7 @@ where
 /// When created via [`SessionBuilder::run_until`], this is tied to the
 /// closure scope, preventing [`Self::proxy_remaining_messages`] from being called
 /// (since the responders would die when the closure returns).
+#[derive(Debug)]
 pub struct ActiveSession<'responder, Link>
 where
     Link: HasPeer<Agent>,
@@ -520,7 +522,7 @@ pub enum SessionMessage {
     StopReason(StopReason),
 }
 
-impl<'responder, Link> ActiveSession<'responder, Link>
+impl<Link> ActiveSession<'_, Link>
 where
     Link: HasPeer<Agent>,
 {
@@ -680,7 +682,7 @@ where
         // Step 3: Drain any messages that were already queued and forward to client.
         // These messages arrived before we dropped the handler but haven't been
         // consumed yet. We must forward them to maintain message ordering.
-        while let Some(Some(message)) = update_rx.try_next().ok() {
+        while let Ok(message) = update_rx.try_recv() {
             match message {
                 SessionMessage::SessionMessage(dispatch) => {
                     // Forward the message to the client

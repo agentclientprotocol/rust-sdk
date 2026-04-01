@@ -17,7 +17,7 @@ impl JsonRpcMessage for EchoRequestResponse {
         method == "echo"
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "echo"
     }
 

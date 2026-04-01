@@ -30,6 +30,7 @@ impl Default for EnabledTools {
 
 impl EnabledTools {
     /// Check if a tool is enabled.
+    #[must_use]
     pub fn is_enabled(&self, name: &str) -> bool {
         match self {
             EnabledTools::DenyList(deny) => !deny.contains(name),
@@ -76,6 +77,7 @@ use crate::{
 ///     )
 ///     .build();
 /// ```
+#[derive(Debug)]
 pub struct McpServerBuilder<Counterpart: Role, Responder>
 where
     Responder: RunWithConnectionTo<Counterpart>,
@@ -86,6 +88,7 @@ where
     responder: Responder,
 }
 
+#[derive(Debug)]
 struct McpServerData<Counterpart: Role> {
     instructions: Option<String>,
     tool_models: Vec<rmcp::model::Tool>,
@@ -98,6 +101,14 @@ struct RegisteredTool<Counterpart: Role> {
     tool: Arc<dyn ErasedMcpTool<Counterpart>>,
     /// Whether this tool returns structured output (i.e., has an output_schema).
     has_structured_output: bool,
+}
+
+impl<Counterpart: Role + std::fmt::Debug> std::fmt::Debug for RegisteredTool<Counterpart> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegisteredTool")
+            .field("has_structured_output", &self.has_structured_output)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<Host: Role> Default for McpServerData<Host> {
@@ -114,10 +125,10 @@ impl<Host: Role> Default for McpServerData<Host> {
 impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
     pub(super) fn new(name: String) -> Self {
         Self {
-            name: name,
+            name,
             phantom: PhantomData,
             data: McpServerData::default(),
-            responder: NullRun::default(),
+            responder: NullRun,
         }
     }
 }
@@ -127,12 +138,14 @@ where
     Responder: RunWithConnectionTo<Counterpart>,
 {
     /// Set the server instructions that are provided to the client.
+    #[must_use]
     pub fn instructions(mut self, instructions: impl ToString) -> Self {
         self.data.instructions = Some(instructions.to_string());
         self
     }
 
     /// Add a tool to the server.
+    #[must_use]
     pub fn tool(mut self, tool: impl McpTool<Counterpart> + 'static) -> Self {
         let tool_model = make_tool_model(&tool);
         let has_structured_output = tool_model.output_schema.is_some();
@@ -149,6 +162,7 @@ where
 
     /// Disable all tools. After calling this, only tools explicitly enabled
     /// with [`enable_tool`](Self::enable_tool) will be available.
+    #[must_use]
     pub fn disable_all_tools(mut self) -> Self {
         self.data.enabled_tools = EnabledTools::AllowList(HashSet::new());
         self
@@ -156,6 +170,7 @@ where
 
     /// Enable all tools. After calling this, all tools will be available
     /// except those explicitly disabled with [`disable_tool`](Self::disable_tool).
+    #[must_use]
     pub fn enable_all_tools(mut self) -> Self {
         self.data.enabled_tools = EnabledTools::DenyList(HashSet::new());
         self
@@ -166,7 +181,7 @@ where
     /// Returns an error if the tool is not registered.
     pub fn disable_tool(mut self, name: &str) -> Result<Self, crate::Error> {
         if !self.data.tools.contains_key(name) {
-            return Err(crate::Error::invalid_request().data(format!("unknown tool: {}", name)));
+            return Err(crate::Error::invalid_request().data(format!("unknown tool: {name}")));
         }
         match &mut self.data.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -184,7 +199,7 @@ where
     /// Returns an error if the tool is not registered.
     pub fn enable_tool(mut self, name: &str) -> Result<Self, crate::Error> {
         if !self.data.tools.contains_key(name) {
-            return Err(crate::Error::invalid_request().data(format!("unknown tool: {}", name)));
+            return Err(crate::Error::invalid_request().data(format!("unknown tool: {name}")));
         }
         match &mut self.data.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -318,7 +333,7 @@ where
                 call_tx,
             },
             ToolFnResponder {
-                func: func,
+                func,
                 call_rx,
                 tool_future_fn: Box::new(tool_future_hack),
             },
@@ -345,7 +360,7 @@ struct McpServerBuilt<Counterpart: Role> {
     data: Arc<McpServerData<Counterpart>>,
 }
 
-impl<'scope, Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {
+impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {
     fn name(&self) -> String {
         self.name.clone()
     }
@@ -381,11 +396,13 @@ impl<Counterpart: Role> ConnectTo<role::mcp::Client> for McpServerConnection<Cou
             // Connect byte_streams to the provided client
             let byte_streams =
                 ByteStreams::new(mcp_client_write.compat_write(), mcp_client_read.compat());
-            let _ = <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(
-                byte_streams,
-                client,
-            )
-            .await;
+            drop(
+                <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(
+                    byte_streams,
+                    client,
+                )
+                .await,
+            );
             Ok(())
         };
 
@@ -517,7 +534,7 @@ fn make_tool_model<R: Role, M: McpTool<R>>(tool: &M) -> Tool {
     )
     .with_execution(rmcp::model::ToolExecution::new());
 
-    if let Some(schema) = schema_for_output::<M::Output>().ok() {
+    if let Ok(schema) = schema_for_output::<M::Output>() {
         // schema_for_output returns Err for non-object types (strings, integers, etc.)
         // since MCP structured output requires JSON objects. We set
         // output_schema to None for these tools, signaling unstructured output.

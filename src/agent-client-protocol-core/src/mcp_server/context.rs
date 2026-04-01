@@ -1,7 +1,7 @@
 use crate::{ConnectionTo, role::Role};
 
 /// Context about the ACP and MCP connection available to an MCP server.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct McpConnectionTo<Counterpart: Role> {
     pub(super) acp_url: String,
     pub(super) connection: ConnectionTo<Counterpart>,

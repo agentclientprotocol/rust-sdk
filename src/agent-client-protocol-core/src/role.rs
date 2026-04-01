@@ -123,9 +123,9 @@ pub enum RoleId {
 
 impl RoleId {
     /// Create the role ID for a singleton role type.
-    pub fn from_singleton<R: Role>(_role: &R) -> RoleId
+    pub fn from_singleton<R>(_role: &R) -> RoleId
     where
-        R: Default,
+        R: Role + Default,
     {
         RoleId::Singleton(std::any::type_name::<R>(), TypeId::of::<R>())
     }
@@ -135,7 +135,7 @@ impl RoleId {
 // Role implementations
 // ============================================================================
 
-pub(crate) async fn handle_incoming_dispatch<Counterpart: Role, Peer: Role>(
+pub(crate) async fn handle_incoming_dispatch<Counterpart, Peer>(
     counterpart: Counterpart,
     peer: Peer,
     dispatch: Dispatch,
@@ -146,7 +146,8 @@ pub(crate) async fn handle_incoming_dispatch<Counterpart: Role, Peer: Role>(
     ) -> Result<Handled<Dispatch>, crate::Error>,
 ) -> Result<Handled<Dispatch>, crate::Error>
 where
-    Counterpart: HasPeer<Peer>,
+    Counterpart: Role + HasPeer<Peer>,
+    Peer: Role,
 {
     tracing::trace!(
         method = %dispatch.method(),
@@ -175,12 +176,11 @@ where
 
         if router.role_id() == peer.role_id() {
             return handle_dispatch(dispatch, connection).await;
-        } else {
-            return Ok(Handled::No {
-                message: dispatch,
-                retry: false,
-            });
         }
+        return Ok(Handled::No {
+            message: dispatch,
+            retry: false,
+        });
     }
 
     // Handle other messages by looking at the 'remote style'
@@ -189,20 +189,20 @@ where
         RemoteStyle::Counterpart => {
             // "Counterpart" is the default peer, no special checks required.
             tracing::trace!("handle_incoming_dispatch: Counterpart style, passing through");
-            return handle_dispatch(dispatch, connection).await;
+            handle_dispatch(dispatch, connection).await
         }
         RemoteStyle::Predecessor => {
             // "Predecessor" is the default peer, no special checks required.
             tracing::trace!("handle_incoming_dispatch: Predecessor style, passing through");
-            if method != METHOD_SUCCESSOR_MESSAGE {
-                return handle_dispatch(dispatch, connection).await;
-            } else {
+            if method == METHOD_SUCCESSOR_MESSAGE {
                 // Methods coming from the successor are not coming from
                 // our counterpart.
-                return Ok(Handled::No {
+                Ok(Handled::No {
                     message: dispatch,
                     retry: false,
-                });
+                })
+            } else {
+                handle_dispatch(dispatch, connection).await
             }
         }
         RemoteStyle::Successor => {
