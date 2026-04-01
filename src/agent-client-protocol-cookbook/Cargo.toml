@@ -11,10 +11,10 @@ keywords = ["acp", "agent", "proxy", "mcp", "cookbook"]
 categories = ["development-tools"]
 
 [dependencies]
-agent-client-protocol-conductor = { path = "../agent-client-protocol-conductor" }
-agent-client-protocol-core = { path = "../agent-client-protocol-core" }
-agent-client-protocol-rmcp = { path = "../agent-client-protocol-rmcp" }
-agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
+agent-client-protocol-conductor.workspace = true
+agent-client-protocol-core.workspace = true
+agent-client-protocol-rmcp.workspace = true
+agent-client-protocol-tokio.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

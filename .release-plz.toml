@@ -1,6 +1,15 @@
 [workspace]
 git_release_type = "auto"
 
+# Only release when merging the release PR (avoids race conditions with squash-merge)
+release_always = false
+
+# Keep dependencies updated in Cargo.lock
+dependencies_update = true
+
+# Tag release PRs for visibility
+pr_labels = ["release"]
+
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
@@ -28,6 +37,8 @@ git_tag_name = "agent-client-protocol-rmcp-v{{ version }}"
 [[package]]
 name = "agent-client-protocol-test"
 git_tag_name = "agent-client-protocol-test-v{{ version }}"
+# Don't publish test utilities to crates.io
+publish = false
 
 [[package]]
 name = "agent-client-protocol-tokio"

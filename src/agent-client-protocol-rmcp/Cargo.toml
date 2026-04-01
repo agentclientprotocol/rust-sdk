@@ -11,7 +11,7 @@ keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
 
 [dependencies]
-agent-client-protocol-core = { path = "../agent-client-protocol-core" }
+agent-client-protocol-core.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rmcp.workspace = true

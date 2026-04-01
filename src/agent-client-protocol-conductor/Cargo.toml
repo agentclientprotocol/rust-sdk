@@ -18,10 +18,10 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-agent-client-protocol-core = { path = "../agent-client-protocol-core" }
+agent-client-protocol-core.workspace = true
 agent-client-protocol-schema.workspace = true
-agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
-agent-client-protocol-trace-viewer = { path = "../agent-client-protocol-trace-viewer" }
+agent-client-protocol-tokio.workspace = true
+agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
@@ -45,9 +45,9 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-agent-client-protocol-test = { path = "../agent-client-protocol-test" }
-agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
-agent-client-protocol-yopo = { path = "../yopo" }
+agent-client-protocol-test.workspace = true
+agent-client-protocol-tokio.workspace = true
+agent-client-protocol-yopo.workspace = true
 expect-test.workspace = true
 regex.workspace = true
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }

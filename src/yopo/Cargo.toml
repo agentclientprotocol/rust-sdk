@@ -16,8 +16,8 @@ name = "yopo"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol-core = { path = "../agent-client-protocol-core" }
-agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
+agent-client-protocol-core.workspace = true
+agent-client-protocol-tokio.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

@@ -21,6 +21,16 @@ repository = "https://github.com/agentclientprotocol/rust-sdk"
 homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
+# Internal crates
+agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.1.0" }
+agent-client-protocol-core = { path = "src/agent-client-protocol-core", version = "0.1.0" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.1.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.1.0" }
+agent-client-protocol-test = { path = "src/agent-client-protocol-test", version = "0.1.0" }
+agent-client-protocol-tokio = { path = "src/agent-client-protocol-tokio", version = "0.1.0" }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.1.0" }
+agent-client-protocol-yopo = { path = "src/yopo", version = "0.1.0" }
+
 # Core async runtime
 tokio = { version = "1.48", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }

@@ -18,9 +18,9 @@ name = "testy"
 path = "src/bin/testy.rs"
 
 [dependencies]
-agent-client-protocol-core = { path = "../agent-client-protocol-core" }
-agent-client-protocol-tokio = { path = "../agent-client-protocol-tokio" }
-agent-client-protocol-yopo = { path = "../yopo" }
+agent-client-protocol-core.workspace = true
+agent-client-protocol-tokio.workspace = true
+agent-client-protocol-yopo.workspace = true
 anyhow.workspace = true
 futures.workspace = true
 rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
