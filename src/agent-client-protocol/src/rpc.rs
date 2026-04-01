@@ -285,9 +285,9 @@ where
                             spawn(
                                 async move {
                                     let result = handler.handle_request(request).await;
-                                    if let Err(e) = outgoing_tx.unbounded_send(OutgoingMessage::Response(Response::new(
-                                        id, result,
-                                    ))) {
+                                    if let Err(e) = outgoing_tx.unbounded_send(
+                                        OutgoingMessage::Response(Response::new(id, result)),
+                                    ) {
                                         log::error!("failed to send response to peer: {e:?}");
                                     }
                                 }
