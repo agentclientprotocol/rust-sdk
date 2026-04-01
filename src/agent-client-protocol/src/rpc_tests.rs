@@ -110,7 +110,7 @@ impl Client for TestClient {
     }
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
-        match dbg!(args.method.as_ref()) {
+        match args.method.as_ref() {
             "example.com/ping" => Ok(ExtResponse::new(raw_json!({
                 "response": "pong",
                 "params": args.params
@@ -296,8 +296,7 @@ impl Agent for TestAgent {
     }
 
     async fn ext_method(&self, args: ExtRequest) -> Result<ExtResponse> {
-        dbg!();
-        match dbg!(args.method.as_ref()) {
+        match args.method.as_ref() {
             "example.com/echo" => {
                 let response = serde_json::json!({
                     "echo": args.params
