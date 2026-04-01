@@ -102,6 +102,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// This exists because `AcpAgent` implements `Component<L>` for all `L`,
 /// so a `Vec<AcpAgent>` can be used as either a list of proxies or as
 /// proxies + final agent depending on the conductor mode.
+#[derive(Debug)]
 pub struct CommandLineComponents(pub Vec<AcpAgent>);
 
 impl InstantiateProxies for CommandLineComponents {
@@ -318,10 +319,12 @@ impl ConductorArgs {
             (None, false) => (None, None),
         };
 
-        self.run(debug_logger.as_ref(), trace_writer)
-            .instrument(tracing::info_span!("conductor", pid = %pid, cwd = %cwd))
-            .await
-            .map_err(|err| anyhow::anyhow!("{err}"))
+        Box::pin(
+            self.run(debug_logger.as_ref(), trace_writer)
+                .instrument(tracing::info_span!("conductor", pid = %pid, cwd = %cwd)),
+        )
+        .await
+        .map_err(|err| anyhow::anyhow!("{err}"))
     }
 
     async fn run(
@@ -331,23 +334,23 @@ impl ConductorArgs {
     ) -> Result<(), agent_client_protocol_core::Error> {
         match self.command {
             ConductorCommand::Agent { name, components } => {
-                initialize_conductor(
+                Box::pin(initialize_conductor(
                     debug_logger,
                     trace_writer,
                     name,
                     components,
                     ConductorImpl::new_agent,
-                )
+                ))
                 .await
             }
             ConductorCommand::Proxy { name, proxies } => {
-                initialize_conductor(
+                Box::pin(initialize_conductor(
                     debug_logger,
                     trace_writer,
                     name,
                     proxies,
                     ConductorImpl::new_proxy,
-                )
+                ))
                 .await
             }
             ConductorCommand::Mcp { port } => mcp_bridge::run_mcp_bridge(port).await,
@@ -387,7 +390,11 @@ async fn initialize_conductor<Host: ConductorHostRole>(
     };
 
     // Create conductor with optional trace writer
-    let mut conductor = new_conductor(name, CommandLineComponents(providers), Default::default());
+    let mut conductor = new_conductor(
+        name,
+        CommandLineComponents(providers),
+        McpBridgeMode::default(),
+    );
     if let Some(writer) = trace_writer {
         conductor = conductor.with_trace_writer(writer);
     }

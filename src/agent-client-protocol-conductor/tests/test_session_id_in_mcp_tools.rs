@@ -8,7 +8,7 @@
 //! 5. The tool returns the session_id in its response
 //! 6. We verify the session_ids match
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::RunWithConnectionTo;
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy};
@@ -27,7 +27,7 @@ struct EchoOutput {
 }
 
 /// Create a proxy that provides an MCP server with a session_id echo tool
-fn create_echo_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
+fn create_echo_proxy() -> DynConnectTo<Conductor> {
     // Create MCP server with an echo tool that returns the session_id
     let mcp_server = McpServer::builder("echo_server".to_string())
         .instructions("Test MCP server with session_id echo tool")
@@ -44,7 +44,7 @@ fn create_echo_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol_
         .build();
 
     // Create proxy component
-    Ok(DynConnectTo::new(ProxyWithEchoServer { mcp_server }))
+    DynConnectTo::new(ProxyWithEchoServer { mcp_server })
 }
 
 struct ProxyWithEchoServer<R: RunWithConnectionTo<Conductor>> {
@@ -71,17 +71,17 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_core::Error> {
     use expect_test::expect;
 
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()?),
-            Default::default(),
+            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
+            McpBridgeMode::default(),
         ),
         TestyCommand::ListTools {
             server: "echo_server".to_string(),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     // Check the response using expect_test
@@ -95,11 +95,11 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_c
 
 #[tokio::test]
 async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_protocol_core::Error> {
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()?),
-            Default::default(),
+            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
+            McpBridgeMode::default(),
         ),
         TestyCommand::CallTool {
             server: "echo_server".to_string(),
@@ -107,7 +107,7 @@ async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_pro
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     let pattern = regex::Regex::new(r#""acp_url":\s*String\("acp:[0-9a-f-]+"\)"#).unwrap();

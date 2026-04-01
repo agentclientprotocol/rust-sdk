@@ -3,7 +3,7 @@
 //! This test verifies that `tool_fn` works correctly for stateless tools
 //! that don't need mutable state.
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
@@ -17,7 +17,7 @@ struct GreetInput {
 }
 
 /// Create a proxy that provides an MCP server with a stateless greet tool
-fn create_greet_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
+fn create_greet_proxy() -> DynConnectTo<Conductor> {
     // Create MCP server with a stateless greet tool using tool_fn
     let mcp_server = McpServer::builder("greet_server".to_string())
         .instructions("Test MCP server with stateless greet tool")
@@ -30,7 +30,7 @@ fn create_greet_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol
         .build();
 
     // Create proxy component
-    Ok(DynConnectTo::new(ProxyWithGreetServer { mcp_server }))
+    DynConnectTo::new(ProxyWithGreetServer { mcp_server })
 }
 
 struct ProxyWithGreetServer<R: RunWithConnectionTo<Conductor>> {
@@ -55,11 +55,11 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 
 #[tokio::test]
 async fn test_tool_fn_greet() -> Result<(), agent_client_protocol_core::Error> {
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_greet_proxy()?),
-            Default::default(),
+            ProxiesAndAgent::new(Testy::new()).proxy(create_greet_proxy()),
+            McpBridgeMode::default(),
         ),
         TestyCommand::CallTool {
             server: "greet_server".to_string(),
@@ -67,7 +67,7 @@ async fn test_tool_fn_greet() -> Result<(), agent_client_protocol_core::Error> {
             params: serde_json::json!({"name": "World"}),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     expect_test::expect![[r#"

@@ -7,7 +7,7 @@
 //!
 //! Run `just prep-tests` before running this test.
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use agent_client_protocol_tokio::AcpAgent;
@@ -17,10 +17,12 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 #[tokio::test]
 async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error> {
     // Enable tracing if RUST_LOG is set
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_ansi(false)
-        .try_init();
+    drop(
+        tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_ansi(false)
+            .try_init(),
+    );
     // Create a temp file for the trace
     let trace_path = std::env::temp_dir().join(format!("trace_test_{}.jsons", std::process::id()));
 
@@ -38,29 +40,31 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
 
     // Spawn the conductor with tracing enabled
     let conductor_handle = tokio::spawn(async move {
-        ConductorImpl::new_agent(
-            "conductor".to_string(),
-            ProxiesAndAgent::new(eliza_agent).proxy(arrow_proxy_agent),
-            Default::default(),
+        Box::pin(
+            ConductorImpl::new_agent(
+                "conductor".to_string(),
+                ProxiesAndAgent::new(eliza_agent).proxy(arrow_proxy_agent),
+                McpBridgeMode::default(),
+            )
+            .trace_to_path(&trace_path_clone)
+            .expect("Failed to create trace writer")
+            .run(agent_client_protocol_core::ByteStreams::new(
+                conductor_write.compat_write(),
+                conductor_read.compat(),
+            )),
         )
-        .trace_to_path(&trace_path_clone)
-        .expect("Failed to create trace writer")
-        .run(agent_client_protocol_core::ByteStreams::new(
-            conductor_write.compat_write(),
-            conductor_read.compat(),
-        ))
         .await
     });
 
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = agent_client_protocol_yopo::prompt(
+        let result = Box::pin(agent_client_protocol_yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        )
+        ))
         .await?;
 
         Ok::<String, agent_client_protocol_core::Error>(result)
@@ -122,7 +126,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
     }
 
     // Clean up
-    let _ = std::fs::remove_file(&trace_path);
+    drop(std::fs::remove_file(&trace_path));
 
     println!("Test passed! Response: {result}");
 

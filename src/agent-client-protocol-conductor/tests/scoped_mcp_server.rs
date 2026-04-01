@@ -21,10 +21,10 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
     let conductor = ConductorImpl::new_agent(
         "conductor".to_string(),
         ProxiesAndAgent::new(Testy::new()).proxy(ScopedProxy),
-        Default::default(),
+        McpBridgeMode::default(),
     );
 
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         conductor,
         TestyCommand::CallTool {
             server: "test".to_string(),
@@ -32,7 +32,7 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
             params: serde_json::json!({"elements": ["Hello", "world"]}),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     expect_test::expect![[r#"
@@ -50,7 +50,7 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
 #[tokio::test]
 async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_protocol_core::Error> {
     // Run the client
-    agent_client_protocol_core::Client.builder()
+    Box::pin(agent_client_protocol_core::Client.builder()
         .connect_with(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
@@ -87,7 +87,7 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
 
                 Ok(())
             },
-        )
+        ))
         .await?;
 
     Ok(())

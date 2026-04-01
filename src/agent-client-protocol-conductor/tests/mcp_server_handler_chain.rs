@@ -5,7 +5,7 @@
 //! `Handled::No`, which prevented downstream `.on_receive_request_from()` handlers
 //! from being invoked.
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
@@ -169,15 +169,17 @@ async fn run_test(
         .builder()
         .name("editor-to-conductor")
         .with_spawned(|_cx| async move {
-            ConductorImpl::new_agent(
-                "conductor".to_string(),
-                ProxiesAndAgent::new(agent).proxies(proxies),
-                Default::default(),
+            Box::pin(
+                ConductorImpl::new_agent(
+                    "conductor".to_string(),
+                    ProxiesAndAgent::new(agent).proxies(proxies),
+                    McpBridgeMode::default(),
+                )
+                .run(agent_client_protocol_core::ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                )),
             )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_out.compat_write(),
-                conductor_in.compat(),
-            ))
             .await
         })
         .connect_with(transport, editor_task)
@@ -196,7 +198,7 @@ async fn test_new_session_handler_invoked_with_mcp_server()
     });
     let agent = DynConnectTo::<Client>::new(SimpleAgent);
 
-    run_test(vec![proxy], agent, async |connection_to_editor| {
+    Box::pin(run_test(vec![proxy], agent, async |connection_to_editor| {
         // Initialize first
         let _init_response = recv(
             connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
@@ -215,7 +217,7 @@ async fn test_new_session_handler_invoked_with_mcp_server()
         );
 
         Ok::<(), agent_client_protocol_core::Error>(())
-    })
+    }))
     .await?;
 
     // THE KEY ASSERTION: verify the handler was actually called

@@ -148,6 +148,7 @@ mod mcp_bridge;
 /// It maintains connections to all components in the chain and routes messages
 /// bidirectionally between the editor, components, and agent.
 ///
+#[derive(Debug)]
 pub struct ConductorImpl<Host: ConductorHostRole> {
     host: Host,
     name: String,
@@ -199,6 +200,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     /// Enable trace logging to a custom destination.
     ///
     /// Use `agent-client-protocol-trace-viewer` to view the trace as an interactive sequence diagram.
+    #[must_use]
     pub fn trace_to(mut self, dest: impl crate::trace::WriteEvent) -> Self {
         self.trace_writer = Some(crate::trace::TraceWriter::new(dest));
         self
@@ -214,6 +216,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     }
 
     /// Enable trace logging with an existing TraceWriter.
+    #[must_use]
     pub fn with_trace_writer(mut self, writer: crate::trace::TraceWriter) -> Self {
         self.trace_writer = Some(writer);
         self
@@ -241,10 +244,10 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             conductor_rx,
             conductor_tx: conductor_tx.clone(),
             instantiator: Some(self.instantiator),
-            bridge_listeners: Default::default(),
-            bridge_connections: Default::default(),
+            bridge_listeners: McpBridgeListeners::default(),
+            bridge_connections: HashMap::default(),
             mcp_bridge_mode: self.mcp_bridge_mode,
-            proxies: Default::default(),
+            proxies: Vec::default(),
             successor: Arc::new(agent_client_protocol_core::util::internal_error(
                 "successor not initialized",
             )),
@@ -367,6 +370,24 @@ where
 
     /// Defines what sort of link we have
     host: Host,
+}
+
+impl<Host> std::fmt::Debug for ConductorResponder<Host>
+where
+    Host: ConductorHostRole,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConductorResponder")
+            .field("conductor_rx", &self.conductor_rx)
+            .field("conductor_tx", &self.conductor_tx)
+            .field("bridge_listeners", &self.bridge_listeners)
+            .field("bridge_connections", &self.bridge_connections)
+            .field("proxies", &self.proxies)
+            .field("mcp_bridge_mode", &self.mcp_bridge_mode)
+            .field("trace_handle", &self.trace_handle)
+            .field("host", &self.host)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<Host> RunWithConnectionTo<Host::Counterpart> for ConductorResponder<Host>
@@ -1120,6 +1141,7 @@ pub trait InstantiateProxiesAndAgent: Send {
 }
 
 /// Wrapper to convert a single agent component (no proxies) into InstantiateProxiesAndAgent.
+#[derive(Debug)]
 pub struct AgentOnly<A>(pub A);
 
 impl<A: ConnectTo<Client> + 'static> InstantiateProxiesAndAgent for AgentOnly<A> {
@@ -1149,6 +1171,7 @@ impl<A: ConnectTo<Client> + 'static> InstantiateProxiesAndAgent for AgentOnly<A>
 ///     .proxy(LoggingProxy::new())
 ///     .proxy(AuthProxy::new())
 /// ```
+#[derive(Debug)]
 pub struct ProxiesAndAgent {
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,
@@ -1164,12 +1187,14 @@ impl ProxiesAndAgent {
     }
 
     /// Add a single proxy component.
+    #[must_use]
     pub fn proxy(mut self, proxy: impl ConnectTo<Conductor> + 'static) -> Self {
         self.proxies.push(DynConnectTo::new(proxy));
         self
     }
 
     /// Add multiple proxy components.
+    #[must_use]
     pub fn proxies<P, I>(mut self, proxies: I) -> Self
     where
         P: ConnectTo<Conductor> + 'static,

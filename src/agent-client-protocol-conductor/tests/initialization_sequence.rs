@@ -5,7 +5,7 @@
 //! 2. Multi-component chains: proxies receive `InitializeProxyRequest`
 //! 3. Last component (agent) receives `InitializeRequest`
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::schema::{
     AgentCapabilities, InitializeProxyRequest, InitializeRequest, InitializeResponse,
     ProtocolVersion,
@@ -134,15 +134,17 @@ async fn run_test_with_components(
         .builder()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
-            ConductorImpl::new_agent(
-                "conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()).proxies(proxies),
-                Default::default(),
+            Box::pin(
+                ConductorImpl::new_agent(
+                    "conductor".to_string(),
+                    ProxiesAndAgent::new(Testy::new()).proxies(proxies),
+                    McpBridgeMode::default(),
+                )
+                .run(agent_client_protocol_core::ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                )),
             )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_out.compat_write(),
-                conductor_in.compat(),
-            ))
             .await
         })
         .connect_with(transport, editor_task)
@@ -154,19 +156,22 @@ async fn test_single_component_gets_initialize_request()
 -> Result<(), agent_client_protocol_core::Error> {
     // Single component (agent) should receive InitializeRequest - we use ElizaAgent
     // which properly handles InitializeRequest
-    run_test_with_components(vec![], async |connection_to_editor| {
-        let init_response = recv(
-            connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
-        )
-        .await;
+    Box::pin(run_test_with_components(
+        vec![],
+        async |connection_to_editor| {
+            let init_response = recv(
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+            )
+            .await;
 
-        assert!(
-            init_response.is_ok(),
-            "Initialize should succeed: {init_response:?}"
-        );
+            assert!(
+                init_response.is_ok(),
+                "Initialize should succeed: {init_response:?}"
+            );
 
-        Ok::<(), agent_client_protocol_core::Error>(())
-    })
+            Ok::<(), agent_client_protocol_core::Error>(())
+        },
+    ))
     .await?;
 
     Ok(())
@@ -179,7 +184,7 @@ async fn test_two_components_proxy_gets_initialize_proxy()
     // Second component (agent, ElizaAgent) gets InitializeRequest
     let component1 = InitConfig::new();
 
-    run_test_with_components(
+    Box::pin(run_test_with_components(
         vec![InitComponent::new(&component1)],
         async |connection_to_editor| {
             let init_response = recv(
@@ -194,7 +199,7 @@ async fn test_two_components_proxy_gets_initialize_proxy()
 
             Ok::<(), agent_client_protocol_core::Error>(())
         },
-    )
+    ))
     .await?;
 
     // First component (proxy) should receive InitializeProxyRequest
@@ -217,7 +222,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
     let component1 = InitConfig::new();
     let component2 = InitConfig::new();
 
-    run_test_with_components(
+    Box::pin(run_test_with_components(
         vec![
             InitComponent::new(&component1),
             InitComponent::new(&component2),
@@ -235,7 +240,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
 
             Ok::<(), agent_client_protocol_core::Error>(())
         },
-    )
+    ))
     .await?;
 
     // First two components (proxies) should receive InitializeProxyRequest
@@ -302,15 +307,17 @@ async fn run_bad_proxy_test(
         .builder()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
-            ConductorImpl::new_agent(
-                "conductor".to_string(),
-                ProxiesAndAgent::new(agent).proxies(proxies),
-                Default::default(),
+            Box::pin(
+                ConductorImpl::new_agent(
+                    "conductor".to_string(),
+                    ProxiesAndAgent::new(agent).proxies(proxies),
+                    McpBridgeMode::default(),
+                )
+                .run(agent_client_protocol_core::ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                )),
             )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_out.compat_write(),
-                conductor_in.compat(),
-            ))
             .await
         })
         .connect_with(transport, editor_task)
@@ -322,7 +329,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
 -> Result<(), agent_client_protocol_core::Error> {
     // BadProxy incorrectly forwards InitializeProxyRequest to the agent.
     // The conductor should reject this with an error.
-    let result = run_bad_proxy_test(
+    let result = Box::pin(run_bad_proxy_test(
         vec![DynConnectTo::new(BadProxy)],
         DynConnectTo::new(Testy::new()),
         async |connection_to_editor| {
@@ -340,7 +347,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
 
             Ok::<(), agent_client_protocol_core::Error>(())
         },
-    )
+    ))
     .await;
 
     match result {
@@ -361,7 +368,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
 -> Result<(), agent_client_protocol_core::Error> {
     // BadProxy incorrectly forwards InitializeProxyRequest to another proxy.
     // The conductor should reject this with an error.
-    let result = run_bad_proxy_test(
+    let result = Box::pin(run_bad_proxy_test(
         vec![
             DynConnectTo::new(BadProxy),
             DynConnectTo::new(InitComponent::new(&InitConfig::new())), // This proxy will receive the bad request
@@ -383,7 +390,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
 
             Ok::<(), agent_client_protocol_core::Error>(())
         },
-    )
+    ))
     .await;
 
     // The error might bubble up through run_test_with_components instead

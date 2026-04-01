@@ -14,7 +14,7 @@
 //!
 //! Run `just prep-tests` before running this test.
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use agent_client_protocol_tokio::AcpAgent;
@@ -36,29 +36,31 @@ async fn test_conductor_with_two_external_arrow_proxies()
 
     // Spawn the conductor with three components
     let conductor_handle = tokio::spawn(async move {
-        ConductorImpl::new_agent(
-            "test-conductor".to_string(),
-            ProxiesAndAgent::new(agent)
-                .proxy(arrow_proxy1)
-                .proxy(arrow_proxy2),
-            Default::default(),
+        Box::pin(
+            ConductorImpl::new_agent(
+                "test-conductor".to_string(),
+                ProxiesAndAgent::new(agent)
+                    .proxy(arrow_proxy1)
+                    .proxy(arrow_proxy2),
+                McpBridgeMode::default(),
+            )
+            .run(agent_client_protocol_core::ByteStreams::new(
+                conductor_write.compat_write(),
+                conductor_read.compat(),
+            )),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
-            conductor_write.compat_write(),
-            conductor_read.compat(),
-        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = agent_client_protocol_yopo::prompt(
+        let result = Box::pin(agent_client_protocol_yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        )
+        ))
         .await?;
 
         expect_test::expect![[r#"

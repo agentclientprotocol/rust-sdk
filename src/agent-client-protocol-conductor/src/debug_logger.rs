@@ -97,8 +97,8 @@ impl DebugLogger {
                 let log_line =
                     format!("{component_label} {arrow} +{elapsed_ms}ms {cleaned_line}\n");
                 let mut writer = writer.lock().await;
-                let _ = writer.write_all(log_line.as_bytes()).await;
-                let _ = writer.flush().await;
+                drop(writer.write_all(log_line.as_bytes()).await);
+                drop(writer.flush().await);
             });
         }
     }
@@ -116,8 +116,8 @@ impl DebugLogger {
 
             let log_line = format!("C ! +{}ms {}\n", elapsed_ms, cleaned_line.trim_end());
             let mut writer = writer.lock().await;
-            let _ = writer.write_all(log_line.as_bytes()).await;
-            let _ = writer.flush().await;
+            drop(writer.write_all(log_line.as_bytes()).await);
+            drop(writer.flush().await);
         });
     }
 

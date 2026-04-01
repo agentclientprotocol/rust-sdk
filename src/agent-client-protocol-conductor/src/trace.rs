@@ -3,6 +3,7 @@
 //! Events are serialized as newline-delimited JSON (`.jsons` files).
 //! The viewer loads these files to render interactive sequence diagrams.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -165,6 +166,14 @@ pub struct TraceWriter {
     request_details: FxHashMap<serde_json::Value, RequestDetails>,
 }
 
+impl std::fmt::Debug for TraceWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TraceWriter")
+            .field("start_time", &self.start_time)
+            .finish_non_exhaustive()
+    }
+}
+
 struct RequestDetails {
     #[expect(dead_code)]
     protocol: Protocol,
@@ -182,7 +191,7 @@ impl TraceWriter {
         Self {
             dest: Box::new(dest),
             start_time: Instant::now(),
-            request_details: Default::default(),
+            request_details: HashMap::default(),
         }
     }
 
@@ -204,10 +213,11 @@ impl TraceWriter {
     /// Write a trace event.
     fn write_event(&mut self, event: &TraceEvent) {
         // Ignore errors - tracing should not break the conductor
-        let _ = self.dest.write_event(event);
+        drop(self.dest.write_event(event));
     }
 
     /// Write a request event.
+    #[expect(clippy::too_many_arguments)]
     fn request(
         &mut self,
         protocol: Protocol,
@@ -278,8 +288,6 @@ impl TraceWriter {
             params,
         }));
     }
-
-    /// Write a trace log event.
 
     /// Trace a raw JSON-RPC message being sent from one component to another.
     fn trace_message(&mut self, traced_message: TracedMessage) {
@@ -400,7 +408,7 @@ impl TraceWriter {
 /// A cloneable handle for sending trace events to the trace writer task.
 ///
 /// Create with [`spawn_trace_writer`], then clone and pass to bridges.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct TraceHandle {
     tx: futures::channel::mpsc::UnboundedSender<TracedMessage>,
 }

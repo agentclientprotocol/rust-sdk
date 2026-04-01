@@ -6,7 +6,7 @@
 //! Run `just prep-tests` before running this test.
 
 use agent_client_protocol_conductor::trace::TraceEvent;
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use agent_client_protocol_tokio::AcpAgent;
@@ -144,28 +144,30 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> 
 
     // Spawn the conductor with tracing to the channel
     let conductor_handle = tokio::spawn(async move {
-        ConductorImpl::new_agent(
-            "conductor".to_string(),
-            ProxiesAndAgent::new(eliza_agent).proxy(arrow_proxy_agent),
-            Default::default(),
+        Box::pin(
+            ConductorImpl::new_agent(
+                "conductor".to_string(),
+                ProxiesAndAgent::new(eliza_agent).proxy(arrow_proxy_agent),
+                McpBridgeMode::default(),
+            )
+            .trace_to(tx)
+            .run(agent_client_protocol_core::ByteStreams::new(
+                conductor_write.compat_write(),
+                conductor_read.compat(),
+            )),
         )
-        .trace_to(tx)
-        .run(agent_client_protocol_core::ByteStreams::new(
-            conductor_write.compat_write(),
-            conductor_read.compat(),
-        ))
         .await
     });
 
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        agent_client_protocol_yopo::prompt(
+        Box::pin(agent_client_protocol_yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        )
+        ))
         .await
     })
     .await

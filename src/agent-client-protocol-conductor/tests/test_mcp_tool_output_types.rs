@@ -3,7 +3,7 @@
 //! MCP structured output requires JSON objects. This test verifies behavior
 //! when tools return non-object types like bare strings or integers.
 
-use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_core::mcp_server::McpServer;
 use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 struct EmptyInput {}
 
 /// Create a proxy with tools that return different types
-fn create_test_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol_core::Error> {
+fn create_test_proxy() -> DynConnectTo<Conductor> {
     let mcp_server = McpServer::builder("test_server".to_string())
         .instructions("Test MCP server with various output types")
         .tool_fn_mut(
@@ -32,7 +32,7 @@ fn create_test_proxy() -> Result<DynConnectTo<Conductor>, agent_client_protocol_
         )
         .build();
 
-    Ok(DynConnectTo::new(ProxyWithTestServer { mcp_server }))
+    DynConnectTo::new(ProxyWithTestServer { mcp_server })
 }
 
 struct ProxyWithTestServer<R: RunWithConnectionTo<Conductor>> {
@@ -57,11 +57,11 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 
 #[tokio::test]
 async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::Error> {
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()?),
-            Default::default(),
+            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
+            McpBridgeMode::default(),
         ),
         TestyCommand::CallTool {
             server: "test_server".to_string(),
@@ -69,7 +69,7 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     // The result should contain "hello world" somewhere
@@ -83,11 +83,11 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::
 
 #[tokio::test]
 async fn test_tool_returning_integer() -> Result<(), agent_client_protocol_core::Error> {
-    let result = agent_client_protocol_yopo::prompt(
+    let result = Box::pin(agent_client_protocol_yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()?),
-            Default::default(),
+            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
+            McpBridgeMode::default(),
         ),
         TestyCommand::CallTool {
             server: "test_server".to_string(),
@@ -95,7 +95,7 @@ async fn test_tool_returning_integer() -> Result<(), agent_client_protocol_core:
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    )
+    ))
     .await?;
 
     // The result should contain "42" somewhere

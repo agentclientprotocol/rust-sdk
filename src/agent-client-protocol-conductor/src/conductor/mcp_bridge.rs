@@ -15,7 +15,7 @@ pub use self::actor::McpBridgeConnectionActor;
 use crate::conductor::ConductorMessage;
 
 /// Maintains bridges for MCP message routing.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct McpBridgeListeners {
     /// Mapping of acp:$UUID URLs to TCP bridge information for MCP message routing
     listeners: HashMap<String, McpBridgeListener>,

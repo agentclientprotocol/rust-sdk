@@ -10,7 +10,11 @@ use futures::{SinkExt, StreamExt as _, channel::mpsc, future::Either, stream::St
 use futures_concurrency::future::FutureExt as _;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
-use std::{collections::VecDeque, pin::pin, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    pin::pin,
+    sync::Arc,
+};
 use tokio::net::TcpListener;
 
 use crate::conductor::{
@@ -65,8 +69,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
     ) -> Result<(), agent_client_protocol_core::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
-            Either::Left((result, _)) => result,
-            Either::Right((result, _)) => result,
+            Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
@@ -200,8 +203,8 @@ struct RunningServer {
 impl RunningServer {
     fn new() -> Self {
         RunningServer {
-            waiting_sessions: Default::default(),
-            general_sessions: Default::default(),
+            waiting_sessions: HashMap::default(),
+            general_sessions: Vec::default(),
             message_deque: VecDeque::with_capacity(32),
         }
     }
@@ -237,8 +240,7 @@ impl RunningServer {
 
             match message {
                 MultiplexMessage::FromHttpToChannel(http_message) => {
-                    self.handle_http_message(http_message, &mut channel.tx)
-                        .await?;
+                    self.handle_http_message(http_message, &mut channel.tx)?;
                 }
 
                 MultiplexMessage::FromChannelToHttp(message) => {
@@ -259,7 +261,7 @@ impl RunningServer {
                 }
             }
 
-            self.drain_jsonrpc_messages().await?;
+            self.drain_jsonrpc_messages();
         }
 
         tracing::trace!("http connection terminating");
@@ -268,7 +270,7 @@ impl RunningServer {
     }
 
     /// Handle an incoming HTTP message (request, notification, response, or GET).
-    async fn handle_http_message(
+    fn handle_http_message(
         &mut self,
         message: HttpMessage,
         channel_tx: &mut mpsc::UnboundedSender<
@@ -350,7 +352,7 @@ impl RunningServer {
 
     /// Remove messages from the queue and send them.
     /// Stop if we cannot find places to send them.
-    async fn drain_jsonrpc_messages(&mut self) -> Result<(), agent_client_protocol_core::Error> {
+    fn drain_jsonrpc_messages(&mut self) {
         if !self.message_deque.is_empty() {
             tracing::debug!(
                 queue_len = self.message_deque.len(),
@@ -361,7 +363,7 @@ impl RunningServer {
         }
 
         while let Some(message) = self.message_deque.pop_front() {
-            match self.try_dispatch_jsonrpc_message(message).await? {
+            match self.try_dispatch_jsonrpc_message(message) {
                 None => {
                     tracing::debug!(
                         remaining = self.message_deque.len(),
@@ -379,21 +381,16 @@ impl RunningServer {
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Invoked when there is an outgoing JSON-RPC message to send.
     /// Tries to find a suitable place to send it.
-    /// If it succeeds, returns `Ok(None)`.
-    /// If there is no place to send it, returns `Ok(Some(message))`.
-    async fn try_dispatch_jsonrpc_message(
+    /// If it succeeds, returns `None`.
+    /// If there is no place to send it, returns `Some(message)`.
+    fn try_dispatch_jsonrpc_message(
         &mut self,
         mut message: agent_client_protocol_core::jsonrpcmsg::Message,
-    ) -> Result<
-        Option<agent_client_protocol_core::jsonrpcmsg::Message>,
-        agent_client_protocol_core::Error,
-    > {
+    ) -> Option<agent_client_protocol_core::jsonrpcmsg::Message> {
         // Extract the id of the message we are replying to, if any
         let message_id = match &message {
             Message::Response(response) => response.id.as_ref().map(|v| v.clone().into()),
@@ -413,7 +410,7 @@ impl RunningServer {
                 // Successfully sent the message, return
                 Ok(()) => {
                     tracing::debug!(session_id = %session.id, "sent to waiting session");
-                    return Ok(None);
+                    return None;
                 }
 
                 // If the sender died, just recover the message and send it to anyone.
@@ -443,7 +440,7 @@ impl RunningServer {
             match session.outgoing_tx.unbounded_send(message) {
                 Ok(()) => {
                     tracing::debug!(session_id = %session.id, "sent to session");
-                    return Ok(None);
+                    return None;
                 }
 
                 Err(m) => {
@@ -455,7 +452,7 @@ impl RunningServer {
         }
 
         // If we don't find anywhere to send the message, return it.
-        Ok(Some(message))
+        Some(message)
     }
 
     /// Purge sessions from the bridge state where the receiver is closed.
