@@ -46,6 +46,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+agent-client-protocol-test = { path = "../agent-client-protocol-test" }
 clap.workspace = true
 expect-test.workspace = true
 shell-words.workspace = true

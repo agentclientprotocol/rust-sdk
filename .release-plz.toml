@@ -18,6 +18,10 @@ name = "agent-client-protocol-rmcp"
 git_tag_name = "agent-client-protocol-rmcp-v{{ version }}"
 
 [[package]]
+name = "agent-client-protocol-test"
+git_tag_name = "agent-client-protocol-test-v{{ version }}"
+
+[[package]]
 name = "agent-client-protocol-tokio"
 git_tag_name = "agent-client-protocol-tokio-v{{ version }}"
 

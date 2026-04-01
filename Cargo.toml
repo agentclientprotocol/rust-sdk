@@ -4,6 +4,7 @@ members = [
     "src/agent-client-protocol-core",
     "src/agent-client-protocol-derive",
     "src/agent-client-protocol-rmcp",
+    "src/agent-client-protocol-test",
     "src/agent-client-protocol-tokio",
     "src/agent-client-protocol-trace-viewer",
     "src/yopo",
