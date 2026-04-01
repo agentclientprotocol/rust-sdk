@@ -199,7 +199,7 @@ pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
 }
 
 fn default_crate_path() -> Path {
-    syn::parse_quote!(agent_client_protocol)
+    syn::parse_quote!(agent_client_protocol_core)
 }
 
 fn parse_request_attrs(input: &DeriveInput) -> syn::Result<(String, Type, Path)> {

@@ -1,0 +1,55 @@
+[package]
+name = "agent-client-protocol-core"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core protocol types and traits for the Agent Client Protocol"
+keywords = ["acp", "agent", "protocol", "ai"]
+categories = ["development-tools"]
+
+[features]
+default = []
+
+# Forward unstable features from agent-client-protocol-schema.
+# Enable these to get support for the corresponding unstable ACP methods.
+unstable = [
+    "unstable_session_model",
+    "unstable_session_fork",
+    "unstable_session_resume",
+    "unstable_session_close",
+]
+unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
+unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
+unstable_session_resume = ["agent-client-protocol-schema/unstable_session_resume"]
+unstable_session_close = ["agent-client-protocol-schema/unstable_session_close"]
+
+[dependencies]
+agent-client-protocol-schema.workspace = true
+agent-client-protocol-derive = { path = "../agent-client-protocol-derive" }
+anyhow.workspace = true
+boxfnonce.workspace = true
+futures.workspace = true
+futures-concurrency.workspace = true
+rustc-hash.workspace = true
+jsonrpcmsg.workspace = true
+rmcp = { workspace = true, features = ["server"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+clap.workspace = true
+expect-test.workspace = true
+shell-words.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
