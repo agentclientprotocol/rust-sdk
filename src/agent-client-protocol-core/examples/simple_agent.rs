@@ -6,7 +6,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::main]
 async fn main() -> Result<(), agent_client_protocol_core::Error> {
-    let agent = Agent
+    Agent
         .builder()
         .name("my-agent") // for debugging
         .on_receive_request(
@@ -32,6 +32,6 @@ async fn main() -> Result<(), agent_client_protocol_core::Error> {
         .connect_to(agent_client_protocol_core::ByteStreams::new(
             tokio::io::stdout().compat_write(),
             tokio::io::stdin().compat(),
-        ));
-    Box::pin(agent).await
+        ))
+        .await
 }

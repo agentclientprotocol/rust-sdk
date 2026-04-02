@@ -57,7 +57,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 
 #[tokio::test]
 async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
@@ -69,7 +69,7 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // The result should contain "hello world" somewhere
@@ -83,7 +83,7 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::
 
 #[tokio::test]
 async fn test_tool_returning_integer() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
@@ -95,7 +95,7 @@ async fn test_tool_returning_integer() -> Result<(), agent_client_protocol_core:
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // The result should contain "42" somewhere

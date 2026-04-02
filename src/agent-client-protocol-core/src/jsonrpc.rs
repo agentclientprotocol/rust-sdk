@@ -1239,7 +1239,8 @@ impl<
                     Ok(())
                 };
 
-                crate::util::run_until(background, main_fn(connection.clone())).await
+                crate::util::run_until(Box::pin(background), Box::pin(main_fn(connection.clone())))
+                    .await
             }
         });
 

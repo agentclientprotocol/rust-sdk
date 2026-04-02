@@ -319,12 +319,10 @@ impl ConductorArgs {
             (None, false) => (None, None),
         };
 
-        Box::pin(
-            self.run(debug_logger.as_ref(), trace_writer)
-                .instrument(tracing::info_span!("conductor", pid = %pid, cwd = %cwd)),
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))
+        self.run(debug_logger.as_ref(), trace_writer)
+            .instrument(tracing::info_span!("conductor", pid = %pid, cwd = %cwd))
+            .await
+            .map_err(|err| anyhow::anyhow!("{err}"))
     }
 
     async fn run(
@@ -334,23 +332,23 @@ impl ConductorArgs {
     ) -> Result<(), agent_client_protocol_core::Error> {
         match self.command {
             ConductorCommand::Agent { name, components } => {
-                Box::pin(initialize_conductor(
+                initialize_conductor(
                     debug_logger,
                     trace_writer,
                     name,
                     components,
                     ConductorImpl::new_agent,
-                ))
+                )
                 .await
             }
             ConductorCommand::Proxy { name, proxies } => {
-                Box::pin(initialize_conductor(
+                initialize_conductor(
                     debug_logger,
                     trace_writer,
                     name,
                     proxies,
                     ConductorImpl::new_proxy,
-                ))
+                )
                 .await
             }
             ConductorCommand::Mcp { port } => mcp_bridge::run_mcp_bridge(port).await,

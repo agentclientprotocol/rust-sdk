@@ -233,7 +233,7 @@ where
                         connection: connection_to_client.clone(),
                     });
 
-                let client = role::mcp::Client
+                role::mcp::Client
                     .builder()
                     .on_receive_dispatch(
                         async |message_from_server: Dispatch, _| {
@@ -247,8 +247,8 @@ where
                             connection_to_server.send_proxied_message(message_from_client)?;
                         }
                         Ok(())
-                    });
-                Box::pin(client).await
+                    })
+                    .await
             })
             .connect_to(client)
             .await

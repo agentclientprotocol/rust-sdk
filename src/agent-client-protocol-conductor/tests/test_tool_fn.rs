@@ -55,7 +55,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 
 #[tokio::test]
 async fn test_tool_fn_greet() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_greet_proxy()),
@@ -67,7 +67,7 @@ async fn test_tool_fn_greet() -> Result<(), agent_client_protocol_core::Error> {
             params: serde_json::json!({"name": "World"}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     expect_test::expect![[r#"

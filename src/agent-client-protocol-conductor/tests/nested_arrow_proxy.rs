@@ -36,31 +36,29 @@ async fn test_conductor_with_two_external_arrow_proxies()
 
     // Spawn the conductor with three components
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "test-conductor".to_string(),
-                ProxiesAndAgent::new(agent)
-                    .proxy(arrow_proxy1)
-                    .proxy(arrow_proxy2),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "test-conductor".to_string(),
+            ProxiesAndAgent::new(agent)
+                .proxy(arrow_proxy1)
+                .proxy(arrow_proxy2),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(yopo::prompt(
+        let result = yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        ))
+        )
         .await?;
 
         expect_test::expect![[r#"

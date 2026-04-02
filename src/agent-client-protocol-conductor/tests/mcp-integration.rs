@@ -64,15 +64,12 @@ async fn run_test_with_mode(
         .builder()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
-            Box::pin(
-                ConductorImpl::new_agent("conductor".to_string(), components, mode).run(
-                    agent_client_protocol_core::ByteStreams::new(
-                        conductor_out.compat_write(),
-                        conductor_in.compat(),
-                    ),
-                ),
-            )
-            .await
+            ConductorImpl::new_agent("conductor".to_string(), components, mode)
+                .run(agent_client_protocol_core::ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
         })
         .connect_with(transport, editor_task)
         .await
@@ -81,7 +78,7 @@ async fn run_test_with_mode(
 /// Test that proxy-provided MCP tools work with stdio bridge mode
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protocol_core::Error> {
-    Box::pin(run_test_with_mode(
+    run_test_with_mode(
         McpBridgeMode::Stdio {
             conductor_command: conductor_command(),
         },
@@ -116,7 +113,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 
             Ok(())
         },
-    ))
+    )
     .await?;
 
     Ok(())
@@ -125,7 +122,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 /// Test that proxy-provided MCP tools work with HTTP bridge mode
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protocol_core::Error> {
-    Box::pin(run_test_with_mode(
+    run_test_with_mode(
         McpBridgeMode::Http,
         ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
         async |connection_to_editor| {
@@ -158,7 +155,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 
             Ok(())
         },
-    ))
+    )
     .await?;
 
     Ok(())
@@ -183,29 +180,26 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
 
     // Spawn the conductor in a background task
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "mcp-integration-conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "mcp-integration-conductor".to_string(),
+            ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Run the client
-    let result = Box::pin(
-        agent_client_protocol_core::Client
-            .builder()
-            .name("editor-to-connector")
-            .on_receive_notification(
-                {
-                    let mut log_tx = log_tx.clone();
-                    async move |notification: SessionNotification,
+    let result = agent_client_protocol_core::Client
+        .builder()
+        .name("editor-to-connector")
+        .on_receive_notification(
+            {
+                let mut log_tx = log_tx.clone();
+                async move |notification: SessionNotification,
                             _cx: agent_client_protocol_core::ConnectionTo<Agent>| {
                     // Log the notification in debug format
                     log_tx
@@ -213,54 +207,52 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
                         .await
                         .map_err(|_| agent_client_protocol_core::Error::internal_error())
                 }
-                },
-                agent_client_protocol_core::on_receive_notification!(),
-            )
-            .connect_with(
-                agent_client_protocol_core::ByteStreams::new(
-                    client_write.compat_write(),
-                    client_read.compat(),
-                ),
-                async |connection_to_editor| {
-                    // Initialize
-                    recv(
-                        connection_to_editor
-                            .send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
-                    )
-                    .await?;
+            },
+            agent_client_protocol_core::on_receive_notification!(),
+        )
+        .connect_with(
+            agent_client_protocol_core::ByteStreams::new(
+                client_write.compat_write(),
+                client_read.compat(),
+            ),
+            async |connection_to_editor| {
+                // Initialize
+                recv(
+                    connection_to_editor
+                        .send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                )
+                .await?;
 
-                    // Create session
-                    let session = recv(
-                        connection_to_editor
-                            .send_request(NewSessionRequest::new(std::path::PathBuf::from("/"))),
-                    )
-                    .await?;
+                // Create session
+                let session = recv(
+                    connection_to_editor
+                        .send_request(NewSessionRequest::new(std::path::PathBuf::from("/"))),
+                )
+                .await?;
 
-                    tracing::debug!(session_id = %session.session_id.0, "Session created");
+                tracing::debug!(session_id = %session.session_id.0, "Session created");
 
-                    // Send a prompt to call the echo tool
-                    let prompt_response =
-                        recv(connection_to_editor.send_request(PromptRequest::new(
-                            session.session_id.clone(),
-                            vec![ContentBlock::Text(TextContent::new(TestyCommand::CallTool {
+                // Send a prompt to call the echo tool
+                let prompt_response = recv(connection_to_editor.send_request(PromptRequest::new(
+                    session.session_id.clone(),
+                    vec![ContentBlock::Text(TextContent::new(TestyCommand::CallTool {
                         server: "test".to_string(),
                         tool: "echo".to_string(),
                         params: serde_json::json!({"message": "Hello from the test!"}),
                     }.to_prompt()))],
-                        )))
-                        .await?;
+                )))
+                .await?;
 
-                    // Log the response
-                    log_tx
-                        .send(format!("{prompt_response:?}"))
-                        .await
-                        .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
+                // Log the response
+                log_tx
+                    .send(format!("{prompt_response:?}"))
+                    .await
+                    .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
 
-                    Ok(())
-                },
-            ),
-    )
-    .await;
+                Ok(())
+            },
+        )
+        .await;
 
     conductor_handle.abort();
     result?;

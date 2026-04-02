@@ -29,29 +29,27 @@ async fn test_conductor_with_arrow_proxy_and_test_agent()
 
     // Spawn the conductor
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "conductor".to_string(),
-                ProxiesAndAgent::new(test_agent).proxy(arrow_proxy_agent),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "conductor".to_string(),
+            ProxiesAndAgent::new(test_agent).proxy(arrow_proxy_agent),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(yopo::prompt(
+        let result = yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        ))
+        )
         .await?;
 
         tracing::debug!(?result, "Received response from arrow proxy chain");

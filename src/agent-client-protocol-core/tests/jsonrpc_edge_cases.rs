@@ -149,51 +149,53 @@ async fn test_empty_request() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |_request: EmptyRequest,
-                   responder: Responder<SimpleResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                responder.respond(SimpleResponse {
-                    result: "Got empty request".to_string(),
-                })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    let request = EmptyRequest;
-
-                    let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
-
-                    // Should succeed
-                    assert!(result.is_ok());
-                    if let Ok(response) = result {
-                        assert_eq!(response.result, "Got empty request");
-                    }
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |_request: EmptyRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: "Got empty request".to_string(),
+                    })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let request = EmptyRequest;
+
+                        let result: Result<SimpleResponse, _> =
+                            recv(cx.send_request(request)).await;
+
+                        // Should succeed
+                        assert!(result.is_ok());
+                        if let Ok(response) = result {
+                            assert_eq!(response.result, "Got empty request");
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -206,48 +208,50 @@ async fn test_null_params() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |_request: OptionalParamsRequest,
-                   responder: Responder<SimpleResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                responder.respond(SimpleResponse {
-                    result: "Has params: true".to_string(),
-                })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    let request = OptionalParamsRequest { value: None };
-
-                    let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
-
-                    // Should succeed - handler should handle null/missing params
-                    assert!(result.is_ok());
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |_request: OptionalParamsRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: "Has params: true".to_string(),
+                    })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let request = OptionalParamsRequest { value: None };
+
+                        let result: Result<SimpleResponse, _> =
+                            recv(cx.send_request(request)).await;
+
+                        // Should succeed - handler should handle null/missing params
+                        assert!(result.is_ok());
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -282,7 +286,7 @@ async fn test_server_shutdown() {
             let client = UntypedRole.builder();
 
             let server_handle = tokio::task::spawn_local(async move {
-                Box::pin(server.connect_to(server_transport)).await.ok();
+                server.connect_to(server_transport).await.ok();
             });
 
             let client_result = tokio::task::spawn_local(async move {
@@ -355,7 +359,7 @@ async fn test_client_disconnect() {
             );
 
             tokio::task::spawn_local(async move {
-                drop(Box::pin(server.connect_to(server_transport)).await);
+                drop(server.connect_to(server_transport).await);
             });
 
             // Send partial request and then disconnect

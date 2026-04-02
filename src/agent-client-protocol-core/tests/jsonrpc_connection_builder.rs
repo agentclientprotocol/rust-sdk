@@ -151,86 +151,91 @@ async fn test_multiple_handlers_different_methods() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (client_writer, server_reader) = tokio::io::duplex(1024);
-        let (server_writer, client_reader) = tokio::io::duplex(1024);
+    local
+        .run_until(async {
+            let (client_writer, server_reader) = tokio::io::duplex(1024);
+            let (server_writer, client_reader) = tokio::io::duplex(1024);
 
-        let server_reader = server_reader.compat();
-        let server_writer = server_writer.compat_write();
-        let client_reader = client_reader.compat();
-        let client_writer = client_writer.compat_write();
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+            let client_reader = client_reader.compat();
+            let client_writer = client_writer.compat_write();
 
-        // Chain both handlers
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole
-            .builder()
-            .on_receive_request(
-                async |request: FooRequest,
-                       responder: Responder<FooResponse>,
-                       _connection: ConnectionTo<UntypedRole>| {
-                    responder.respond(FooResponse {
-                        result: format!("foo: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            )
-            .on_receive_request(
-                async |request: BarRequest,
-                       responder: Responder<BarResponse>,
-                       _connection: ConnectionTo<UntypedRole>| {
-                    responder.respond(BarResponse {
-                        result: format!("bar: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            );
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
+            // Chain both handlers
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: FooRequest,
+                           responder: Responder<FooResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(FooResponse {
+                            result: format!("foo: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async |request: BarRequest,
+                           responder: Responder<BarResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(BarResponse {
+                            result: format!("bar: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                );
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
 
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Test foo request
-                    let foo_response = recv(cx.send_request(FooRequest {
-                        value: "test1".to_string(),
-                    }))
-                    .await
-                    .map_err(|e| -> agent_client_protocol_core::Error {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Foo request failed: {e:?}"
-                        ))
-                    })?;
-                    assert_eq!(foo_response.result, "foo: test1");
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Test foo request
+                        let foo_response = recv(cx.send_request(FooRequest {
+                            value: "test1".to_string(),
+                        }))
+                        .await
+                        .map_err(
+                            |e| -> agent_client_protocol_core::Error {
+                                agent_client_protocol_core::util::internal_error(format!(
+                                    "Foo request failed: {e:?}"
+                                ))
+                            },
+                        )?;
+                        assert_eq!(foo_response.result, "foo: test1");
 
-                    // Test bar request
-                    let bar_response = recv(cx.send_request(BarRequest {
-                        value: "test2".to_string(),
-                    }))
-                    .await
-                    .map_err(|e| -> agent_client_protocol_core::Error {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Bar request failed: {e:?}"
-                        ))
-                    })?;
-                    assert_eq!(bar_response.result, "bar: test2");
+                        // Test bar request
+                        let bar_response = recv(cx.send_request(BarRequest {
+                            value: "test2".to_string(),
+                        }))
+                        .await
+                        .map_err(
+                            |e| -> agent_client_protocol_core::Error {
+                                agent_client_protocol_core::util::internal_error(format!(
+                                    "Bar request failed: {e:?}"
+                                ))
+                            },
+                        )?;
+                        assert_eq!(bar_response.result, "bar: test2");
 
-                    Ok(())
-                },
-            )
-            .await;
+                        Ok(())
+                    },
+                )
+                .await;
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -278,86 +283,87 @@ async fn test_handler_priority_ordering() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let handled = Arc::new(Mutex::new(Vec::new()));
+    local
+        .run_until(async {
+            let handled = Arc::new(Mutex::new(Vec::new()));
 
-        let (client_writer, server_reader) = tokio::io::duplex(1024);
-        let (server_writer, client_reader) = tokio::io::duplex(1024);
+            let (client_writer, server_reader) = tokio::io::duplex(1024);
+            let (server_writer, client_reader) = tokio::io::duplex(1024);
 
-        let server_reader = server_reader.compat();
-        let server_writer = server_writer.compat_write();
-        let client_reader = client_reader.compat();
-        let client_writer = client_writer.compat_write();
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+            let client_reader = client_reader.compat();
+            let client_writer = client_writer.compat_write();
 
-        // First handler in chain should get first chance
-        let handled_clone1 = handled.clone();
-        let handled_clone2 = handled.clone();
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole
-            .builder()
-            .on_receive_request(
-                async move |request: TrackRequest,
-                            responder: Responder<FooResponse>,
-                            _connection: ConnectionTo<UntypedRole>| {
-                    handled_clone1.lock().unwrap().push("handler1".to_string());
-                    responder.respond(FooResponse {
-                        result: format!("handler1: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            )
-            .on_receive_request(
-                async move |request: TrackRequest,
-                            responder: Responder<FooResponse>,
-                            _connection: ConnectionTo<UntypedRole>| {
-                    handled_clone2.lock().unwrap().push("handler2".to_string());
-                    responder.respond(FooResponse {
-                        result: format!("handler2: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            );
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
+            // First handler in chain should get first chance
+            let handled_clone1 = handled.clone();
+            let handled_clone2 = handled.clone();
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async move |request: TrackRequest,
+                                responder: Responder<FooResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        handled_clone1.lock().unwrap().push("handler1".to_string());
+                        responder.respond(FooResponse {
+                            result: format!("handler1: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |request: TrackRequest,
+                                responder: Responder<FooResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        handled_clone2.lock().unwrap().push("handler2".to_string());
+                        responder.respond(FooResponse {
+                            result: format!("handler2: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                );
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
 
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    let response = recv(cx.send_request(TrackRequest {
-                        value: "test".to_string(),
-                    }))
-                    .await
-                    .map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Track request failed: {e:?}"
-                        ))
-                    })?;
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        let response = recv(cx.send_request(TrackRequest {
+                            value: "test".to_string(),
+                        }))
+                        .await
+                        .map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Track request failed: {e:?}"
+                            ))
+                        })?;
 
-                    // First handler should have handled it
-                    assert_eq!(response.result, "handler1: test");
+                        // First handler should have handled it
+                        assert_eq!(response.result, "handler1: test");
 
-                    Ok(())
-                },
-            )
-            .await;
+                        Ok(())
+                    },
+                )
+                .await;
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
-        // Verify only handler1 was invoked
-        let handled_by = handled.lock().unwrap();
-        assert_eq!(handled_by.len(), 1);
-        assert_eq!(handled_by[0], "handler1");
-    }))
-    .await;
+            // Verify only handler1 was invoked
+            let handled_by = handled.lock().unwrap();
+            assert_eq!(handled_by.len(), 1);
+            assert_eq!(handled_by[0], "handler1");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -440,86 +446,87 @@ async fn test_fallthrough_behavior() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let handled = Arc::new(Mutex::new(Vec::new()));
+    local
+        .run_until(async {
+            let handled = Arc::new(Mutex::new(Vec::new()));
 
-        let (client_writer, server_reader) = tokio::io::duplex(1024);
-        let (server_writer, client_reader) = tokio::io::duplex(1024);
+            let (client_writer, server_reader) = tokio::io::duplex(1024);
+            let (server_writer, client_reader) = tokio::io::duplex(1024);
 
-        let server_reader = server_reader.compat();
-        let server_writer = server_writer.compat_write();
-        let client_reader = client_reader.compat();
-        let client_writer = client_writer.compat_write();
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+            let client_reader = client_reader.compat();
+            let client_writer = client_writer.compat_write();
 
-        // Handler1 only handles "method1", Handler2 only handles "method2"
-        let handled_clone1 = handled.clone();
-        let handled_clone2 = handled.clone();
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole
-            .builder()
-            .on_receive_request(
-                async move |request: Method1Request,
-                            responder: Responder<FooResponse>,
-                            _connection: ConnectionTo<UntypedRole>| {
-                    handled_clone1.lock().unwrap().push("method1".to_string());
-                    responder.respond(FooResponse {
-                        result: format!("method1: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            )
-            .on_receive_request(
-                async move |request: Method2Request,
-                            responder: Responder<FooResponse>,
-                            _connection: ConnectionTo<UntypedRole>| {
-                    handled_clone2.lock().unwrap().push("method2".to_string());
-                    responder.respond(FooResponse {
-                        result: format!("method2: {}", request.value),
-                    })
-                },
-                agent_client_protocol_core::on_receive_request!(),
-            );
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
+            // Handler1 only handles "method1", Handler2 only handles "method2"
+            let handled_clone1 = handled.clone();
+            let handled_clone2 = handled.clone();
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async move |request: Method1Request,
+                                responder: Responder<FooResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        handled_clone1.lock().unwrap().push("method1".to_string());
+                        responder.respond(FooResponse {
+                            result: format!("method1: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async move |request: Method2Request,
+                                responder: Responder<FooResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        handled_clone2.lock().unwrap().push("method2".to_string());
+                        responder.respond(FooResponse {
+                            result: format!("method2: {}", request.value),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                );
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
 
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Send method2 - should fallthrough handler1 to handler2
-                    let response = recv(cx.send_request(Method2Request {
-                        value: "fallthrough".to_string(),
-                    }))
-                    .await
-                    .map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Method2 request failed: {e:?}"
-                        ))
-                    })?;
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Send method2 - should fallthrough handler1 to handler2
+                        let response = recv(cx.send_request(Method2Request {
+                            value: "fallthrough".to_string(),
+                        }))
+                        .await
+                        .map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Method2 request failed: {e:?}"
+                            ))
+                        })?;
 
-                    assert_eq!(response.result, "method2: fallthrough");
+                        assert_eq!(response.result, "method2: fallthrough");
 
-                    Ok(())
-                },
-            )
-            .await;
+                        Ok(())
+                    },
+                )
+                .await;
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
+            assert!(result.is_ok(), "Test failed: {result:?}");
 
-        // Verify only method2 was handled (handler1 passed through)
-        let handled_methods = handled.lock().unwrap();
-        assert_eq!(handled_methods.len(), 1);
-        assert_eq!(handled_methods[0], "method2");
-    }))
-    .await;
+            // Verify only method2 was handled (handler1 passed through)
+            let handled_methods = handled.lock().unwrap();
+            assert_eq!(handled_methods.len(), 1);
+            assert_eq!(handled_methods[0], "method2");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -532,59 +539,60 @@ async fn test_no_handler_claims() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (client_writer, server_reader) = tokio::io::duplex(1024);
-        let (server_writer, client_reader) = tokio::io::duplex(1024);
+    local
+        .run_until(async {
+            let (client_writer, server_reader) = tokio::io::duplex(1024);
+            let (server_writer, client_reader) = tokio::io::duplex(1024);
 
-        let server_reader = server_reader.compat();
-        let server_writer = server_writer.compat_write();
-        let client_reader = client_reader.compat();
-        let client_writer = client_writer.compat_write();
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+            let client_reader = client_reader.compat();
+            let client_writer = client_writer.compat_write();
 
-        // Handler that only handles "foo"
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |request: FooRequest,
-                   responder: Responder<FooResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                responder.respond(FooResponse {
-                    result: format!("foo: {}", request.value),
-                })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Send "bar" request which no handler claims
-                    let response_result = recv(cx.send_request(BarRequest {
-                        value: "unclaimed".to_string(),
-                    }))
-                    .await;
-
-                    // Should get an error (method not found)
-                    assert!(response_result.is_err());
-
-                    Ok(())
+            // Handler that only handles "foo"
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: FooRequest,
+                       responder: Responder<FooResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(FooResponse {
+                        result: format!("foo: {}", request.value),
+                    })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Send "bar" request which no handler claims
+                        let response_result = recv(cx.send_request(BarRequest {
+                            value: "unclaimed".to_string(),
+                        }))
+                        .await;
+
+                        // Should get an error (method not found)
+                        assert!(response_result.is_err());
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -630,66 +638,68 @@ async fn test_handler_claims_notification() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let events = Arc::new(Mutex::new(Vec::new()));
+    local
+        .run_until(async {
+            let events = Arc::new(Mutex::new(Vec::new()));
 
-        let (client_writer, server_reader) = tokio::io::duplex(1024);
-        let (server_writer, client_reader) = tokio::io::duplex(1024);
+            let (client_writer, server_reader) = tokio::io::duplex(1024);
+            let (server_writer, client_reader) = tokio::io::duplex(1024);
 
-        let server_reader = server_reader.compat();
-        let server_writer = server_writer.compat_write();
-        let client_reader = client_reader.compat();
-        let client_writer = client_writer.compat_write();
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+            let client_reader = client_reader.compat();
+            let client_writer = client_writer.compat_write();
 
-        // EventHandler claims notifications
-        let events_clone = events.clone();
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_notification(
-            async move |notification: EventNotification, _connection: ConnectionTo<UntypedRole>| {
-                events_clone.lock().unwrap().push(notification.event);
-                Ok(())
-            },
-            agent_client_protocol_core::on_receive_notification!(),
-        );
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    cx.send_notification(EventNotification {
-                        event: "test_event".to_string(),
-                    })
-                    .map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Failed to send notification: {e:?}"
-                        ))
-                    })?;
-
-                    // Give server time to process
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-
+            // EventHandler claims notifications
+            let events_clone = events.clone();
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_notification(
+                async move |notification: EventNotification,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    events_clone.lock().unwrap().push(notification.event);
                     Ok(())
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_notification!(),
+            );
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
 
-        let received_events = events.lock().unwrap();
-        assert_eq!(received_events.len(), 1);
-        assert_eq!(received_events[0], "test_event");
-    }))
-    .await;
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        cx.send_notification(EventNotification {
+                            event: "test_event".to_string(),
+                        })
+                        .map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Failed to send notification: {e:?}"
+                            ))
+                        })?;
+
+                        // Give server time to process
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+
+            let received_events = events.lock().unwrap();
+            assert_eq!(received_events.len(), 1);
+            assert_eq!(received_events[0], "test_event");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -726,7 +736,7 @@ async fn test_connection_builder_as_component() -> Result<(), agent_client_proto
     );
 
     // Use Builder as a Component via run_until
-    Box::pin(run_until(
+    run_until(
         // This uses Component::serve on Builder
         ConnectTo::<UntypedRole>::connect_to(server_builder, server_transport),
         async move {
@@ -744,6 +754,6 @@ async fn test_connection_builder_as_component() -> Result<(), agent_client_proto
                 })
                 .await
         },
-    ))
+    )
     .await
 }

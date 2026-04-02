@@ -88,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Run the client
-    let client = Client
+    Client
         .builder()
         .on_receive_notification(
             async move |notification: SessionNotification, _cx| {
@@ -152,8 +152,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!("Stop reason: {:?}", prompt_response.stop_reason);
 
             Ok(())
-        });
-    Box::pin(client).await?;
+        })
+        .await?;
 
     // Kill the child process when done
     drop(child.kill().await);

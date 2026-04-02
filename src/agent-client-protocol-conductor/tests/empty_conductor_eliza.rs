@@ -54,29 +54,27 @@ async fn test_conductor_with_empty_conductor_and_test_agent()
 
     // Spawn the conductor
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "outer-conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()).proxy(MockEmptyConductor),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "outer-conductor".to_string(),
+            ProxiesAndAgent::new(Testy::new()).proxy(MockEmptyConductor),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(yopo::prompt(
+        let result = yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        ))
+        )
         .await?;
 
         tracing::debug!(?result, "Received response from empty conductor chain");
