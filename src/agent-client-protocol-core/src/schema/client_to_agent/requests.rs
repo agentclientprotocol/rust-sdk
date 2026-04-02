@@ -9,6 +9,8 @@ use crate::schema::{
 use crate::schema::{CloseSessionRequest, CloseSessionResponse};
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::{ForkSessionRequest, ForkSessionResponse};
+#[cfg(feature = "unstable_logout")]
+use crate::schema::{LogoutRequest, LogoutResponse};
 #[cfg(feature = "unstable_session_resume")]
 use crate::schema::{ResumeSessionRequest, ResumeSessionResponse};
 #[cfg(feature = "unstable_session_model")]
@@ -16,6 +18,8 @@ use crate::schema::{SetSessionModelRequest, SetSessionModelResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");
+#[cfg(feature = "unstable_logout")]
+impl_jsonrpc_request!(LogoutRequest, LogoutResponse, "logout");
 impl_jsonrpc_request!(LoadSessionRequest, LoadSessionResponse, "session/load");
 impl_jsonrpc_request!(ListSessionsRequest, ListSessionsResponse, "session/list");
 impl_jsonrpc_request!(NewSessionRequest, NewSessionResponse, "session/new");
