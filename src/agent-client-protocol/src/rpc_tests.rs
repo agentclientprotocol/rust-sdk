@@ -982,3 +982,54 @@ async fn test_set_session_config_option() {
         })
         .await;
 }
+
+#[tokio::test]
+async fn test_pending_response_cleanup_on_drop() {
+    struct NoopHandler;
+
+    impl MessageHandler<ClientSide> for NoopHandler {
+        fn handle_request(
+            &self,
+            _request: AgentRequest,
+        ) -> impl std::future::Future<Output = Result<ClientResponse>> {
+            async { Err(Error::internal_error()) }
+        }
+
+        fn handle_notification(
+            &self,
+            _notification: AgentNotification,
+        ) -> impl std::future::Future<Output = Result<()>> {
+            async { Ok(()) }
+        }
+    }
+
+    let local_set = tokio::task::LocalSet::new();
+    local_set
+        .run_until(async {
+            let (_client_to_agent_rx, client_to_agent_tx) = piper::pipe(1024);
+            let (agent_to_client_rx, _agent_to_client_tx) = piper::pipe(1024);
+
+            let (conn, _io_task) = RpcConnection::<ClientSide, AgentSide>::new(
+                NoopHandler,
+                client_to_agent_tx,
+                agent_to_client_rx,
+                |fut| {
+                    tokio::task::spawn_local(fut);
+                },
+            );
+
+            let pending = conn
+                .request::<InitializeResponse>(
+                    AGENT_METHOD_NAMES.initialize,
+                    Some(ClientRequest::InitializeRequest(InitializeRequest::new(
+                        ProtocolVersion::LATEST,
+                    ))),
+                )
+                .expect("request should enqueue pending response");
+
+            assert_eq!(conn.pending_response_count(), 1);
+            drop(pending);
+            assert_eq!(conn.pending_response_count(), 0);
+        })
+        .await;
+}
