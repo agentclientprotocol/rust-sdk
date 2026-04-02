@@ -171,53 +171,54 @@ async fn test_bidirectional_communication() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        // Set up two connections that are symmetric - both can send and receive
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            // Set up two connections that are symmetric - both can send and receive
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let side_a_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let side_a = UntypedRole.builder().on_receive_request(
-            async |request: PingRequest,
-                   responder: Responder<PongResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                responder.respond(PongResponse {
-                    value: request.value + 1,
-                })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let side_b_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-
-        // Spawn side_a as server
-        tokio::task::spawn_local(async move {
-            Box::pin(side_a.connect_to(side_a_transport)).await.ok();
-        });
-
-        // Use side_b as client
-        let result = UntypedRole
-            .builder()
-            .connect_with(
-                side_b_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    let request = PingRequest { value: 10 };
-                    let response_future = recv(cx.send_request(request));
-                    let response: Result<PongResponse, _> = response_future.await;
-
-                    assert!(response.is_ok());
-                    if let Ok(resp) = response {
-                        assert_eq!(resp.value, 11);
-                    }
-                    Ok(())
+            let side_a_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let side_a = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(PongResponse {
+                        value: request.value + 1,
+                    })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let side_b_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+
+            // Spawn side_a as server
+            tokio::task::spawn_local(async move {
+                side_a.connect_to(side_a_transport).await.ok();
+            });
+
+            // Use side_b as client
+            let result = UntypedRole
+                .builder()
+                .connect_with(
+                    side_b_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let request = PingRequest { value: 10 };
+                        let response_future = recv(cx.send_request(request));
+                        let response: Result<PongResponse, _> = response_future.await;
+
+                        assert!(response.is_ok());
+                        if let Ok(resp) = response {
+                            assert_eq!(resp.value, 11);
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -230,60 +231,61 @@ async fn test_request_ids() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |request: PingRequest,
-                   responder: Responder<PongResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                responder.respond(PongResponse {
-                    value: request.value + 1,
-                })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    // Send multiple requests and verify responses match
-                    let req1 = PingRequest { value: 1 };
-                    let req2 = PingRequest { value: 2 };
-                    let req3 = PingRequest { value: 3 };
-
-                    let resp1_future = recv(cx.send_request(req1));
-                    let resp2_future = recv(cx.send_request(req2));
-                    let resp3_future = recv(cx.send_request(req3));
-
-                    let resp1: Result<PongResponse, _> = resp1_future.await;
-                    let resp2: Result<PongResponse, _> = resp2_future.await;
-                    let resp3: Result<PongResponse, _> = resp3_future.await;
-
-                    // Verify each response corresponds to its request
-                    assert_eq!(resp1.unwrap().value, 2); // 1 + 1
-                    assert_eq!(resp2.unwrap().value, 3); // 2 + 1
-                    assert_eq!(resp3.unwrap().value, 4); // 3 + 1
-
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(PongResponse {
+                        value: request.value + 1,
+                    })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        // Send multiple requests and verify responses match
+                        let req1 = PingRequest { value: 1 };
+                        let req2 = PingRequest { value: 2 };
+                        let req3 = PingRequest { value: 3 };
+
+                        let resp1_future = recv(cx.send_request(req1));
+                        let resp2_future = recv(cx.send_request(req2));
+                        let resp3_future = recv(cx.send_request(req3));
+
+                        let resp1: Result<PongResponse, _> = resp1_future.await;
+                        let resp2: Result<PongResponse, _> = resp2_future.await;
+                        let resp3: Result<PongResponse, _> = resp3_future.await;
+
+                        // Verify each response corresponds to its request
+                        assert_eq!(resp1.unwrap().value, 2); // 1 + 1
+                        assert_eq!(resp2.unwrap().value, 3); // 2 + 1
+                        assert_eq!(resp3.unwrap().value, 4); // 3 + 1
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -296,73 +298,74 @@ async fn test_out_of_order_responses() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |request: SlowRequest,
-                   responder: Responder<SlowResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                // Simulate delay
-                tokio::time::sleep(tokio::time::Duration::from_millis(request.delay_ms)).await;
-                responder.respond(SlowResponse { id: request.id })
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    // Send requests with different delays
-                    // Request 1: 100ms delay
-                    // Request 2: 50ms delay
-                    // Request 3: 10ms delay
-                    // Responses should arrive in order: 3, 2, 1
-
-                    let req1 = SlowRequest {
-                        delay_ms: 100,
-                        id: 1,
-                    };
-                    let req2 = SlowRequest {
-                        delay_ms: 50,
-                        id: 2,
-                    };
-                    let req3 = SlowRequest {
-                        delay_ms: 10,
-                        id: 3,
-                    };
-
-                    let resp1_future = recv(cx.send_request(req1));
-                    let resp2_future = recv(cx.send_request(req2));
-                    let resp3_future = recv(cx.send_request(req3));
-
-                    // Wait for all responses
-                    let resp1: Result<SlowResponse, _> = resp1_future.await;
-                    let resp2: Result<SlowResponse, _> = resp2_future.await;
-                    let resp3: Result<SlowResponse, _> = resp3_future.await;
-
-                    // Verify each future got the correct response despite out-of-order arrival
-                    assert_eq!(resp1.unwrap().id, 1);
-                    assert_eq!(resp2.unwrap().id, 2);
-                    assert_eq!(resp3.unwrap().id, 3);
-
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SlowRequest,
+                       responder: Responder<SlowResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    // Simulate delay
+                    tokio::time::sleep(tokio::time::Duration::from_millis(request.delay_ms)).await;
+                    responder.respond(SlowResponse { id: request.id })
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        // Send requests with different delays
+                        // Request 1: 100ms delay
+                        // Request 2: 50ms delay
+                        // Request 3: 10ms delay
+                        // Responses should arrive in order: 3, 2, 1
+
+                        let req1 = SlowRequest {
+                            delay_ms: 100,
+                            id: 1,
+                        };
+                        let req2 = SlowRequest {
+                            delay_ms: 50,
+                            id: 2,
+                        };
+                        let req3 = SlowRequest {
+                            delay_ms: 10,
+                            id: 3,
+                        };
+
+                        let resp1_future = recv(cx.send_request(req1));
+                        let resp2_future = recv(cx.send_request(req2));
+                        let resp3_future = recv(cx.send_request(req3));
+
+                        // Wait for all responses
+                        let resp1: Result<SlowResponse, _> = resp1_future.await;
+                        let resp2: Result<SlowResponse, _> = resp2_future.await;
+                        let resp3: Result<SlowResponse, _> = resp3_future.await;
+
+                        // Verify each future got the correct response despite out-of-order arrival
+                        assert_eq!(resp1.unwrap().id, 1);
+                        assert_eq!(resp2.unwrap().id, 2);
+                        assert_eq!(resp3.unwrap().id, 3);
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }

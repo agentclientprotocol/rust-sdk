@@ -169,17 +169,15 @@ async fn run_test(
         .builder()
         .name("editor-to-conductor")
         .with_spawned(|_cx| async move {
-            Box::pin(
-                ConductorImpl::new_agent(
-                    "conductor".to_string(),
-                    ProxiesAndAgent::new(agent).proxies(proxies),
-                    McpBridgeMode::default(),
-                )
-                .run(agent_client_protocol_core::ByteStreams::new(
-                    conductor_out.compat_write(),
-                    conductor_in.compat(),
-                )),
+            ConductorImpl::new_agent(
+                "conductor".to_string(),
+                ProxiesAndAgent::new(agent).proxies(proxies),
+                McpBridgeMode::default(),
             )
+            .run(agent_client_protocol_core::ByteStreams::new(
+                conductor_out.compat_write(),
+                conductor_in.compat(),
+            ))
             .await
         })
         .connect_with(transport, editor_task)
@@ -198,7 +196,7 @@ async fn test_new_session_handler_invoked_with_mcp_server()
     });
     let agent = DynConnectTo::<Client>::new(SimpleAgent);
 
-    Box::pin(run_test(vec![proxy], agent, async |connection_to_editor| {
+    run_test(vec![proxy], agent, async |connection_to_editor| {
         // Initialize first
         let _init_response = recv(
             connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
@@ -217,7 +215,7 @@ async fn test_new_session_handler_invoked_with_mcp_server()
         );
 
         Ok::<(), agent_client_protocol_core::Error>(())
-    }))
+    })
     .await?;
 
     // THE KEY ASSERTION: verify the handler was actually called

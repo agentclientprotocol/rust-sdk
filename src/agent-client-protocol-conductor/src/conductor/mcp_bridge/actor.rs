@@ -43,7 +43,7 @@ impl McpBridgeConnectionActor {
             to_mcp_client_rx,
         } = self;
 
-        let client = mcp::Client
+        let result = mcp::Client
             .builder()
             .name(format!("mpc-client-to-conductor({connection_id})"))
             // When we receive a message from the MCP client, forward it to the conductor
@@ -70,8 +70,8 @@ impl McpBridgeConnectionActor {
                     mcp_connection_to_client.send_proxied_message(message)?;
                 }
                 Ok(())
-            });
-        let result = Box::pin(client).await;
+            })
+            .await;
 
         conductor_tx
             .send(ConductorMessage::McpConnectionDisconnected {

@@ -71,7 +71,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_core::Error> {
     use expect_test::expect;
 
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
@@ -81,7 +81,7 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_c
             server: "echo_server".to_string(),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // Check the response using expect_test
@@ -95,7 +95,7 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol_c
 
 #[tokio::test]
 async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
@@ -107,7 +107,7 @@ async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_pro
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     let pattern = regex::Regex::new(r#""acp_url":\s*String\("acp:[0-9a-f-]+"\)"#).unwrap();

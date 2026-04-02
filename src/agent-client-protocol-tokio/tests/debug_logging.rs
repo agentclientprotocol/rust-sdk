@@ -60,7 +60,7 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
     let transport =
         agent_client_protocol_core::ByteStreams::new(client_out.compat_write(), client_in.compat());
 
-    let client = Client
+    Client
         .builder()
         .name("test-client")
         .with_spawned(|_cx| async move {
@@ -81,8 +81,8 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
             .await?;
 
             Ok(())
-        });
-    Box::pin(client).await?;
+        })
+        .await?;
 
     // Verify debug output was captured
     let logged_lines = debug_log.get_lines();

@@ -110,59 +110,60 @@ async fn test_hello_world() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async move |request: PingRequest,
-                        responder: Responder<PongResponse>,
-                        _connection: ConnectionTo<UntypedRole>| {
-                let pong = PongResponse {
-                    echo: format!("pong: {}", request.message),
-                };
-                responder.respond(pong)
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        // Spawn the server in the background
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        // Use the client to send a ping and wait for a pong
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    let request = PingRequest {
-                        message: "hello world".to_string(),
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async move |request: PingRequest,
+                            responder: Responder<PongResponse>,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    let pong = PongResponse {
+                        echo: format!("pong: {}", request.message),
                     };
-
-                    let response = recv(cx.send_request(request)).await.map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Request failed: {e:?}"
-                        ))
-                    })?;
-
-                    assert_eq!(response.echo, "pong: hello world");
-
-                    Ok(())
+                    responder.respond(pong)
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            // Spawn the server in the background
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
+
+            // Use the client to send a ping and wait for a pong
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        let request = PingRequest {
+                            message: "hello world".to_string(),
+                        };
+
+                        let response = recv(cx.send_request(request)).await.map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Request failed: {e:?}"
+                            ))
+                        })?;
+
+                        assert_eq!(response.echo, "pong: hello world");
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 /// A simple notification message
@@ -205,74 +206,75 @@ async fn test_notification() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let logs = Arc::new(Mutex::new(Vec::new()));
-        let logs_clone = logs.clone();
+    local
+        .run_until(async {
+            let logs = Arc::new(Mutex::new(Vec::new()));
+            let logs_clone = logs.clone();
 
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_notification(
-            {
-                let logs = logs_clone.clone();
-                async move |notification: LogNotification, _cx: ConnectionTo<UntypedRole>| {
-                    logs.lock().unwrap().push(notification.message);
-                    Ok(())
-                }
-            },
-            agent_client_protocol_core::on_receive_notification!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Send a notification (no response expected)
-                    cx.send_notification(LogNotification {
-                        message: "test log 1".to_string(),
-                    })
-                    .map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Failed to send notification: {e:?}"
-                        ))
-                    })?;
-
-                    cx.send_notification(LogNotification {
-                        message: "test log 2".to_string(),
-                    })
-                    .map_err(|e| {
-                        agent_client_protocol_core::util::internal_error(format!(
-                            "Failed to send notification: {e:?}"
-                        ))
-                    })?;
-
-                    // Give the server time to process notifications
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_notification(
+                {
+                    let logs = logs_clone.clone();
+                    async move |notification: LogNotification, _cx: ConnectionTo<UntypedRole>| {
+                        logs.lock().unwrap().push(notification.message);
+                        Ok(())
+                    }
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_notification!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        let received_logs = logs.lock().unwrap();
-        assert_eq!(received_logs.len(), 2);
-        assert_eq!(received_logs[0], "test log 1");
-        assert_eq!(received_logs[1], "test log 2");
-    }))
-    .await;
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Send a notification (no response expected)
+                        cx.send_notification(LogNotification {
+                            message: "test log 1".to_string(),
+                        })
+                        .map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Failed to send notification: {e:?}"
+                            ))
+                        })?;
+
+                        cx.send_notification(LogNotification {
+                            message: "test log 2".to_string(),
+                        })
+                        .map_err(|e| {
+                            agent_client_protocol_core::util::internal_error(format!(
+                                "Failed to send notification: {e:?}"
+                            ))
+                        })?;
+
+                        // Give the server time to process notifications
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+
+            let received_logs = logs.lock().unwrap();
+            assert_eq!(received_logs.len(), 2);
+            assert_eq!(received_logs[0], "test log 1");
+            assert_eq!(received_logs[1], "test log 2");
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -281,60 +283,61 @@ async fn test_multiple_sequential_requests() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |request: PingRequest,
-                   responder: Responder<PongResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                let pong = PongResponse {
-                    echo: format!("pong: {}", request.message),
-                };
-                responder.respond(pong)
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Send multiple requests sequentially
-                    for i in 1..=5 {
-                        let request = PingRequest {
-                            message: format!("message {i}"),
-                        };
-
-                        let response = recv(cx.send_request(request)).await.map_err(|e| {
-                            agent_client_protocol_core::util::internal_error(format!(
-                                "Request {i} failed: {e:?}"
-                            ))
-                        })?;
-
-                        assert_eq!(response.echo, format!("pong: message {i}"));
-                    }
-
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    let pong = PongResponse {
+                        echo: format!("pong: {}", request.message),
+                    };
+                    responder.respond(pong)
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Send multiple requests sequentially
+                        for i in 1..=5 {
+                            let request = PingRequest {
+                                message: format!("message {i}"),
+                            };
+
+                            let response = recv(cx.send_request(request)).await.map_err(|e| {
+                                agent_client_protocol_core::util::internal_error(format!(
+                                    "Request {i} failed: {e:?}"
+                                ))
+                            })?;
+
+                            assert_eq!(response.echo, format!("pong: message {i}"));
+                        }
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -343,66 +346,67 @@ async fn test_concurrent_requests() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |request: PingRequest,
-                   responder: Responder<PongResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                let pong = PongResponse {
-                    echo: format!("pong: {}", request.message),
-                };
-                responder.respond(pong)
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            if let Err(e) = Box::pin(server.connect_to(server_transport)).await {
-                eprintln!("Server error: {e:?}");
-            }
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
-                    // Send multiple requests concurrently
-                    let mut responses = Vec::new();
-
-                    for i in 1..=5 {
-                        let request = PingRequest {
-                            message: format!("concurrent message {i}"),
-                        };
-
-                        // Start all requests without awaiting
-                        responses.push((i, cx.send_request(request)));
-                    }
-
-                    // Now await all responses
-                    for (i, response_future) in responses {
-                        let response = recv(response_future).await.map_err(|e| {
-                            agent_client_protocol_core::util::internal_error(format!(
-                                "Request {i} failed: {e:?}"
-                            ))
-                        })?;
-
-                        assert_eq!(response.echo, format!("pong: concurrent message {i}"));
-                    }
-
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    let pong = PongResponse {
+                        echo: format!("pong: {}", request.message),
+                    };
+                    responder.respond(pong)
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                if let Err(e) = server.connect_to(server_transport).await {
+                    eprintln!("Server error: {e:?}");
+                }
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> std::result::Result<(), agent_client_protocol_core::Error> {
+                        // Send multiple requests concurrently
+                        let mut responses = Vec::new();
+
+                        for i in 1..=5 {
+                            let request = PingRequest {
+                                message: format!("concurrent message {i}"),
+                            };
+
+                            // Start all requests without awaiting
+                            responses.push((i, cx.send_request(request)));
+                        }
+
+                        // Now await all responses
+                        for (i, response_future) in responses {
+                            let response = recv(response_future).await.map_err(|e| {
+                                agent_client_protocol_core::util::internal_error(format!(
+                                    "Request {i} failed: {e:?}"
+                                ))
+                            })?;
+
+                            assert_eq!(response.echo, format!("pong: concurrent message {i}"));
+                        }
+
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }

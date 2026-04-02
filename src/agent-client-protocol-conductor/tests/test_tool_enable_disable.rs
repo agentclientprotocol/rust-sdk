@@ -109,7 +109,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor> fo
 
 #[tokio::test]
 async fn test_list_tools_excludes_disabled() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -119,7 +119,7 @@ async fn test_list_tools_excludes_disabled() -> Result<(), agent_client_protocol
             server: "test_server".to_string(),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // Should contain echo and greet, but NOT secret
@@ -135,7 +135,7 @@ async fn test_list_tools_excludes_disabled() -> Result<(), agent_client_protocol
 
 #[tokio::test]
 async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -147,7 +147,7 @@ async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_c
             params: serde_json::json!({"message": "hello"}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     assert!(
@@ -160,7 +160,7 @@ async fn test_enabled_tool_can_be_called() -> Result<(), agent_client_protocol_c
 
 #[tokio::test]
 async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_disabled_tool()?),
@@ -172,7 +172,7 @@ async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_proto
             params: serde_json::json!({}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // Should get an error about tool not found
@@ -191,7 +191,7 @@ async fn test_disabled_tool_returns_not_found() -> Result<(), agent_client_proto
 #[tokio::test]
 async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_protocol_core::Error>
 {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
@@ -201,7 +201,7 @@ async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_pr
             server: "allowlist_server".to_string(),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // Should only contain echo
@@ -220,7 +220,7 @@ async fn test_allowlist_only_shows_enabled_tools() -> Result<(), agent_client_pr
 
 #[tokio::test]
 async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
@@ -232,7 +232,7 @@ async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol
             params: serde_json::json!({"message": "allowed"}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     assert!(
@@ -246,7 +246,7 @@ async fn test_allowlist_enabled_tool_works() -> Result<(), agent_client_protocol
 #[tokio::test]
 async fn test_allowlist_non_enabled_tool_returns_not_found()
 -> Result<(), agent_client_protocol_core::Error> {
-    let result = Box::pin(yopo::prompt(
+    let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(create_proxy_with_allowlist()?),
@@ -258,7 +258,7 @@ async fn test_allowlist_non_enabled_tool_returns_not_found()
             params: serde_json::json!({"name": "World"}),
         }
         .to_prompt(),
-    ))
+    )
     .await?;
 
     // greet is registered but not enabled, should error

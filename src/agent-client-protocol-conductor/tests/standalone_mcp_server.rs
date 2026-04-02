@@ -76,7 +76,7 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
     // Wrap client side as ByteStreams (this is what the MCP server will talk to)
     let client_as_component = ByteStreams::new(client_write.compat_write(), client_read.compat());
 
-    Box::pin(run_until(
+    run_until(
         ConnectTo::<mcp::Client>::connect_to(server, client_as_component),
         async move {
             // Create rmcp client on the server side of the duplex (the "other end")
@@ -106,7 +106,7 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
                 .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
-    ))
+    )
     .await
 }
 
@@ -119,7 +119,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
     let server = create_test_server();
     let client_as_component = ByteStreams::new(client_write.compat_write(), client_read.compat());
 
-    Box::pin(run_until(
+    run_until(
         ConnectTo::<mcp::Client>::connect_to(server, client_as_component),
         async move {
             let client = MinimalClientHandler
@@ -156,7 +156,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
                 .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
-    ))
+    )
     .await
 }
 
@@ -169,7 +169,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
     let server = create_test_server();
     let client_as_component = ByteStreams::new(client_write.compat_write(), client_read.compat());
 
-    Box::pin(run_until(
+    run_until(
         ConnectTo::<mcp::Client>::connect_to(server, client_as_component),
         async move {
             let client = MinimalClientHandler
@@ -209,7 +209,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
                 .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
-    ))
+    )
     .await
 }
 
@@ -222,7 +222,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
     let server = create_test_server();
     let client_as_component = ByteStreams::new(client_write.compat_write(), client_read.compat());
 
-    Box::pin(run_until(
+    run_until(
         ConnectTo::<mcp::Client>::connect_to(server, client_as_component),
         async move {
             let client = MinimalClientHandler
@@ -244,7 +244,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
                 .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
-    ))
+    )
     .await
 }
 
@@ -278,7 +278,7 @@ async fn test_standalone_server_with_disabled_tools()
 
     let client_as_component = ByteStreams::new(client_write.compat_write(), client_read.compat());
 
-    Box::pin(run_until(
+    run_until(
         ConnectTo::<mcp::Client>::connect_to(server, client_as_component),
         async move {
             let client = MinimalClientHandler
@@ -314,6 +314,6 @@ async fn test_standalone_server_with_disabled_tools()
                 .map_err(agent_client_protocol_core::util::internal_error)?;
             Ok(())
         },
-    ))
+    )
     .await
 }

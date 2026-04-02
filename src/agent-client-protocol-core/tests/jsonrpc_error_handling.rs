@@ -203,50 +203,52 @@ async fn test_unknown_method() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        // No handlers - all requests will be "method not found"
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder();
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
+            // No handlers - all requests will be "method not found"
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder();
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
 
-        // Spawn server
-        tokio::task::spawn_local(async move {
-            server.connect_to(server_transport).await.ok();
-        });
+            // Spawn server
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
 
-        // Send request from client
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    let request = SimpleRequest {
-                        message: "test".to_string(),
-                    };
+            // Send request from client
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let request = SimpleRequest {
+                            message: "test".to_string(),
+                        };
 
-                    let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
+                        let result: Result<SimpleResponse, _> =
+                            recv(cx.send_request(request)).await;
 
-                    // Should get an error because no handler claims the method
-                    assert!(result.is_err());
-                    if let Err(err) = result {
-                        // Should be "method not found" or similar error
-                        assert!(matches!(
-                            err.code,
-                            agent_client_protocol_core::ErrorCode::MethodNotFound
-                        ));
-                    }
-                    Ok(())
-                },
-            )
-            .await;
+                        // Should get an error because no handler claims the method
+                        assert!(result.is_err());
+                        if let Err(err) = result {
+                            // Should be "method not found" or similar error
+                            assert!(matches!(
+                                err.code,
+                                agent_client_protocol_core::ErrorCode::MethodNotFound
+                            ));
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -294,55 +296,58 @@ async fn test_handler_returns_error() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |_request: ErrorRequest,
-                   responder: Responder<SimpleResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                // Explicitly return an error
-                responder.respond_with_error(agent_client_protocol_core::Error::internal_error())
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    let request = ErrorRequest {
-                        value: "trigger error".to_string(),
-                    };
-
-                    let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
-
-                    // Should get the error the handler returned
-                    assert!(result.is_err());
-                    if let Err(err) = result {
-                        assert!(matches!(
-                            err.code,
-                            agent_client_protocol_core::ErrorCode::InternalError
-                        ));
-                    }
-                    Ok(())
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |_request: ErrorRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    // Explicitly return an error
+                    responder
+                        .respond_with_error(agent_client_protocol_core::Error::internal_error())
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let request = ErrorRequest {
+                            value: "trigger error".to_string(),
+                        };
+
+                        let result: Result<SimpleResponse, _> =
+                            recv(cx.send_request(request)).await;
+
+                        // Should get the error the handler returned
+                        assert!(result.is_err());
+                        if let Err(err) = result {
+                            assert!(matches!(
+                                err.code,
+                                agent_client_protocol_core::ErrorCode::InternalError
+                            ));
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }
 
 // ============================================================================
@@ -388,58 +393,61 @@ async fn test_missing_required_params() {
 
     let local = LocalSet::new();
 
-    Box::pin(local.run_until(async {
-        let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+    local
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-        // Handler that validates params - since EmptyRequest has no params but we're checking
-        // against SimpleRequest which requires a message field, this will fail
-        let server_transport =
-            agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
-        let server = UntypedRole.builder().on_receive_request(
-            async |_request: EmptyRequest,
-                   responder: Responder<SimpleResponse>,
-                   _connection: ConnectionTo<UntypedRole>| {
-                // This will be called, but EmptyRequest parsing already succeeded
-                // The test is actually checking if EmptyRequest (no params) fails to parse as SimpleRequest
-                // But with the new API, EmptyRequest parses successfully since it expects no params
-                // We need to manually check - but actually the parse_request for EmptyRequest
-                // accepts anything for "strict_method", so the error must come from somewhere else
-                responder.respond_with_error(agent_client_protocol_core::Error::invalid_params())
-            },
-            agent_client_protocol_core::on_receive_request!(),
-        );
-
-        let client_transport =
-            agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
-        let client = UntypedRole.builder();
-
-        tokio::task::spawn_local(async move {
-            Box::pin(server.connect_to(server_transport)).await.ok();
-        });
-
-        let result = client
-            .connect_with(
-                client_transport,
-                async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                    // Send request with no params (EmptyRequest has no fields)
-                    let request = EmptyRequest;
-
-                    let result: Result<SimpleResponse, _> = recv(cx.send_request(request)).await;
-
-                    // Should get invalid_params error
-                    assert!(result.is_err());
-                    if let Err(err) = result {
-                        assert!(matches!(
-                            err.code,
-                            agent_client_protocol_core::ErrorCode::InvalidParams
-                        )); // JSONRPC_INVALID_PARAMS
-                    }
-                    Ok(())
+            // Handler that validates params - since EmptyRequest has no params but we're checking
+            // against SimpleRequest which requires a message field, this will fail
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |_request: EmptyRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    // This will be called, but EmptyRequest parsing already succeeded
+                    // The test is actually checking if EmptyRequest (no params) fails to parse as SimpleRequest
+                    // But with the new API, EmptyRequest parses successfully since it expects no params
+                    // We need to manually check - but actually the parse_request for EmptyRequest
+                    // accepts anything for "strict_method", so the error must come from somewhere else
+                    responder
+                        .respond_with_error(agent_client_protocol_core::Error::invalid_params())
                 },
-            )
-            .await;
+                agent_client_protocol_core::on_receive_request!(),
+            );
 
-        assert!(result.is_ok(), "Test failed: {result:?}");
-    }))
-    .await;
+            let client_transport =
+                agent_client_protocol_core::ByteStreams::new(client_writer, client_reader);
+            let client = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        // Send request with no params (EmptyRequest has no fields)
+                        let request = EmptyRequest;
+
+                        let result: Result<SimpleResponse, _> =
+                            recv(cx.send_request(request)).await;
+
+                        // Should get invalid_params error
+                        assert!(result.is_err());
+                        if let Err(err) = result {
+                            assert!(matches!(
+                                err.code,
+                                agent_client_protocol_core::ErrorCode::InvalidParams
+                            )); // JSONRPC_INVALID_PARAMS
+                        }
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
 }

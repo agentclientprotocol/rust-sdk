@@ -91,29 +91,27 @@ async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_p
 
     // Spawn the outer conductor with the inner conductor and eliza
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "outer-conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()).proxy(MockInnerConductor::new(2)),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "outer-conductor".to_string(),
+            ProxiesAndAgent::new(Testy::new()).proxy(MockInnerConductor::new(2)),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(yopo::prompt(
+        let result = yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        ))
+        )
         .await?;
 
         tracing::debug!(?result, "Received response from nested conductor chain");
@@ -162,29 +160,27 @@ async fn test_nested_conductor_with_external_arrow_proxies()
 
     // Spawn the outer conductor with the inner conductor and eliza as external processes
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "outer-conductor".to_string(),
-                ProxiesAndAgent::new(agent).proxy(inner_conductor),
-                McpBridgeMode::default(),
-            )
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "outer-conductor".to_string(),
+            ProxiesAndAgent::new(agent).proxy(inner_conductor),
+            McpBridgeMode::default(),
         )
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        let result = Box::pin(yopo::prompt(
+        let result = yopo::prompt(
             agent_client_protocol_core::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
             TestyCommand::Greet.to_prompt(),
-        ))
+        )
         .await?;
 
         tracing::debug!(?result, "Received response from nested conductor chain");

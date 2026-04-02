@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up the proxy connection with our MCP server
     // ProxyToConductor already has proxy behavior built into its default_message_handler
-    let proxy = Proxy
+    Proxy
         .builder()
         .name("mcp-server-proxy")
         // Register the MCP server as a handler
@@ -96,8 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect_to(agent_client_protocol_core::ByteStreams::new(
             tokio::io::stdout().compat_write(),
             tokio::io::stdin().compat(),
-        ));
-    Box::pin(proxy).await?;
+        ))
+        .await?;
 
     Ok(())
 }

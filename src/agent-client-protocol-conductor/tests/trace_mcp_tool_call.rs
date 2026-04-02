@@ -212,71 +212,66 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Er
     // - ProxyComponent that provides the "test" MCP server with echo tool
     // - Tracing enabled to capture events
     let conductor_handle = tokio::spawn(async move {
-        Box::pin(
-            ConductorImpl::new_agent(
-                "conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
-                McpBridgeMode::default(),
-            )
-            .trace_to(trace_tx)
-            .run(agent_client_protocol_core::ByteStreams::new(
-                conductor_write.compat_write(),
-                conductor_read.compat(),
-            )),
+        ConductorImpl::new_agent(
+            "conductor".to_string(),
+            ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
+            McpBridgeMode::default(),
         )
+        .trace_to(trace_tx)
+        .run(agent_client_protocol_core::ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
         .await
     });
 
     // Run the client interaction
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        Box::pin(
-            agent_client_protocol_core::Client
-                .builder()
-                .name("test-client")
-                .on_receive_notification(
-                    {
-                        let mut notif_tx = notif_tx;
-                        async move |notification: SessionNotification, _cx| {
-                            notif_tx
-                                .send(notification)
-                                .await
-                                .map_err(|_| agent_client_protocol_core::Error::internal_error())
-                        }
-                    },
-                    agent_client_protocol_core::on_receive_notification!(),
-                )
-                .connect_with(
-                    agent_client_protocol_core::ByteStreams::new(
-                        client_write.compat_write(),
-                        client_read.compat(),
-                    ),
-                    async |cx| {
-                        // Initialize
-                        recv(cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST)))
-                            .await?;
+        agent_client_protocol_core::Client
+            .builder()
+            .name("test-client")
+            .on_receive_notification(
+                {
+                    let mut notif_tx = notif_tx;
+                    async move |notification: SessionNotification, _cx| {
+                        notif_tx
+                            .send(notification)
+                            .await
+                            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+                    }
+                },
+                agent_client_protocol_core::on_receive_notification!(),
+            )
+            .connect_with(
+                agent_client_protocol_core::ByteStreams::new(
+                    client_write.compat_write(),
+                    client_read.compat(),
+                ),
+                async |cx| {
+                    // Initialize
+                    recv(cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await?;
 
-                        // Create session
-                        let session = recv(
-                            cx.send_request(NewSessionRequest::new(std::path::PathBuf::from("/"))),
-                        )
-                        .await?;
+                    // Create session
+                    let session = recv(
+                        cx.send_request(NewSessionRequest::new(std::path::PathBuf::from("/"))),
+                    )
+                    .await?;
 
-                        // Send prompt that triggers MCP tool call
-                        recv(cx.send_request(PromptRequest::new(
-                            session.session_id.clone(),
-                            vec![ContentBlock::Text(TextContent::new(TestyCommand::CallTool {
+                    // Send prompt that triggers MCP tool call
+                    recv(cx.send_request(PromptRequest::new(
+                        session.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(TestyCommand::CallTool {
                             server: "test".to_string(),
                             tool: "echo".to_string(),
                             params: serde_json::json!({"message": "Hello from trace test!"}),
                         }.to_prompt()))],
-                        )))
-                        .await?;
+                    )))
+                    .await?;
 
-                        Ok(())
-                    },
-                ),
-        )
-        .await
+                    Ok(())
+                },
+            )
+            .await
     })
     .await
     .expect("Test timed out");
