@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.5](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.4...v0.10.5) - 2026-04-02
+
+### Fixed
+
+- *(rpc)* log errors when sending response to peer fails ([#101](https://github.com/agentclientprotocol/rust-sdk/pull/101))
+- *(rpc)* handle write failures in handle_io loop ([#99](https://github.com/agentclientprotocol/rust-sdk/pull/99))
+- *(rpc)* use RawValue::NULL constant instead of from_string().unwrap() ([#96](https://github.com/agentclientprotocol/rust-sdk/pull/96))
+
+### Other
+
+- remove debug code from rpc_tests ([#100](https://github.com/agentclientprotocol/rust-sdk/pull/100))
+- *(test)* add conditional compilation ([#98](https://github.com/agentclientprotocol/rust-sdk/pull/98))
+
 ## [0.10.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.3...v0.10.4) - 2026-03-31
 
 ### Added
