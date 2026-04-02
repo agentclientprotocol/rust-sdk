@@ -10,6 +10,8 @@ use crate::schema::{AgentNotification, AgentRequest, ClientNotification, ClientR
 impl_jsonrpc_request_enum!(ClientRequest {
     InitializeRequest => "initialize",
     AuthenticateRequest => "authenticate",
+    #[cfg(feature = "unstable_logout")]
+    LogoutRequest => "logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",

@@ -18,6 +18,7 @@ default = []
 unstable = [
     "unstable_auth_methods",
     "unstable_boolean_config",
+    "unstable_logout",
     "unstable_message_id",
     "unstable_session_additional_directories",
     "unstable_session_close",
@@ -28,6 +29,7 @@ unstable = [
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
+unstable_logout = ["agent-client-protocol-schema/unstable_logout"]
 unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
 unstable_session_additional_directories = ["agent-client-protocol-schema/unstable_session_additional_directories"]
 unstable_session_close = ["agent-client-protocol-schema/unstable_session_close"]
