@@ -67,7 +67,8 @@ impl MetaCapabilityExt for InitializeRequest {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .is_some()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
@@ -104,7 +105,8 @@ impl MetaCapabilityExt for InitializeResponse {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .is_some()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
@@ -184,5 +186,41 @@ mod tests {
             response.agent_capabilities.meta.as_ref().unwrap()["symposium"]["mcp_acp_transport"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn test_has_meta_capability_false_value() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "symposium".to_string(),
+            json!({
+                "version": "1.0",
+                "mcp_acp_transport": false
+            }),
+        );
+        let client_capabilities = ClientCapabilities::new().meta(meta);
+
+        let request = InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(client_capabilities);
+
+        assert!(!request.has_meta_capability(McpAcpTransport));
+    }
+
+    #[test]
+    fn test_has_meta_capability_null_value() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "symposium".to_string(),
+            json!({
+                "version": "1.0",
+                "mcp_acp_transport": null
+            }),
+        );
+        let client_capabilities = ClientCapabilities::new().meta(meta);
+
+        let request = InitializeRequest::new(ProtocolVersion::LATEST)
+            .client_capabilities(client_capabilities);
+
+        assert!(!request.has_meta_capability(McpAcpTransport));
     }
 }
