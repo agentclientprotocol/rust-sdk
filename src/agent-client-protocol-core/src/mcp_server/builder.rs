@@ -393,17 +393,13 @@ impl<Counterpart: Role> ConnectTo<role::mcp::Client> for McpServerConnection<Cou
         let (mcp_client_read, mcp_client_write) = tokio::io::split(mcp_client_stream);
 
         let run_client = async {
-            // Connect byte_streams to the provided client
             let byte_streams =
                 ByteStreams::new(mcp_client_write.compat_write(), mcp_client_read.compat());
-            drop(
-                <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(
-                    byte_streams,
-                    client,
-                )
-                .await,
-            );
-            Ok(())
+            <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(
+                byte_streams,
+                client,
+            )
+            .await
         };
 
         let run_server = async {
