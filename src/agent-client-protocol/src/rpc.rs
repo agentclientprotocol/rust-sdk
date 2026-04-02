@@ -2,11 +2,15 @@ use std::{
     any::Any,
     borrow::Cow,
     collections::HashMap,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
     rc::Rc,
     sync::{
         Arc, Mutex,
         atomic::{AtomicI64, Ordering},
     },
+    task::{Context, Poll},
 };
 
 use agent_client_protocol_schema::{
@@ -22,7 +26,6 @@ use futures::{
     },
     future::LocalBoxFuture,
     io::BufReader,
-    select_biased,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::value::RawValue;
@@ -41,6 +44,43 @@ pub(crate) struct RpcConnection<Local: Side, Remote: Side> {
 struct PendingResponse {
     deserialize: fn(&serde_json::value::RawValue) -> Result<Box<dyn Any + Send>>,
     respond: oneshot::Sender<Result<Box<dyn Any + Send>>>,
+}
+
+pub(crate) struct PendingRequest<Out> {
+    id: RequestId,
+    pending_responses: Arc<Mutex<HashMap<RequestId, PendingResponse>>>,
+    rx: oneshot::Receiver<Result<Box<dyn Any + Send>>>,
+    _marker: PhantomData<Out>,
+}
+
+impl<Out> Future for PendingRequest<Out>
+where
+    Out: Send + 'static,
+{
+    type Output = Result<Out>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.rx).poll(cx) {
+            Poll::Ready(result) => {
+                let result = result
+                    .map_err(|_| Error::internal_error().data("server shut down unexpectedly"))??;
+                let result = result
+                    .downcast::<Out>()
+                    .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
+                Poll::Ready(Ok(*result))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl<Out> Unpin for PendingRequest<Out> {}
+
+impl<Out> Drop for PendingRequest<Out> {
+    fn drop(&mut self) {
+        drop(self.pending_responses.lock().unwrap().remove(&self.id));
+    }
 }
 
 impl<Local, Remote> RpcConnection<Local, Remote>
@@ -113,7 +153,7 @@ where
         &self,
         method: impl Into<Arc<str>>,
         params: Option<Remote::InRequest>,
-    ) -> Result<impl Future<Output = Result<Out>>> {
+    ) -> Result<PendingRequest<Out>> {
         let (tx, rx) = oneshot::channel();
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let id = RequestId::Number(id);
@@ -143,14 +183,11 @@ where
                 Error::internal_error().data("connection closed before request could be sent")
             );
         }
-        Ok(async move {
-            let result = rx
-                .await
-                .map_err(|_| Error::internal_error().data("server shut down unexpectedly"))??
-                .downcast::<Out>()
-                .map_err(|_| Error::internal_error().data("failed to deserialize response"))?;
-
-            Ok(*result)
+        Ok(PendingRequest {
+            id,
+            pending_responses: self.pending_responses.clone(),
+            rx,
+            _marker: PhantomData,
         })
     }
 
@@ -167,7 +204,7 @@ where
         let mut outgoing_line = Vec::new();
         let mut incoming_line = String::new();
         loop {
-            select_biased! {
+            futures::select! {
                 message = outgoing_rx.next() => {
                     if let Some(message) = message {
                         outgoing_line.clear();
@@ -236,7 +273,9 @@ where
                                         pending_response.respond.send(result).ok();
                                     }
                                 } else {
-                                    log::error!("received response for unknown request id: {id:?}");
+                                    log::debug!(
+                                        "received response for unknown request id: {id:?} (possibly cancelled)"
+                                    );
                                 }
                             } else if let Some(method) = message.method {
                                 // Notification
@@ -312,6 +351,14 @@ where
             }
             .boxed_local()
         });
+    }
+}
+
+#[cfg(test)]
+impl<Local: Side, Remote: Side> RpcConnection<Local, Remote> {
+    // Test-only visibility into pending request tracking for drop cleanup assertions.
+    pub(crate) fn pending_response_count(&self) -> usize {
+        self.pending_responses.lock().unwrap().len()
     }
 }
 
