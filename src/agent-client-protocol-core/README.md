@@ -23,7 +23,7 @@ Client.builder()
     .name("my-client")
     .connect_with(transport, async |cx| {
         // Initialize the connection
-        cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+        cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
             .block_task()
             .await?;
 

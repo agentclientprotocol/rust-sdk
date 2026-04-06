@@ -21,7 +21,7 @@
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol_core::Error> {
 //! # Client.builder().connect_with(transport, async |cx| {
 //! // As a client
-//! cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST));
+//! cx.send_request(InitializeRequest::new(ProtocolVersion::V1));
 //! # Ok(())
 //! # }).await?;
 //! # Ok(())

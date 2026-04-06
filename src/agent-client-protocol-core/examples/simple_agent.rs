@@ -1,11 +1,11 @@
 use agent_client_protocol_core::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse,
 };
-use agent_client_protocol_core::{Agent, Client, ConnectionTo, Dispatch};
+use agent_client_protocol_core::{Agent, Client, ConnectionTo, Dispatch, Result};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::main]
-async fn main() -> Result<(), agent_client_protocol_core::Error> {
+async fn main() -> Result<()> {
     Agent
         .builder()
         .name("my-agent") // for debugging
