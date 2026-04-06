@@ -102,7 +102,7 @@ pub async fn prompt_with_callback(
         .connect_with(component, |cx: agent_client_protocol_core::ConnectionTo<Agent>| async move {
             // Initialize the agent
             let _init_response = cx
-                .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
 

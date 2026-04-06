@@ -46,7 +46,7 @@
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol_core::Error> {
 //! # Client.builder().connect_with(transport, async |cx| {
 //! // Send a request and wait for the response
-//! let response = cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+//! let response = cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
 //!     .block_task()
 //!     .await?;
 //!

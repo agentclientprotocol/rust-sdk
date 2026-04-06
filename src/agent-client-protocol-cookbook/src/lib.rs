@@ -71,7 +71,7 @@ pub mod one_shot_prompt {
     //!         .name("my-client")
     //!         .connect_with(transport, async |connection| {
     //!             // Initialize the connection
-    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::V1))
     //!                 .block_task().await?;
     //!
     //!             // Create a session, send prompt, read response
@@ -135,7 +135,7 @@ pub mod connecting_as_client {
     //!         .name("my-client")
     //!         .connect_with(transport, async |connection| {
     //!             // Initialize the connection
-    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::V1))
     //!                 .block_task().await?;
     //!
     //!             // Create a session and send a prompt

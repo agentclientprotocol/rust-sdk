@@ -24,12 +24,12 @@
 //! use agent_client_protocol_core::Client;
 //! use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
 //!
-//! # async fn run(transport: impl agent_client_protocol_core::ConnectTo<agent_client_protocol_core::Client>) -> Result<(), agent_client_protocol_core::Error> {
+//! # async fn run(transport: impl agent_client_protocol_core::ConnectTo<agent_client_protocol_core::Client>) -> agent_client_protocol_core::Result<()> {
 //! Client.builder()
 //!     .name("my-client")
 //!     .connect_with(transport, async |cx| {
 //!         // Step 1: Initialize the connection
-//!         cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+//!         cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
 //!             .block_task().await?;
 //!
 //!         // Step 2: Create a session and send a prompt
@@ -134,7 +134,7 @@ pub use schema::{
 };
 
 // Re-export commonly used infrastructure types for convenience
-pub use schema::{Error, ErrorCode};
+pub use schema::{Error, ErrorCode, Result};
 
 // Re-export derive macros for custom JSON-RPC types
 pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};

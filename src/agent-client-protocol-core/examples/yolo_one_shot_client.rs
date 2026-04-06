@@ -120,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Initialize the agent
             eprintln!("🤝 Initializing agent...");
             let init_response = connection
-                .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                .send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
 
