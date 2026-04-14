@@ -591,6 +591,108 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn test_bad_notification_params_swallowed_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_notification(
+                    async |_notif: SimpleNotification,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        // If we get here, the notification parsed successfully.
+                        Ok(())
+                    },
+                    agent_client_protocol_core::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            // Send a notification with bad params (wrong field name).
+            // Notifications have no "id", so the server sends an error
+            // notification (id: null) and keeps the connection alive.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"wrong_field":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            // The server sends an error notification (id: null) for the
+            // malformed notification.
+            let error_notification = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "error": {
+                    "code": -32602,
+                    "data": {
+                      "error": "missing field `message`",
+                      "json": {
+                        "wrong_field": "hello"
+                      },
+                      "phase": "deserialization"
+                    },
+                    "message": "Invalid params"
+                  },
+                  "jsonrpc": "2.0"
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&error_notification).unwrap());
+
+            // Now send a valid request to prove the connection is still alive.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":10,"method":"simple_method","params":{"message":"after bad notification"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 10,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: after bad notification"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn test_match_dispatch_from_if_message_invalid_params_keeps_connection_alive() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;

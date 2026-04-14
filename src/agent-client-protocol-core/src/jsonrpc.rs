@@ -2349,11 +2349,17 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     /// * **Requests** – sends the error back to the caller via the [`Responder`].
     /// * **Responses** – forwards the error to the waiting handler via the
     ///   [`ResponseRouter`].
-    /// * **Notifications** – there is no request ID to reply to, so the error
+    /// * **Notifications** – there is no request ID to reply to, and no
+    ///   connection is available to send an error notification, so the error
     ///   is logged and swallowed.
     ///
     /// Returns `Ok(Handled::Yes)` in all cases so the connection loop
     /// continues.
+    ///
+    /// **Prefer [`respond_with_error`](Self::respond_with_error)** when a
+    /// [`ConnectionTo`] is available — it can send an error notification for
+    /// malformed notifications, which is consistent with
+    /// [`TypeNotification`](crate::util::TypeNotification).
     pub(crate) fn reject_parse_error(
         self,
         error: crate::Error,
@@ -2570,13 +2576,17 @@ impl Dispatch {
                 }
             }
             Dispatch::Response(result, cx) => {
-                let method = cx.method().to_string();
-                if Req::matches_method(&method) {
-                    let typed_result = match result {
-                        Ok(value) => match <Req::Response as JsonRpcResponse>::from_value(
-                            &method,
+                if !Req::matches_method(cx.method()) {
+                    tracing::trace!("method doesn't match");
+                    return TypedDispatchOutcome::Unhandled(Dispatch::Response(result, cx));
+                }
+                let typed_result = match result {
+                    Ok(value) => {
+                        let parsed = <Req::Response as JsonRpcResponse>::from_value(
+                            cx.method(),
                             value.clone(),
-                        ) {
+                        );
+                        match parsed {
                             Ok(parsed) => {
                                 tracing::trace!(?parsed, "parse ok");
                                 Ok(parsed)
@@ -2588,17 +2598,14 @@ impl Dispatch {
                                     error: err,
                                 };
                             }
-                        },
-                        Err(err) => {
-                            tracing::trace!("error, passthrough");
-                            Err(err)
                         }
-                    };
-                    TypedDispatchOutcome::Matched(Dispatch::Response(typed_result, cx.cast()))
-                } else {
-                    tracing::trace!("method doesn't match");
-                    TypedDispatchOutcome::Unhandled(Dispatch::Response(result, cx))
-                }
+                    }
+                    Err(err) => {
+                        tracing::trace!("error, passthrough");
+                        Err(err)
+                    }
+                };
+                TypedDispatchOutcome::Matched(Dispatch::Response(typed_result, cx.cast()))
             }
         }
     }
