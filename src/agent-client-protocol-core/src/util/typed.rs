@@ -121,9 +121,9 @@ impl MatchDispatch {
                     message: dispatch,
                     retry,
                 }),
-                TypedRequestOutcome::Reject { dispatch, error } => dispatch
-                    .respond_with_error_without_connection(error)
-                    .map(|()| Handled::Yes),
+                TypedRequestOutcome::Reject { dispatch, error } => {
+                    dispatch.reject_parse_error(error)
+                }
             };
         }
         self
@@ -163,7 +163,9 @@ impl MatchDispatch {
                     message: dispatch,
                     retry,
                 }),
-                TypedNotificationOutcome::Reject { error, .. } => Err(error),
+                TypedNotificationOutcome::Reject { dispatch, error } => {
+                    dispatch.reject_parse_error(error)
+                }
             };
         }
         self
@@ -203,9 +205,9 @@ impl MatchDispatch {
                     message: dispatch,
                     retry,
                 }),
-                TypedDispatchOutcome::Reject { dispatch, error } => dispatch
-                    .respond_with_error_without_connection(error)
-                    .map(|()| Handled::Yes),
+                TypedDispatchOutcome::Reject { dispatch, error } => {
+                    dispatch.reject_parse_error(error)
+                }
             };
         }
         self

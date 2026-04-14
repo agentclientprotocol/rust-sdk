@@ -2343,14 +2343,37 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
         }
     }
 
-    pub(crate) fn respond_with_error_without_connection(
+    /// Reject a dispatch whose params failed to deserialize, without
+    /// requiring a [`ConnectionTo`].
+    ///
+    /// * **Requests** – sends the error back to the caller via the [`Responder`].
+    /// * **Responses** – forwards the error to the waiting handler via the
+    ///   [`ResponseRouter`].
+    /// * **Notifications** – there is no request ID to reply to, so the error
+    ///   is logged and swallowed.
+    ///
+    /// Returns `Ok(Handled::Yes)` in all cases so the connection loop
+    /// continues.
+    pub(crate) fn reject_parse_error(
         self,
         error: crate::Error,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<Handled<Dispatch>, crate::Error> {
         match self {
-            Dispatch::Request(_, responder) => responder.respond_with_error(error),
-            Dispatch::Notification(_) => Err(error),
-            Dispatch::Response(_, responder) => responder.respond_with_error(error),
+            Dispatch::Request(_, responder) => {
+                responder.respond_with_error(error).map(|()| Handled::Yes)
+            }
+            Dispatch::Notification(_) => {
+                // Notifications have no request ID, so there is no response
+                // to send.  Log and swallow to keep the connection alive.
+                tracing::warn!(
+                    ?error,
+                    "rejecting malformed notification: no response possible"
+                );
+                Ok(Handled::Yes)
+            }
+            Dispatch::Response(_, router) => {
+                router.respond_with_error(error).map(|()| Handled::Yes)
+            }
         }
     }
 
