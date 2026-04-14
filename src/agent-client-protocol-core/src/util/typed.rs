@@ -22,6 +22,7 @@ use jsonrpcmsg::Params;
 use crate::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, Responder, ResponseRouter, UntypedMessage,
+    jsonrpc::{TypedDispatchOutcome, TypedNotificationOutcome, TypedRequestOutcome},
     role::{HasPeer, Role, handle_incoming_dispatch},
     util::json_cast,
 };
@@ -102,46 +103,27 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch {
-                Dispatch::Request(untyped_request, untyped_responder) => {
-                    if Req::matches_method(untyped_request.method()) {
-                        match Req::parse_message(untyped_request.method(), untyped_request.params())
-                        {
-                            Ok(typed_request) => {
-                                let typed_responder = untyped_responder.cast();
-                                match op(typed_request, typed_responder).await {
-                                    Ok(result) => match result.into_handled() {
-                                        Handled::Yes => Ok(Handled::Yes),
-                                        Handled::No {
-                                            message: (request, responder),
-                                            retry: request_retry,
-                                        } => match request.to_untyped_message() {
-                                            Ok(untyped) => Ok(Handled::No {
-                                                message: Dispatch::Request(
-                                                    untyped,
-                                                    responder.erase_to_json(),
-                                                ),
-                                                retry: retry | request_retry,
-                                            }),
-                                            Err(err) => Err(err),
-                                        },
-                                    },
-                                    Err(err) => Err(err),
-                                }
-                            }
-                            Err(err) => Err(err),
-                        }
-                    } else {
-                        Ok(Handled::No {
-                            message: Dispatch::Request(untyped_request, untyped_responder),
-                            retry,
-                        })
+            self.state = match dispatch.classify_typed_request::<Req>() {
+                TypedRequestOutcome::Matched(typed_request, typed_responder) => {
+                    match op(typed_request, typed_responder).await {
+                        Ok(result) => match result.into_handled() {
+                            Handled::Yes => Ok(Handled::Yes),
+                            Handled::No {
+                                message: (request, responder),
+                                retry: request_retry,
+                            } => Dispatch::<Req, UntypedMessage>::Request(request, responder)
+                                .into_handled_no_untyped(retry | request_retry),
+                        },
+                        Err(err) => Err(err),
                     }
                 }
-                Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(Handled::No {
+                TypedRequestOutcome::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
+                TypedRequestOutcome::Reject { dispatch, error } => dispatch
+                    .respond_with_error_without_connection(error)
+                    .map(|()| Handled::Yes),
             };
         }
         self
@@ -163,42 +145,25 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch {
-                Dispatch::Notification(untyped_notification) => {
-                    if N::matches_method(untyped_notification.method()) {
-                        match N::parse_message(
-                            untyped_notification.method(),
-                            untyped_notification.params(),
-                        ) {
-                            Ok(typed_notification) => match op(typed_notification).await {
-                                Ok(result) => match result.into_handled() {
-                                    Handled::Yes => Ok(Handled::Yes),
-                                    Handled::No {
-                                        message: notification,
-                                        retry: notification_retry,
-                                    } => match notification.to_untyped_message() {
-                                        Ok(untyped) => Ok(Handled::No {
-                                            message: Dispatch::Notification(untyped),
-                                            retry: retry | notification_retry,
-                                        }),
-                                        Err(err) => Err(err),
-                                    },
-                                },
-                                Err(err) => Err(err),
-                            },
-                            Err(err) => Err(err),
-                        }
-                    } else {
-                        Ok(Handled::No {
-                            message: Dispatch::Notification(untyped_notification),
-                            retry,
-                        })
+            self.state = match dispatch.classify_typed_notification::<N>() {
+                TypedNotificationOutcome::Matched(typed_notification) => {
+                    match op(typed_notification).await {
+                        Ok(result) => match result.into_handled() {
+                            Handled::Yes => Ok(Handled::Yes),
+                            Handled::No {
+                                message: notification,
+                                retry: notification_retry,
+                            } => Dispatch::<UntypedMessage, N>::Notification(notification)
+                                .into_handled_no_untyped(retry | notification_retry),
+                        },
+                        Err(err) => Err(err),
                     }
                 }
-                Dispatch::Request(_, _) | Dispatch::Response(_, _) => Ok(Handled::No {
+                TypedNotificationOutcome::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
+                TypedNotificationOutcome::Reject { error, .. } => Err(error),
             };
         }
         self
@@ -220,54 +185,27 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch.into_typed_dispatch::<R, N>() {
-                Ok(Ok(typed_dispatch)) => match op(typed_dispatch).await {
+            self.state = match dispatch.classify_typed_dispatch::<R, N>() {
+                TypedDispatchOutcome::Matched(typed_dispatch) => match op(typed_dispatch).await {
                     Ok(result) => match result.into_handled() {
                         Handled::Yes => Ok(Handled::Yes),
                         Handled::No {
                             message: typed_dispatch,
                             retry: message_retry,
-                        } => {
-                            let untyped = match typed_dispatch {
-                                Dispatch::Request(request, responder) => {
-                                    match request.to_untyped_message() {
-                                        Ok(untyped) => {
-                                            Dispatch::Request(untyped, responder.erase_to_json())
-                                        }
-                                        Err(err) => return Self { state: Err(err) },
-                                    }
-                                }
-                                Dispatch::Notification(notification) => {
-                                    match notification.to_untyped_message() {
-                                        Ok(untyped) => Dispatch::Notification(untyped),
-                                        Err(err) => return Self { state: Err(err) },
-                                    }
-                                }
-                                Dispatch::Response(result, router) => {
-                                    let method = router.method();
-                                    let untyped_result = match result {
-                                        Ok(response) => match response.into_json(method) {
-                                            Ok(json) => Ok(json),
-                                            Err(err) => return Self { state: Err(err) },
-                                        },
-                                        Err(err) => Err(err),
-                                    };
-                                    Dispatch::Response(untyped_result, router.erase_to_json())
-                                }
-                            };
-                            Ok(Handled::No {
-                                message: untyped,
-                                retry: retry | message_retry,
-                            })
-                        }
+                        } => match typed_dispatch.into_handled_no_untyped(retry | message_retry) {
+                            Ok(handled) => Ok(handled),
+                            Err(err) => return Self { state: Err(err) },
+                        },
                     },
                     Err(err) => Err(err),
                 },
-                Ok(Err(dispatch)) => Ok(Handled::No {
+                TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
-                Err(err) => Err(err),
+                TypedDispatchOutcome::Reject { dispatch, error } => dispatch
+                    .respond_with_error_without_connection(error)
+                    .map(|()| Handled::Yes),
             };
         }
         self
@@ -315,20 +253,8 @@ impl MatchDispatch {
                                 Handled::No {
                                     message: (result, router),
                                     retry: response_retry,
-                                } => {
-                                    // Convert typed result back to untyped
-                                    let untyped_result = match result {
-                                        Ok(response) => response.into_json(router.method()),
-                                        Err(err) => Err(err),
-                                    };
-                                    Ok(Handled::No {
-                                        message: Dispatch::Response(
-                                            untyped_result,
-                                            router.erase_to_json(),
-                                        ),
-                                        retry: retry | response_retry,
-                                    })
-                                }
+                                } => Dispatch::<Req, UntypedMessage>::Response(result, router)
+                                    .into_handled_no_untyped(retry | response_retry),
                             },
                             Err(err) => Err(err),
                         }
@@ -580,12 +506,28 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
-                    // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch)
-                        .if_notification(op)
-                        .await
-                        .done()
+                async |dispatch, connection| match dispatch.classify_typed_notification::<N>() {
+                    TypedNotificationOutcome::Matched(typed_notification) => {
+                        match op(typed_notification).await {
+                            Ok(result) => match result.into_handled() {
+                                Handled::Yes => Ok(Handled::Yes),
+                                Handled::No {
+                                    message: notification,
+                                    retry: notification_retry,
+                                } => Dispatch::<UntypedMessage, N>::Notification(notification)
+                                    .into_handled_no_untyped(notification_retry),
+                            },
+                            Err(err) => Err(err),
+                        }
+                    }
+                    TypedNotificationOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                        message: dispatch,
+                        retry: false,
+                    }),
+                    TypedNotificationOutcome::Reject { dispatch, error } => {
+                        dispatch.respond_with_error(error, connection)?;
+                        Ok(Handled::Yes)
+                    }
                 },
             )
             .await;
@@ -617,9 +559,27 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
-                    // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch).if_message(op).await.done()
+                async |dispatch, connection| match dispatch.classify_typed_dispatch::<Req, N>() {
+                    TypedDispatchOutcome::Matched(typed_dispatch) => {
+                        match op(typed_dispatch).await {
+                            Ok(result) => match result.into_handled() {
+                                Handled::Yes => Ok(Handled::Yes),
+                                Handled::No {
+                                    message: typed_dispatch,
+                                    retry: message_retry,
+                                } => typed_dispatch.into_handled_no_untyped(message_retry),
+                            },
+                            Err(err) => Err(err),
+                        }
+                    }
+                    TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                        message: dispatch,
+                        retry: false,
+                    }),
+                    TypedDispatchOutcome::Reject { dispatch, error } => {
+                        dispatch.respond_with_error(error, connection)?;
+                        Ok(Handled::Yes)
+                    }
                 },
             )
             .await;

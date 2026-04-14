@@ -1,4 +1,7 @@
-use crate::jsonrpc::{HandleDispatchFrom, Handled, IntoHandled, JsonRpcResponse};
+use crate::jsonrpc::{
+    HandleDispatchFrom, Handled, IntoHandled, TypedDispatchOutcome, TypedNotificationOutcome,
+    TypedRequestOutcome,
+};
 
 use crate::role::{HasPeer, Role, handle_incoming_dispatch};
 use crate::{ConnectionTo, Dispatch, JsonRpcNotification, JsonRpcRequest, UntypedMessage};
@@ -108,67 +111,44 @@ where
             dispatch,
             connection,
             async |dispatch, connection| {
-                match dispatch {
-                    Dispatch::Request(message, responder) => {
-                        tracing::debug!(
-                            request_type = std::any::type_name::<Req>(),
-                            message = ?message,
-                            "RequestHandler::handle_request"
-                        );
-                        if Req::matches_method(&message.method) {
-                            match Req::parse_message(&message.method, &message.params) {
-                                Ok(req) => {
-                                    tracing::trace!(
-                                        ?req,
-                                        "RequestHandler::handle_request: parse completed"
-                                    );
-                                    let typed_responder = responder.cast();
-                                    let result = (self.to_future_hack)(
-                                        &mut self.handler,
-                                        req,
-                                        typed_responder,
-                                        connection,
-                                    )
-                                    .await?;
-                                    match result.into_handled() {
-                                        Handled::Yes => Ok(Handled::Yes),
-                                        Handled::No {
-                                            message: (request, responder),
-                                            retry,
-                                        } => {
-                                            // Handler returned the request back, convert to untyped
-                                            let untyped = request.to_untyped_message()?;
-                                            Ok(Handled::No {
-                                                message: Dispatch::Request(
-                                                    untyped,
-                                                    responder.erase_to_json(),
-                                                ),
-                                                retry,
-                                            })
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::trace!(
-                                        ?err,
-                                        "RequestHandler::handle_request: parse errored"
-                                    );
-                                    Err(err)
-                                }
-                            }
-                        } else {
-                            tracing::trace!("RequestHandler::handle_request: method doesn't match");
-                            Ok(Handled::No {
-                                message: Dispatch::Request(message, responder),
-                                retry: false,
-                            })
+                if let Dispatch::Request(message, _) = &dispatch {
+                    tracing::debug!(
+                        request_type = std::any::type_name::<Req>(),
+                        message = ?message,
+                        "RequestHandler::handle_request"
+                    );
+                }
+                match dispatch.classify_typed_request::<Req>() {
+                    TypedRequestOutcome::Matched(req, typed_responder) => {
+                        tracing::trace!(?req, "RequestHandler::handle_request: parse completed");
+                        let result = (self.to_future_hack)(
+                            &mut self.handler,
+                            req,
+                            typed_responder,
+                            connection,
+                        )
+                        .await?;
+                        match result.into_handled() {
+                            Handled::Yes => Ok(Handled::Yes),
+                            Handled::No {
+                                message: (request, responder),
+                                retry,
+                            } => Dispatch::<Req, UntypedMessage>::Request(request, responder)
+                                .into_handled_no_untyped(retry),
                         }
                     }
-
-                    Dispatch::Notification(..) | Dispatch::Response(..) => Ok(Handled::No {
-                        message: dispatch,
-                        retry: false,
-                    }),
+                    TypedRequestOutcome::Unhandled(dispatch) => {
+                        tracing::trace!("RequestHandler::handle_request: method doesn't match");
+                        Ok(Handled::No {
+                            message: dispatch,
+                            retry: false,
+                        })
+                    }
+                    TypedRequestOutcome::Reject { dispatch, error } => {
+                        tracing::trace!(?error, "RequestHandler::handle_request: parse errored");
+                        dispatch.respond_with_error(error, connection)?;
+                        Ok(Handled::Yes)
+                    }
                 }
             },
         )
@@ -236,61 +216,47 @@ where
             dispatch,
             connection,
             async |dispatch, connection| {
-                match dispatch {
-                    Dispatch::Notification(message) => {
-                        tracing::debug!(
-                            request_type = std::any::type_name::<Notif>(),
-                            message = ?message,
-                            "NotificationHandler::handle_dispatch"
+                if let Dispatch::Notification(message) = &dispatch {
+                    tracing::debug!(
+                        request_type = std::any::type_name::<Notif>(),
+                        message = ?message,
+                        "NotificationHandler::handle_dispatch"
+                    );
+                }
+                match dispatch.classify_typed_notification::<Notif>() {
+                    TypedNotificationOutcome::Matched(notif) => {
+                        tracing::trace!(
+                            ?notif,
+                            "NotificationHandler::handle_notification: parse completed"
                         );
-                        if Notif::matches_method(&message.method) {
-                            match Notif::parse_message(&message.method, &message.params) {
-                                Ok(notif) => {
-                                    tracing::trace!(
-                                        ?notif,
-                                        "NotificationHandler::handle_notification: parse completed"
-                                    );
-                                    let result =
-                                        (self.to_future_hack)(&mut self.handler, notif, connection)
-                                            .await?;
-                                    match result.into_handled() {
-                                        Handled::Yes => Ok(Handled::Yes),
-                                        Handled::No {
-                                            message: (notification, _cx),
-                                            retry,
-                                        } => {
-                                            // Handler returned the notification back, convert to untyped
-                                            let untyped = notification.to_untyped_message()?;
-                                            Ok(Handled::No {
-                                                message: Dispatch::Notification(untyped),
-                                                retry,
-                                            })
-                                        }
-                                    }
-                                }
-                                Err(err) => {
-                                    tracing::trace!(
-                                        ?err,
-                                        "NotificationHandler::handle_notification: parse errored"
-                                    );
-                                    Err(err)
-                                }
-                            }
-                        } else {
-                            tracing::trace!(
-                                "NotificationHandler::handle_notification: method doesn't match"
-                            );
-                            Ok(Handled::No {
-                                message: Dispatch::Notification(message),
-                                retry: false,
-                            })
+                        let result =
+                            (self.to_future_hack)(&mut self.handler, notif, connection).await?;
+                        match result.into_handled() {
+                            Handled::Yes => Ok(Handled::Yes),
+                            Handled::No {
+                                message: (notification, _cx),
+                                retry,
+                            } => Dispatch::<UntypedMessage, Notif>::Notification(notification)
+                                .into_handled_no_untyped(retry),
                         }
                     }
-
-                    Dispatch::Request(..) | Dispatch::Response(..) => Ok(Handled::No {
-                        message: dispatch,
-                        retry: false,
-                    }),
+                    TypedNotificationOutcome::Unhandled(dispatch) => {
+                        tracing::trace!(
+                            "NotificationHandler::handle_notification: method doesn't match"
+                        );
+                        Ok(Handled::No {
+                            message: dispatch,
+                            retry: false,
+                        })
+                    }
+                    TypedNotificationOutcome::Reject { dispatch, error } => {
+                        tracing::trace!(
+                            ?error,
+                            "NotificationHandler::handle_notification: parse errored"
+                        );
+                        dispatch.respond_with_error(error, connection)?;
+                        Ok(Handled::Yes)
+                    }
                 }
             },
         )
@@ -362,57 +328,27 @@ where
             self.peer.clone(),
             dispatch,
             connection,
-            async |dispatch, connection| match dispatch.into_typed_dispatch::<Req, Notif>()? {
-                Ok(typed_dispatch) => {
+            async |dispatch, connection| match dispatch.classify_typed_dispatch::<Req, Notif>() {
+                TypedDispatchOutcome::Matched(typed_dispatch) => {
                     let result =
                         (self.to_future_hack)(&mut self.handler, typed_dispatch, connection)
                             .await?;
                     match result.into_handled() {
                         Handled::Yes => Ok(Handled::Yes),
                         Handled::No {
-                            message: Dispatch::Request(request, responder),
+                            message: typed_dispatch,
                             retry,
-                        } => {
-                            let untyped = request.to_untyped_message()?;
-                            Ok(Handled::No {
-                                message: Dispatch::Request(untyped, responder.erase_to_json()),
-                                retry,
-                            })
-                        }
-                        Handled::No {
-                            message: Dispatch::Notification(notification),
-                            retry,
-                        } => {
-                            let untyped = notification.to_untyped_message()?;
-                            Ok(Handled::No {
-                                message: Dispatch::Notification(untyped),
-                                retry,
-                            })
-                        }
-                        Handled::No {
-                            message: Dispatch::Response(result, responder),
-                            retry,
-                        } => {
-                            let method = responder.method();
-                            let untyped_result = match result {
-                                Ok(response) => response.into_json(method).map(Ok),
-                                Err(err) => Ok(Err(err)),
-                            }?;
-                            Ok(Handled::No {
-                                message: Dispatch::Response(
-                                    untyped_result,
-                                    responder.erase_to_json(),
-                                ),
-                                retry,
-                            })
-                        }
+                        } => typed_dispatch.into_handled_no_untyped(retry),
                     }
                 }
-
-                Err(dispatch) => Ok(Handled::No {
+                TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry: false,
                 }),
+                TypedDispatchOutcome::Reject { dispatch, error } => {
+                    dispatch.respond_with_error(error, connection)?;
+                    Ok(Handled::Yes)
+                }
             },
         )
         .await

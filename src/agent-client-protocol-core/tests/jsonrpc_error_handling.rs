@@ -8,13 +8,31 @@
 //! - Missing/invalid parameters
 
 use agent_client_protocol_core::{
-    ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder, SentRequest,
-    role::UntypedRole,
+    ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcNotification,
+    JsonRpcRequest, JsonRpcResponse, Responder, SentRequest, role::UntypedRole,
+    util::MatchDispatchFrom,
 };
 use expect_test::expect;
 use futures::{AsyncRead, AsyncWrite};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+async fn read_jsonrpc_response_line(
+    reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
+) -> serde_json::Value {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let mut line = String::new();
+    tokio::time::timeout(
+        tokio::time::Duration::from_secs(1),
+        reader.read_line(&mut line),
+    )
+    .await
+    .expect("timed out waiting for JSON-RPC response")
+    .expect("failed to read JSON-RPC response line");
+
+    serde_json::from_str(line.trim()).expect("response should be valid JSON")
+}
 
 /// Test helper to block and wait for a JSON-RPC response.
 async fn recv<T: JsonRpcResponse + Send>(
@@ -106,6 +124,39 @@ impl JsonRpcResponse for SimpleResponse {
         agent_client_protocol_core::util::json_cast(&value)
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimpleNotification {
+    message: String,
+}
+
+impl JsonRpcMessage for SimpleNotification {
+    fn matches_method(method: &str) -> bool {
+        method == "simple_notification"
+    }
+
+    fn method(&self) -> &'static str {
+        "simple_notification"
+    }
+
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
+        agent_client_protocol_core::UntypedMessage::new(self.method(), self)
+    }
+
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
+        if !Self::matches_method(method) {
+            return Err(agent_client_protocol_core::Error::method_not_found());
+        }
+        agent_client_protocol_core::util::json_cast(params)
+    }
+}
+
+impl JsonRpcNotification for SimpleNotification {}
 
 // ============================================================================
 // Test 1: Invalid JSON (complete line with parse error)
@@ -448,6 +499,207 @@ async fn test_missing_required_params() {
                 .await;
 
             assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_bad_request_params_return_invalid_params_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol_core::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":3,"method":"simple_method","params":{"content":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let invalid_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "error": {
+                    "code": -32602,
+                    "data": {
+                      "error": "missing field `message`",
+                      "json": {
+                        "content": "hello"
+                      },
+                      "phase": "deserialization"
+                    },
+                    "message": "Invalid params"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&invalid_response).unwrap());
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":4,"method":"simple_method","params":{"message":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 4,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: hello"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_match_dispatch_from_if_message_invalid_params_keeps_connection_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    struct MatchDispatchFromMessageHandler;
+
+    impl HandleDispatchFrom<UntypedRole> for MatchDispatchFromMessageHandler {
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "MatchDispatchFromMessageHandler"
+        }
+
+        async fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            connection: ConnectionTo<UntypedRole>,
+        ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+            MatchDispatchFrom::new(message, &connection)
+                .if_message_from(
+                    UntypedRole,
+                    async move |dispatch: Dispatch<SimpleRequest, SimpleNotification>| {
+                        match dispatch {
+                            Dispatch::Request(request, responder) => {
+                                responder.respond(SimpleResponse {
+                                    result: format!("echo: {}", request.message),
+                                })
+                            }
+                            Dispatch::Notification(_) => Ok(()),
+                            Dispatch::Response(result, router) => {
+                                router.respond_with_result(result)
+                            }
+                        }
+                    },
+                )
+                .await
+                .done()
+        }
+    }
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .with_handler(MatchDispatchFromMessageHandler);
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":5,"method":"simple_method","params":{"content":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let invalid_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "error": {
+                    "code": -32602,
+                    "data": {
+                      "error": "missing field `message`",
+                      "json": {
+                        "content": "hello"
+                      },
+                      "phase": "deserialization"
+                    },
+                    "message": "Invalid params"
+                  },
+                  "id": 5,
+                  "jsonrpc": "2.0"
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&invalid_response).unwrap());
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":6,"method":"simple_method","params":{"message":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 6,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: hello"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
         })
         .await;
 }
