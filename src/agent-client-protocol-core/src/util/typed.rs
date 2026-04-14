@@ -21,8 +21,8 @@ use jsonrpcmsg::Params;
 
 use crate::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, Responder, ResponseRouter, UntypedMessage,
-    jsonrpc::{TypedDispatchOutcome, TypedNotificationOutcome, TypedRequestOutcome},
+    JsonRpcResponse, NotificationMatch, RequestMatch, Responder, ResponseRouter,
+    TypedDispatchMatch, UntypedMessage,
     role::{HasPeer, Role, handle_incoming_dispatch},
     util::json_cast,
 };
@@ -32,6 +32,9 @@ use crate::{
 /// Use this when you already have an unwrapped message and just need to parse it,
 /// such as inside a [`MatchDispatchFrom`] callback or when processing messages
 /// that don't need peer transforms.
+///
+/// Because this helper has no [`ConnectionTo`], malformed notifications cannot emit
+/// an out-of-band error message; they are logged and swallowed instead.
 ///
 /// For connection handlers where you need proper peer-aware transforms,
 /// use [`MatchDispatchFrom`] instead.
@@ -103,8 +106,8 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch.classify_typed_request::<Req>() {
-                TypedRequestOutcome::Matched(typed_request, typed_responder) => {
+            self.state = match dispatch.match_request::<Req>() {
+                RequestMatch::Matched(typed_request, typed_responder) => {
                     match op(typed_request, typed_responder).await {
                         Ok(result) => match result.into_handled() {
                             Handled::Yes => Ok(Handled::Yes),
@@ -117,12 +120,12 @@ impl MatchDispatch {
                         Err(err) => Err(err),
                     }
                 }
-                TypedRequestOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                RequestMatch::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
-                TypedRequestOutcome::Reject { dispatch, error } => {
-                    dispatch.reject_parse_error(error)
+                RequestMatch::Rejected { dispatch, error } => {
+                    dispatch.handle_rejection_without_connection(error)
                 }
             };
         }
@@ -145,8 +148,8 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch.classify_typed_notification::<N>() {
-                TypedNotificationOutcome::Matched(typed_notification) => {
+            self.state = match dispatch.match_notification::<N>() {
+                NotificationMatch::Matched(typed_notification) => {
                     match op(typed_notification).await {
                         Ok(result) => match result.into_handled() {
                             Handled::Yes => Ok(Handled::Yes),
@@ -159,12 +162,12 @@ impl MatchDispatch {
                         Err(err) => Err(err),
                     }
                 }
-                TypedNotificationOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                NotificationMatch::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
-                TypedNotificationOutcome::Reject { dispatch, error } => {
-                    dispatch.reject_parse_error(error)
+                NotificationMatch::Rejected { dispatch, error } => {
+                    dispatch.handle_rejection_without_connection(error)
                 }
             };
         }
@@ -187,8 +190,8 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch.classify_typed_dispatch::<R, N>() {
-                TypedDispatchOutcome::Matched(typed_dispatch) => match op(typed_dispatch).await {
+            self.state = match dispatch.match_typed_dispatch::<R, N>() {
+                TypedDispatchMatch::Matched(typed_dispatch) => match op(typed_dispatch).await {
                     Ok(result) => match result.into_handled() {
                         Handled::Yes => Ok(Handled::Yes),
                         Handled::No {
@@ -201,12 +204,12 @@ impl MatchDispatch {
                     },
                     Err(err) => Err(err),
                 },
-                TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                TypedDispatchMatch::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry,
                 }),
-                TypedDispatchOutcome::Reject { dispatch, error } => {
-                    dispatch.reject_parse_error(error)
+                TypedDispatchMatch::Rejected { dispatch, error } => {
+                    dispatch.handle_rejection_without_connection(error)
                 }
             };
         }
@@ -508,8 +511,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, connection| match dispatch.classify_typed_notification::<N>() {
-                    TypedNotificationOutcome::Matched(typed_notification) => {
+                async |dispatch, connection| match dispatch.match_notification::<N>() {
+                    NotificationMatch::Matched(typed_notification) => {
                         match op(typed_notification).await {
                             Ok(result) => match result.into_handled() {
                                 Handled::Yes => Ok(Handled::Yes),
@@ -522,11 +525,11 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                             Err(err) => Err(err),
                         }
                     }
-                    TypedNotificationOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                    NotificationMatch::Unhandled(dispatch) => Ok(Handled::No {
                         message: dispatch,
                         retry: false,
                     }),
-                    TypedNotificationOutcome::Reject { dispatch, error } => {
+                    NotificationMatch::Rejected { dispatch, error } => {
                         dispatch.respond_with_error(error, connection)?;
                         Ok(Handled::Yes)
                     }
@@ -561,24 +564,22 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, connection| match dispatch.classify_typed_dispatch::<Req, N>() {
-                    TypedDispatchOutcome::Matched(typed_dispatch) => {
-                        match op(typed_dispatch).await {
-                            Ok(result) => match result.into_handled() {
-                                Handled::Yes => Ok(Handled::Yes),
-                                Handled::No {
-                                    message: typed_dispatch,
-                                    retry: message_retry,
-                                } => typed_dispatch.into_handled_no_untyped(message_retry),
-                            },
-                            Err(err) => Err(err),
-                        }
-                    }
-                    TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                async |dispatch, connection| match dispatch.match_typed_dispatch::<Req, N>() {
+                    TypedDispatchMatch::Matched(typed_dispatch) => match op(typed_dispatch).await {
+                        Ok(result) => match result.into_handled() {
+                            Handled::Yes => Ok(Handled::Yes),
+                            Handled::No {
+                                message: typed_dispatch,
+                                retry: message_retry,
+                            } => typed_dispatch.into_handled_no_untyped(message_retry),
+                        },
+                        Err(err) => Err(err),
+                    },
+                    TypedDispatchMatch::Unhandled(dispatch) => Ok(Handled::No {
                         message: dispatch,
                         retry: false,
                     }),
-                    TypedDispatchOutcome::Reject { dispatch, error } => {
+                    TypedDispatchMatch::Rejected { dispatch, error } => {
                         dispatch.respond_with_error(error, connection)?;
                         Ok(Handled::Yes)
                     }
@@ -806,7 +807,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 /// ```
 ///
 /// Since notifications don't expect responses, handlers only receive the parsed
-/// notification (not a request context).
+/// notification (not a request context). If parsing fails, this helper sends an
+/// out-of-band JSON-RPC error message via the provided connection.
 #[must_use]
 #[derive(Debug)]
 pub struct TypeNotification<R: Role> {

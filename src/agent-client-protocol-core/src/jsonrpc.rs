@@ -203,6 +203,12 @@ pub trait HandleDispatchFrom<Counterpart: Role>: Send {
     /// You should avoid blocking in this callback unless you wish to block the server (e.g., for rate limiting).
     /// The recommended approach to manage expensive operations is to the [`ConnectionTo::spawn`] method available on the message context.
     ///
+    /// When implementing this directly, prefer [`Dispatch::match_request`],
+    /// [`Dispatch::match_notification`], or [`Dispatch::match_typed_dispatch`]
+    /// over manually calling `parse_message` and propagating the resulting error.
+    /// These helpers preserve per-message failures as structured rejections instead
+    /// of tearing down the entire connection.
+    ///
     /// # Parameters
     ///
     /// * `message` - The incoming message to handle.
@@ -1786,7 +1792,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         )
     }
 
-    /// Send an error notification (no reply expected).
+    /// Send an out-of-band JSON-RPC error message.
+    ///
+    /// This is serialized as a JSON-RPC error response with no `id`, so it is
+    /// not correlated with any specific request.
     pub fn send_error_notification(&self, error: crate::Error) -> Result<(), crate::Error> {
         send_raw_message(&self.message_tx, OutgoingMessage::Error { error })
     }
@@ -2328,7 +2337,8 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     ///
     /// If this message is a request, this error becomes the reply to the request.
     ///
-    /// If this message is a notification, the error is sent as a notification.
+    /// If this message is a notification, the error is sent as an out-of-band
+    /// JSON-RPC error message.
     ///
     /// If this message is a response, the error is forwarded to the waiting handler.
     pub fn respond_with_error<R: Role>(
@@ -2343,24 +2353,23 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
         }
     }
 
-    /// Reject a dispatch whose params failed to deserialize, without
-    /// requiring a [`ConnectionTo`].
+    /// Handle a rejected typed match when no [`ConnectionTo`] is available.
     ///
     /// * **Requests** – sends the error back to the caller via the [`Responder`].
     /// * **Responses** – forwards the error to the waiting handler via the
     ///   [`ResponseRouter`].
-    /// * **Notifications** – there is no request ID to reply to, and no
-    ///   connection is available to send an error notification, so the error
-    ///   is logged and swallowed.
+    /// * **Notifications** – there is no request ID to reply to and no
+    ///   connection available to send an out-of-band error message, so the
+    ///   error is logged and swallowed.
     ///
     /// Returns `Ok(Handled::Yes)` in all cases so the connection loop
     /// continues.
     ///
     /// **Prefer [`respond_with_error`](Self::respond_with_error)** when a
-    /// [`ConnectionTo`] is available — it can send an error notification for
+    /// [`ConnectionTo`] is available — it can send an out-of-band error for
     /// malformed notifications, which is consistent with
     /// [`TypeNotification`](crate::util::TypeNotification).
-    pub(crate) fn reject_parse_error(
+    pub(crate) fn handle_rejection_without_connection(
         self,
         error: crate::Error,
     ) -> Result<Handled<Dispatch>, crate::Error> {
@@ -2369,11 +2378,9 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
                 responder.respond_with_error(error).map(|()| Handled::Yes)
             }
             Dispatch::Notification(_) => {
-                // Notifications have no request ID, so there is no response
-                // to send.  Log and swallow to keep the connection alive.
                 tracing::warn!(
                     ?error,
-                    "rejecting malformed notification: no response possible"
+                    "rejecting malformed notification without connection: no out-of-band error possible"
                 );
                 Ok(Handled::Yes)
             }
@@ -2465,120 +2472,135 @@ fn normalize_incoming_message_parse_error(err: crate::Error) -> Option<crate::Er
     }
 }
 
-pub(crate) enum TypedRequestOutcome<Req: JsonRpcRequest> {
+/// Outcome of matching an untyped [`Dispatch`] against a request type.
+#[derive(Debug)]
+pub enum RequestMatch<Req: JsonRpcRequest> {
+    /// The dispatch is a request whose method matched and whose params parsed successfully.
     Matched(Req, Responder<Req::Response>),
+    /// The dispatch was not a request of the requested type.
     Unhandled(Dispatch),
-    Reject {
+    /// The request method matched, but parsing failed.
+    Rejected {
+        /// The original untyped dispatch.
         dispatch: Dispatch,
+        /// The error explaining why the match was rejected.
         error: crate::Error,
     },
 }
 
-pub(crate) enum TypedNotificationOutcome<Notif: JsonRpcNotification> {
+/// Outcome of matching an untyped [`Dispatch`] against a notification type.
+#[derive(Debug)]
+pub enum NotificationMatch<Notif: JsonRpcNotification> {
+    /// The dispatch is a notification whose method matched and whose params parsed successfully.
     Matched(Notif),
+    /// The dispatch was not a notification of the requested type.
     Unhandled(Dispatch),
-    Reject {
+    /// The notification method matched, but parsing failed.
+    Rejected {
+        /// The original untyped dispatch.
         dispatch: Dispatch,
+        /// The error explaining why the match was rejected.
         error: crate::Error,
     },
 }
 
-pub(crate) enum TypedDispatchOutcome<Req: JsonRpcRequest, Notif: JsonRpcNotification> {
+/// Outcome of matching an untyped [`Dispatch`] against typed request and notification types.
+#[derive(Debug)]
+pub enum TypedDispatchMatch<Req: JsonRpcRequest, Notif: JsonRpcNotification> {
+    /// The dispatch matched one of the provided types and parsed successfully.
     Matched(Dispatch<Req, Notif>),
+    /// The dispatch did not match either provided type.
     Unhandled(Dispatch),
-    Reject {
+    /// The dispatch method matched, but parsing failed.
+    Rejected {
+        /// The original untyped dispatch.
         dispatch: Dispatch,
+        /// The error explaining why the match was rejected.
         error: crate::Error,
     },
 }
 
 impl Dispatch {
-    pub(crate) fn classify_typed_request<Req: JsonRpcRequest>(self) -> TypedRequestOutcome<Req> {
+    /// Match this dispatch against a request type without using `Err` for parse failures.
+    #[must_use]
+    pub fn match_request<Req: JsonRpcRequest>(self) -> RequestMatch<Req> {
         match self {
             Dispatch::Request(message, responder) => {
                 if Req::matches_method(&message.method) {
                     match Req::parse_message(&message.method, &message.params) {
-                        Ok(req) => TypedRequestOutcome::Matched(req, responder.cast()),
+                        Ok(req) => RequestMatch::Matched(req, responder.cast()),
                         Err(err) => match normalize_incoming_message_parse_error(err) {
-                            Some(error) => TypedRequestOutcome::Reject {
+                            Some(error) => RequestMatch::Rejected {
                                 dispatch: Dispatch::Request(message, responder),
                                 error,
                             },
-                            None => TypedRequestOutcome::Unhandled(Dispatch::Request(
-                                message, responder,
-                            )),
+                            None => RequestMatch::Unhandled(Dispatch::Request(message, responder)),
                         },
                     }
                 } else {
-                    TypedRequestOutcome::Unhandled(Dispatch::Request(message, responder))
+                    RequestMatch::Unhandled(Dispatch::Request(message, responder))
                 }
             }
             dispatch @ (Dispatch::Notification(_) | Dispatch::Response(_, _)) => {
-                TypedRequestOutcome::Unhandled(dispatch)
+                RequestMatch::Unhandled(dispatch)
             }
         }
     }
 
-    pub(crate) fn classify_typed_notification<Notif: JsonRpcNotification>(
-        self,
-    ) -> TypedNotificationOutcome<Notif> {
+    /// Match this dispatch against a notification type without using `Err` for parse failures.
+    #[must_use]
+    pub fn match_notification<Notif: JsonRpcNotification>(self) -> NotificationMatch<Notif> {
         match self {
             Dispatch::Notification(message) => {
                 if Notif::matches_method(&message.method) {
                     match Notif::parse_message(&message.method, &message.params) {
-                        Ok(notif) => TypedNotificationOutcome::Matched(notif),
+                        Ok(notif) => NotificationMatch::Matched(notif),
                         Err(err) => match normalize_incoming_message_parse_error(err) {
-                            Some(error) => TypedNotificationOutcome::Reject {
+                            Some(error) => NotificationMatch::Rejected {
                                 dispatch: Dispatch::Notification(message),
                                 error,
                             },
-                            None => {
-                                TypedNotificationOutcome::Unhandled(Dispatch::Notification(message))
-                            }
+                            None => NotificationMatch::Unhandled(Dispatch::Notification(message)),
                         },
                     }
                 } else {
-                    TypedNotificationOutcome::Unhandled(Dispatch::Notification(message))
+                    NotificationMatch::Unhandled(Dispatch::Notification(message))
                 }
             }
             dispatch @ (Dispatch::Request(_, _) | Dispatch::Response(_, _)) => {
-                TypedNotificationOutcome::Unhandled(dispatch)
+                NotificationMatch::Unhandled(dispatch)
             }
         }
     }
 
-    pub(crate) fn classify_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
+    /// Match this dispatch against typed request and notification types without using `Err`
+    /// for parse failures.
+    pub fn match_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
         self,
-    ) -> TypedDispatchOutcome<Req, Notif> {
+    ) -> TypedDispatchMatch<Req, Notif> {
         match self {
-            dispatch @ Dispatch::Request(_, _) => match dispatch.classify_typed_request::<Req>() {
-                TypedRequestOutcome::Matched(request, responder) => {
-                    TypedDispatchOutcome::Matched(Dispatch::Request(request, responder))
+            dispatch @ Dispatch::Request(_, _) => match dispatch.match_request::<Req>() {
+                RequestMatch::Matched(request, responder) => {
+                    TypedDispatchMatch::Matched(Dispatch::Request(request, responder))
                 }
-                TypedRequestOutcome::Unhandled(dispatch) => {
-                    TypedDispatchOutcome::Unhandled(dispatch)
-                }
-                TypedRequestOutcome::Reject { dispatch, error } => {
-                    TypedDispatchOutcome::Reject { dispatch, error }
+                RequestMatch::Unhandled(dispatch) => TypedDispatchMatch::Unhandled(dispatch),
+                RequestMatch::Rejected { dispatch, error } => {
+                    TypedDispatchMatch::Rejected { dispatch, error }
                 }
             },
-            dispatch @ Dispatch::Notification(_) => {
-                match dispatch.classify_typed_notification::<Notif>() {
-                    TypedNotificationOutcome::Matched(notification) => {
-                        TypedDispatchOutcome::Matched(Dispatch::Notification(notification))
-                    }
-                    TypedNotificationOutcome::Unhandled(dispatch) => {
-                        TypedDispatchOutcome::Unhandled(dispatch)
-                    }
-                    TypedNotificationOutcome::Reject { dispatch, error } => {
-                        TypedDispatchOutcome::Reject { dispatch, error }
-                    }
+            dispatch @ Dispatch::Notification(_) => match dispatch.match_notification::<Notif>() {
+                NotificationMatch::Matched(notification) => {
+                    TypedDispatchMatch::Matched(Dispatch::Notification(notification))
                 }
-            }
+                NotificationMatch::Unhandled(dispatch) => TypedDispatchMatch::Unhandled(dispatch),
+                NotificationMatch::Rejected { dispatch, error } => {
+                    TypedDispatchMatch::Rejected { dispatch, error }
+                }
+            },
             Dispatch::Response(result, cx) => {
                 if !Req::matches_method(cx.method()) {
                     tracing::trace!("method doesn't match");
-                    return TypedDispatchOutcome::Unhandled(Dispatch::Response(result, cx));
+                    return TypedDispatchMatch::Unhandled(Dispatch::Response(result, cx));
                 }
                 let typed_result = match result {
                     Ok(value) => {
@@ -2593,7 +2615,7 @@ impl Dispatch {
                             }
                             Err(err) => {
                                 tracing::trace!(?err, "parse error");
-                                return TypedDispatchOutcome::Reject {
+                                return TypedDispatchMatch::Rejected {
                                     dispatch: Dispatch::Response(Ok(value), cx),
                                     error: err,
                                 };
@@ -2605,7 +2627,7 @@ impl Dispatch {
                         Err(err)
                     }
                 };
-                TypedDispatchOutcome::Matched(Dispatch::Response(typed_result, cx.cast()))
+                TypedDispatchMatch::Matched(Dispatch::Response(typed_result, cx.cast()))
             }
         }
     }
@@ -2639,54 +2661,6 @@ impl Dispatch {
         };
         let session_id = serde_json::from_value(value.clone())?;
         Ok(Some(session_id))
-    }
-
-    /// Try to parse this as a notification of the given type.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Ok(typed))` if this is a request/notification of the given types
-    /// * `Ok(Err(self))` if not
-    /// * `Err` if has the correct method for the given types but parsing fails
-    pub fn into_notification<N: JsonRpcNotification>(
-        self,
-    ) -> Result<Result<N, Dispatch>, crate::Error> {
-        match self {
-            Dispatch::Notification(msg) => {
-                if !N::matches_method(&msg.method) {
-                    return Ok(Err(Dispatch::Notification(msg)));
-                }
-                match N::parse_message(&msg.method, &msg.params) {
-                    Ok(n) => Ok(Ok(n)),
-                    Err(err) => Err(err),
-                }
-            }
-            Dispatch::Request(..) | Dispatch::Response(..) => Ok(Err(self)),
-        }
-    }
-
-    /// Try to parse this as a request of the given type.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Ok(typed))` if this is a request/notification of the given types
-    /// * `Ok(Err(self))` if not
-    /// * `Err` if has the correct method for the given types but parsing fails
-    pub fn into_request<Req: JsonRpcRequest>(
-        self,
-    ) -> Result<Result<(Req, Responder<Req::Response>), Dispatch>, crate::Error> {
-        match self {
-            Dispatch::Request(msg, responder) => {
-                if !Req::matches_method(&msg.method) {
-                    return Ok(Err(Dispatch::Request(msg, responder)));
-                }
-                match Req::parse_message(&msg.method, &msg.params) {
-                    Ok(req) => Ok(Ok((req, responder.cast()))),
-                    Err(err) => Err(err),
-                }
-            }
-            Dispatch::Notification(..) | Dispatch::Response(..) => Ok(Err(self)),
-        }
     }
 }
 

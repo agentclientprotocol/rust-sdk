@@ -1,6 +1,5 @@
 use crate::jsonrpc::{
-    HandleDispatchFrom, Handled, IntoHandled, TypedDispatchOutcome, TypedNotificationOutcome,
-    TypedRequestOutcome,
+    HandleDispatchFrom, Handled, IntoHandled, NotificationMatch, RequestMatch, TypedDispatchMatch,
 };
 
 use crate::role::{HasPeer, Role, handle_incoming_dispatch};
@@ -118,8 +117,8 @@ where
                         "RequestHandler::handle_request"
                     );
                 }
-                match dispatch.classify_typed_request::<Req>() {
-                    TypedRequestOutcome::Matched(req, typed_responder) => {
+                match dispatch.match_request::<Req>() {
+                    RequestMatch::Matched(req, typed_responder) => {
                         tracing::trace!(?req, "RequestHandler::handle_request: parse completed");
                         let result = (self.to_future_hack)(
                             &mut self.handler,
@@ -137,14 +136,14 @@ where
                                 .into_handled_no_untyped(retry),
                         }
                     }
-                    TypedRequestOutcome::Unhandled(dispatch) => {
+                    RequestMatch::Unhandled(dispatch) => {
                         tracing::trace!("RequestHandler::handle_request: method doesn't match");
                         Ok(Handled::No {
                             message: dispatch,
                             retry: false,
                         })
                     }
-                    TypedRequestOutcome::Reject { dispatch, error } => {
+                    RequestMatch::Rejected { dispatch, error } => {
                         tracing::trace!(?error, "RequestHandler::handle_request: parse errored");
                         dispatch.respond_with_error(error, connection)?;
                         Ok(Handled::Yes)
@@ -223,8 +222,8 @@ where
                         "NotificationHandler::handle_dispatch"
                     );
                 }
-                match dispatch.classify_typed_notification::<Notif>() {
-                    TypedNotificationOutcome::Matched(notif) => {
+                match dispatch.match_notification::<Notif>() {
+                    NotificationMatch::Matched(notif) => {
                         tracing::trace!(
                             ?notif,
                             "NotificationHandler::handle_notification: parse completed"
@@ -240,7 +239,7 @@ where
                                 .into_handled_no_untyped(retry),
                         }
                     }
-                    TypedNotificationOutcome::Unhandled(dispatch) => {
+                    NotificationMatch::Unhandled(dispatch) => {
                         tracing::trace!(
                             "NotificationHandler::handle_notification: method doesn't match"
                         );
@@ -249,7 +248,7 @@ where
                             retry: false,
                         })
                     }
-                    TypedNotificationOutcome::Reject { dispatch, error } => {
+                    NotificationMatch::Rejected { dispatch, error } => {
                         tracing::trace!(
                             ?error,
                             "NotificationHandler::handle_notification: parse errored"
@@ -328,8 +327,8 @@ where
             self.peer.clone(),
             dispatch,
             connection,
-            async |dispatch, connection| match dispatch.classify_typed_dispatch::<Req, Notif>() {
-                TypedDispatchOutcome::Matched(typed_dispatch) => {
+            async |dispatch, connection| match dispatch.match_typed_dispatch::<Req, Notif>() {
+                TypedDispatchMatch::Matched(typed_dispatch) => {
                     let result =
                         (self.to_future_hack)(&mut self.handler, typed_dispatch, connection)
                             .await?;
@@ -341,11 +340,11 @@ where
                         } => typed_dispatch.into_handled_no_untyped(retry),
                     }
                 }
-                TypedDispatchOutcome::Unhandled(dispatch) => Ok(Handled::No {
+                TypedDispatchMatch::Unhandled(dispatch) => Ok(Handled::No {
                     message: dispatch,
                     retry: false,
                 }),
-                TypedDispatchOutcome::Reject { dispatch, error } => {
+                TypedDispatchMatch::Rejected { dispatch, error } => {
                     dispatch.respond_with_error(error, connection)?;
                     Ok(Handled::Yes)
                 }

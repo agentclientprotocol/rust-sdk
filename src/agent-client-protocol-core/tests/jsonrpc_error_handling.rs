@@ -9,8 +9,9 @@
 
 use agent_client_protocol_core::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcNotification,
-    JsonRpcRequest, JsonRpcResponse, Responder, SentRequest, role::UntypedRole,
-    util::MatchDispatchFrom,
+    JsonRpcRequest, JsonRpcResponse, RequestMatch, Responder, SentRequest,
+    role::UntypedRole,
+    util::{MatchDispatch, MatchDispatchFrom},
 };
 use expect_test::expect;
 use futures::{AsyncRead, AsyncWrite};
@@ -20,18 +21,25 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 async fn read_jsonrpc_response_line(
     reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
 ) -> serde_json::Value {
+    try_read_jsonrpc_response_line(reader, tokio::time::Duration::from_secs(1))
+        .await
+        .expect("timed out waiting for JSON-RPC response")
+}
+
+async fn try_read_jsonrpc_response_line(
+    reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
+    timeout: tokio::time::Duration,
+) -> Option<serde_json::Value> {
     use tokio::io::AsyncBufReadExt as _;
 
     let mut line = String::new();
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(1),
-        reader.read_line(&mut line),
-    )
-    .await
-    .expect("timed out waiting for JSON-RPC response")
-    .expect("failed to read JSON-RPC response line");
-
-    serde_json::from_str(line.trim()).expect("response should be valid JSON")
+    match tokio::time::timeout(timeout, reader.read_line(&mut line)).await {
+        Ok(Ok(0)) | Err(_) => None,
+        Ok(Ok(_)) => {
+            Some(serde_json::from_str(line.trim()).expect("response should be valid JSON"))
+        }
+        Ok(Err(_)) => panic!("failed to read JSON-RPC response line"),
+    }
 }
 
 /// Test helper to block and wait for a JSON-RPC response.
@@ -591,7 +599,7 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_bad_notification_params_swallowed_and_connection_stays_alive() {
+async fn test_bad_notification_params_send_error_notification_and_connection_stays_alive() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;
 
@@ -685,6 +693,113 @@ async fn test_bad_notification_params_swallowed_and_connection_stays_alive() {
                   "jsonrpc": "2.0",
                   "result": {
                     "result": "echo: after bad notification"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_match_dispatch_connectionless_bad_notification_params_emit_no_error_and_connection_stays_alive()
+ {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    struct ConnectionlessMatchDispatchHandler;
+
+    impl HandleDispatchFrom<UntypedRole> for ConnectionlessMatchDispatchHandler {
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "ConnectionlessMatchDispatchHandler"
+        }
+
+        async fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            connection: ConnectionTo<UntypedRole>,
+        ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+            match MatchDispatch::new(message)
+                .if_notification(async move |_notif: SimpleNotification| Ok(()))
+                .await
+                .done()?
+            {
+                Handled::Yes => Ok(Handled::Yes),
+                Handled::No { message, retry } => match message.match_request::<SimpleRequest>() {
+                    RequestMatch::Matched(request, responder) => {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })?;
+                        Ok(Handled::Yes)
+                    }
+                    RequestMatch::Rejected { dispatch, error } => {
+                        dispatch.respond_with_error(error, connection)?;
+                        Ok(Handled::Yes)
+                    }
+                    RequestMatch::Unhandled(message) => Ok(Handled::No { message, retry }),
+                },
+            }
+        }
+    }
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .with_handler(ConnectionlessMatchDispatchHandler);
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"wrong_field":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let unexpected = try_read_jsonrpc_response_line(
+                &mut client_reader,
+                tokio::time::Duration::from_millis(100),
+            )
+            .await;
+            assert!(
+                unexpected.is_none(),
+                "connectionless MatchDispatch should not emit an out-of-band error for malformed notifications"
+            );
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":11,"method":"simple_method","params":{"message":"after connectionless bad notification"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 11,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: after connectionless bad notification"
                   }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
