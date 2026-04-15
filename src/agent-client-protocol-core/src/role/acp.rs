@@ -279,7 +279,14 @@ where
         MatchDispatchFrom::new(message, &connection)
             .if_message_from(Agent, async |message| {
                 // If this is for our session-id, proxy it to the client.
-                if let Some(session_id) = message.get_session_id()?
+                let session_id = match message.get_session_id() {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        message.respond_with_error(error, connection.clone())?;
+                        return Ok(Handled::Yes);
+                    }
+                };
+                if let Some(session_id) = session_id
                     && session_id == self.session_id
                 {
                     connection.send_proxied_message_to(Client, message)?;

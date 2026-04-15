@@ -8,24 +8,64 @@ use futures::{
 mod typed;
 pub use typed::{MatchDispatch, MatchDispatchFrom, TypeNotification};
 
-/// Cast from `N` to `M` by serializing/deserialization to/from JSON.
+fn serde_conversion_error(
+    kind: impl FnOnce() -> crate::Error,
+    error: impl ToString,
+    json: Option<serde_json::Value>,
+    phase: &'static str,
+) -> crate::Error {
+    let mut data = serde_json::json!({
+        "error": error.to_string(),
+        "phase": phase,
+    });
+    if let Some(json) = json {
+        data["json"] = json;
+    }
+    kind().data(data)
+}
+
+/// Cast between JSON and typed values for local/internal conversions.
+///
+/// This is appropriate for response decoding, outbound JSON-RPC conversion, and other
+/// framework-internal serde transformations where `InvalidParams` would be misleading.
 pub fn json_cast<N, M>(params: N) -> Result<M, crate::Error>
 where
     N: serde::Serialize,
     M: serde::de::DeserializeOwned,
 {
     let json = serde_json::to_value(params).map_err(|e| {
-        crate::Error::parse_error().data(serde_json::json!({
-            "error": e.to_string(),
-            "phase": "serialization"
-        }))
+        serde_conversion_error(crate::Error::internal_error, e, None, "serialization")
     })?;
     let m = serde_json::from_value(json.clone()).map_err(|e| {
-        crate::Error::parse_error().data(serde_json::json!({
-            "error": e.to_string(),
-            "json": json,
-            "phase": "deserialization"
-        }))
+        serde_conversion_error(
+            crate::Error::internal_error,
+            e,
+            Some(json),
+            "deserialization",
+        )
+    })?;
+    Ok(m)
+}
+
+/// Cast incoming request/notification params into a typed payload.
+///
+/// Deserialization failures become `InvalidParams`, while serialization failures are
+/// treated as local/internal bugs.
+pub fn json_cast_params<N, M>(params: N) -> Result<M, crate::Error>
+where
+    N: serde::Serialize,
+    M: serde::de::DeserializeOwned,
+{
+    let json = serde_json::to_value(params).map_err(|e| {
+        serde_conversion_error(crate::Error::internal_error, e, None, "serialization")
+    })?;
+    let m = serde_json::from_value(json.clone()).map_err(|e| {
+        serde_conversion_error(
+            crate::Error::invalid_params,
+            e,
+            Some(json),
+            "deserialization",
+        )
     })?;
     Ok(m)
 }

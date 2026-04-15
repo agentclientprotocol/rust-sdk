@@ -60,7 +60,7 @@ impl JsonRpcMessage for FooRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -116,7 +116,7 @@ impl JsonRpcMessage for BarRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -269,7 +269,7 @@ impl JsonRpcMessage for TrackRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -397,7 +397,7 @@ impl JsonRpcMessage for Method1Request {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -432,7 +432,7 @@ impl JsonRpcMessage for Method2Request {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -626,7 +626,7 @@ impl JsonRpcMessage for EventNotification {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 

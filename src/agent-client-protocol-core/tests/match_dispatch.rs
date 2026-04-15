@@ -37,7 +37,7 @@ impl JsonRpcMessage for EchoRequestResponse {
         if !<Self as JsonRpcMessage>::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 

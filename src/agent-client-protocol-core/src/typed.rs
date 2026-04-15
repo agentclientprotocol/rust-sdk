@@ -2,7 +2,7 @@
 use jsonrpcmsg::Params;
 
 use crate::{
-    ConnectionTo, Responder, JsonRpcNotification, JsonRpcRequest, UntypedMessage,
+    ConnectionTo, JsonRpcNotification, JsonRpcRequest, Responder, UntypedMessage,
     util::json_cast,
 };
 

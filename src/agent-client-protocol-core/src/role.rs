@@ -9,7 +9,6 @@ use std::{any::TypeId, fmt::Debug, future::Future, hash::Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::schema::{METHOD_SUCCESSOR_MESSAGE, SuccessorMessage};
-use crate::util::json_cast;
 use crate::{Builder, ConnectionTo, Dispatch, Handled, JsonRpcMessage, UntypedMessage};
 
 /// Roles for the ACP protocol.
@@ -230,7 +229,14 @@ where
                     "Response variant cannot be unwrapped as SuccessorMessage",
                 )
             })?;
-            let SuccessorMessage { message, meta } = json_cast(untyped_message.params())?;
+            let SuccessorMessage { message, meta } =
+                match crate::util::json_cast_params(untyped_message.params()) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        dispatch.respond_with_error(error, connection.clone())?;
+                        return Ok(Handled::Yes);
+                    }
+                };
             let successor_dispatch = dispatch.try_map_message(|_| Ok(message))?;
             tracing::trace!(
                 unwrapped_method = %successor_dispatch.method(),

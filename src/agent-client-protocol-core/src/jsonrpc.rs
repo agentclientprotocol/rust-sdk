@@ -35,7 +35,7 @@ use crate::jsonrpc::task_actor::{Task, TaskTx};
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
-use crate::util::json_cast;
+use crate::util::json_cast_params;
 use crate::{Agent, Client, ConnectTo, RoleId};
 
 /// Handlers process incoming JSON-RPC messages on a connection.
@@ -2198,8 +2198,16 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
 
     /// Parse this type from a method name and parameters.
     ///
-    /// Returns an error if the method doesn't match or deserialization fails.
-    /// Callers should use `matches_method` first to check if this type handles the method.
+    /// Return `crate::Error::method_not_found()` only when `method` is not handled by this
+    /// type. When the method matches, any other error is treated as terminal for that dispatch:
+    /// the message will be rejected rather than falling through to later handlers for the same
+    /// method.
+    ///
+    /// For incoming request/notification params, prefer `crate::util::json_cast_params()` so
+    /// malformed payloads become `crate::Error::invalid_params()`.
+    ///
+    /// For backward compatibility, the incoming dispatch matchers still normalize legacy
+    /// `crate::ErrorCode::ParseError` values from older custom parsers into `Invalid params`.
     fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error>;
 }
 
@@ -2460,8 +2468,14 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     }
 }
 
+/// Normalize legacy parse errors from matched incoming request/notification params.
+///
+/// `MethodNotFound` still means "this type does not handle the method" and therefore falls
+/// through to later handlers. The SDK's own request/notification parsers now return
+/// `InvalidParams` directly; this rewrite remains only as a compatibility backstop for older
+/// custom parsers that still emit `ParseError`.
 fn normalize_incoming_message_parse_error(err: crate::Error) -> Option<crate::Error> {
-    match err.code {
+    match &err.code {
         crate::ErrorCode::MethodNotFound => None,
         crate::ErrorCode::ParseError => {
             let mut invalid_params = crate::Error::invalid_params();
@@ -2522,6 +2536,9 @@ pub enum TypedDispatchMatch<Req: JsonRpcRequest, Notif: JsonRpcNotification> {
 
 impl Dispatch {
     /// Match this dispatch against a request type without using `Err` for parse failures.
+    ///
+    /// Once `Req::matches_method` is true, any parse error is terminal for that method.
+    /// The request is rejected rather than offered to later handlers for the same method.
     #[must_use]
     pub fn match_request<Req: JsonRpcRequest>(self) -> RequestMatch<Req> {
         match self {
@@ -2548,6 +2565,9 @@ impl Dispatch {
     }
 
     /// Match this dispatch against a notification type without using `Err` for parse failures.
+    ///
+    /// Once `Notif::matches_method` is true, any parse error is terminal for that method.
+    /// The notification is rejected rather than offered to later handlers for the same method.
     #[must_use]
     pub fn match_notification<Notif: JsonRpcNotification>(self) -> NotificationMatch<Notif> {
         match self {
@@ -2575,6 +2595,10 @@ impl Dispatch {
 
     /// Match this dispatch against typed request and notification types without using `Err`
     /// for parse failures.
+    ///
+    /// Once the request/notification side matches by method, any parse error is terminal for
+    /// that method and yields [`TypedDispatchMatch::Rejected`]. Likewise, a matched response
+    /// whose result cannot be decoded is rejected instead of bubbling up as a fatal `Err`.
     pub fn match_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
         self,
     ) -> TypedDispatchMatch<Req, Notif> {
@@ -2659,7 +2683,7 @@ impl Dispatch {
         let Some(value) = message.params().get("sessionId") else {
             return Ok(None);
         };
-        let session_id = serde_json::from_value(value.clone())?;
+        let session_id = json_cast_params(value)?;
         Ok(Some(session_id))
     }
 }
@@ -2735,7 +2759,11 @@ impl UntypedMessage {
         id: Option<jsonrpcmsg::Id>,
     ) -> Result<jsonrpcmsg::Request, crate::Error> {
         let Self { method, params } = self;
-        Ok(jsonrpcmsg::Request::new_v2(method, json_cast(params)?, id))
+        Ok(jsonrpcmsg::Request::new_v2(
+            method,
+            crate::util::json_cast_params(params)?,
+            id,
+        ))
     }
 }
 

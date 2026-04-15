@@ -89,7 +89,7 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
                 if method != #method {
                     return Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast(params)
+                #krate::util::json_cast_params(params)
             }
         }
 
@@ -149,7 +149,7 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
                 if method != #method {
                     return Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast(params)
+                #krate::util::json_cast_params(params)
             }
         }
 

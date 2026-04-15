@@ -741,7 +741,14 @@ where
         );
         MatchDispatchFrom::new(message, &cx)
             .if_message_from(Agent, async |message| {
-                if let Some(session_id) = message.get_session_id()? {
+                let session_id = match message.get_session_id() {
+                    Ok(session_id) => session_id,
+                    Err(error) => {
+                        message.respond_with_error(error, cx.clone())?;
+                        return Ok(Handled::Yes);
+                    }
+                };
+                if let Some(session_id) = session_id {
                     tracing::trace!(
                         message_session_id = ?session_id,
                         handler_session_id = ?self.session_id,

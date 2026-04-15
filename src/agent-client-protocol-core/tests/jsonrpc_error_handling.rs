@@ -104,7 +104,7 @@ impl JsonRpcMessage for SimpleRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -160,7 +160,7 @@ impl JsonRpcMessage for SimpleNotification {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -341,7 +341,7 @@ impl JsonRpcMessage for ErrorRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -410,7 +410,7 @@ async fn test_handler_returns_error() {
 }
 
 // ============================================================================
-// Test 4: Request without required params
+// Test 4: Handler-returned invalid params
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -447,7 +447,7 @@ impl JsonRpcRequest for EmptyRequest {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_missing_required_params() {
+async fn test_handler_returned_invalid_params() {
     use tokio::task::LocalSet;
 
     let local = LocalSet::new();
@@ -456,19 +456,15 @@ async fn test_missing_required_params() {
         .run_until(async {
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
 
-            // Handler that validates params - since EmptyRequest has no params but we're checking
-            // against SimpleRequest which requires a message field, this will fail
+            // This test exercises a handler that explicitly returns `Invalid params`.
+            // It does not cover request deserialization failures; those are covered below
+            // by the raw-wire malformed-request regression tests.
             let server_transport =
                 agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
             let server = UntypedRole.builder().on_receive_request(
                 async |_request: EmptyRequest,
                        responder: Responder<SimpleResponse>,
                        _connection: ConnectionTo<UntypedRole>| {
-                    // This will be called, but EmptyRequest parsing already succeeded
-                    // The test is actually checking if EmptyRequest (no params) fails to parse as SimpleRequest
-                    // But with the new API, EmptyRequest parses successfully since it expects no params
-                    // We need to manually check - but actually the parse_request for EmptyRequest
-                    // accepts anything for "strict_method", so the error must come from somewhere else
                     responder
                         .respond_with_error(agent_client_protocol_core::Error::invalid_params())
                 },
@@ -487,13 +483,12 @@ async fn test_missing_required_params() {
                 .connect_with(
                     client_transport,
                     async |cx| -> Result<(), agent_client_protocol_core::Error> {
-                        // Send request with no params (EmptyRequest has no fields)
                         let request = EmptyRequest;
 
                         let result: Result<SimpleResponse, _> =
                             recv(cx.send_request(request)).await;
 
-                        // Should get invalid_params error
+                        // Should get invalid_params error from the handler.
                         assert!(result.is_err());
                         if let Err(err) = result {
                             assert!(matches!(
@@ -507,6 +502,162 @@ async fn test_missing_required_params() {
                 .await;
 
             assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+// ============================================================================
+// Test 5: Malformed incoming responses
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_match_dispatch_from_if_message_malformed_response_keeps_connection_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    struct ClientTypedMessageHandler;
+
+    impl HandleDispatchFrom<UntypedRole> for ClientTypedMessageHandler {
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "ClientTypedMessageHandler"
+        }
+
+        async fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            connection: ConnectionTo<UntypedRole>,
+        ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+            MatchDispatchFrom::new(message, &connection)
+                .if_message_from(
+                    UntypedRole,
+                    async move |dispatch: Dispatch<SimpleRequest, SimpleNotification>| {
+                        match dispatch {
+                            Dispatch::Request(request, responder) => {
+                                responder.respond(SimpleResponse {
+                                    result: format!("echo: {}", request.message),
+                                })
+                            }
+                            Dispatch::Notification(_) => Ok(()),
+                            Dispatch::Response(result, router) => {
+                                router.respond_with_result(result)
+                            }
+                        }
+                    },
+                )
+                .await
+                .done()
+        }
+    }
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (client_writer, server_reader) = tokio::io::duplex(2048);
+            let (mut server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let client_transport = agent_client_protocol_core::ByteStreams::new(
+                client_writer.compat_write(),
+                client_reader.compat(),
+            );
+            let client = UntypedRole
+                .builder()
+                .with_handler(ClientTypedMessageHandler);
+
+            let server_task = tokio::task::spawn_local(async move {
+                let mut server_reader = BufReader::new(server_reader);
+
+                let first_request = read_jsonrpc_response_line(&mut server_reader).await;
+                assert_eq!(first_request["jsonrpc"], "2.0");
+                assert_eq!(first_request["method"], "simple_method");
+                assert_eq!(first_request["params"]["message"], "first");
+                let first_id = first_request["id"].clone();
+                assert_ne!(first_id, serde_json::Value::Null);
+
+                let malformed_response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": first_id,
+                    "result": {
+                        "wrong_field": "oops"
+                    }
+                });
+                let malformed_line =
+                    format!("{}\n", serde_json::to_string(&malformed_response).unwrap());
+                server_writer
+                    .write_all(malformed_line.as_bytes())
+                    .await
+                    .unwrap();
+                server_writer.flush().await.unwrap();
+
+                let second_request = read_jsonrpc_response_line(&mut server_reader).await;
+                assert_eq!(second_request["jsonrpc"], "2.0");
+                assert_eq!(second_request["method"], "simple_method");
+                assert_eq!(second_request["params"]["message"], "second");
+                let second_id = second_request["id"].clone();
+                assert_ne!(second_id, serde_json::Value::Null);
+
+                let good_response = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": second_id,
+                    "result": {
+                        "result": "echo: second"
+                    }
+                });
+                let good_line = format!("{}\n", serde_json::to_string(&good_response).unwrap());
+                server_writer.write_all(good_line.as_bytes()).await.unwrap();
+                server_writer.flush().await.unwrap();
+            });
+
+            let client_result = client
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol_core::Error> {
+                        let bad_result = tokio::time::timeout(
+                            tokio::time::Duration::from_secs(1),
+                            recv(cx.send_request(SimpleRequest {
+                                message: "first".to_string(),
+                            })),
+                        )
+                        .await
+                        .expect("malformed response should complete with an error, not hang");
+
+                        let err = bad_result.expect_err(
+                            "malformed response payload should be reported as an error",
+                        );
+                        assert!(matches!(
+                            err.code,
+                            agent_client_protocol_core::ErrorCode::InternalError
+                        ));
+                        let err_data = serde_json::to_value(&err.data)
+                            .expect("error data should serialize to JSON");
+                        assert_eq!(err_data["phase"], "deserialization");
+                        assert_eq!(
+                            err_data["json"],
+                            serde_json::json!({
+                                "wrong_field": "oops"
+                            })
+                        );
+
+                        let good_result = tokio::time::timeout(
+                            tokio::time::Duration::from_secs(1),
+                            recv(cx.send_request(SimpleRequest {
+                                message: "second".to_string(),
+                            })),
+                        )
+                        .await
+                        .expect("connection should remain alive after malformed response")?;
+
+                        assert_eq!(good_result.result, "echo: second");
+                        Ok(())
+                    },
+                )
+                .await;
+
+            server_task.await.unwrap();
+            assert!(
+                client_result.is_ok(),
+                "client should stay alive: {client_result:?}"
+            );
         })
         .await;
 }
