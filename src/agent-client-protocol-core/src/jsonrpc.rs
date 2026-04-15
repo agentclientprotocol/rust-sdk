@@ -2740,7 +2740,7 @@ impl UntypedMessage {
         let Self { method, params } = self;
         Ok(jsonrpcmsg::Request::new_v2(
             method,
-            crate::util::json_cast_params(params)?,
+            crate::util::json_cast(params)?,
             id,
         ))
     }
