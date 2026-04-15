@@ -115,7 +115,7 @@ impl MatchDispatch {
                                 message: (request, responder),
                                 retry: request_retry,
                             } => Dispatch::<Req, UntypedMessage>::Request(request, responder)
-                                .into_handled_no_untyped(retry | request_retry),
+                                .erase_into_unhandled(retry | request_retry),
                         },
                         Err(err) => Err(err),
                     }
@@ -157,7 +157,7 @@ impl MatchDispatch {
                                 message: notification,
                                 retry: notification_retry,
                             } => Dispatch::<UntypedMessage, N>::Notification(notification)
-                                .into_handled_no_untyped(retry | notification_retry),
+                                .erase_into_unhandled(retry | notification_retry),
                         },
                         Err(err) => Err(err),
                     }
@@ -197,7 +197,7 @@ impl MatchDispatch {
                         Handled::No {
                             message: typed_dispatch,
                             retry: message_retry,
-                        } => match typed_dispatch.into_handled_no_untyped(retry | message_retry) {
+                        } => match typed_dispatch.erase_into_unhandled(retry | message_retry) {
                             Ok(handled) => Ok(handled),
                             Err(err) => return Self { state: Err(err) },
                         },
@@ -259,7 +259,7 @@ impl MatchDispatch {
                                     message: (result, router),
                                     retry: response_retry,
                                 } => Dispatch::<Req, UntypedMessage>::Response(result, router)
-                                    .into_handled_no_untyped(retry | response_retry),
+                                    .erase_into_unhandled(retry | response_retry),
                             },
                             Err(err) => Err(err),
                         }
@@ -520,7 +520,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                                     message: notification,
                                     retry: notification_retry,
                                 } => Dispatch::<UntypedMessage, N>::Notification(notification)
-                                    .into_handled_no_untyped(notification_retry),
+                                    .erase_into_unhandled(notification_retry),
                             },
                             Err(err) => Err(err),
                         }
@@ -571,7 +571,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                             Handled::No {
                                 message: typed_dispatch,
                                 retry: message_retry,
-                            } => typed_dispatch.into_handled_no_untyped(message_retry),
+                            } => typed_dispatch.erase_into_unhandled(message_retry),
                         },
                         Err(err) => Err(err),
                     },

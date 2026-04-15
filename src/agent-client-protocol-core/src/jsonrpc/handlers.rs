@@ -133,7 +133,7 @@ where
                                 message: (request, responder),
                                 retry,
                             } => Dispatch::<Req, UntypedMessage>::Request(request, responder)
-                                .into_handled_no_untyped(retry),
+                                .erase_into_unhandled(retry),
                         }
                     }
                     RequestMatch::Unhandled(dispatch) => {
@@ -236,7 +236,7 @@ where
                                 message: (notification, _cx),
                                 retry,
                             } => Dispatch::<UntypedMessage, Notif>::Notification(notification)
-                                .into_handled_no_untyped(retry),
+                                .erase_into_unhandled(retry),
                         }
                     }
                     NotificationMatch::Unhandled(dispatch) => {
@@ -337,7 +337,7 @@ where
                         Handled::No {
                             message: typed_dispatch,
                             retry,
-                        } => typed_dispatch.into_handled_no_untyped(retry),
+                        } => typed_dispatch.erase_into_unhandled(retry),
                     }
                 }
                 TypedDispatchMatch::Unhandled(dispatch) => Ok(Handled::No {

@@ -2436,7 +2436,9 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
         }
     }
 
-    pub(crate) fn into_handled_no_untyped(
+    /// Erase this typed dispatch back to untyped JSON and wrap it in
+    /// [`Handled::No`] so the connection loop can offer it to later handlers.
+    pub(crate) fn erase_into_unhandled(
         self,
         retry: bool,
     ) -> Result<Handled<Dispatch>, crate::Error> {
@@ -2465,24 +2467,6 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
             Dispatch::Notification(msg) => msg.method(),
             Dispatch::Response(_, cx) => cx.method(),
         }
-    }
-}
-
-/// Normalize legacy parse errors from matched incoming request/notification params.
-///
-/// `MethodNotFound` still means "this type does not handle the method" and therefore falls
-/// through to later handlers. The SDK's own request/notification parsers now return
-/// `InvalidParams` directly; this rewrite remains only as a compatibility backstop for older
-/// custom parsers that still emit `ParseError`.
-fn normalize_incoming_message_parse_error(err: crate::Error) -> Option<crate::Error> {
-    match &err.code {
-        crate::ErrorCode::MethodNotFound => None,
-        crate::ErrorCode::ParseError => {
-            let mut invalid_params = crate::Error::invalid_params();
-            invalid_params.data = err.data;
-            Some(invalid_params)
-        }
-        _ => Some(err),
     }
 }
 
@@ -2546,12 +2530,9 @@ impl Dispatch {
                 if Req::matches_method(&message.method) {
                     match Req::parse_message(&message.method, &message.params) {
                         Ok(req) => RequestMatch::Matched(req, responder.cast()),
-                        Err(err) => match normalize_incoming_message_parse_error(err) {
-                            Some(error) => RequestMatch::Rejected {
-                                dispatch: Dispatch::Request(message, responder),
-                                error,
-                            },
-                            None => RequestMatch::Unhandled(Dispatch::Request(message, responder)),
+                        Err(error) => RequestMatch::Rejected {
+                            dispatch: Dispatch::Request(message, responder),
+                            error,
                         },
                     }
                 } else {
@@ -2575,12 +2556,9 @@ impl Dispatch {
                 if Notif::matches_method(&message.method) {
                     match Notif::parse_message(&message.method, &message.params) {
                         Ok(notif) => NotificationMatch::Matched(notif),
-                        Err(err) => match normalize_incoming_message_parse_error(err) {
-                            Some(error) => NotificationMatch::Rejected {
-                                dispatch: Dispatch::Notification(message),
-                                error,
-                            },
-                            None => NotificationMatch::Unhandled(Dispatch::Notification(message)),
+                        Err(error) => NotificationMatch::Rejected {
+                            dispatch: Dispatch::Notification(message),
+                            error,
                         },
                     }
                 } else {
@@ -2599,6 +2577,7 @@ impl Dispatch {
     /// Once the request/notification side matches by method, any parse error is terminal for
     /// that method and yields [`TypedDispatchMatch::Rejected`]. Likewise, a matched response
     /// whose result cannot be decoded is rejected instead of bubbling up as a fatal `Err`.
+    #[must_use]
     pub fn match_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
         self,
     ) -> TypedDispatchMatch<Req, Notif> {
