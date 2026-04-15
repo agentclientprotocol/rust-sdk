@@ -17,7 +17,7 @@
 //! ```
 
 use crate::schema::{InitializeRequest, InitializeResponse};
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// Trait for capabilities stored in the `_meta.symposium` object.
 ///
@@ -67,7 +67,7 @@ impl MetaCapabilityExt for InitializeRequest {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .and_then(|v| v.as_bool())
+            .map(|v| !matches!(v, Value::Bool(false) | Value::Null))
             .unwrap_or(false)
     }
 
@@ -105,7 +105,7 @@ impl MetaCapabilityExt for InitializeResponse {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .and_then(|v| v.as_bool())
+            .map(|v| !matches!(v, Value::Bool(false) | Value::Null))
             .unwrap_or(false)
     }
 
