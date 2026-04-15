@@ -2205,9 +2205,6 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
     ///
     /// For incoming request/notification params, prefer `crate::util::json_cast_params()` so
     /// malformed payloads become `crate::Error::invalid_params()`.
-    ///
-    /// For backward compatibility, the incoming dispatch matchers still normalize legacy
-    /// `crate::ErrorCode::ParseError` values from older custom parsers into `Invalid params`.
     fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error>;
 }
 
