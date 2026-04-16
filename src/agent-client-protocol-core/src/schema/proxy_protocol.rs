@@ -50,7 +50,7 @@ impl<M: JsonRpcMessage> JsonRpcMessage for SuccessorMessage<M> {
         if method != METHOD_SUCCESSOR_MESSAGE {
             return Err(crate::Error::method_not_found());
         }
-        let outer = crate::util::json_cast::<_, SuccessorMessage<UntypedMessage>>(params)?;
+        let outer = crate::util::json_cast_params::<_, SuccessorMessage<UntypedMessage>>(params)?;
         if !M::matches_method(&outer.message.method) {
             return Err(crate::Error::method_not_found());
         }
@@ -161,7 +161,7 @@ impl<M: JsonRpcMessage> JsonRpcMessage for McpOverAcpMessage<M> {
         if method != METHOD_MCP_MESSAGE {
             return Err(crate::Error::method_not_found());
         }
-        let outer = crate::util::json_cast::<_, McpOverAcpMessage<UntypedMessage>>(params)?;
+        let outer = crate::util::json_cast_params::<_, McpOverAcpMessage<UntypedMessage>>(params)?;
         if !M::matches_method(&outer.message.method) {
             return Err(crate::Error::method_not_found());
         }

@@ -36,7 +36,7 @@ macro_rules! impl_jsonrpc_request {
                 if method != $method {
                     return Err($crate::Error::method_not_found());
                 }
-                $crate::util::json_cast(params)
+                $crate::util::json_cast_params(params)
             }
         }
 
@@ -84,7 +84,7 @@ macro_rules! impl_jsonrpc_notification {
                 if method != $method {
                     return Err($crate::Error::method_not_found());
                 }
-                $crate::util::json_cast(params)
+                $crate::util::json_cast_params(params)
             }
         }
 
@@ -133,10 +133,10 @@ macro_rules! impl_jsonrpc_request_enum {
                 params: &impl serde::Serialize,
             ) -> Result<Self, $crate::Error> {
                 match method {
-                    $( $(#[$meta])* $method => $crate::util::json_cast(params).map(Self::$variant), )*
+                    $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
                     _ => {
                         if let Some(custom_method) = method.strip_prefix('_') {
-                            $crate::util::json_cast(params).map(
+                            $crate::util::json_cast_params(params).map(
                                 |ext_req: $crate::schema::ExtRequest| {
                                     Self::$ext_variant($crate::schema::ExtRequest::new(
                                         custom_method.to_string(),
@@ -196,10 +196,10 @@ macro_rules! impl_jsonrpc_notification_enum {
                 params: &impl serde::Serialize,
             ) -> Result<Self, $crate::Error> {
                 match method {
-                    $( $(#[$meta])* $method => $crate::util::json_cast(params).map(Self::$variant), )*
+                    $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
                     _ => {
                         if let Some(custom_method) = method.strip_prefix('_') {
-                            $crate::util::json_cast(params).map(
+                            $crate::util::json_cast_params(params).map(
                                 |ext_notif: $crate::schema::ExtNotification| {
                                     Self::$ext_variant($crate::schema::ExtNotification::new(
                                         custom_method.to_string(),
