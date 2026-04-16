@@ -572,8 +572,11 @@ async fn read_jsonrpc_response_line(
     use tokio::io::AsyncBufReadExt as _;
 
     let mut line = String::new();
-    match tokio::time::timeout(tokio::time::Duration::from_secs(1), reader.read_line(&mut line))
-        .await
+    match tokio::time::timeout(
+        tokio::time::Duration::from_secs(1),
+        reader.read_line(&mut line),
+    )
+    .await
     {
         Ok(Ok(0)) | Err(_) => panic!("timed out waiting for JSON-RPC response"),
         Ok(Ok(_)) => serde_json::from_str(line.trim()).expect("response should be valid JSON"),

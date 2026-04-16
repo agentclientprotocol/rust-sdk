@@ -320,7 +320,13 @@ async fn dispatch_dispatch<Counterpart: Role>(
             retry_any |= retry;
         }
         Err(err) => {
-            tracing::warn!(?method, ?id, ?err, handler = "default", "Default handler errored, reporting back to remote");
+            tracing::warn!(
+                ?method,
+                ?id,
+                ?err,
+                handler = "default",
+                "Default handler errored, reporting back to remote"
+            );
             return report_handler_error(connection, id, err);
         }
     }
