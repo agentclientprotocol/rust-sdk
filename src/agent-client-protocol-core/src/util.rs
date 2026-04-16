@@ -30,6 +30,33 @@ where
     Ok(m)
 }
 
+/// Cast incoming request/notification params into a typed payload.
+///
+/// Like [`json_cast`], but deserialization failures become
+/// [`Error::invalid_params`](`crate::Error::invalid_params`) (`-32602`)
+/// instead of a parse error, which is the correct JSON-RPC error code for
+/// malformed method parameters.
+pub fn json_cast_params<N, M>(params: N) -> Result<M, crate::Error>
+where
+    N: serde::Serialize,
+    M: serde::de::DeserializeOwned,
+{
+    let json = serde_json::to_value(params).map_err(|e| {
+        crate::Error::internal_error().data(serde_json::json!({
+            "error": e.to_string(),
+            "phase": "serialization"
+        }))
+    })?;
+    let m = serde_json::from_value(json.clone()).map_err(|e| {
+        crate::Error::invalid_params().data(serde_json::json!({
+            "error": e.to_string(),
+            "json": json,
+            "phase": "deserialization"
+        }))
+    })?;
+    Ok(m)
+}
+
 /// Creates an internal error with the given message
 pub fn internal_error(message: impl ToString) -> crate::Error {
     crate::Error::internal_error().data(message.to_string())

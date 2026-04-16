@@ -78,7 +78,7 @@ impl JsonRpcMessage for SimpleRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -106,6 +106,39 @@ impl JsonRpcResponse for SimpleResponse {
         agent_client_protocol_core::util::json_cast(&value)
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SimpleNotification {
+    message: String,
+}
+
+impl JsonRpcMessage for SimpleNotification {
+    fn matches_method(method: &str) -> bool {
+        method == "simple_notification"
+    }
+
+    fn method(&self) -> &'static str {
+        "simple_notification"
+    }
+
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol_core::UntypedMessage, agent_client_protocol_core::Error> {
+        agent_client_protocol_core::UntypedMessage::new(self.method(), self)
+    }
+
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol_core::Error> {
+        if !Self::matches_method(method) {
+            return Err(agent_client_protocol_core::Error::method_not_found());
+        }
+        agent_client_protocol_core::util::json_cast_params(params)
+    }
+}
+
+impl agent_client_protocol_core::JsonRpcNotification for SimpleNotification {}
 
 // ============================================================================
 // Test 1: Invalid JSON (complete line with parse error)
@@ -282,7 +315,7 @@ impl JsonRpcMessage for ErrorRequest {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol_core::Error::method_not_found());
         }
-        agent_client_protocol_core::util::json_cast(params)
+        agent_client_protocol_core::util::json_cast_params(params)
     }
 }
 
@@ -448,6 +481,299 @@ async fn test_missing_required_params() {
                 .await;
 
             assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+// ============================================================================
+// Test 5: Invalid params returns error but connection stays alive (issue #131)
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_invalid_params_keeps_connection_alive() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, mut client_reader) = tokio::io::duplex(4096);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            // Register a handler for SimpleRequest (requires "message" field)
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol_core::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                drop(server.connect_to(server_transport).await);
+            });
+
+            // 1) Send a request with WRONG params (missing "message" field)
+            let bad_request =
+                b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"simple_method\",\"params\":{\"wrong_field\":\"hello\"}}\n";
+            client_writer.write_all(bad_request).await.unwrap();
+            client_writer.flush().await.unwrap();
+
+            // Read the error response
+            let mut buffer = vec![0u8; 4096];
+            let n = client_reader.read(&mut buffer).await.unwrap();
+            let response_str = String::from_utf8_lossy(&buffer[..n]);
+            let response: serde_json::Value =
+                serde_json::from_str(response_str.trim()).expect("Response should be valid JSON");
+
+            // Verify it's an error response with the correct id and error code
+            assert_eq!(response["id"], 1);
+            assert!(response["error"].is_object(), "Expected error object");
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "Expected invalid params (-32602)"
+            );
+
+            // 2) Send a VALID request to prove the connection is still alive
+            let good_request =
+                b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"simple_method\",\"params\":{\"message\":\"hello\"}}\n";
+            client_writer.write_all(good_request).await.unwrap();
+            client_writer.flush().await.unwrap();
+
+            // Read the success response
+            let n = client_reader.read(&mut buffer).await.unwrap();
+            let response_str = String::from_utf8_lossy(&buffer[..n]);
+            let response: serde_json::Value =
+                serde_json::from_str(response_str.trim()).expect("Response should be valid JSON");
+
+            // Verify it's a success response
+            assert_eq!(response["id"], 2);
+            assert_eq!(response["result"]["result"], "echo: hello");
+        })
+        .await;
+}
+
+// ============================================================================
+// Helpers for raw-wire tests
+// ============================================================================
+
+async fn read_jsonrpc_response_line(
+    reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
+) -> serde_json::Value {
+    use tokio::io::AsyncBufReadExt as _;
+
+    let mut line = String::new();
+    match tokio::time::timeout(tokio::time::Duration::from_secs(1), reader.read_line(&mut line))
+        .await
+    {
+        Ok(Ok(0)) | Err(_) => panic!("timed out waiting for JSON-RPC response"),
+        Ok(Ok(_)) => serde_json::from_str(line.trim()).expect("response should be valid JSON"),
+        Ok(Err(e)) => panic!("failed to read JSON-RPC response line: {e}"),
+    }
+}
+
+// ============================================================================
+// Test 6: Bad request params returns -32602 and connection stays alive (from Ben's branch)
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_bad_request_params_return_invalid_params_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol_core::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":3,"method":"simple_method","params":{"content":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let invalid_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "error": {
+                    "code": -32602,
+                    "data": {
+                      "error": "missing field `message`",
+                      "json": {
+                        "content": "hello"
+                      },
+                      "phase": "deserialization"
+                    },
+                    "message": "Invalid params"
+                  },
+                  "id": 3,
+                  "jsonrpc": "2.0"
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&invalid_response).unwrap());
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":4,"method":"simple_method","params":{"message":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 4,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: hello"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
+        })
+        .await;
+}
+
+// ============================================================================
+// Test 7: Bad notification params (from Ben's branch)
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_bad_notification_params_send_error_notification_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol_core::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_notification(
+                    async |_notif: SimpleNotification,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        // If we get here, the notification parsed successfully.
+                        Ok(())
+                    },
+                    agent_client_protocol_core::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol_core::on_receive_request!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            // Send a notification with bad params (wrong field name).
+            // Notifications have no "id", so the server sends an error
+            // notification (id: null) and keeps the connection alive.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"wrong_field":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            // The server sends an error notification (id: null) for the
+            // malformed notification.
+            let error_notification = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "error": {
+                    "code": -32602,
+                    "data": {
+                      "error": "missing field `message`",
+                      "json": {
+                        "wrong_field": "hello"
+                      },
+                      "phase": "deserialization"
+                    },
+                    "message": "Invalid params"
+                  },
+                  "jsonrpc": "2.0"
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&error_notification).unwrap());
+
+            // Now send a valid request to prove the connection is still alive.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":10,"method":"simple_method","params":{"message":"after bad notification"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "id": 10,
+                  "jsonrpc": "2.0",
+                  "result": {
+                    "result": "echo: after bad notification"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
         })
         .await;
 }

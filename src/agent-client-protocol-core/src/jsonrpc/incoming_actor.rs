@@ -13,11 +13,13 @@ use crate::RoleId;
 use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
 use crate::jsonrpc::HandleDispatchFrom;
+use crate::jsonrpc::OutgoingMessage;
 use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
+use crate::jsonrpc::outgoing_actor::send_raw_message;
 
 use crate::role::Role;
 
@@ -93,19 +95,24 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     let mut new_pending_messages = vec![];
                     for pending_message in pending_messages {
                         tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
+                        let id = pending_message.id();
                         match handler
                             .dyn_handle_dispatch_from(pending_message, connection.clone())
-                            .await?
+                            .await
                         {
-                            Handled::Yes => {
+                            Ok(Handled::Yes) => {
                                 tracing::trace!("Message handled");
                             }
-                            Handled::No {
+                            Ok(Handled::No {
                                 message: m,
                                 retry: _,
-                            } => {
+                            }) => {
                                 tracing::trace!(method = m.method(), handler = ?handler.dyn_describe_chain(), "Message not handled");
                                 new_pending_messages.push(m);
+                            }
+                            Err(err) => {
+                                tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message, reporting back");
+                                report_handler_error(connection, id, err)?;
                             }
                         }
                     }
@@ -253,17 +260,22 @@ async fn dispatch_dispatch<Counterpart: Role>(
     tracing::trace!(handler = ?handler.describe_chain(), "Attempting handler chain");
     match handler
         .handle_dispatch_from(dispatch, connection.clone())
-        .await?
+        .await
     {
-        Handled::Yes => {
+        Ok(Handled::Yes) => {
             tracing::trace!(?method, ?id, handler = ?handler.describe_chain(), "Handler accepted message");
             return Ok(());
         }
 
-        Handled::No { message: m, retry } => {
+        Ok(Handled::No { message: m, retry }) => {
             tracing::trace!(?method, ?id, handler = ?handler.describe_chain(), "Handler declined message");
             dispatch = m;
             retry_any |= retry;
+        }
+
+        Err(err) => {
+            tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored, reporting back to remote");
+            return report_handler_error(connection, id, err);
         }
     }
 
@@ -272,17 +284,22 @@ async fn dispatch_dispatch<Counterpart: Role>(
         tracing::trace!(handler = ?dynamic_handler.dyn_describe_chain(), "Attempting dynamic handler");
         match dynamic_handler
             .dyn_handle_dispatch_from(dispatch, connection.clone())
-            .await?
+            .await
         {
-            Handled::Yes => {
+            Ok(Handled::Yes) => {
                 tracing::trace!(?method, ?id, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler accepted message");
                 return Ok(());
             }
 
-            Handled::No { message: m, retry } => {
+            Ok(Handled::No { message: m, retry }) => {
                 tracing::trace!(?method, ?id, handler = ?dynamic_handler.dyn_describe_chain(),  "Dynamic handler declined message");
                 retry_any |= retry;
                 dispatch = m;
+            }
+
+            Err(err) => {
+                tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored, reporting back to remote");
+                return report_handler_error(connection, id, err);
             }
         }
     }
@@ -291,16 +308,20 @@ async fn dispatch_dispatch<Counterpart: Role>(
     tracing::trace!(role = ?counterpart, "Attempting default handler");
     match counterpart
         .default_handle_dispatch_from(dispatch, connection.clone())
-        .await?
+        .await
     {
-        Handled::Yes => {
+        Ok(Handled::Yes) => {
             tracing::trace!(?method, handler = "default", "Role accepted message");
             return Ok(());
         }
-        Handled::No { message: m, retry } => {
+        Ok(Handled::No { message: m, retry }) => {
             tracing::trace!(?method, handler = "default", "Role declined message");
             dispatch = m;
             retry_any |= retry;
+        }
+        Err(err) => {
+            tracing::warn!(?method, ?id, ?err, handler = "default", "Default handler errored, reporting back to remote");
+            return report_handler_error(connection, id, err);
         }
     }
 
@@ -327,6 +348,36 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 tracing::trace!(?method, "Forwarding response");
                 router.respond_with_result(result)
             }
+        }
+    }
+}
+
+/// When a handler returns an error, report it back to the remote side instead
+/// of propagating it and tearing down the connection.
+///
+/// For requests (which have an id), sends a JSON-RPC error response.
+/// For notifications (no id), sends an out-of-band error notification.
+/// For responses, forwards the error to the local awaiter.
+fn report_handler_error<Counterpart: Role>(
+    connection: &ConnectionTo<Counterpart>,
+    id: Option<serde_json::Value>,
+    error: crate::Error,
+) -> Result<(), crate::Error> {
+    match id {
+        Some(id) => {
+            // Request: send error response with the original request id
+            let jsonrpc_id = serde_json::from_value(id).unwrap_or(jsonrpcmsg::Id::Null);
+            send_raw_message(
+                &connection.message_tx,
+                OutgoingMessage::Response {
+                    id: jsonrpc_id,
+                    response: Err(error),
+                },
+            )
+        }
+        None => {
+            // Notification or response without id: send error notification
+            connection.send_error_notification(error)
         }
     }
 }
