@@ -19,9 +19,10 @@ The crates are found in `src/*`. Each crate's `README.md` and `CHANGELOG.md` des
 ## Working With the Book
 
 - Source lives under `md/` and is configured by `book.toml`.
-- Build it locally with `mdbook build`; preview with `mdbook serve`.
-- The `mdbook-mermaid` preprocessor is required for diagrams; install with `cargo install mdbook-mermaid`.
-- Publishing is automated by `.github/workflows/mdbook.yml`, which deploys to GitHub Pages on pushes to `main`.
+- The `mdbook-mermaid` preprocessor is required for diagrams; install both tools with `cargo install mdbook mdbook-mermaid`.
+- Before the first local build, run `mdbook-mermaid install .` from the repo root to drop `mermaid.min.js` and `mermaid-init.js` alongside `book.toml` (both files are git-ignored).
+- Build the book with `mdbook build`; preview with `mdbook serve`.
+- Publishing is automated by `.github/workflows/mdbook.yml`, which installs the mermaid assets and deploys to GitHub Pages on pushes to `main`.
 
 ## Conventional Commits
 

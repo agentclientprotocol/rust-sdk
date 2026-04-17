@@ -9,10 +9,11 @@ We propose to prototype **P/ACP** (Proxying ACP), an extension to Zed's Agent Cl
 This RFD builds on the concepts introduced in [SymmACP: extending Zed's ACP to support Composable Agents](https://smallcultfollowing.com/babysteps/blog/2025/10/08/symmacp), with the protocol renamed to P/ACP for this implementation.
 
 Key changes:
-* Define a proxy chain architecture where components can transform ACP messages
-* Create an orchestrator (Conductor) that manages the proxy chain and presents as a normal ACP agent to editors
-* Establish the `_proxy/successor/*` protocol for proxies to communicate with downstream components
-* Enable composition without requiring editors to understand P/ACP internals
+
+- Define a proxy chain architecture where components can transform ACP messages
+- Create an orchestrator (Conductor) that manages the proxy chain and presents as a normal ACP agent to editors
+- Establish the `_proxy/successor/*` protocol for proxies to communicate with downstream components
+- Enable composition without requiring editors to understand P/ACP internals
 
 # Status quo
 
@@ -25,6 +26,7 @@ Today's AI agent ecosystem is dominated by monolithic agents. We want people to 
 Consider integrating Sparkle (a collaborative AI framework) into a coding session with Zed and Claude. Sparkle provides an MCP server with tools, but requires an initialization sequence to load patterns and set up collaborative context.
 
 **Without P/ACP:**
+
 - Users must manually run the initialization sequence each session
 - Or use agent-specific hooks (Claude Code has them, but not standardized across agents)
 - Or modify the agent to handle initialization automatically
@@ -49,6 +51,7 @@ flowchart LR
 ```
 
 The Sparkle component:
+
 1. Injects Sparkle MCP server into the agent's tool list during `initialize`
 2. Intercepts the first `prompt` and prepends Sparkle embodiment sequence
 3. Passes all other messages through transparently
@@ -88,10 +91,10 @@ flowchart LR
 
 P/ACP defines three kinds of actors:
 
-* **Editors** spawn the orchestrator and communicate via standard ACP
-* **Orchestrator** manages the proxy chain, appears as a normal ACP agent to editors
-* **Proxies** intercept and transform messages, communicate with downstream via `_proxy/successor/*` protocol
-* **Agents** provide base AI model behavior using standard ACP
+- **Editors** spawn the orchestrator and communicate via standard ACP
+- **Orchestrator** manages the proxy chain, appears as a normal ACP agent to editors
+- **Proxies** intercept and transform messages, communicate with downstream via `_proxy/successor/*` protocol
+- **Agents** provide base AI model behavior using standard ACP
 
 The orchestrator handles message routing, making the proxy chain transparent to editors. Proxies can transform requests, responses, or add side-effects without editors or agents needing P/ACP awareness.
 
@@ -104,6 +107,7 @@ P/ACP's orchestrator is called the **Conductor** (binary name: `conductor`). The
 3. **Capability Adaptation** - Observes component capabilities and adapts between them
 
 **Key adaptation: MCP Bridge**
+
 - If the agent supports `mcp_acp_transport`, conductor passes MCP servers with ACP transport through unchanged
 - If not, conductor spawns `conductor mcp $port` processes to bridge between stdio (MCP) and ACP messages
 - Components can provide MCP servers without requiring agent modifications
@@ -114,6 +118,7 @@ P/ACP's orchestrator is called the **Conductor** (binary name: `conductor`). The
 **From the editor's perspective**, it spawns one conductor process and communicates using normal ACP over stdio. The editor doesn't know about the proxy chain.
 
 **Command-line usage:**
+
 ```bash
 # Agent mode - manages proxy chain
 conductor agent sparkle-acp claude-code-acp
@@ -129,11 +134,10 @@ To editors, the conductor is a normal ACP agent - no special capabilities are ad
 The conductor uses a two-way capability handshake to verify that proxy components can fulfill their responsibilities:
 
 1. **Conductor offers proxy capability** - When initializing non-last components (proxies), the conductor includes `"proxy": true` in the `_meta` field of the InitializeRequest
-2. **Component accepts proxy capability** - The component must respond with `"proxy": true` in the `_meta` field of its InitializeResponse  
+2. **Component accepts proxy capability** - The component must respond with `"proxy": true` in the `_meta` field of its InitializeResponse
 3. **Last component (agent)** - The final component is treated as a standard ACP agent and does NOT receive the proxy capability offer
 
-**Why a two-way handshake?** The proxy capability is an *active protocol* - it requires the component to handle `_proxy/successor/*` messages and route communications appropriately. Unlike passive capabilities (like "http" or "sse") which are just declarations, proxy components must actively participate in message routing. If a component doesn't respond with the proxy capability, the conductor fails initialization with an error like "component X is not a proxy", since that component cannot fulfill its required function in the chain.
-
+**Why a two-way handshake?** The proxy capability is an _active protocol_ - it requires the component to handle `_proxy/successor/*` messages and route communications appropriately. Unlike passive capabilities (like "http" or "sse") which are just declarations, proxy components must actively participate in message routing. If a component doesn't respond with the proxy capability, the conductor fails initialization with an error like "component X is not a proxy", since that component cannot fulfill its required function in the chain.
 
 # Shiny future
 
@@ -142,31 +146,35 @@ The conductor uses a two-way capability handshake to verify that proxy component
 ## Composable Agent Ecosystems
 
 P/ACP enables a marketplace of reusable proxy components. Developers can:
-* Compose custom agent pipelines from independently-developed proxies
-* Share proxies across different editors and agents
-* Test and debug proxies in isolation
-* Mix community-developed and custom proxies
+
+- Compose custom agent pipelines from independently-developed proxies
+- Share proxies across different editors and agents
+- Test and debug proxies in isolation
+- Mix community-developed and custom proxies
 
 ## Simplified Agent Development
 
 Agent developers can focus on core model behavior without implementing cross-cutting concerns:
-* Logging, metrics, and observability become proxy responsibilities
-* Rate limiting and caching handled externally
-* Content filtering and safety policies applied consistently
+
+- Logging, metrics, and observability become proxy responsibilities
+- Rate limiting and caching handled externally
+- Content filtering and safety policies applied consistently
 
 ## Editor Simplicity
 
 Editors gain enhanced functionality without custom integrations:
-* Add sophisticated agent behaviors by changing proxy chain configuration
-* Support new agent features without editor updates
-* Maintain compatibility with any ACP agent
+
+- Add sophisticated agent behaviors by changing proxy chain configuration
+- Support new agent features without editor updates
+- Maintain compatibility with any ACP agent
 
 ## Standardization Path
 
 As the ecosystem matures, successful patterns may be:
-* Standardized in ACP specification itself
-* Adopted by other agent protocols
-* Used as reference implementations for proxy architectures
+
+- Standardized in ACP specification itself
+- Adopted by other agent protocols
+- Used as reference implementations for proxy architectures
 
 ## Implemented Extensions
 
@@ -184,7 +192,7 @@ Extensions under consideration for future development:
 
 # Implementation details and plan
 
-> Tell me more about your implementation. What is your detailed implementaton plan?
+> Tell me more about your implementation. What is your detailed implementation plan?
 
 The implementation focuses on building the Conductor and demonstrating the Sparkle integration use case.
 
@@ -224,6 +232,7 @@ P/ACP uses capabilities in the `_meta` field for the proxy handshake:
 **Proxy capability (two-way handshake):**
 
 The conductor offers the proxy capability to non-last components in InitializeRequest:
+
 ```json
 // InitializeRequest from conductor to proxy component
 "_meta": {
@@ -235,6 +244,7 @@ The conductor offers the proxy capability to non-last components in InitializeRe
 ```
 
 The component must accept by responding with the proxy capability in InitializeResponse:
+
 ```json
 // InitializeResponse from proxy component to conductor
 "_meta": {
@@ -255,6 +265,7 @@ The last component in the chain (the agent) is NOT offered the proxy capability 
 Proxies communicate with their downstream component (next proxy or agent) through special extension messages handled by the orchestrator:
 
 **`_proxy/successor/send/request`** - Proxy wants to send a request downstream:
+
 ```json
 {
   "method": "_proxy/successor/send/request",
@@ -265,6 +276,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 ```
 
 **`_proxy/successor/send/notification`** - Proxy wants to send a notification downstream:
+
 ```json
 {
   "method": "_proxy/successor/send/notification",
@@ -275,6 +287,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 ```
 
 **`_proxy/successor/receive/request`** - Orchestrator delivers a request from downstream:
+
 ```json
 {
   "method": "_proxy/successor/receive/request",
@@ -285,6 +298,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 ```
 
 **`_proxy/successor/receive/notification`** - Orchestrator delivers a notification from downstream:
+
 ```json
 {
   "method": "_proxy/successor/receive/notification",
@@ -295,6 +309,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 ```
 
 **Message flow example:**
+
 1. Editor sends ACP `prompt` request to orchestrator
 2. Orchestrator forwards to Proxy1 as normal ACP message
 3. Proxy1 transforms and sends `_proxy/successor/send/request { message: <modified_prompt> }`
@@ -304,6 +319,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 
 **Transparent proxy pattern:**
 A pass-through proxy is trivial - just forward everything:
+
 ```rust
 match message {
     // Forward requests from editor to successor
@@ -355,6 +371,7 @@ Agents that natively support MCP-over-ACP declare this capability:
 ```
 
 **Conductor behavior:**
+
 - If the final agent has `mcp_acp_transport: true`, conductor passes MCP server declarations through unchanged
 - If the final agent lacks this capability, conductor performs **bridging adaptation**:
   1. Binds a fresh TCP port (e.g., `localhost:54321`)
@@ -365,6 +382,7 @@ Agents that natively support MCP-over-ACP declare this capability:
 #### Bridging Transformation Example
 
 **Original MCP server spec (from component):**
+
 ```json
 {
   "sparkle": {
@@ -376,6 +394,7 @@ Agents that natively support MCP-over-ACP declare this capability:
 ```
 
 **Transformed spec (passed to agent without `mcp_acp_transport`):**
+
 ```json
 {
   "sparkle": {
@@ -393,6 +412,7 @@ The agent thinks it's talking to a normal MCP server over stdio. The `conductor 
 When MCP tool calls occur, they flow as ACP extension messages:
 
 **`_mcp/client_to_server/request`** - Agent calling an MCP tool (flows backward up chain):
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -414,6 +434,7 @@ When MCP tool calls occur, they flow as ACP extension messages:
 ```
 
 **Response:**
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -423,9 +444,7 @@ When MCP tool calls occur, they flow as ACP extension messages:
       "jsonrpc": "2.0",
       "id": "mcp-123",
       "result": {
-        "content": [
-          {"type": "text", "text": "Embodiment complete"}
-        ]
+        "content": [{ "type": "text", "text": "Embodiment complete" }]
       }
     }
   }
@@ -433,6 +452,7 @@ When MCP tool calls occur, they flow as ACP extension messages:
 ```
 
 **`_mcp/client_to_server/notification`** - Agent sending notification to MCP server:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -449,6 +469,7 @@ When MCP tool calls occur, they flow as ACP extension messages:
 ```
 
 **`_mcp/server_to_client/request`** - MCP server calling back to agent (flows forward down chain):
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -470,6 +491,7 @@ When MCP tool calls occur, they flow as ACP extension messages:
 ```
 
 **`_mcp/server_to_client/notification`** - MCP server sending notification to agent:
+
 ```json
 {
   "jsonrpc": "2.0",
@@ -492,11 +514,13 @@ When MCP tool calls occur, they flow as ACP extension messages:
 #### Message Routing
 
 **Client→Server messages** (agent calling MCP tools):
+
 - Flow **backward** up the proxy chain (agent → conductor → components)
 - Component matches on `params.url` to identify which MCP server
 - Component extracts `params.message`, handles the MCP call, responds
 
 **Server→Client messages** (MCP server callbacks):
+
 - Flow **forward** down the proxy chain (component → conductor → agent)
 - Component initiates when its MCP server needs to call back (sampling, logging, progress)
 - Conductor routes to agent (or via bridge if needed)
@@ -520,9 +544,9 @@ When bridging is needed, the main conductor spawns `conductor mcp $port` as the 
 
 Proxies can define their own extension messages beyond `_proxy/successor/*` to provide specific capabilities. Examples might include:
 
-* **Logging/observability**: `_proxy/log` messages for structured logging
-* **Metrics**: `_proxy/metric` messages for tracking usage
-* **Configuration**: `_proxy/config` messages for dynamic reconfiguration
+- **Logging/observability**: `_proxy/log` messages for structured logging
+- **Metrics**: `_proxy/metric` messages for tracking usage
+- **Configuration**: `_proxy/config` messages for dynamic reconfiguration
 
 The orchestrator can handle routing these messages appropriately, or they can be handled by specific proxies in the chain.
 
@@ -535,6 +559,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 ## Current Status: Implementation Phase
 
 **Completed:**
+
 - ✅ P/ACP protocol design with Conductor orchestrator architecture
 - ✅ `_proxy/successor/{send,receive}` message protocol defined
 - ✅ `scp` Rust crate with JSON-RPC layer and ACP message types
@@ -542,6 +567,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 - ✅ Proxy message type definitions (`ToSuccessorRequest`, etc.)
 
 **In Progress:**
+
 - Conductor orchestrator implementation
 - Sparkle P/ACP component
 - MCP Bridge implementation (see checklist below)
@@ -549,6 +575,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 ### MCP Bridge Implementation Checklist
 
 **Phase 1: Conductor MCP Mode (COMPLETE ✅)**
+
 - [x] Implement `conductor mcp $port` CLI parsing
 - [x] TCP connection to `localhost:$port`
 - [x] Stdio → TCP bridging (read from stdin, send via TCP)
@@ -559,6 +586,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 - [x] Integration test: standalone MCP bridge with mock MCP client/server
 
 **Phase 2: Conductor Agent Mode - MCP Detection & Bridging**
+
 - [ ] Detect `"transport": "http", "url": "acp:$UUID"` MCP servers in initialization
 - [ ] Check final agent for `mcp_acp_transport` capability
 - [ ] Bind ephemeral TCP ports when bridging needed
@@ -569,6 +597,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 - [ ] Integration test: full chain with MCP bridging
 
 **Phase 3: `_mcp/*` Message Routing**
+
 - [ ] Route `_mcp/client_to_server/request` (TCP → ACP, backward up chain)
 - [ ] Route `_mcp/client_to_server/notification` (TCP → ACP, backward)
 - [ ] Route `_mcp/server_to_client/request` (ACP → TCP, forward down chain)
@@ -578,6 +607,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 - [ ] Integration test: full `_mcp/*` message flow
 
 **Phase 4: Bridge Lifecycle Management**
+
 - [ ] Clean up bridge processes on session end
 - [ ] Handle bridge process crashes
 - [ ] Handle component crashes (clean up associated bridges)
@@ -585,6 +615,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 - [ ] Port cleanup and reuse
 
 **Phase 5: Component-Side MCP Integration**
+
 - [ ] Sparkle component declares ACP-transport MCP server
 - [ ] Sparkle handles `_mcp/client_to_server/*` messages
 - [ ] Sparkle initiates `_mcp/server_to_client/*` callbacks
@@ -595,11 +626,13 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 **Goal:** Demonstrate Sparkle integration through P/ACP composition.
 
 **Components:**
+
 1. **Conductor orchestrator** - Process management, message routing, capability adaptation
 2. **Sparkle P/ACP component** - Injects Sparkle MCP server, handles embodiment sequence
 3. **Integration test** - Validates end-to-end flow with mock editor/agent
 
 **Demo flow:**
+
 ```
 Zed → Conductor → Sparkle Component → Claude
                 ↓
@@ -607,6 +640,7 @@ Zed → Conductor → Sparkle Component → Claude
 ```
 
 **Success criteria:**
+
 - Sparkle MCP server appears in agent's tool list
 - First prompt triggers Sparkle embodiment sequence
 - Subsequent prompts work normally
@@ -647,57 +681,58 @@ sequenceDiagram
     Note over Editor: Spawns Conductor with args:<br/>"sparkle-acp agent-acp"
     Editor->>Conductor: spawn process
     activate Conductor
-    
+
     Note over Conductor: Spawns both components
     Conductor->>Sparkle: spawn "sparkle-acp"
     activate Sparkle
     Conductor->>Agent: spawn "agent-acp"
     activate Agent
-    
+
     Note over Editor,Agent: === Initialization Phase ===
-    
+
     Editor->>Conductor: initialize (id: I0)
     Conductor->>Sparkle: initialize (id: I0)<br/>(offers PROXY capability)
-    
+
     Note over Sparkle: Sees proxy capability offer,<br/>initializes successor
-    
+
     Sparkle->>Conductor: _proxy/successor/request (id: I1)<br/>payload: initialize
     Conductor->>Agent: initialize (id: I1)<br/>(NO proxy capability - agent is last)
     Agent-->>Conductor: initialize response (id: I1)
     Conductor-->>Sparkle: _proxy/successor response (id: I1)
-    
+
     Note over Sparkle: Sees Agent capabilities,<br/>prepares response
-    
+
     Sparkle-->>Conductor: initialize response (id: I0)<br/>(accepts PROXY capability)
-    
+
     Note over Conductor: Verifies Sparkle accepted proxy.<br/>If not, would fail with error.
-    
+
     Conductor-->>Editor: initialize response (id: I0)
-    
+
     Note over Editor,Agent: === Session Creation ===
-    
+
     Editor->>Conductor: session/new (id: U0, tools: M0)
     Conductor->>Sparkle: session/new (id: U0, tools: M0)
-    
+
     Note over Sparkle: Wants to inject Sparkle MCP server
-    
+
     Sparkle->>Conductor: _proxy/successor/request (id: U1)<br/>payload: session/new with tools (M0, sparkle-mcp)
     Conductor->>Agent: session/new (id: U1, tools: M0 + sparkle-mcp)
-    
+
     Agent-->>Conductor: response (id: U1, sessionId: S1)
     Conductor-->>Sparkle: response to _proxy request (id: U1, sessionId: S1)
-    
+
     Note over Sparkle: Remembers mapping U0 → U1
-    
+
     Sparkle-->>Conductor: response (id: U0, sessionId: S1)
     Conductor-->>Editor: response (id: U0, sessionId: S1)
-    
+
     Note over Editor,Agent: Session S1 created,<br/>Sparkle MCP server available to agent
 ```
 
 **Key messages:**
 
 1. **Editor → Conductor: initialize** (id: I0)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -706,12 +741,13 @@ sequenceDiagram
      "params": {
        "protocolVersion": "0.1.0",
        "capabilities": {},
-       "clientInfo": {"name": "Zed", "version": "0.1.0"}
+       "clientInfo": { "name": "Zed", "version": "0.1.0" }
      }
    }
    ```
 
 2. **Conductor → Sparkle: initialize** (id: I0, with PROXY capability)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -727,12 +763,13 @@ sequenceDiagram
            }
          }
        },
-       "clientInfo": {"name": "Conductor", "version": "0.1.0"}
+       "clientInfo": { "name": "Conductor", "version": "0.1.0" }
      }
    }
    ```
 
-3. **Sparkle → Conductor: _proxy/successor/request** (id: I1, wrapping initialize)
+3. **Sparkle → Conductor: \_proxy/successor/request** (id: I1, wrapping initialize)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -744,7 +781,7 @@ sequenceDiagram
          "params": {
            "protocolVersion": "0.1.0",
            "capabilities": {},
-           "clientInfo": {"name": "Sparkle", "version": "0.1.0"}
+           "clientInfo": { "name": "Sparkle", "version": "0.1.0" }
          }
        }
      }
@@ -752,6 +789,7 @@ sequenceDiagram
    ```
 
 4. **Conductor → Agent: initialize** (id: I1, unwrapped, without PROXY capability)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -760,12 +798,13 @@ sequenceDiagram
      "params": {
        "protocolVersion": "0.1.0",
        "capabilities": {},
-       "clientInfo": {"name": "Sparkle", "version": "0.1.0"}
+       "clientInfo": { "name": "Sparkle", "version": "0.1.0" }
      }
    }
    ```
 
 5. **Agent → Conductor: initialize response** (id: I1)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -773,12 +812,13 @@ sequenceDiagram
      "result": {
        "protocolVersion": "0.1.0",
        "capabilities": {},
-       "serverInfo": {"name": "claude-code-acp", "version": "0.1.0"}
+       "serverInfo": { "name": "claude-code-acp", "version": "0.1.0" }
      }
    }
    ```
 
-6. **Conductor → Sparkle: _proxy/successor response** (id: I1, wrapping Agent's response)
+6. **Conductor → Sparkle: \_proxy/successor response** (id: I1, wrapping Agent's response)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -786,12 +826,13 @@ sequenceDiagram
      "result": {
        "protocolVersion": "0.1.0",
        "capabilities": {},
-       "serverInfo": {"name": "claude-code-acp", "version": "0.1.0"}
+       "serverInfo": { "name": "claude-code-acp", "version": "0.1.0" }
      }
    }
    ```
 
 7. **Sparkle → Conductor: initialize response** (id: I0, accepting proxy capability)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -806,14 +847,15 @@ sequenceDiagram
            }
          }
        },
-       "serverInfo": {"name": "Sparkle + claude-code-acp", "version": "0.1.0"}
+       "serverInfo": { "name": "Sparkle + claude-code-acp", "version": "0.1.0" }
      }
    }
    ```
-   
+
    Note: Sparkle MUST include `"proxy": true` in its response since it was offered the proxy capability. If this field is missing, Conductor will fail initialization with an error.
 
 8. **Editor → Conductor: session/new** (id: U0)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -822,7 +864,7 @@ sequenceDiagram
      "params": {
        "tools": {
          "mcpServers": {
-           "filesystem": {"command": "mcp-filesystem", "args": []}
+           "filesystem": { "command": "mcp-filesystem", "args": [] }
          }
        }
      }
@@ -830,6 +872,7 @@ sequenceDiagram
    ```
 
 9. **Conductor → Sparkle: session/new** (id: U0, forwarded as-is)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -838,87 +881,92 @@ sequenceDiagram
      "params": {
        "tools": {
          "mcpServers": {
-           "filesystem": {"command": "mcp-filesystem", "args": []}
+           "filesystem": { "command": "mcp-filesystem", "args": [] }
          }
        }
      }
    }
    ```
 
-10. **Sparkle → Conductor: _proxy/successor/request** (id: U1, with injected Sparkle MCP)
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "id": "U1",
-     "method": "_proxy/successor/request",
-     "params": {
-       "message": {
-         "method": "session/new",
-         "params": {
-           "tools": {
-             "mcpServers": {
-               "filesystem": {"command": "mcp-filesystem", "args": []},
-               "sparkle": {"command": "sparkle-mcp", "args": []}
-             }
-           }
-         }
-       }
-     }
-   }
-   ```
+10. **Sparkle → Conductor: \_proxy/successor/request** (id: U1, with injected Sparkle MCP)
 
-11. **Conductor → Agent: session/new** (id: U1, unwrapped from _proxy message)
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "id": "U1",
-     "method": "session/new",
-     "params": {
-       "tools": {
-         "mcpServers": {
-           "filesystem": {"command": "mcp-filesystem", "args": []},
-           "sparkle": {"command": "sparkle-mcp", "args": []}
-         }
-       }
-     }
-   }
-   ```
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "U1",
+  "method": "_proxy/successor/request",
+  "params": {
+    "message": {
+      "method": "session/new",
+      "params": {
+        "tools": {
+          "mcpServers": {
+            "filesystem": { "command": "mcp-filesystem", "args": [] },
+            "sparkle": { "command": "sparkle-mcp", "args": [] }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+11. **Conductor → Agent: session/new** (id: U1, unwrapped from \_proxy message)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "U1",
+  "method": "session/new",
+  "params": {
+    "tools": {
+      "mcpServers": {
+        "filesystem": { "command": "mcp-filesystem", "args": [] },
+        "sparkle": { "command": "sparkle-mcp", "args": [] }
+      }
+    }
+  }
+}
+```
 
 12. **Agent → Conductor: response** (id: U1, with new session S1)
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "id": "U1",
-     "result": {
-       "sessionId": "S1",
-       "serverInfo": {"name": "claude-code-acp", "version": "0.1.0"}
-     }
-   }
-   ```
 
-13. **Conductor → Sparkle: _proxy/successor response** (id: U1)
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "id": "U1",
-     "result": {
-       "sessionId": "S1",
-       "serverInfo": {"name": "claude-code-acp", "version": "0.1.0"}
-     }
-   }
-   ```
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "U1",
+  "result": {
+    "sessionId": "S1",
+    "serverInfo": { "name": "claude-code-acp", "version": "0.1.0" }
+  }
+}
+```
+
+13. **Conductor → Sparkle: \_proxy/successor response** (id: U1)
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "U1",
+  "result": {
+    "sessionId": "S1",
+    "serverInfo": { "name": "claude-code-acp", "version": "0.1.0" }
+  }
+}
+```
 
 14. **Sparkle → Conductor: response** (id: U0, with session S1)
-   ```json
-   {
-     "jsonrpc": "2.0",
-     "id": "U0",
-     "result": {
-       "sessionId": "S1",
-       "serverInfo": {"name": "Conductor + Sparkle", "version": "0.1.0"}
-     }
-   }
-   ```
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "U0",
+  "result": {
+    "sessionId": "S1",
+    "serverInfo": { "name": "Conductor + Sparkle", "version": "0.1.0" }
+  }
+}
+```
 
 #### Scenario 2: First Prompt (Sparkle Embodiment)
 
@@ -932,37 +980,38 @@ sequenceDiagram
     participant Agent as Base<br/>Agent
 
     Note over Editor,Agent: === First Prompt Flow ===
-    
+
     Editor->>Conductor: session/prompt (id: P0, sessionId: S1)
     Conductor->>Sparkle: session/prompt (id: P0, sessionId: S1)
-    
+
     Note over Sparkle: First prompt detected!<br/>Run embodiment sequence first
-    
+
     Sparkle->>Conductor: _proxy/successor/request (id: P1)<br/>payload: session/prompt (embodiment)
     Conductor->>Agent: session/prompt (id: P1, embodiment)
-    
+
     Agent-->>Conductor: response (id: P1, tool_use: embody_sparkle)
     Conductor-->>Sparkle: response to _proxy request (id: P1)
-    
+
     Note over Sparkle: Embodiment complete,<br/>now send real prompt
-    
+
     Sparkle->>Conductor: _proxy/successor/request (id: P2)<br/>payload: session/prompt (user message)
     Conductor->>Agent: session/prompt (id: P2, user message)
-    
+
     Agent-->>Conductor: response (id: P2, actual answer)
     Conductor-->>Sparkle: response to _proxy request (id: P2)
-    
+
     Note over Sparkle: Maps P2 → P0
-    
+
     Sparkle-->>Conductor: response (id: P0, actual answer)
     Conductor-->>Editor: response (id: P0, actual answer)
-    
+
     Note over Editor,Agent: User sees response,<br/>Sparkle initialized
 ```
 
 **Key messages:**
 
 1. **Editor → Conductor: session/prompt** (id: P0, user's first message)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -971,13 +1020,14 @@ sequenceDiagram
      "params": {
        "sessionId": "S1",
        "messages": [
-         {"role": "user", "content": "Hello! Can you help me with my code?"}
+         { "role": "user", "content": "Hello! Can you help me with my code?" }
        ]
      }
    }
    ```
 
 2. **Conductor → Sparkle: session/prompt** (id: P0, forwarded as-is)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -986,13 +1036,14 @@ sequenceDiagram
      "params": {
        "sessionId": "S1",
        "messages": [
-         {"role": "user", "content": "Hello! Can you help me with my code?"}
+         { "role": "user", "content": "Hello! Can you help me with my code?" }
        ]
      }
    }
    ```
 
-3. **Sparkle → Conductor: _proxy/successor/request** (id: P1, embodiment sequence)
+3. **Sparkle → Conductor: \_proxy/successor/request** (id: P1, embodiment sequence)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1016,6 +1067,7 @@ sequenceDiagram
    ```
 
 4. **Conductor → Agent: session/prompt** (id: P1, unwrapped embodiment)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1034,6 +1086,7 @@ sequenceDiagram
    ```
 
 5. **Agent → Conductor: response** (id: P1, embodiment tool call)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1052,7 +1105,8 @@ sequenceDiagram
    }
    ```
 
-6. **Sparkle → Conductor: _proxy/successor/request** (id: P2, actual user prompt)
+6. **Sparkle → Conductor: \_proxy/successor/request** (id: P2, actual user prompt)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1064,7 +1118,10 @@ sequenceDiagram
          "params": {
            "sessionId": "S1",
            "messages": [
-             {"role": "user", "content": "Hello! Can you help me with my code?"}
+             {
+               "role": "user",
+               "content": "Hello! Can you help me with my code?"
+             }
            ]
          }
        }
@@ -1073,6 +1130,7 @@ sequenceDiagram
    ```
 
 7. **Conductor → Agent: session/prompt** (id: P2, unwrapped user prompt)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1081,7 +1139,7 @@ sequenceDiagram
      "params": {
        "sessionId": "S1",
        "messages": [
-         {"role": "user", "content": "Hello! Can you help me with my code?"}
+         { "role": "user", "content": "Hello! Can you help me with my code?" }
        ]
      }
    }
@@ -1111,29 +1169,30 @@ sequenceDiagram
     participant Agent as Base<br/>Agent
 
     Note over Editor,Agent: === Subsequent Prompt Flow ===
-    
+
     Editor->>Conductor: session/prompt (id: P3, sessionId: S1)
     Conductor->>Sparkle: session/prompt (id: P3, sessionId: S1)
-    
+
     Note over Sparkle: Already embodied,<br/>pass through unchanged
-    
+
     Sparkle->>Conductor: _proxy/successor/request (id: P4)<br/>payload: session/prompt (unchanged)
     Conductor->>Agent: session/prompt (id: P4, unchanged)
-    
+
     Agent-->>Conductor: response (id: P4)
     Conductor-->>Sparkle: response to _proxy request (id: P4)
-    
+
     Note over Sparkle: Maps P4 → P3
-    
+
     Sparkle-->>Conductor: response (id: P3)
     Conductor-->>Editor: response (id: P3)
-    
+
     Note over Editor,Agent: Normal ACP flow,<br/>Sparkle and Conductor transparent
 ```
 
 **Key messages:**
 
 1. **Editor → Conductor: session/prompt** (id: P3)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1142,13 +1201,17 @@ sequenceDiagram
      "params": {
        "sessionId": "S1",
        "messages": [
-         {"role": "user", "content": "Can you refactor the authenticate function?"}
+         {
+           "role": "user",
+           "content": "Can you refactor the authenticate function?"
+         }
        ]
      }
    }
    ```
 
-2. **Sparkle → Conductor: _proxy/successor/request** (id: P4, message unchanged)
+2. **Sparkle → Conductor: \_proxy/successor/request** (id: P4, message unchanged)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1160,7 +1223,10 @@ sequenceDiagram
          "params": {
            "sessionId": "S1",
            "messages": [
-             {"role": "user", "content": "Can you refactor the authenticate function?"}
+             {
+               "role": "user",
+               "content": "Can you refactor the authenticate function?"
+             }
            ]
          }
        }
@@ -1169,6 +1235,7 @@ sequenceDiagram
    ```
 
 3. **Conductor → Agent: session/prompt** (id: P4, unwrapped)
+
    ```json
    {
      "jsonrpc": "2.0",
@@ -1177,7 +1244,10 @@ sequenceDiagram
      "params": {
        "sessionId": "S1",
        "messages": [
-         {"role": "user", "content": "Can you refactor the authenticate function?"}
+         {
+           "role": "user",
+           "content": "Can you refactor the authenticate function?"
+         }
        ]
      }
    }
@@ -1210,6 +1280,7 @@ Conductor registers as a dummy MCP server. When Claude calls a Sparkle tool, the
 ## Phase 3: Additional Components (FUTURE)
 
 Build additional P/ACP components that demonstrate different use cases:
+
 - Session history/context management
 - Logging and observability
 - Rate limiting
@@ -1220,16 +1291,19 @@ These will validate the protocol design and inform refinements.
 ## Testing Strategy
 
 **Unit tests:**
+
 - Test message serialization/deserialization
 - Test process spawning logic
 - Test stdio communication
 
 **Integration tests:**
+
 - Spawn real proxy chains
 - Use actual ACP agents for end-to-end validation
 - Test error handling and cleanup
 
 **Manual testing:**
+
 - Use with VSCode + ACP-aware agents
 - Verify with different proxy configurations
 - Test process management under various failure modes
