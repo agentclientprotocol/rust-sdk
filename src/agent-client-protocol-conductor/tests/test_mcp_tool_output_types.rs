@@ -3,9 +3,9 @@
 //! MCP structured output requires JSON objects. This test verifies behavior
 //! when tools return non-object types like bare strings or integers.
 
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,13 +22,13 @@ fn create_test_proxy() -> DynConnectTo<Conductor> {
             "return_string",
             "Returns a bare string",
             async |_input: EmptyInput, _context| Ok("hello world".to_string()),
-            agent_client_protocol_core::tool_fn_mut!(),
+            agent_client_protocol::tool_fn_mut!(),
         )
         .tool_fn_mut(
             "return_integer",
             "Returns a bare integer",
             async |_input: EmptyInput, _context| Ok(42i32),
-            agent_client_protocol_core::tool_fn_mut!(),
+            agent_client_protocol::tool_fn_mut!(),
         )
         .build();
 
@@ -45,8 +45,8 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
-        agent_client_protocol_core::Proxy
+    ) -> Result<(), agent_client_protocol::Error> {
+        agent_client_protocol::Proxy
             .builder()
             .name("test-proxy")
             .with_mcp_server(self.mcp_server)
@@ -56,7 +56,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 }
 
 #[tokio::test]
-async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_tool_returning_string() -> Result<(), agent_client_protocol::Error> {
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
@@ -82,7 +82,7 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol_core::
 }
 
 #[tokio::test]
-async fn test_tool_returning_integer() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_tool_returning_integer() -> Result<(), agent_client_protocol::Error> {
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),

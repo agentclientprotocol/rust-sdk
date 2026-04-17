@@ -8,9 +8,11 @@ pub fn init_test_tracing() {
 
     drop(
         fmt()
-            .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                EnvFilter::new("trace,agent_client_protocol_core::jsonrpc=trace")
-            }))
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    EnvFilter::new("trace,agent_client_protocol::jsonrpc=trace")
+                }),
+            )
             .with_test_writer()
             .try_init(),
     );

@@ -1,6 +1,6 @@
 [package]
 name = "agent-client-protocol-test"
-version = "0.1.0"
+version = "0.11.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ name = "testy"
 path = "src/bin/testy.rs"
 
 [dependencies]
-agent-client-protocol-core.workspace = true
+agent-client-protocol.workspace = true
 agent-client-protocol-tokio.workspace = true
 yopo.workspace = true
 anyhow.workspace = true

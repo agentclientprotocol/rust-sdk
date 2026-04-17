@@ -5,13 +5,13 @@
 //! `Handled::No`, which prevented downstream `.on_receive_request_from()` handlers
 //! from being invoked.
 
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
     NewSessionResponse, ProtocolVersion, SessionId,
 };
-use agent_client_protocol_core::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
+use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -34,16 +34,16 @@ struct EchoOutput {
 }
 
 /// Test helper to receive a JSON-RPC response
-async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
-    response: agent_client_protocol_core::SentRequest<T>,
-) -> Result<T, agent_client_protocol_core::Error> {
+async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
+    response: agent_client_protocol::SentRequest<T>,
+) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
         tx.send(result)
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+            .map_err(|_| agent_client_protocol::Error::internal_error())
     })?;
     rx.await
-        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
+        .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
 /// Tracks whether the NewSessionRequest handler was invoked
@@ -73,7 +73,7 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let config = Arc::clone(&self.config);
 
         // Create an MCP server with a simple tool
@@ -87,11 +87,11 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
                         result: format!("Echo: {}", params.message),
                     })
                 },
-                agent_client_protocol_core::tool_fn_mut!(),
+                agent_client_protocol::tool_fn_mut!(),
             )
             .build();
 
-        agent_client_protocol_core::Proxy
+        agent_client_protocol::Proxy
             .builder()
             .name("proxy-with-mcp-and-handler")
             // Add the MCP server
@@ -112,7 +112,7 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
                             responder.respond(response)
                         })
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .connect_to(client)
             .await
@@ -126,7 +126,7 @@ impl ConnectTo<Client> for SimpleAgent {
     async fn connect_to(
         self,
         client: impl ConnectTo<Agent>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         Agent
             .builder()
             .name("simple-agent")
@@ -137,7 +137,7 @@ impl ConnectTo<Client> for SimpleAgent {
                             .agent_capabilities(AgentCapabilities::new()),
                     )
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
                 async |_request: NewSessionRequest, responder, _cx| {
@@ -145,7 +145,7 @@ impl ConnectTo<Client> for SimpleAgent {
                         uuid::Uuid::new_v4().to_string(),
                     )))
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .connect_to(client)
             .await
@@ -156,16 +156,16 @@ async fn run_test(
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,
     editor_task: impl AsyncFnOnce(
-        agent_client_protocol_core::ConnectionTo<Agent>,
-    ) -> Result<(), agent_client_protocol_core::Error>,
-) -> Result<(), agent_client_protocol_core::Error> {
+        agent_client_protocol::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol::Error>,
+) -> Result<(), agent_client_protocol::Error> {
     let (editor_out, conductor_in) = duplex(1024);
     let (conductor_out, editor_in) = duplex(1024);
 
     let transport =
-        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+        agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
-    agent_client_protocol_core::Client
+    agent_client_protocol::Client
         .builder()
         .name("editor-to-conductor")
         .with_spawned(|_cx| async move {
@@ -174,7 +174,7 @@ async fn run_test(
                 ProxiesAndAgent::new(agent).proxies(proxies),
                 McpBridgeMode::default(),
             )
-            .run(agent_client_protocol_core::ByteStreams::new(
+            .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),
                 conductor_in.compat(),
             ))
@@ -187,7 +187,7 @@ async fn run_test(
 /// Regression test: NewSessionRequest handler should be invoked even when MCP server is present
 #[tokio::test]
 async fn test_new_session_handler_invoked_with_mcp_server()
--> Result<(), agent_client_protocol_core::Error> {
+-> Result<(), agent_client_protocol::Error> {
     let handler_config = HandlerConfig::new();
     let handler_config_clone = Arc::clone(&handler_config);
 
@@ -214,7 +214,7 @@ async fn test_new_session_handler_invoked_with_mcp_server()
             "Should receive a valid session ID"
         );
 
-        Ok::<(), agent_client_protocol_core::Error>(())
+        Ok::<(), agent_client_protocol::Error>(())
     })
     .await?;
 

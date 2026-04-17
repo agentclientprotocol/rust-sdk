@@ -15,8 +15,8 @@ use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test]
-async fn test_conductor_with_arrow_proxy_and_test_agent()
--> Result<(), agent_client_protocol_core::Error> {
+async fn test_conductor_with_arrow_proxy_and_test_agent() -> Result<(), agent_client_protocol::Error>
+{
     // Create the component chain: arrow_proxy -> test_agent
     // Uses pre-built binaries to avoid cargo run races during `cargo test --all`
     let arrow_proxy_agent =
@@ -34,7 +34,7 @@ async fn test_conductor_with_arrow_proxy_and_test_agent()
             ProxiesAndAgent::new(test_agent).proxy(arrow_proxy_agent),
             McpBridgeMode::default(),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -44,7 +44,7 @@ async fn test_conductor_with_arrow_proxy_and_test_agent()
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
@@ -59,7 +59,7 @@ async fn test_conductor_with_arrow_proxy_and_test_agent()
             "Expected response to start with '>' from arrow proxy, got: {result}"
         );
 
-        Ok::<String, agent_client_protocol_core::Error>(result)
+        Ok::<String, agent_client_protocol::Error>(result)
     })
     .await
     .expect("Test timed out")

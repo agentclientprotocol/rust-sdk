@@ -1,13 +1,13 @@
 //! Utilities for connecting to ACP agents and proxies.
 //!
-//! This module provides [`AcpAgent`], a convenient wrapper around [`agent_client_protocol_core::schema::McpServer`]
+//! This module provides [`AcpAgent`], a convenient wrapper around [`agent_client_protocol::schema::McpServer`]
 //! that can be parsed from either a command string or JSON configuration.
 
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use agent_client_protocol_core::{Client, Conductor, Role};
+use agent_client_protocol::{Client, Conductor, Role};
 use tokio::process::Child;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -24,12 +24,12 @@ pub enum LineDirection {
 
 /// A component representing an external ACP agent running in a separate process.
 ///
-/// `AcpAgent` implements the [`agent_client_protocol_core::ConnectTo`] trait for spawning and communicating with
+/// `AcpAgent` implements the [`agent_client_protocol::ConnectTo`] trait for spawning and communicating with
 /// external agents or proxies via stdio. It handles process spawning, stream setup, and
 /// byte stream serialization automatically. This is the primary way to connect to agents
 /// that run as separate executables.
 ///
-/// This is a wrapper around [`agent_client_protocol_core::schema::McpServer`] that provides convenient parsing
+/// This is a wrapper around [`agent_client_protocol::schema::McpServer`] that provides convenient parsing
 /// from command-line strings or JSON configurations.
 ///
 /// # Use Cases
@@ -57,7 +57,7 @@ pub enum LineDirection {
 ///
 /// Use as a component to connect to an external agent:
 /// ```ignore
-/// use agent_client_protocol_core::{Client, Builder};
+/// use agent_client_protocol::{Client, Builder};
 /// use agent_client_protocol_tokio::AcpAgent;
 /// use std::str::FromStr;
 ///
@@ -79,7 +79,7 @@ pub enum LineDirection {
 ///
 /// [`agent_client_protocol_conductor::Conductor`]: https://docs.rs/agent-client-protocol-conductor/latest/agent_client_protocol_conductor/struct.Conductor.html
 pub struct AcpAgent {
-    server: agent_client_protocol_core::schema::McpServer,
+    server: agent_client_protocol::schema::McpServer,
     debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
 }
 
@@ -96,9 +96,9 @@ impl std::fmt::Debug for AcpAgent {
 }
 
 impl AcpAgent {
-    /// Create a new `AcpAgent` from an [`agent_client_protocol_core::schema::McpServer`] configuration.
+    /// Create a new `AcpAgent` from an [`agent_client_protocol::schema::McpServer`] configuration.
     #[must_use]
-    pub fn new(server: agent_client_protocol_core::schema::McpServer) -> Self {
+    pub fn new(server: agent_client_protocol::schema::McpServer) -> Self {
         Self {
             server,
             debug_callback: None,
@@ -127,15 +127,15 @@ impl AcpAgent {
             .expect("valid bash command")
     }
 
-    /// Get the underlying [`agent_client_protocol_core::schema::McpServer`] configuration.
+    /// Get the underlying [`agent_client_protocol::schema::McpServer`] configuration.
     #[must_use]
-    pub fn server(&self) -> &agent_client_protocol_core::schema::McpServer {
+    pub fn server(&self) -> &agent_client_protocol::schema::McpServer {
         &self.server
     }
 
-    /// Convert into the underlying [`agent_client_protocol_core::schema::McpServer`] configuration.
+    /// Convert into the underlying [`agent_client_protocol::schema::McpServer`] configuration.
     #[must_use]
-    pub fn into_server(self) -> agent_client_protocol_core::schema::McpServer {
+    pub fn into_server(self) -> agent_client_protocol::schema::McpServer {
         self.server
     }
 
@@ -175,10 +175,10 @@ impl AcpAgent {
             tokio::process::ChildStderr,
             Child,
         ),
-        agent_client_protocol_core::Error,
+        agent_client_protocol::Error,
     > {
         match &self.server {
-            agent_client_protocol_core::schema::McpServer::Stdio(stdio) => {
+            agent_client_protocol::schema::McpServer::Stdio(stdio) => {
                 let mut cmd = tokio::process::Command::new(&stdio.command);
                 cmd.args(&stdio.args);
                 for env_var in &stdio.env {
@@ -190,31 +190,31 @@ impl AcpAgent {
 
                 let mut child = cmd
                     .spawn()
-                    .map_err(agent_client_protocol_core::Error::into_internal_error)?;
+                    .map_err(agent_client_protocol::Error::into_internal_error)?;
 
                 let child_stdin = child.stdin.take().ok_or_else(|| {
-                    agent_client_protocol_core::util::internal_error("Failed to open stdin")
+                    agent_client_protocol::util::internal_error("Failed to open stdin")
                 })?;
                 let child_stdout = child.stdout.take().ok_or_else(|| {
-                    agent_client_protocol_core::util::internal_error("Failed to open stdout")
+                    agent_client_protocol::util::internal_error("Failed to open stdout")
                 })?;
                 let child_stderr = child.stderr.take().ok_or_else(|| {
-                    agent_client_protocol_core::util::internal_error("Failed to open stderr")
+                    agent_client_protocol::util::internal_error("Failed to open stderr")
                 })?;
 
                 Ok((child_stdin, child_stdout, child_stderr, child))
             }
-            agent_client_protocol_core::schema::McpServer::Http(_) => {
-                Err(agent_client_protocol_core::util::internal_error(
+            agent_client_protocol::schema::McpServer::Http(_) => {
+                Err(agent_client_protocol::util::internal_error(
                     "HTTP transport not yet supported by AcpAgent",
                 ))
             }
-            agent_client_protocol_core::schema::McpServer::Sse(_) => {
-                Err(agent_client_protocol_core::util::internal_error(
+            agent_client_protocol::schema::McpServer::Sse(_) => {
+                Err(agent_client_protocol::util::internal_error(
                     "SSE transport not yet supported by AcpAgent",
                 ))
             }
-            _ => Err(agent_client_protocol_core::util::internal_error(
+            _ => Err(agent_client_protocol::util::internal_error(
                 "Unknown MCP server transport type",
             )),
         }
@@ -243,12 +243,12 @@ impl Drop for ChildGuard {
 async fn monitor_child(
     child: Child,
     stderr_rx: tokio::sync::oneshot::Receiver<String>,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     let mut guard = ChildGuard(child);
 
     // Wait for the child to exit
     let status = guard.wait().await.map_err(|e| {
-        agent_client_protocol_core::util::internal_error(format!("Failed to wait for process: {e}"))
+        agent_client_protocol::util::internal_error(format!("Failed to wait for process: {e}"))
     })?;
 
     if status.success() {
@@ -263,7 +263,7 @@ async fn monitor_child(
             format!("Process exited with {status}: {stderr}")
         };
 
-        Err(agent_client_protocol_core::util::internal_error(message))
+        Err(agent_client_protocol::util::internal_error(message))
     }
 }
 
@@ -274,13 +274,13 @@ impl AcpAgentCounterpartRole for Client {}
 
 impl AcpAgentCounterpartRole for Conductor {}
 
-impl<Counterpart: AcpAgentCounterpartRole> agent_client_protocol_core::ConnectTo<Counterpart>
+impl<Counterpart: AcpAgentCounterpartRole> agent_client_protocol::ConnectTo<Counterpart>
     for AcpAgent
 {
     async fn connect_to(
         self,
-        client: impl agent_client_protocol_core::ConnectTo<Counterpart::Counterpart>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+        client: impl agent_client_protocol::ConnectTo<Counterpart::Counterpart>,
+    ) -> Result<(), agent_client_protocol::Error> {
         use futures::AsyncBufReadExt;
         use futures::AsyncWriteExt;
         use futures::StreamExt;
@@ -359,8 +359,8 @@ impl<Counterpart: AcpAgentCounterpartRole> agent_client_protocol_core::ConnectTo
 
         // Race the protocol against child process exit
         // If the child exits early (e.g., with an error), we return that error
-        let protocol_future = agent_client_protocol_core::ConnectTo::<Counterpart>::connect_to(
-            agent_client_protocol_core::Lines::new(outgoing_sink, incoming_lines),
+        let protocol_future = agent_client_protocol::ConnectTo::<Counterpart>::connect_to(
+            agent_client_protocol::Lines::new(outgoing_sink, incoming_lines),
             client,
         );
 
@@ -389,7 +389,7 @@ impl AcpAgent {
     ///     "my-crate",
     /// ]).unwrap();
     /// ```
-    pub fn from_args<I, T>(args: I) -> Result<Self, agent_client_protocol_core::Error>
+    pub fn from_args<I, T>(args: I) -> Result<Self, agent_client_protocol::Error>
     where
         I: IntoIterator<Item = T>,
         T: ToString,
@@ -397,7 +397,7 @@ impl AcpAgent {
         let args: Vec<String> = args.into_iter().map(|s| s.to_string()).collect();
 
         if args.is_empty() {
-            return Err(agent_client_protocol_core::util::internal_error(
+            return Err(agent_client_protocol::util::internal_error(
                 "Arguments cannot be empty",
             ));
         }
@@ -408,9 +408,7 @@ impl AcpAgent {
         // Parse leading FOO=bar arguments as environment variables
         for (i, arg) in args.iter().enumerate() {
             if let Some((name, value)) = parse_env_var(arg) {
-                env.push(agent_client_protocol_core::schema::EnvVariable::new(
-                    name, value,
-                ));
+                env.push(agent_client_protocol::schema::EnvVariable::new(name, value));
                 command_idx = i + 1;
             } else {
                 break;
@@ -418,7 +416,7 @@ impl AcpAgent {
         }
 
         if command_idx >= args.len() {
-            return Err(agent_client_protocol_core::util::internal_error(
+            return Err(agent_client_protocol::util::internal_error(
                 "No command found (only environment variables provided)",
             ));
         }
@@ -434,8 +432,8 @@ impl AcpAgent {
             .to_string();
 
         Ok(AcpAgent {
-            server: agent_client_protocol_core::schema::McpServer::Stdio(
-                agent_client_protocol_core::schema::McpServerStdio::new(name, command)
+            server: agent_client_protocol::schema::McpServer::Stdio(
+                agent_client_protocol::schema::McpServerStdio::new(name, command)
                     .args(cmd_args)
                     .env(env),
             ),
@@ -471,16 +469,16 @@ fn parse_env_var(s: &str) -> Option<(String, String)> {
 }
 
 impl FromStr for AcpAgent {
-    type Err = agent_client_protocol_core::Error;
+    type Err = agent_client_protocol::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
 
         // If it starts with '{', try to parse as JSON
         if trimmed.starts_with('{') {
-            let server: agent_client_protocol_core::schema::McpServer =
-                serde_json::from_str(trimmed).map_err(|e| {
-                    agent_client_protocol_core::util::internal_error(format!(
+            let server: agent_client_protocol::schema::McpServer = serde_json::from_str(trimmed)
+                .map_err(|e| {
+                    agent_client_protocol::util::internal_error(format!(
                         "Failed to parse JSON: {e}"
                     ))
                 })?;
@@ -492,9 +490,7 @@ impl FromStr for AcpAgent {
 
         // Otherwise, parse as a command string
         let parts = shell_words::split(trimmed).map_err(|e| {
-            agent_client_protocol_core::util::internal_error(format!(
-                "Failed to parse command: {e}"
-            ))
+            agent_client_protocol::util::internal_error(format!("Failed to parse command: {e}"))
         })?;
 
         Self::from_args(parts)
@@ -509,7 +505,7 @@ mod tests {
     fn test_parse_simple_command() {
         let agent = AcpAgent::from_str("python agent.py").unwrap();
         match agent.server {
-            agent_client_protocol_core::schema::McpServer::Stdio(stdio) => {
+            agent_client_protocol::schema::McpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "python");
                 assert_eq!(stdio.command, PathBuf::from("python"));
                 assert_eq!(stdio.args, vec!["agent.py"]);
@@ -523,7 +519,7 @@ mod tests {
     fn test_parse_command_with_args() {
         let agent = AcpAgent::from_str("node server.js --port 8080 --verbose").unwrap();
         match agent.server {
-            agent_client_protocol_core::schema::McpServer::Stdio(stdio) => {
+            agent_client_protocol::schema::McpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "node");
                 assert_eq!(stdio.command, PathBuf::from("node"));
                 assert_eq!(stdio.args, vec!["server.js", "--port", "8080", "--verbose"]);
@@ -537,7 +533,7 @@ mod tests {
     fn test_parse_command_with_quotes() {
         let agent = AcpAgent::from_str(r#"python "my agent.py" --name "Test Agent""#).unwrap();
         match agent.server {
-            agent_client_protocol_core::schema::McpServer::Stdio(stdio) => {
+            agent_client_protocol::schema::McpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "python");
                 assert_eq!(stdio.command, PathBuf::from("python"));
                 assert_eq!(stdio.args, vec!["my agent.py", "--name", "Test Agent"]);
@@ -558,7 +554,7 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            agent_client_protocol_core::schema::McpServer::Stdio(stdio) => {
+            agent_client_protocol::schema::McpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "my-agent");
                 assert_eq!(stdio.command, PathBuf::from("/usr/bin/python"));
                 assert_eq!(stdio.args, vec!["agent.py", "--verbose"]);
@@ -578,7 +574,7 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            agent_client_protocol_core::schema::McpServer::Http(http) => {
+            agent_client_protocol::schema::McpServer::Http(http) => {
                 assert_eq!(http.name, "remote-agent");
                 assert_eq!(http.url, "https://example.com/agent");
                 assert!(http.headers.is_empty());

@@ -112,19 +112,19 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     Agent, BoxFuture, Client, Conductor, ConnectTo, Dispatch, DynConnectTo, Error, JsonRpcMessage,
     Proxy, Role, RunWithConnectionTo, role::HasPeer, util::MatchDispatch,
 };
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     Builder, ConnectionTo, JsonRpcNotification, JsonRpcRequest, SentRequest, UntypedMessage,
 };
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     HandleDispatchFrom,
     schema::{InitializeProxyRequest, InitializeRequest, NewSessionRequest},
     util::MatchDispatchFrom,
 };
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     Handled,
     schema::{
         McpConnectRequest, McpConnectResponse, McpDisconnectNotification, McpOverAcpMessage,
@@ -226,12 +226,12 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     pub async fn run(
         self,
         transport: impl ConnectTo<Host>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let (conductor_tx, conductor_rx) = mpsc::channel(128 /* chosen arbitrarily */);
 
         // Set up tracing if enabled - spawn writer task and get handle
         let trace_handle;
-        let trace_future: BoxFuture<'static, Result<(), agent_client_protocol_core::Error>>;
+        let trace_future: BoxFuture<'static, Result<(), agent_client_protocol::Error>>;
         if let Some((h, f)) = self.trace_writer.map(super::trace::TraceWriter::spawn) {
             trace_handle = Some(h);
             trace_future = Box::pin(f);
@@ -248,7 +248,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             bridge_connections: HashMap::default(),
             mcp_bridge_mode: self.mcp_bridge_mode,
             proxies: Vec::default(),
-            successor: Arc::new(agent_client_protocol_core::util::internal_error(
+            successor: Arc::new(agent_client_protocol::util::internal_error(
                 "successor not initialized",
             )),
             trace_handle,
@@ -272,27 +272,27 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
     async fn incoming_message_from_client(
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
         message: Dispatch,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         conductor_tx
             .send(ConductorMessage::LeftToRight {
                 target_component_index: 0,
                 message,
             })
             .await
-            .map_err(agent_client_protocol_core::util::internal_error)
+            .map_err(agent_client_protocol::util::internal_error)
     }
 
     async fn incoming_message_from_agent(
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
         message: Dispatch,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         conductor_tx
             .send(ConductorMessage::RightToLeft {
                 source_component_index: SourceComponentIndex::Successor,
                 message,
             })
             .await
-            .map_err(agent_client_protocol_core::util::internal_error)
+            .map_err(agent_client_protocol::util::internal_error)
     }
 }
 
@@ -300,7 +300,7 @@ impl<Host: ConductorHostRole> ConnectTo<Host::Counterpart> for ConductorImpl<Hos
     async fn connect_to(
         self,
         client: impl ConnectTo<Host>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         self.run(client).await
     }
 }
@@ -316,9 +316,8 @@ impl<Host: ConductorHostRole> HandleDispatchFrom<Host::Counterpart>
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
-        connection: agent_client_protocol_core::ConnectionTo<Host::Counterpart>,
-    ) -> Result<agent_client_protocol_core::Handled<Dispatch>, agent_client_protocol_core::Error>
-    {
+        connection: agent_client_protocol::ConnectionTo<Host::Counterpart>,
+    ) -> Result<agent_client_protocol::Handled<Dispatch>, agent_client_protocol::Error> {
         self.host
             .handle_dispatch(message, connection, &mut self.conductor_tx)
             .await
@@ -397,7 +396,7 @@ where
     async fn run_with_connection_to(
         mut self,
         connection: ConnectionTo<Host::Counterpart>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         // Components are now spawned lazily in forward_initialize_request
         // when the first Initialize request is received.
 
@@ -446,7 +445,7 @@ where
         &mut self,
         client: ConnectionTo<Host::Counterpart>,
         message: ConductorMessage,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         tracing::debug!(?message, "handle_conductor_message");
 
         match message {
@@ -502,7 +501,7 @@ where
                                     connection,
                                 })
                                 .await
-                                .map_err(|_| agent_client_protocol_core::Error::internal_error()),
+                                .map_err(|_| agent_client_protocol::Error::internal_error()),
                             Err(_) => {
                                 // Error occurred, just drop the connection.
                                 Ok(())
@@ -582,7 +581,7 @@ where
         client: ConnectionTo<Host::Counterpart>,
         source_component_index: SourceComponentIndex,
         message: Dispatch<Req, N>,
-    ) -> Result<(), agent_client_protocol_core::Error>
+    ) -> Result<(), agent_client_protocol::Error>
     where
         Req::Response: Send,
     {
@@ -635,7 +634,7 @@ where
         client: ConnectionTo<Host::Counterpart>,
         source_component_index: usize,
         notification: N,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         tracing::debug!(
             source_component_index,
             proxies_len = self.proxies.len(),
@@ -665,7 +664,7 @@ where
         target_component_index: usize,
         message: Dispatch,
         client: ConnectionTo<Host::Counterpart>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         tracing::trace!(
             target_component_index,
             ?message,
@@ -739,7 +738,7 @@ where
         &mut self,
         client: ConnectionTo<Host::Counterpart>,
         proxy_components: Vec<DynConnectTo<Conductor>>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         assert!(self.proxies.is_empty());
 
         let num_proxies = proxy_components.len();
@@ -838,7 +837,7 @@ where
                                     message: dispatch.map(|r, cx| (r.message, cx), |n| n.message),
                                 })
                                 .await
-                                .map_err(agent_client_protocol_core::util::internal_error)
+                                .map_err(agent_client_protocol::util::internal_error)
                         })
                         .await
                         .otherwise(async |dispatch| {
@@ -865,11 +864,11 @@ where
                             conductor_tx
                                 .send(message)
                                 .await
-                                .map_err(agent_client_protocol_core::util::internal_error)
+                                .map_err(agent_client_protocol::util::internal_error)
                         })
                         .await
                 },
-                agent_client_protocol_core::on_receive_dispatch!(),
+                agent_client_protocol::on_receive_dispatch!(),
             )
     }
 
@@ -877,13 +876,13 @@ where
         &mut self,
         target_component_index: usize,
         message: Dispatch,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         tracing::debug!(?message, "forward_message_to_proxy");
 
         MatchDispatch::new(message)
             .if_request(async |_request: InitializeProxyRequest, responder| {
                 responder.respond_with_error(
-                    agent_client_protocol_core::Error::invalid_request()
+                    agent_client_protocol::Error::invalid_request()
                         .data("initialize/proxy requests are only sent by the conductor"),
                 )
             })
@@ -924,7 +923,7 @@ where
         MatchDispatch::new(message)
             .if_request(async |_request: InitializeProxyRequest, responder| {
                 responder.respond_with_error(
-                    agent_client_protocol_core::Error::invalid_request()
+                    agent_client_protocol::Error::invalid_request()
                         .data("initialize/proxy requests are only sent by the conductor"),
                 )
             })
@@ -958,7 +957,7 @@ where
                     self.bridge_connections
                         .get_mut(&connection_id)
                         .ok_or_else(|| {
-                            agent_client_protocol_core::util::internal_error(format!(
+                            agent_client_protocol::util::internal_error(format!(
                                 "unknown connection id: {connection_id}"
                             ))
                         })?
@@ -976,7 +975,7 @@ where
                 self.bridge_connections
                     .get_mut(&connection_id)
                     .ok_or_else(|| {
-                        agent_client_protocol_core::util::internal_error(format!(
+                        agent_client_protocol::util::internal_error(format!(
                             "unknown connection id: {connection_id}"
                         ))
                     })?
@@ -1056,10 +1055,7 @@ pub trait InstantiateProxies: Send {
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<
-            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol_core::Error,
-        >,
+        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
     >;
 }
 
@@ -1075,10 +1071,7 @@ where
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<
-            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol_core::Error,
-        >,
+        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
     > {
         Box::pin(async move {
             let components: Vec<DynConnectTo<Conductor>> =
@@ -1095,7 +1088,7 @@ where
     Fut: std::future::Future<
             Output = Result<
                 (InitializeRequest, Vec<DynConnectTo<Conductor>>),
-                agent_client_protocol_core::Error,
+                agent_client_protocol::Error,
             >,
         > + Send
         + 'static,
@@ -1105,10 +1098,7 @@ where
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<
-            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol_core::Error,
-        >,
+        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
     > {
         Box::pin(async move { (*self)(req).await })
     }
@@ -1135,7 +1125,7 @@ pub trait InstantiateProxiesAndAgent: Send {
                 Vec<DynConnectTo<Conductor>>,
                 DynConnectTo<Client>,
             ),
-            agent_client_protocol_core::Error,
+            agent_client_protocol::Error,
         >,
     >;
 }
@@ -1156,7 +1146,7 @@ impl<A: ConnectTo<Client> + 'static> InstantiateProxiesAndAgent for AgentOnly<A>
                 Vec<DynConnectTo<Conductor>>,
                 DynConnectTo<Client>,
             ),
-            agent_client_protocol_core::Error,
+            agent_client_protocol::Error,
         >,
     > {
         Box::pin(async move { Ok((req, Vec::new(), DynConnectTo::new(self.0))) })
@@ -1218,7 +1208,7 @@ impl InstantiateProxiesAndAgent for ProxiesAndAgent {
                 Vec<DynConnectTo<Conductor>>,
                 DynConnectTo<Client>,
             ),
-            agent_client_protocol_core::Error,
+            agent_client_protocol::Error,
         >,
     > {
         Box::pin(async move { Ok((req, self.proxies, self.agent)) })
@@ -1236,7 +1226,7 @@ where
                     Vec<DynConnectTo<Conductor>>,
                     DynConnectTo<Client>,
                 ),
-                agent_client_protocol_core::Error,
+                agent_client_protocol::Error,
             >,
         > + Send
         + 'static,
@@ -1252,7 +1242,7 @@ where
                 Vec<DynConnectTo<Conductor>>,
                 DynConnectTo<Client>,
             ),
-            agent_client_protocol_core::Error,
+            agent_client_protocol::Error,
         >,
     > {
         Box::pin(async move { (*self)(req).await })
@@ -1350,7 +1340,7 @@ pub trait ConductorHostRole: Role<Counterpart: HasPeer<Client>> {
         connection: ConnectionTo<Self::Counterpart>,
         instantiator: Self::Instantiator,
         responder: &mut ConductorResponder<Self>,
-    ) -> impl Future<Output = Result<Dispatch, agent_client_protocol_core::Error>> + Send;
+    ) -> impl Future<Output = Result<Dispatch, agent_client_protocol::Error>> + Send;
 
     /// Handle an incoming message from the client or conductor, depending on `Self`
     fn handle_dispatch(
@@ -1358,7 +1348,7 @@ pub trait ConductorHostRole: Role<Counterpart: HasPeer<Client>> {
         message: Dispatch,
         connection: ConnectionTo<Self::Counterpart>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
-    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol_core::Error>> + Send;
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send;
 }
 
 /// Conductor acting as an agent
@@ -1371,7 +1361,7 @@ impl ConductorHostRole for Agent {
         client_connection: ConnectionTo<Client>,
         instantiator: Self::Instantiator,
         responder: &mut ConductorResponder<Self>,
-    ) -> Result<Dispatch, agent_client_protocol_core::Error> {
+    ) -> Result<Dispatch, agent_client_protocol::Error> {
         let invalid_request = || Error::invalid_request().data("expected `initialize` request");
 
         // Not yet initialized - expect an initialize request.
@@ -1417,10 +1407,10 @@ impl ConductorHostRole for Agent {
                                     message: dispatch,
                                 })
                                 .await
-                                .map_err(agent_client_protocol_core::util::internal_error)
+                                .map_err(agent_client_protocol::util::internal_error)
                         }
                     },
-                    agent_client_protocol_core::on_receive_dispatch!(),
+                    agent_client_protocol::on_receive_dispatch!(),
                 ),
             agent_component,
         )?;
@@ -1440,7 +1430,7 @@ impl ConductorHostRole for Agent {
         message: Dispatch,
         client_connection: ConnectionTo<Client>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         tracing::debug!(
             method = ?message.method(),
             "ConductorToClient::handle_dispatch"
@@ -1469,7 +1459,7 @@ impl ConductorHostRole for Proxy {
         client_connection: ConnectionTo<Conductor>,
         instantiator: Self::Instantiator,
         responder: &mut ConductorResponder<Self>,
-    ) -> Result<Dispatch, agent_client_protocol_core::Error> {
+    ) -> Result<Dispatch, agent_client_protocol::Error> {
         let invalid_request = || Error::invalid_request().data("expected `initialize` request");
 
         // Not yet initialized - expect an InitializeProxy request.
@@ -1514,7 +1504,7 @@ impl ConductorHostRole for Proxy {
         message: Dispatch,
         client_connection: ConnectionTo<Conductor>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         tracing::debug!(
             method = ?message.method(),
             ?message,
@@ -1557,16 +1547,16 @@ pub trait ConductorSuccessor<Host: ConductorHostRole>: Send + Sync + 'static {
         message: Dispatch,
         connection_to_conductor: ConnectionTo<Host::Counterpart>,
         responder: &'a mut ConductorResponder<Host>,
-    ) -> BoxFuture<'a, Result<(), agent_client_protocol_core::Error>>;
+    ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>>;
 }
 
-impl<Host: ConductorHostRole> ConductorSuccessor<Host> for agent_client_protocol_core::Error {
+impl<Host: ConductorHostRole> ConductorSuccessor<Host> for agent_client_protocol::Error {
     fn send_message<'a>(
         &self,
         #[expect(unused_variables)] message: Dispatch,
         #[expect(unused_variables)] connection_to_conductor: ConnectionTo<Host::Counterpart>,
         #[expect(unused_variables)] responder: &'a mut ConductorResponder<Host>,
-    ) -> BoxFuture<'a, Result<(), agent_client_protocol_core::Error>> {
+    ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>> {
         let error = self.clone();
         Box::pin(std::future::ready(Err(error)))
     }
@@ -1590,7 +1580,7 @@ impl ConductorSuccessor<Proxy> for GrandSuccessor {
         message: Dispatch,
         connection: ConnectionTo<Conductor>,
         _responder: &'a mut ConductorResponder<Proxy>,
-    ) -> BoxFuture<'a, Result<(), agent_client_protocol_core::Error>> {
+    ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>> {
         Box::pin(async move {
             debug!("Proxy mode: forwarding successor message to conductor's successor");
             connection.send_proxied_message_to(Agent, message)
@@ -1607,7 +1597,7 @@ impl ConductorSuccessor<Agent> for ConnectionTo<Agent> {
         message: Dispatch,
         connection: ConnectionTo<Client>,
         responder: &'a mut ConductorResponder<Agent>,
-    ) -> BoxFuture<'a, Result<(), agent_client_protocol_core::Error>> {
+    ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>> {
         let connection_to_agent = self.clone();
         Box::pin(async move {
             debug!("Proxy mode: forwarding successor message to conductor's successor");

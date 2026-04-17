@@ -1,4 +1,4 @@
-use agent_client_protocol_core::ConnectTo;
+use agent_client_protocol::ConnectTo;
 use agent_client_protocol_test::testy::Testy;
 
 #[tokio::main]

@@ -7,12 +7,12 @@
 
 mod mcp_integration;
 
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::Agent;
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::Agent;
+use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     SessionNotification, TextContent,
 };
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use futures::{SinkExt, StreamExt, channel::mpsc};
@@ -21,16 +21,16 @@ use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to receive a JSON-RPC response
-async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
-    response: agent_client_protocol_core::SentRequest<T>,
-) -> Result<T, agent_client_protocol_core::Error> {
+async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
+    response: agent_client_protocol::SentRequest<T>,
+) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
         tx.send(result)
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+            .map_err(|_| agent_client_protocol::Error::internal_error())
     })?;
     rx.await
-        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
+        .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
 fn conductor_command() -> Vec<String> {
@@ -42,9 +42,9 @@ async fn run_test_with_mode(
     mode: McpBridgeMode,
     components: ProxiesAndAgent,
     editor_task: impl AsyncFnOnce(
-        agent_client_protocol_core::ConnectionTo<Agent>,
-    ) -> Result<(), agent_client_protocol_core::Error>,
-) -> Result<(), agent_client_protocol_core::Error> {
+        agent_client_protocol::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol::Error>,
+) -> Result<(), agent_client_protocol::Error> {
     // Initialize tracing for debug output
     drop(
         tracing_subscriber::fmt()
@@ -58,14 +58,14 @@ async fn run_test_with_mode(
     let (conductor_out, editor_in) = duplex(1024);
 
     let transport =
-        agent_client_protocol_core::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+        agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
-    agent_client_protocol_core::Client
+    agent_client_protocol::Client
         .builder()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent("conductor".to_string(), components, mode)
-                .run(agent_client_protocol_core::ByteStreams::new(
+                .run(agent_client_protocol::ByteStreams::new(
                     conductor_out.compat_write(),
                     conductor_in.compat(),
                 ))
@@ -77,7 +77,7 @@ async fn run_test_with_mode(
 
 /// Test that proxy-provided MCP tools work with stdio bridge mode
 #[tokio::test]
-async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
         McpBridgeMode::Stdio {
             conductor_command: conductor_command(),
@@ -121,7 +121,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 
 /// Test that proxy-provided MCP tools work with HTTP bridge mode
 #[tokio::test]
-async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
         McpBridgeMode::Http,
         ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
@@ -162,7 +162,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 }
 
 #[tokio::test]
-async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error> {
     // Initialize tracing for debug output
     drop(
         tracing_subscriber::fmt()
@@ -185,7 +185,7 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
             ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
             McpBridgeMode::default(),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -193,25 +193,25 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
     });
 
     // Run the client
-    let result = agent_client_protocol_core::Client
+    let result = agent_client_protocol::Client
         .builder()
         .name("editor-to-connector")
         .on_receive_notification(
             {
                 let mut log_tx = log_tx.clone();
                 async move |notification: SessionNotification,
-                            _cx: agent_client_protocol_core::ConnectionTo<Agent>| {
+                            _cx: agent_client_protocol::ConnectionTo<Agent>| {
                     // Log the notification in debug format
                     log_tx
                         .send(format!("{notification:?}"))
                         .await
-                        .map_err(|_| agent_client_protocol_core::Error::internal_error())
+                        .map_err(|_| agent_client_protocol::Error::internal_error())
                 }
             },
-            agent_client_protocol_core::on_receive_notification!(),
+            agent_client_protocol::on_receive_notification!(),
         )
         .connect_with(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 client_write.compat_write(),
                 client_read.compat(),
             ),
@@ -247,7 +247,7 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol_core::E
                 log_tx
                     .send(format!("{prompt_response:?}"))
                     .await
-                    .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
+                    .map_err(|_| agent_client_protocol::Error::internal_error())?;
 
                 Ok(())
             },

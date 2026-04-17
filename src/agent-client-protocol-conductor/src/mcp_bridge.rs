@@ -15,7 +15,7 @@ use tokio::net::TcpStream;
 ///
 /// Reads MCP JSON-RPC messages from stdin, forwards to TCP connection.
 /// Reads responses from TCP, writes to stdout.
-pub async fn run_mcp_bridge(port: u16) -> Result<(), agent_client_protocol_core::Error> {
+pub async fn run_mcp_bridge(port: u16) -> Result<(), agent_client_protocol::Error> {
     tracing::info!("MCP bridge starting, connecting to localhost:{}", port);
 
     // Connect to the main conductor via TCP
@@ -92,7 +92,7 @@ pub async fn run_mcp_bridge(port: u16) -> Result<(), agent_client_protocol_core:
 }
 
 /// Connect to TCP port with retry logic
-async fn connect_with_retry(port: u16) -> Result<TcpStream, agent_client_protocol_core::Error> {
+async fn connect_with_retry(port: u16) -> Result<TcpStream, agent_client_protocol::Error> {
     let max_retries = 10;
     let mut retry_delay_ms = 50;
 
@@ -113,7 +113,7 @@ async fn connect_with_retry(port: u16) -> Result<TcpStream, agent_client_protoco
                 retry_delay_ms = (retry_delay_ms * 2).min(1000); // Exponential backoff, max 1s
             }
             Err(e) => {
-                return Err(agent_client_protocol_core::Error::into_internal_error(e));
+                return Err(agent_client_protocol::Error::into_internal_error(e));
             }
         }
     }

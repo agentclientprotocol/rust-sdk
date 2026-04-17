@@ -8,7 +8,7 @@
 //! cargo run --example with_mcp_server
 //! ```
 
-use agent_client_protocol_core::{Proxy, mcp_server::McpServer};
+use agent_client_protocol::{Proxy, mcp_server::McpServer};
 use agent_client_protocol_rmcp::McpServerExt;
 use rmcp::{
     ErrorData as McpError, ServerHandler,
@@ -93,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Register the MCP server as a handler
         .with_mcp_server(mcp_server)
         // Start serving
-        .connect_to(agent_client_protocol_core::ByteStreams::new(
+        .connect_to(agent_client_protocol::ByteStreams::new(
             tokio::io::stdout().compat_write(),
             tokio::io::stdin().compat(),
         ))

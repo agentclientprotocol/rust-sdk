@@ -6,8 +6,8 @@
 //! 3. Messages flow correctly through the empty conductor to the agent
 //! 4. The full chain works end-to-end
 
+use agent_client_protocol::{Conductor, ConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::{Conductor, ConnectTo, Proxy};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -20,9 +20,9 @@ impl ConnectTo<Conductor> for MockEmptyConductor {
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         // Create an empty conductor with no components - it should act as a passthrough
-        let empty_components: Vec<agent_client_protocol_core::DynConnectTo<Conductor>> = vec![];
+        let empty_components: Vec<agent_client_protocol::DynConnectTo<Conductor>> = vec![];
         ConnectTo::<Conductor>::connect_to(
             ConductorImpl::new_proxy(
                 "empty-conductor".to_string(),
@@ -37,7 +37,7 @@ impl ConnectTo<Conductor> for MockEmptyConductor {
 
 #[tokio::test]
 async fn test_conductor_with_empty_conductor_and_test_agent()
--> Result<(), agent_client_protocol_core::Error> {
+-> Result<(), agent_client_protocol::Error> {
     // Initialize tracing for debugging
     drop(
         tracing_subscriber::fmt()
@@ -59,7 +59,7 @@ async fn test_conductor_with_empty_conductor_and_test_agent()
             ProxiesAndAgent::new(Testy::new()).proxy(MockEmptyConductor),
             McpBridgeMode::default(),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -69,7 +69,7 @@ async fn test_conductor_with_empty_conductor_and_test_agent()
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
@@ -85,7 +85,7 @@ async fn test_conductor_with_empty_conductor_and_test_agent()
         "#]]
         .assert_debug_eq(&result);
 
-        Ok::<String, agent_client_protocol_core::Error>(result)
+        Ok::<String, agent_client_protocol::Error>(result)
     })
     .await
     .expect("Test timed out")

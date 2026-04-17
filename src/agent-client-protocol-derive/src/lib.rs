@@ -46,7 +46,7 @@ use syn::{DeriveInput, Expr, Lit, Path, Type, parse_macro_input};
 /// # Attributes
 ///
 /// - `#[request(method = "method_name", response = ResponseType)]`
-/// - `#[request(method = "method_name", response = ResponseType, crate = crate)]` - for use within the `agent_client_protocol_core` crate
+/// - `#[request(method = "method_name", response = ResponseType, crate = crate)]` - for use within the `agent_client_protocol` crate
 ///
 /// # Example
 ///
@@ -106,7 +106,7 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
 /// # Attributes
 ///
 /// - `#[notification(method = "method_name")]`
-/// - `#[notification(method = "method_name", crate = crate)]` - for use within the `agent_client_protocol_core` crate
+/// - `#[notification(method = "method_name", crate = crate)]` - for use within the `agent_client_protocol` crate
 ///
 /// # Example
 ///
@@ -163,7 +163,7 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
 ///
 /// # Attributes
 ///
-/// - `#[response(crate = crate)]` - for use within the `agent_client_protocol_core` crate
+/// - `#[response(crate = crate)]` - for use within the `agent_client_protocol` crate
 ///
 /// # Example
 ///
@@ -199,7 +199,7 @@ pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
 }
 
 fn default_crate_path() -> Path {
-    syn::parse_quote!(agent_client_protocol_core)
+    syn::parse_quote!(agent_client_protocol)
 }
 
 fn parse_request_attrs(input: &DeriveInput) -> syn::Result<(String, Type, Path)> {

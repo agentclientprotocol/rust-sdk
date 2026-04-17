@@ -8,7 +8,7 @@
 //! Create an MCP server from an rmcp service using the extension trait:
 //!
 //! ```ignore
-//! use agent_client_protocol_core::mcp_server::McpServer;
+//! use agent_client_protocol::mcp_server::McpServer;
 //! use agent_client_protocol_rmcp::McpServerExt;
 //!
 //! let server = McpServer::from_rmcp("my-server", MyRmcpService::new);
@@ -20,9 +20,9 @@
 //!     .await?;
 //! ```
 
-use agent_client_protocol_core::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
-use agent_client_protocol_core::role::{self, HasPeer};
-use agent_client_protocol_core::{Agent, ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
+use agent_client_protocol::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
+use agent_client_protocol::role::{self, HasPeer};
+use agent_client_protocol::{Agent, ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
 use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -94,7 +94,7 @@ where
     async fn connect_to(
         self,
         client: impl ConnectTo<role::mcp::Server>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         // Create tokio byte streams that rmcp expects
         let (mcp_server_stream, mcp_client_stream) = tokio::io::duplex(8192);
         let (mcp_server_read, mcp_server_write) = tokio::io::split(mcp_server_stream);
@@ -117,14 +117,14 @@ where
                 .service
                 .serve((mcp_server_read, mcp_server_write))
                 .await
-                .map_err(agent_client_protocol_core::Error::into_internal_error)?;
+                .map_err(agent_client_protocol::Error::into_internal_error)?;
 
             // Wait for the server to finish
             running_server
                 .waiting()
                 .await
                 .map(|_quit_reason| ())
-                .map_err(agent_client_protocol_core::Error::into_internal_error)
+                .map_err(agent_client_protocol::Error::into_internal_error)
         };
 
         (bytes_to_acp, bytes_to_rmcp).try_join().await?;
