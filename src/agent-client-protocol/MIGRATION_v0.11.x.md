@@ -73,9 +73,16 @@ The main replacements are:
 
 A few behavioral differences matter during migration:
 
-- `send_request(...)` returns a `SentRequest`, not the response directly
-- call `.block_task().await?` when you want to wait for the response in a top-level task
-- inside `on_receive_*` callbacks, prefer `on_receiving_result(...)`, `on_session_start(...)`, or `cx.spawn(...)` instead of blocking the dispatch loop
+- `send_request(...)` returns a `SentRequest`, not the response directly.
+- Call `.block_task().await?` when you want to wait for the response from a
+  context that does not block the dispatch loop. The `main_fn` closure passed to
+  `connect_with(...)` and tasks spawned via `cx.spawn(...)` are both safe; the
+  dispatch loop continues processing messages (including the response you are
+  waiting for) in the background.
+- Do **not** call `.block_task().await?` inside `on_receive_*` callbacks. Those
+  callbacks run on the dispatch loop, so blocking them deadlocks the
+  connection. Prefer `on_receiving_result(...)`, `on_receiving_ok_result(...)`,
+  `on_session_start(...)`, or `cx.spawn(...)` from handlers.
 
 ## 4. Replace manual session management with `SessionBuilder`
 
@@ -131,6 +138,14 @@ In `0.10.x`, your client behavior lived in an `impl acp::Client for T` block.
 
 In `0.11`, register typed handlers on `Client.builder()` instead.
 
+Each `on_receive_*` call takes two arguments: the async handler, and one of
+the helper macros `acp::on_receive_request!()`,
+`acp::on_receive_notification!()`, or `acp::on_receive_dispatch!()`. These
+macros are a temporary workaround until [return-type notation] stabilizes;
+pass the one that matches the method you are calling.
+
+[return-type notation]: https://github.com/rust-lang/rust/issues/109417
+
 ### Common client-side method mapping
 
 - `request_permission` -> `.on_receive_request(|req: RequestPermissionRequest, responder, cx| ...)`
@@ -174,8 +189,8 @@ async fn main() -> acp::Result<()> {
             },
             acp::on_receive_notification!(),
         )
-        .connect_with(transport, async |cx: acp::ConnectionTo<acp::Agent>| {
-            // send requests here
+        .connect_with(transport, async |_cx: acp::ConnectionTo<acp::Agent>| {
+            // send requests here, e.g. `_cx.send_request(...).block_task().await?`
             Ok(())
         })
         .await
@@ -207,6 +222,7 @@ use acp::schema::{
     AgentCapabilities, CancelNotification, InitializeRequest, InitializeResponse,
     PromptRequest, PromptResponse, StopReason,
 };
+use acp::{Client, Dispatch};
 
 #[tokio::main]
 async fn main() -> acp::Result<()> {
@@ -226,7 +242,7 @@ async fn main() -> acp::Result<()> {
             acp::on_receive_request!(),
         )
         .on_receive_request(
-            async move |_request: PromptRequest, responder, _cx: acp::ConnectionTo<acp::Client>| {
+            async move |_request: PromptRequest, responder, _cx| {
                 responder.respond(PromptResponse::new(StopReason::EndTurn))
             },
             acp::on_receive_request!(),
@@ -269,10 +285,11 @@ When you need concurrency from a handler in `0.11`, use `cx.spawn(...)`.
 
 ## 9. Prefer `agent-client-protocol-tokio` for subprocess agents
 
-If your old client code spawned an agent with `tokio::process::Command`, the new stack has a higher-level helper for that:
+If your old client code spawned an agent with `tokio::process::Command`, the new stack has a higher-level helper for that. `AcpAgent` implements `ConnectTo<Client>` and takes care of spawning the process and wiring up its stdio:
 
 ```rust
 use agent_client_protocol as acp;
+use acp::schema::{InitializeRequest, ProtocolVersion};
 use agent_client_protocol_tokio::AcpAgent;
 use std::str::FromStr;
 
@@ -283,12 +300,24 @@ async fn main() -> acp::Result<()> {
     acp::Client
         .builder()
         .name("my-client")
-        .connect_to(agent)
+        .connect_with(agent, async |cx| {
+            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            // ...send more requests, build a session, etc.
+            Ok(())
+        })
         .await
 }
 ```
 
-You can still use `ByteStreams::new(...)` when you already own the byte streams and do not want the extra helper crate.
+Use `connect_to(agent)` (without a `main_fn`) only when the client has no
+outbound requests to send and just needs to keep the connection alive so
+registered handlers can respond to the agent. In that mode the builder
+runs until the transport closes or a handler returns an error.
+
+You can still use `ByteStreams::new(...)` when you already own the byte
+streams and do not want the extra helper crate.
 
 ## 10. Common gotchas
 
