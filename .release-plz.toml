@@ -14,8 +14,3 @@ pr_labels = ["release"]
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
-
-# Don't publish test utilities to crates.io
-[[package]]
-name = "agent-client-protocol-test"
-publish = false

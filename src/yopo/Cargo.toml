@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "YOPO (You Only Prompt Once) - A simple ACP client for one-shot prompts"
+publish = false
 
 [lib]
 name = "yopo"
