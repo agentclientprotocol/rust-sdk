@@ -1,4 +1,4 @@
-use agent_client_protocol_core::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
+use agent_client_protocol::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
 use axum::{
     Router,
     extract::State,
@@ -27,7 +27,7 @@ pub async fn run_http_listener(
     tcp_listener: TcpListener,
     acp_url: String,
     mut conductor_tx: mpsc::Sender<ConductorMessage>,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
 
     // When we send this message to the conductor,
@@ -45,7 +45,7 @@ pub async fn run_http_listener(
             connection: McpBridgeConnection::new(to_mcp_client_tx),
         })
         .await
-        .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
+        .map_err(|_| agent_client_protocol::Error::internal_error())?;
 
     Ok(())
 }
@@ -66,7 +66,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
     async fn connect_to(
         self,
         client: impl ConnectTo<mcp::Server>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
@@ -77,7 +77,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
         self,
     ) -> (
         Channel,
-        BoxFuture<'static, Result<(), agent_client_protocol_core::Error>>,
+        BoxFuture<'static, Result<(), agent_client_protocol::Error>>,
     )
     where
         Self: Sized,
@@ -90,11 +90,11 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
 /// Error type that we use to respond to malformed HTTP requests.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
-struct HttpError(#[from] agent_client_protocol_core::Error);
+struct HttpError(#[from] agent_client_protocol::Error);
 
 impl From<axum::Error> for HttpError {
     fn from(error: axum::Error) -> Self {
-        HttpError(agent_client_protocol_core::util::internal_error(error))
+        HttpError(agent_client_protocol::util::internal_error(error))
     }
 }
 
@@ -107,10 +107,7 @@ impl IntoResponse for HttpError {
 
 /// Run a webserver listening on `listener` for HTTP requests at `/`
 /// and communicating those requests over `channel` to the JSON-RPC server.
-async fn run(
-    listener: TcpListener,
-    channel: Channel,
-) -> Result<(), agent_client_protocol_core::Error> {
+async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client_protocol::Error> {
     let (registration_tx, registration_rx) = mpsc::unbounded();
 
     let state = BridgeState { registration_tx };
@@ -135,7 +132,7 @@ async fn run(
 
         axum::serve(listener, app)
             .await
-            .map_err(agent_client_protocol_core::util::internal_error)
+            .map_err(agent_client_protocol::util::internal_error)
     }
     .race(RunningServer::new().run(channel, registration_rx))
     .await
@@ -153,27 +150,27 @@ enum HttpMessage {
     /// A JSON-RPC request (has an id, expects a response via the channel)
     Request {
         http_request_id: uuid::Uuid,
-        request: agent_client_protocol_core::jsonrpcmsg::Request,
-        response_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>,
+        request: agent_client_protocol::jsonrpcmsg::Request,
+        response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
     /// A JSON-RPC notification (no id, no response expected)
     Notification {
         http_request_id: uuid::Uuid,
-        request: agent_client_protocol_core::jsonrpcmsg::Request,
+        request: agent_client_protocol::jsonrpcmsg::Request,
     },
     /// A JSON-RPC response from the client
     Response {
         http_request_id: uuid::Uuid,
-        response: agent_client_protocol_core::jsonrpcmsg::Response,
+        response: agent_client_protocol::jsonrpcmsg::Response,
     },
     /// A GET request to open an SSE stream for server-initiated messages
     Get {
         http_request_id: uuid::Uuid,
-        response_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>,
+        response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
 }
 
-/// Clone of `agent_client_protocol_core::jsonrpcmsg::Id` since for unfathomable reasons that does not impl Hash
+/// Clone of `agent_client_protocol::jsonrpcmsg::Id` since for unfathomable reasons that does not impl Hash
 #[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Debug, Clone)]
 enum JsonRpcId {
     /// String identifier
@@ -184,12 +181,12 @@ enum JsonRpcId {
     Null,
 }
 
-impl From<agent_client_protocol_core::jsonrpcmsg::Id> for JsonRpcId {
-    fn from(id: agent_client_protocol_core::jsonrpcmsg::Id) -> Self {
+impl From<agent_client_protocol::jsonrpcmsg::Id> for JsonRpcId {
+    fn from(id: agent_client_protocol::jsonrpcmsg::Id) -> Self {
         match id {
-            agent_client_protocol_core::jsonrpcmsg::Id::String(s) => JsonRpcId::String(s),
-            agent_client_protocol_core::jsonrpcmsg::Id::Number(n) => JsonRpcId::Number(n),
-            agent_client_protocol_core::jsonrpcmsg::Id::Null => JsonRpcId::Null,
+            agent_client_protocol::jsonrpcmsg::Id::String(s) => JsonRpcId::String(s),
+            agent_client_protocol::jsonrpcmsg::Id::Number(n) => JsonRpcId::Number(n),
+            agent_client_protocol::jsonrpcmsg::Id::Null => JsonRpcId::Null,
         }
     }
 }
@@ -197,7 +194,7 @@ impl From<agent_client_protocol_core::jsonrpcmsg::Id> for JsonRpcId {
 struct RunningServer {
     waiting_sessions: FxHashMap<JsonRpcId, RegisteredSession>,
     general_sessions: Vec<RegisteredSession>,
-    message_deque: VecDeque<agent_client_protocol_core::jsonrpcmsg::Message>,
+    message_deque: VecDeque<agent_client_protocol::jsonrpcmsg::Message>,
 }
 
 impl RunningServer {
@@ -219,15 +216,12 @@ impl RunningServer {
         mut self,
         mut channel: Channel,
         http_rx: mpsc::UnboundedReceiver<HttpMessage>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         #[derive(Debug)]
         enum MultiplexMessage {
             FromHttpToChannel(HttpMessage),
             FromChannelToHttp(
-                Result<
-                    agent_client_protocol_core::jsonrpcmsg::Message,
-                    agent_client_protocol_core::Error,
-                >,
+                Result<agent_client_protocol::jsonrpcmsg::Message, agent_client_protocol::Error>,
             ),
         }
 
@@ -245,9 +239,9 @@ impl RunningServer {
 
                 MultiplexMessage::FromChannelToHttp(message) => {
                     let message = message.unwrap_or_else(|err| {
-                        agent_client_protocol_core::jsonrpcmsg::Message::Response(
-                            agent_client_protocol_core::jsonrpcmsg::Response::error(
-                                agent_client_protocol_core::util::into_jsonrpc_error(err),
+                        agent_client_protocol::jsonrpcmsg::Message::Response(
+                            agent_client_protocol::jsonrpcmsg::Response::error(
+                                agent_client_protocol::util::into_jsonrpc_error(err),
                                 None,
                             ),
                         )
@@ -274,12 +268,9 @@ impl RunningServer {
         &mut self,
         message: HttpMessage,
         channel_tx: &mut mpsc::UnboundedSender<
-            Result<
-                agent_client_protocol_core::jsonrpcmsg::Message,
-                agent_client_protocol_core::Error,
-            >,
+            Result<agent_client_protocol::jsonrpcmsg::Message, agent_client_protocol::Error>,
         >,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         match message {
             HttpMessage::Request {
                 http_request_id,
@@ -292,7 +283,7 @@ impl RunningServer {
                 // Send to the JSON-RPC server
                 channel_tx
                     .unbounded_send(Ok(Message::Request(request)))
-                    .map_err(agent_client_protocol_core::util::internal_error)?;
+                    .map_err(agent_client_protocol::util::internal_error)?;
 
                 // Register to receive the response
                 let session = RegisteredSession::new(response_tx);
@@ -314,7 +305,7 @@ impl RunningServer {
                 // Just forward to the server, no response tracking needed
                 channel_tx
                     .unbounded_send(Ok(Message::Request(request)))
-                    .map_err(agent_client_protocol_core::util::internal_error)?;
+                    .map_err(agent_client_protocol::util::internal_error)?;
             }
 
             HttpMessage::Response {
@@ -325,7 +316,7 @@ impl RunningServer {
                 // Forward to the server
                 channel_tx
                     .unbounded_send(Ok(Message::Response(response)))
-                    .map_err(agent_client_protocol_core::util::internal_error)?;
+                    .map_err(agent_client_protocol::util::internal_error)?;
             }
 
             HttpMessage::Get {
@@ -389,8 +380,8 @@ impl RunningServer {
     /// If there is no place to send it, returns `Some(message)`.
     fn try_dispatch_jsonrpc_message(
         &mut self,
-        mut message: agent_client_protocol_core::jsonrpcmsg::Message,
-    ) -> Option<agent_client_protocol_core::jsonrpcmsg::Message> {
+        mut message: agent_client_protocol::jsonrpcmsg::Message,
+    ) -> Option<agent_client_protocol::jsonrpcmsg::Message> {
         // Extract the id of the message we are replying to, if any
         let message_id = match &message {
             Message::Response(response) => response.id.as_ref().map(|v| v.clone().into()),
@@ -467,13 +458,11 @@ impl RunningServer {
 
 struct RegisteredSession {
     id: uuid::Uuid,
-    outgoing_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>,
+    outgoing_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
 }
 
 impl RegisteredSession {
-    fn new(
-        outgoing_tx: mpsc::UnboundedSender<agent_client_protocol_core::jsonrpcmsg::Message>,
-    ) -> Self {
+    fn new(outgoing_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             outgoing_tx,
@@ -491,8 +480,8 @@ async fn handle_post(
     let http_request_id = uuid::Uuid::new_v4();
 
     // Parse incoming JSON-RPC message
-    let message: agent_client_protocol_core::jsonrpcmsg::Message =
-        serde_json::from_str(&body).map_err(agent_client_protocol_core::util::parse_error)?;
+    let message: agent_client_protocol::jsonrpcmsg::Message =
+        serde_json::from_str(&body).map_err(agent_client_protocol::util::parse_error)?;
 
     match message {
         Message::Request(request) if request.id.is_some() => {
@@ -506,7 +495,7 @@ async fn handle_post(
                     request,
                     response_tx: tx,
                 })
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             let stream = async_stream::stream! {
                 while let Some(message) = rx.next().await {
@@ -530,7 +519,7 @@ async fn handle_post(
                     http_request_id,
                     request,
                 })
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(StatusCode::ACCEPTED.into_response())
         }
 
@@ -543,7 +532,7 @@ async fn handle_post(
                     http_request_id,
                     response,
                 })
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(StatusCode::ACCEPTED.into_response())
         }
     }
@@ -564,7 +553,7 @@ async fn handle_get(
             http_request_id,
             response_tx: tx,
         })
-        .map_err(agent_client_protocol_core::util::internal_error)?;
+        .map_err(agent_client_protocol::util::internal_error)?;
 
     let stream = async_stream::stream! {
         while let Some(message) = rx.next().await {

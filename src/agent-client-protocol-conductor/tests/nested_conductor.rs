@@ -19,8 +19,8 @@
 //!
 //! Run `just prep-tests` before running these tests.
 
+use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo};
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo};
 use agent_client_protocol_test::arrow_proxy::run_arrow_proxy;
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, conductor_binary, testy};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
@@ -35,8 +35,8 @@ struct MockArrowProxy;
 impl ConnectTo<Conductor> for MockArrowProxy {
     async fn connect_to(
         self,
-        client: impl ConnectTo<agent_client_protocol_core::Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+        client: impl ConnectTo<agent_client_protocol::Proxy>,
+    ) -> Result<(), agent_client_protocol::Error> {
         run_arrow_proxy(client).await
     }
 }
@@ -56,8 +56,8 @@ impl MockInnerConductor {
 impl ConnectTo<Conductor> for MockInnerConductor {
     async fn connect_to(
         self,
-        client: impl ConnectTo<agent_client_protocol_core::Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+        client: impl ConnectTo<agent_client_protocol::Proxy>,
+    ) -> Result<(), agent_client_protocol::Error> {
         // Create mock arrow proxy components for the inner conductor
         // This conductor is ONLY proxies - no actual agent
         // Use Serve::serve instead of .run() to get the Serve<Conductor> impl
@@ -79,8 +79,7 @@ impl ConnectTo<Conductor> for MockInnerConductor {
 }
 
 #[tokio::test]
-async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_protocol_core::Error>
-{
+async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_protocol::Error> {
     // Create the nested component chain using mock components
     // Inner conductor will manage: arrow_proxy1 -> arrow_proxy2 -> eliza
     // Outer conductor will manage: inner_conductor only
@@ -96,7 +95,7 @@ async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_p
             ProxiesAndAgent::new(Testy::new()).proxy(MockInnerConductor::new(2)),
             McpBridgeMode::default(),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -106,7 +105,7 @@ async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_p
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
@@ -121,7 +120,7 @@ async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_p
         "#]]
         .assert_debug_eq(&result);
 
-        Ok::<String, agent_client_protocol_core::Error>(result)
+        Ok::<String, agent_client_protocol::Error>(result)
     })
     .await
     .expect("Test timed out")
@@ -139,7 +138,7 @@ async fn test_nested_conductor_with_arrow_proxies() -> Result<(), agent_client_p
 
 #[tokio::test]
 async fn test_nested_conductor_with_external_arrow_proxies()
--> Result<(), agent_client_protocol_core::Error> {
+-> Result<(), agent_client_protocol::Error> {
     // Create the nested component chain using external processes
     // Inner conductor spawned as a separate process with two arrow proxies
     // Outer conductor manages: inner_conductor -> test agent (both as external processes)
@@ -165,7 +164,7 @@ async fn test_nested_conductor_with_external_arrow_proxies()
             ProxiesAndAgent::new(agent).proxy(inner_conductor),
             McpBridgeMode::default(),
         )
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -175,7 +174,7 @@ async fn test_nested_conductor_with_external_arrow_proxies()
     // Wait for editor to complete and get the result
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
@@ -190,7 +189,7 @@ async fn test_nested_conductor_with_external_arrow_proxies()
         "#]]
         .assert_debug_eq(&result);
 
-        Ok::<String, agent_client_protocol_core::Error>(result)
+        Ok::<String, agent_client_protocol::Error>(result)
     })
     .await
     .expect("Test timed out")

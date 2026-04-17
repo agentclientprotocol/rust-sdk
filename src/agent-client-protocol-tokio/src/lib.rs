@@ -7,7 +7,7 @@
 mod acp_agent;
 
 pub use acp_agent::{AcpAgent, LineDirection};
-use agent_client_protocol_core::{ByteStreams, ConnectTo, Role};
+use agent_client_protocol::{ByteStreams, ConnectTo, Role};
 use std::sync::Arc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -49,7 +49,7 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
     async fn connect_to(
         self,
         client: impl ConnectTo<Counterpart::Counterpart>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         if let Some(callback) = self.debug_callback {
             use futures::AsyncBufReadExt;
             use futures::AsyncWriteExt;
@@ -85,7 +85,7 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
                 as std::pin::Pin<Box<dyn futures::Sink<String, Error = std::io::Error> + Send>>;
 
             ConnectTo::<Counterpart>::connect_to(
-                agent_client_protocol_core::Lines::new(outgoing_sink, incoming_lines),
+                agent_client_protocol::Lines::new(outgoing_sink, incoming_lines),
                 client,
             )
             .await

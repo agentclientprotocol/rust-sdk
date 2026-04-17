@@ -1,4 +1,4 @@
-use agent_client_protocol_core::*;
+use agent_client_protocol::*;
 use serde::{Deserialize, Serialize};
 
 pub mod arrow_proxy;
@@ -129,7 +129,7 @@ macro_rules! impl_jr_message {
                 if !Self::matches_method(method) {
                     return Err(crate::Error::method_not_found());
                 }
-                agent_client_protocol_core::util::json_cast_params(params)
+                agent_client_protocol::util::json_cast_params(params)
             }
         }
     };

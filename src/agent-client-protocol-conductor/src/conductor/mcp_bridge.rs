@@ -5,8 +5,8 @@ pub mod stdio;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use agent_client_protocol_core::schema::{McpServer, McpServerHttp, McpServerStdio};
-use agent_client_protocol_core::{ConnectionTo, Dispatch, Role};
+use agent_client_protocol::schema::{McpServer, McpServerHttp, McpServerStdio};
+use agent_client_protocol::{ConnectionTo, Dispatch, Role};
 use futures::{SinkExt, channel::mpsc};
 use tokio::net::TcpListener;
 use tracing::info;
@@ -40,14 +40,11 @@ impl McpBridgeConnection {
         Self { to_mcp_client_tx }
     }
 
-    pub async fn send(
-        &mut self,
-        message: Dispatch,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    pub async fn send(&mut self, message: Dispatch) -> Result<(), agent_client_protocol::Error> {
         self.to_mcp_client_tx
             .send(message)
             .await
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+            .map_err(|_| agent_client_protocol::Error::internal_error())
     }
 }
 
@@ -66,8 +63,8 @@ impl McpBridgeListeners {
         mcp_server: &mut McpServer,
         conductor_tx: &mpsc::Sender<ConductorMessage>,
         mcp_bridge_mode: &crate::McpBridgeMode,
-    ) -> Result<(), agent_client_protocol_core::Error> {
-        use agent_client_protocol_core::schema::McpServer;
+    ) -> Result<(), agent_client_protocol::Error> {
+        use agent_client_protocol::schema::McpServer;
 
         let McpServer::Http(http) = mcp_server else {
             return Ok(());
@@ -78,7 +75,7 @@ impl McpBridgeListeners {
         }
 
         if !http.headers.is_empty() {
-            return Err(agent_client_protocol_core::Error::internal_error());
+            return Err(agent_client_protocol::Error::internal_error());
         }
 
         let name = &http.name;

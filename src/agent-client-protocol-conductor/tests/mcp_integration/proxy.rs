@@ -1,7 +1,7 @@
 //! Proxy component that provides MCP tools
 
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::{Conductor, ConnectTo, Proxy};
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::{Conductor, ConnectTo, Proxy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ impl ConnectTo<Conductor> for ProxyComponent {
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let test_server = McpServer::builder("test")
             .instructions("A simple test MCP server with an echo tool")
             .tool_fn_mut(
@@ -36,11 +36,11 @@ impl ConnectTo<Conductor> for ProxyComponent {
                         result: format!("Echo: {}", params.message),
                     })
                 },
-                agent_client_protocol_core::tool_fn_mut!(),
+                agent_client_protocol::tool_fn_mut!(),
             )
             .build();
 
-        agent_client_protocol_core::Proxy
+        agent_client_protocol::Proxy
             .builder()
             .name("proxy-component")
             .with_mcp_server(test_server)

@@ -2,13 +2,13 @@
 //!
 //! Provides a convenient API for running one-shot prompts against ACP components.
 
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::schema::{
     AudioContent, ContentBlock, EmbeddedResourceResource, ImageContent, InitializeRequest,
     ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, TextContent,
 };
-use agent_client_protocol_core::util::MatchDispatch;
-use agent_client_protocol_core::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage};
+use agent_client_protocol::util::MatchDispatch;
+use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage};
 use std::path::PathBuf;
 
 /// Converts a `ContentBlock` to its string representation.
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 ///
 /// ```no_run
 /// use yopo::content_block_to_string;
-/// use agent_client_protocol_core::schema::{ContentBlock, TextContent};
+/// use agent_client_protocol::schema::{ContentBlock, TextContent};
 ///
 /// let block = ContentBlock::Text(TextContent::new("Hello".to_string()));
 /// assert_eq!(content_block_to_string(&block), "Hello");
@@ -70,7 +70,7 @@ pub fn content_block_to_string(block: &ContentBlock) -> String {
 /// use agent_client_protocol_tokio::AcpAgent;
 /// use std::str::FromStr;
 ///
-/// # async fn example() -> Result<(), agent_client_protocol_core::Error> {
+/// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// let agent = AcpAgent::from_str("python agent.py")?;
 /// prompt_with_callback(agent, "What is 2+2?", async |block| {
 ///     print!("{}", content_block_to_string(&block));
@@ -82,7 +82,7 @@ pub async fn prompt_with_callback(
     component: impl ConnectTo<Client>,
     prompt_text: impl ToString,
     mut callback: impl AsyncFnMut(ContentBlock) + Send,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // Convert prompt to String
     let prompt_text = prompt_text.to_string();
 
@@ -97,9 +97,9 @@ pub async fn prompt_with_callback(
                     retry: false,
                 })
             },
-            agent_client_protocol_core::on_receive_dispatch!(),
+            agent_client_protocol::on_receive_dispatch!(),
         )
-        .connect_with(component, |cx: agent_client_protocol_core::ConnectionTo<Agent>| async move {
+        .connect_with(component, |cx: agent_client_protocol::ConnectionTo<Agent>| async move {
             // Initialize the agent
             let _init_response = cx
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))
@@ -117,7 +117,7 @@ pub async fn prompt_with_callback(
             loop {
                 let update = session.read_update().await?;
                 match update {
-                    agent_client_protocol_core::SessionMessage::SessionMessage(message) => {
+                    agent_client_protocol::SessionMessage::SessionMessage(message) => {
                         MatchDispatch::new(message)
                             .if_notification(async |notification: SessionNotification| {
                                 tracing::debug!(
@@ -125,7 +125,7 @@ pub async fn prompt_with_callback(
                                     "yopo: received SessionNotification"
                                 );
                                 // Call the callback for each agent message chunk
-                                if let agent_client_protocol_core::schema::SessionUpdate::AgentMessageChunk(
+                                if let agent_client_protocol::schema::SessionUpdate::AgentMessageChunk(
                                     content_chunk,
                                 ) = notification.update
                                 {
@@ -141,10 +141,10 @@ pub async fn prompt_with_callback(
                                     .options
                                     .iter()
                                     .find(|option| match option.kind {
-                                        agent_client_protocol_core::schema::PermissionOptionKind::AllowOnce
-                                        | agent_client_protocol_core::schema::PermissionOptionKind::AllowAlways => true,
-                                        agent_client_protocol_core::schema::PermissionOptionKind::RejectOnce
-                                        | agent_client_protocol_core::schema::PermissionOptionKind::RejectAlways
+                                        agent_client_protocol::schema::PermissionOptionKind::AllowOnce
+                                        | agent_client_protocol::schema::PermissionOptionKind::AllowAlways => true,
+                                        agent_client_protocol::schema::PermissionOptionKind::RejectOnce
+                                        | agent_client_protocol::schema::PermissionOptionKind::RejectAlways
                                         | _ => false,
                                     })
                                     .map_or(RequestPermissionOutcome::Cancelled, |option| {
@@ -163,12 +163,12 @@ pub async fn prompt_with_callback(
                             .otherwise(async |_msg| Ok(()))
                             .await?;
                     }
-                    agent_client_protocol_core::SessionMessage::StopReason(stop_reason) => match stop_reason {
-                        agent_client_protocol_core::schema::StopReason::EndTurn => break,
-                        agent_client_protocol_core::schema::StopReason::MaxTokens => todo!(),
-                        agent_client_protocol_core::schema::StopReason::MaxTurnRequests => todo!(),
-                        agent_client_protocol_core::schema::StopReason::Refusal => todo!(),
-                        agent_client_protocol_core::schema::StopReason::Cancelled => todo!(),
+                    agent_client_protocol::SessionMessage::StopReason(stop_reason) => match stop_reason {
+                        agent_client_protocol::schema::StopReason::EndTurn => break,
+                        agent_client_protocol::schema::StopReason::MaxTokens => todo!(),
+                        agent_client_protocol::schema::StopReason::MaxTurnRequests => todo!(),
+                        agent_client_protocol::schema::StopReason::Refusal => todo!(),
+                        agent_client_protocol::schema::StopReason::Cancelled => todo!(),
                         _ => todo!(),
                     },
                     _ => todo!(),
@@ -203,7 +203,7 @@ pub async fn prompt_with_callback(
 /// use agent_client_protocol_tokio::AcpAgent;
 /// use std::str::FromStr;
 ///
-/// # async fn example() -> Result<(), agent_client_protocol_core::Error> {
+/// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// let agent = AcpAgent::from_str("python agent.py")?;
 /// let response = prompt(agent, "What is 2+2?").await?;
 /// assert!(response.contains("4"));
@@ -213,7 +213,7 @@ pub async fn prompt_with_callback(
 pub async fn prompt(
     component: impl ConnectTo<Client>,
     prompt_text: impl ToString,
-) -> Result<String, agent_client_protocol_core::Error> {
+) -> Result<String, agent_client_protocol::Error> {
     let mut accumulated_text = String::new();
     prompt_with_callback(component, prompt_text, async |block| {
         let text = content_block_to_string(&block);

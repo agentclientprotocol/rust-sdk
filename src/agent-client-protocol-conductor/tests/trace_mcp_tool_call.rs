@@ -10,12 +10,12 @@
 
 mod mcp_integration;
 
-use agent_client_protocol_conductor::trace::TraceEvent;
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     SessionNotification, TextContent,
 };
+use agent_client_protocol_conductor::trace::TraceEvent;
+use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use expect_test::expect;
 use futures::channel::mpsc;
@@ -183,20 +183,20 @@ impl EventNormalizer {
 }
 
 /// Test helper to receive a JSON-RPC response
-async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
-    response: agent_client_protocol_core::SentRequest<T>,
-) -> Result<T, agent_client_protocol_core::Error> {
+async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
+    response: agent_client_protocol::SentRequest<T>,
+) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
         tx.send(result)
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+            .map_err(|_| agent_client_protocol::Error::internal_error())
     })?;
     rx.await
-        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
+        .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
 #[tokio::test]
-async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> {
     // Create channel for collecting trace events
     let (trace_tx, trace_rx) = mpsc::unbounded();
 
@@ -218,7 +218,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Er
             McpBridgeMode::default(),
         )
         .trace_to(trace_tx)
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -227,7 +227,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Er
 
     // Run the client interaction
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        agent_client_protocol_core::Client
+        agent_client_protocol::Client
             .builder()
             .name("test-client")
             .on_receive_notification(
@@ -237,13 +237,13 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol_core::Er
                         notif_tx
                             .send(notification)
                             .await
-                            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+                            .map_err(|_| agent_client_protocol::Error::internal_error())
                     }
                 },
-                agent_client_protocol_core::on_receive_notification!(),
+                agent_client_protocol::on_receive_notification!(),
             )
             .connect_with(
-                agent_client_protocol_core::ByteStreams::new(
+                agent_client_protocol::ByteStreams::new(
                     client_write.compat_write(),
                     client_read.compat(),
                 ),

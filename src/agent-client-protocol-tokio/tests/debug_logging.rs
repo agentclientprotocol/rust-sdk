@@ -1,22 +1,22 @@
 //! Integration test for AcpAgent debug logging
 
-use agent_client_protocol_core::schema::InitializeRequest;
-use agent_client_protocol_core::{Client, ConnectTo};
+use agent_client_protocol::schema::InitializeRequest;
+use agent_client_protocol::{Client, ConnectTo};
 use agent_client_protocol_test::test_binaries::testy;
 use agent_client_protocol_tokio::LineDirection;
 use std::sync::{Arc, Mutex};
 
 /// Test helper to receive a JSON-RPC response
-async fn recv<T: agent_client_protocol_core::JsonRpcResponse + Send>(
-    response: agent_client_protocol_core::SentRequest<T>,
-) -> Result<T, agent_client_protocol_core::Error> {
+async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
+    response: agent_client_protocol::SentRequest<T>,
+) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
         tx.send(result)
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+            .map_err(|_| agent_client_protocol::Error::internal_error())
     })?;
     rx.await
-        .map_err(|_| agent_client_protocol_core::Error::internal_error())?
+        .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
 #[tokio::test]
@@ -58,7 +58,7 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
     let (agent_out, client_in) = duplex(1024);
 
     let transport =
-        agent_client_protocol_core::ByteStreams::new(client_out.compat_write(), client_in.compat());
+        agent_client_protocol::ByteStreams::new(client_out.compat_write(), client_in.compat());
 
     Client
         .builder()
@@ -66,7 +66,7 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
         .with_spawned(|_cx| async move {
             ConnectTo::<Client>::connect_to(
                 agent,
-                agent_client_protocol_core::ByteStreams::new(
+                agent_client_protocol::ByteStreams::new(
                     agent_out.compat_write(),
                     agent_in.compat(),
                 ),
@@ -76,7 +76,7 @@ async fn test_acp_agent_debug_callback() -> Result<(), Box<dyn std::error::Error
         .connect_with(transport, async |connection_to_client| {
             // Send an initialize request
             let _init_response = recv(connection_to_client.send_request(InitializeRequest::new(
-                agent_client_protocol_core::schema::ProtocolVersion::LATEST,
+                agent_client_protocol::schema::ProtocolVersion::LATEST,
             )))
             .await?;
 

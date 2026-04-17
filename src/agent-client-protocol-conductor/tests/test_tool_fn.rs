@@ -3,9 +3,9 @@
 //! This test verifies that `tool_fn` works correctly for stateless tools
 //! that don't need mutable state.
 
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -25,7 +25,7 @@ fn create_greet_proxy() -> DynConnectTo<Conductor> {
             "greet",
             "Greet someone by name",
             async |input: GreetInput, _context| Ok(format!("Hello, {}!", input.name)),
-            agent_client_protocol_core::tool_fn!(),
+            agent_client_protocol::tool_fn!(),
         )
         .build();
 
@@ -43,7 +43,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         Proxy
             .builder()
             .name("greet-proxy")
@@ -54,7 +54,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 }
 
 #[tokio::test]
-async fn test_tool_fn_greet() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_tool_fn_greet() -> Result<(), agent_client_protocol::Error> {
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),

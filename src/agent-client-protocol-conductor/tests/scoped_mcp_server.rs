@@ -4,9 +4,9 @@
 //! can capture references to stack-local data (like a Vec) and push to it
 //! when the tool is invoked.
 
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::{Agent, Conductor, ConnectTo, Proxy, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::{Agent, Conductor, ConnectTo, Proxy, Role, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ use std::sync::Mutex;
 /// This validates the scoped lifetime feature - the tool closure captures
 /// a reference to `collected_values` which lives on the stack.
 #[tokio::test]
-async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_protocol::Error> {
     let conductor = ConductorImpl::new_agent(
         "conductor".to_string(),
         ProxiesAndAgent::new(Testy::new()).proxy(ScopedProxy),
@@ -48,9 +48,9 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
 /// The MCP server captures a reference to stack-local data that lives for
 /// the duration of the session.
 #[tokio::test]
-async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_protocol::Error> {
     // Run the client
-    agent_client_protocol_core::Client.builder()
+    agent_client_protocol::Client.builder()
         .connect_with(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
@@ -59,8 +59,8 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
             ),
             async |cx| {
                 // Initialize first
-                cx.send_request(agent_client_protocol_core::schema::InitializeRequest::new(
-                    agent_client_protocol_core::schema::ProtocolVersion::LATEST,
+                cx.send_request(agent_client_protocol::schema::InitializeRequest::new(
+                    agent_client_protocol::schema::ProtocolVersion::LATEST,
                 ))
                 .block_task()
                 .await?;
@@ -113,7 +113,7 @@ fn make_mcp_server<Counterpart: Role>(
                 values.extend(input.elements);
                 Ok(values.len())
             },
-            agent_client_protocol_core::tool_fn_mut!(),
+            agent_client_protocol::tool_fn_mut!(),
         )
         .tool_fn_mut(
             "get",
@@ -122,7 +122,7 @@ fn make_mcp_server<Counterpart: Role>(
                 let values = values.lock().expect("not poisoned");
                 Ok(values.clone())
             },
-            agent_client_protocol_core::tool_fn_mut!(),
+            agent_client_protocol::tool_fn_mut!(),
         )
         .build()
 }
@@ -131,12 +131,12 @@ impl ConnectTo<Conductor> for ScopedProxy {
     async fn connect_to(
         self,
         client: impl ConnectTo<Proxy>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         // Stack-local data that the MCP tool will push to
         let values: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
         // Build the MCP server that captures a reference to collected_values
-        let mcp_server = make_mcp_server::<agent_client_protocol_core::Conductor>(&values);
+        let mcp_server = make_mcp_server::<agent_client_protocol::Conductor>(&values);
 
         Proxy
             .builder()
