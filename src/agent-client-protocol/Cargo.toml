@@ -1,67 +1,68 @@
 [package]
 name = "agent-client-protocol"
-authors = ["Zed <hi@zed.dev>"]
 version = "0.10.4"
-edition = "2024"
-license = "Apache-2.0"
-description = "A protocol for standardizing communication between code editors and AI coding agents"
-repository = "https://github.com/agentclientprotocol/rust-sdk"
-homepage = "https://github.com/agentclientprotocol/rust-sdk"
-documentation = "https://docs.rs/agent-client-protocol"
-readme = "README.md"
-keywords = ["agent", "client", "protocol", "ai", "editor"]
-categories = ["development-tools", "api-bindings"]
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core protocol types and traits for the Agent Client Protocol"
+keywords = ["acp", "agent", "protocol", "ai"]
+categories = ["development-tools"]
 
 [features]
+default = []
+
+# Forward unstable features from agent-client-protocol-schema.
+# Enable these to get support for the corresponding unstable ACP methods.
 unstable = [
     "unstable_auth_methods",
-    "unstable_cancel_request",
-    "unstable_elicitation",
+    "unstable_boolean_config",
     "unstable_logout",
-    "unstable_nes",
+    "unstable_message_id",
     "unstable_session_additional_directories",
-    "unstable_session_fork",
     "unstable_session_close",
+    "unstable_session_fork",
     "unstable_session_model",
     "unstable_session_resume",
     "unstable_session_usage",
-    "unstable_message_id",
-    "unstable_boolean_config",
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
-unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
-unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
+unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
 unstable_logout = ["agent-client-protocol-schema/unstable_logout"]
-unstable_nes = ["agent-client-protocol-schema/unstable_nes"]
+unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
 unstable_session_additional_directories = ["agent-client-protocol-schema/unstable_session_additional_directories"]
+unstable_session_close = ["agent-client-protocol-schema/unstable_session_close"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
 unstable_session_resume = ["agent-client-protocol-schema/unstable_session_resume"]
 unstable_session_usage = ["agent-client-protocol-schema/unstable_session_usage"]
-unstable_session_close = ["agent-client-protocol-schema/unstable_session_close"]
-unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
-unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
-
 
 [dependencies]
 agent-client-protocol-schema.workspace = true
+agent-client-protocol-derive.workspace = true
 anyhow.workspace = true
-async-broadcast.workspace = true
-async-trait.workspace = true
-derive_more.workspace = true
+boxfnonce.workspace = true
 futures.workspace = true
-log.workspace = true
+futures-concurrency.workspace = true
+rustc-hash.workspace = true
+jsonrpcmsg.workspace = true
+rmcp = { workspace = true, features = ["server"] }
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
-env_logger.workspace = true
-futures-util.workspace = true
-piper.workspace = true
-pretty_assertions.workspace = true
-rustyline.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+agent-client-protocol-test.workspace = true
+clap.workspace = true
+expect-test.workspace = true
+shell-words.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

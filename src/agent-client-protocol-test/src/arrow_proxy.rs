@@ -3,10 +3,10 @@
 //! This proxy demonstrates basic proxy functionality by intercepting
 //! `session/update` notifications and prepending `>` to the content.
 
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::schema::{
     ContentBlock, ContentChunk, SessionNotification, SessionUpdate,
 };
-use agent_client_protocol_core::{Agent, Client, ConnectTo, Proxy};
+use agent_client_protocol::{Agent, Client, ConnectTo, Proxy};
 
 /// Run the arrow proxy that adds `>` to each session update.
 ///
@@ -15,7 +15,7 @@ use agent_client_protocol_core::{Agent, Client, ConnectTo, Proxy};
 /// * `transport` - Component to the predecessor (conductor or another proxy)
 pub async fn run_arrow_proxy(
     transport: impl ConnectTo<Proxy> + 'static,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     Proxy
         .builder()
         .name("arrow-proxy")
@@ -40,7 +40,7 @@ pub async fn run_arrow_proxy(
                 cx.send_notification_to(Client, notification)?;
                 Ok(())
             },
-            agent_client_protocol_core::on_receive_notification!(),
+            agent_client_protocol::on_receive_notification!(),
         )
         .connect_to(transport)
         .await

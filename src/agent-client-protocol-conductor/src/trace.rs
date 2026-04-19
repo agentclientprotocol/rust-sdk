@@ -9,8 +9,8 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use agent_client_protocol_core::schema::{McpOverAcpMessage, SuccessorMessage};
-use agent_client_protocol_core::{DynConnectTo, JsonRpcMessage, Role, UntypedMessage, jsonrpcmsg};
+use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
+use agent_client_protocol::{DynConnectTo, JsonRpcMessage, Role, UntypedMessage, jsonrpcmsg};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -388,7 +388,7 @@ impl TraceWriter {
         mut self: TraceWriter,
     ) -> (
         TraceHandle,
-        impl std::future::Future<Output = Result<(), agent_client_protocol_core::Error>>,
+        impl std::future::Future<Output = Result<(), agent_client_protocol::Error>>,
     ) {
         use futures::StreamExt;
 
@@ -421,7 +421,7 @@ impl TraceHandle {
         successor_index: ComponentIndex,
         incoming: Incoming,
         message: &jsonrpcmsg::Message,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         self.tx
             .unbounded_send(TracedMessage {
                 component_index,
@@ -429,7 +429,7 @@ impl TraceHandle {
                 incoming,
                 message: message.clone(),
             })
-            .map_err(agent_client_protocol_core::util::internal_error)
+            .map_err(agent_client_protocol::util::internal_error)
     }
 
     /// Create a tracing bridge that wraps a proxy component.
@@ -450,7 +450,7 @@ impl TraceHandle {
         &self,
         proxy_index: ComponentIndex,
         successor_index: ComponentIndex,
-        proxy: impl agent_client_protocol_core::ConnectTo<R>,
+        proxy: impl agent_client_protocol::ConnectTo<R>,
     ) -> DynConnectTo<R> {
         DynConnectTo::new(SnooperComponent::new(
             proxy,

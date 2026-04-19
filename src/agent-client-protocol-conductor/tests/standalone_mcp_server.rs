@@ -3,7 +3,7 @@
 //! These tests verify that `McpServer` can be used directly with MCP clients
 //! via the `Component<McpServerToClient>` implementation.
 
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     ByteStreams, ConnectTo, RunWithConnectionTo, mcp_server::McpServer, role::mcp, util::run_until,
 };
 use rmcp::{ClientHandler, ServiceExt, model::ClientInfo};
@@ -38,7 +38,7 @@ fn create_test_server() -> McpServer<mcp::Client, impl RunWithConnectionTo<mcp::
             "echo",
             "Echo a message back",
             async |input: EchoInput, _cx| Ok(format!("Echo: {}", input.message)),
-            agent_client_protocol_core::tool_fn!(),
+            agent_client_protocol::tool_fn!(),
         )
         .tool_fn(
             "add",
@@ -48,7 +48,7 @@ fn create_test_server() -> McpServer<mcp::Client, impl RunWithConnectionTo<mcp::
                     result: input.a + input.b,
                 })
             },
-            agent_client_protocol_core::tool_fn!(),
+            agent_client_protocol::tool_fn!(),
         )
         .build()
 }
@@ -64,7 +64,7 @@ impl ClientHandler for MinimalClientHandler {
 }
 
 #[tokio::test]
-async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol::Error> {
     // Create duplex streams for communication
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
@@ -83,13 +83,13 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // List tools
             let tools_result = client
                 .list_tools(None)
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // Verify we got both tools
             assert_eq!(tools_result.tools.len(), 2);
@@ -103,7 +103,7 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(())
         },
     )
@@ -111,7 +111,7 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
 }
 
 #[tokio::test]
-async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_protocol::Error> {
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
@@ -125,7 +125,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // Call the echo tool
             let result = client
@@ -138,7 +138,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
                     ),
                 )
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // Verify the result
             let text = result
@@ -153,7 +153,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(())
         },
     )
@@ -161,7 +161,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
 }
 
 #[tokio::test]
-async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_protocol::Error> {
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
@@ -175,7 +175,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // Call the add tool
             let result = client
@@ -188,7 +188,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
                     ),
                 )
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // The add tool returns structured output (AddOutput)
             // Check that we get the expected result
@@ -206,7 +206,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(())
         },
     )
@@ -214,7 +214,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
 }
 
 #[tokio::test]
-async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_protocol::Error> {
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
@@ -228,7 +228,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // Call a non-existent tool
             let result = client
@@ -241,7 +241,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(())
         },
     )
@@ -249,8 +249,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
 }
 
 #[tokio::test]
-async fn test_standalone_server_with_disabled_tools()
--> Result<(), agent_client_protocol_core::Error> {
+async fn test_standalone_server_with_disabled_tools() -> Result<(), agent_client_protocol::Error> {
     let (server_stream, client_stream) = tokio::io::duplex(8192);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
@@ -261,7 +260,7 @@ async fn test_standalone_server_with_disabled_tools()
             "echo",
             "Echo a message",
             async |input: EchoInput, _cx| Ok(format!("Echo: {}", input.message)),
-            agent_client_protocol_core::tool_fn!(),
+            agent_client_protocol::tool_fn!(),
         )
         .tool_fn(
             "add",
@@ -271,7 +270,7 @@ async fn test_standalone_server_with_disabled_tools()
                     result: input.a + input.b,
                 })
             },
-            agent_client_protocol_core::tool_fn!(),
+            agent_client_protocol::tool_fn!(),
         )
         .disable_tool("echo")?
         .build();
@@ -284,13 +283,13 @@ async fn test_standalone_server_with_disabled_tools()
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
 
             // List tools - should only show "add"
             let tools_result = client
                 .list_tools(None)
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             assert_eq!(tools_result.tools.len(), 1);
             assert_eq!(tools_result.tools[0].name.as_ref(), "add");
 
@@ -311,7 +310,7 @@ async fn test_standalone_server_with_disabled_tools()
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol_core::util::internal_error)?;
+                .map_err(agent_client_protocol::util::internal_error)?;
             Ok(())
         },
     )

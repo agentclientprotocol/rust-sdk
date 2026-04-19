@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@150fca883cd4034361b621bd4e6a9d34e5143606
+        uses: actions-rust-lang/setup-rust-toolchain@2b1f5e9b395427c92ee4e3331786ca3c37afe2d7
         with:
           toolchain: nightly,stable
           components: rustfmt,clippy
@@ -35,7 +35,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Check for typos
-        uses: crate-ci/typos@631208b7aac2daa8b707f55e7331f9112b0e062d
+        uses: crate-ci/typos@cf5f1c29a8ac336af8568821ec41919923b05a83
         with:
           config: ./typos.toml
 
@@ -45,5 +45,10 @@ jobs:
       - name: Build
         run: cargo build --all-targets --all-features
 
+      - name: Install just
+        uses: taiki-e/install-action@a2352fc6ce487f030a3aa709482d57823eadfb37
+        with:
+          tool: just
+
       - name: Run tests
-        run: cargo test --all-features --workspace
+        run: just test

@@ -15,7 +15,7 @@ use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[tokio::test]
-async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_trace_generation() -> Result<(), agent_client_protocol::Error> {
     // Enable tracing if RUST_LOG is set
     drop(
         tracing_subscriber::fmt()
@@ -47,7 +47,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
         )
         .trace_to_path(&trace_path_clone)
         .expect("Failed to create trace writer")
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -57,7 +57,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         let result = yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),
@@ -65,7 +65,7 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol_core::Error
         )
         .await?;
 
-        Ok::<String, agent_client_protocol_core::Error>(result)
+        Ok::<String, agent_client_protocol::Error>(result)
     })
     .await
     .expect("Test timed out")

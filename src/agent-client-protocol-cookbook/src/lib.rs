@@ -6,13 +6,13 @@
 //! - **Proxies** - Sit between client and agent to add capabilities (like MCP tools)
 //! - **Agents** - Respond to prompts with AI-powered responses
 //!
-//! See the [`agent_client_protocol_core::concepts`] module for detailed explanations of
+//! See the [`agent_client_protocol::concepts`] module for detailed explanations of
 //! the concepts behind the API.
 //!
 //! # Building Clients
 //!
 //! A client connects to an agent, sends requests, and handles responses. Use
-//! [`Client.builder()`](agent_client_protocol_core::Client) to build connections.
+//! [`Client.builder()`](agent_client_protocol::Client) to build connections.
 //!
 //! - [`one_shot_prompt`] - Send a single prompt and get a response (simplest pattern)
 //! - [`connecting_as_client`] - More details on connection setup and permission handling
@@ -20,7 +20,7 @@
 //! # Building Proxies
 //!
 //! A proxy sits between client and agent, intercepting and optionally modifying
-//! messages. The most common use case is adding MCP tools. Use [`Proxy.builder()`](agent_client_protocol_core::Proxy)
+//! messages. The most common use case is adding MCP tools. Use [`Proxy.builder()`](agent_client_protocol::Proxy)
 //! to build proxy connections.
 //!
 //! **Important:** Proxies don't run standalone—they need the [`agent-client-protocol-conductor`] to
@@ -37,18 +37,18 @@
 //!
 //! # Building Agents
 //!
-//! An agent receives prompts and generates responses. Use [`Agent.builder()`](agent_client_protocol_core::Agent)
+//! An agent receives prompts and generates responses. Use [`Agent.builder()`](agent_client_protocol::Agent)
 //! to build agent connections.
 //!
 //! - [`building_an_agent`] - Handle initialization, sessions, and prompts
 //! - [`reusable_components`] - Package your agent as a [`ConnectTo`]
 //! - [`custom_message_handlers`] - Fine-grained control over message routing
 //!
-//! [`agent_client_protocol_core::concepts`]: agent_client_protocol_core::concepts
-//! [`Client`]: agent_client_protocol_core::Client
-//! [`Agent`]: agent_client_protocol_core::Agent
-//! [`Proxy`]: agent_client_protocol_core::Proxy
-//! [`ConnectTo`]: agent_client_protocol_core::ConnectTo
+//! [`agent_client_protocol::concepts`]: agent_client_protocol::concepts
+//! [`Client`]: agent_client_protocol::Client
+//! [`Agent`]: agent_client_protocol::Agent
+//! [`Proxy`]: agent_client_protocol::Proxy
+//! [`ConnectTo`]: agent_client_protocol::ConnectTo
 
 pub mod one_shot_prompt {
     //! Pattern: You Only Prompt Once.
@@ -60,18 +60,18 @@ pub mod one_shot_prompt {
     //! # Example
     //!
     //! ```
-    //! use agent_client_protocol_core::{Client, Agent, ConnectTo};
-    //! use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
+    //! use agent_client_protocol::{Client, Agent, ConnectTo};
+    //! use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
     //!
     //! async fn ask_agent(
     //!     transport: impl ConnectTo<Client> + 'static,
     //!     prompt: &str,
-    //! ) -> Result<String, agent_client_protocol_core::Error> {
+    //! ) -> Result<String, agent_client_protocol::Error> {
     //!     Client.builder()
     //!         .name("my-client")
     //!         .connect_with(transport, async |connection| {
     //!             // Initialize the connection
-    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::V1))
     //!                 .block_task().await?;
     //!
     //!             // Create a session, send prompt, read response
@@ -105,16 +105,16 @@ pub mod one_shot_prompt {
     //! commands or writing files. See [`connecting_as_client`] for how to handle
     //! [`RequestPermissionRequest`] messages.
     //!
-    //! [`connect_with`]: agent_client_protocol_core::Builder::connect_with
-    //! [`send_request`]: agent_client_protocol_core::ConnectionTo::send_request
-    //! [`block_task`]: agent_client_protocol_core::SentRequest::block_task
-    //! [`build_session_cwd`]: agent_client_protocol_core::ConnectionTo::build_session_cwd
-    //! [`start_session`]: agent_client_protocol_core::SessionBuilder::start_session
-    //! [`ActiveSession`]: agent_client_protocol_core::ActiveSession
-    //! [`send_prompt`]: agent_client_protocol_core::ActiveSession::send_prompt
-    //! [`read_to_string`]: agent_client_protocol_core::ActiveSession::read_to_string
+    //! [`connect_with`]: agent_client_protocol::Builder::connect_with
+    //! [`send_request`]: agent_client_protocol::ConnectionTo::send_request
+    //! [`block_task`]: agent_client_protocol::SentRequest::block_task
+    //! [`build_session_cwd`]: agent_client_protocol::ConnectionTo::build_session_cwd
+    //! [`start_session`]: agent_client_protocol::SessionBuilder::start_session
+    //! [`ActiveSession`]: agent_client_protocol::ActiveSession
+    //! [`send_prompt`]: agent_client_protocol::ActiveSession::send_prompt
+    //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
     //! [`connecting_as_client`]: super::connecting_as_client
-    //! [`RequestPermissionRequest`]: agent_client_protocol_core::schema::RequestPermissionRequest
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
 }
 
 pub mod connecting_as_client {
@@ -127,15 +127,15 @@ pub mod connecting_as_client {
     //! # Basic Example
     //!
     //! ```
-    //! use agent_client_protocol_core::{Client, Agent, ConnectTo};
-    //! use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
+    //! use agent_client_protocol::{Client, Agent, ConnectTo};
+    //! use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
     //!
-    //! async fn connect_to_agent(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol_core::Error> {
+    //! async fn connect_to_agent(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
     //!     Client.builder()
     //!         .name("my-client")
     //!         .connect_with(transport, async |connection| {
     //!             // Initialize the connection
-    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+    //!             connection.send_request(InitializeRequest::new(ProtocolVersion::V1))
     //!                 .block_task().await?;
     //!
     //!             // Create a session and send a prompt
@@ -182,7 +182,7 @@ pub mod connecting_as_client {
     //!             },
     //!             meta: None,
     //!         })
-    //!     }, agent_client_protocol_core::on_receive_request!())
+    //!     }, agent_client_protocol::on_receive_request!())
     //!     .connect_with(transport, async |connection| { /* ... */ })
     //!     .await
     //! ```
@@ -193,16 +193,16 @@ pub mod connecting_as_client {
     //! as a spawned task, not on the event loop. The event loop continues processing
     //! messages (including the response you're waiting for) while your task blocks.
     //!
-    //! [`connect_with`]: agent_client_protocol_core::Builder::connect_with
-    //! [`block_task`]: agent_client_protocol_core::SentRequest::block_task
-    //! [`build_session`]: agent_client_protocol_core::ConnectionTo::build_session
-    //! [`SessionBuilder`]: agent_client_protocol_core::SessionBuilder
-    //! [`send_prompt`]: agent_client_protocol_core::ActiveSession::send_prompt
-    //! [`read_update`]: agent_client_protocol_core::ActiveSession::read_update
-    //! [`read_to_string`]: agent_client_protocol_core::ActiveSession::read_to_string
-    //! [`with_mcp_server`]: agent_client_protocol_core::SessionBuilder::with_mcp_server
-    //! [`RequestPermissionRequest`]: agent_client_protocol_core::schema::RequestPermissionRequest
-    //! [`on_receive_request`]: agent_client_protocol_core::Builder::on_receive_request
+    //! [`connect_with`]: agent_client_protocol::Builder::connect_with
+    //! [`block_task`]: agent_client_protocol::SentRequest::block_task
+    //! [`build_session`]: agent_client_protocol::ConnectionTo::build_session
+    //! [`SessionBuilder`]: agent_client_protocol::SessionBuilder
+    //! [`send_prompt`]: agent_client_protocol::ActiveSession::send_prompt
+    //! [`read_update`]: agent_client_protocol::ActiveSession::read_update
+    //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
+    //! [`with_mcp_server`]: agent_client_protocol::SessionBuilder::with_mcp_server
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
+    //! [`on_receive_request`]: agent_client_protocol::Builder::on_receive_request
 }
 
 pub mod building_an_agent {
@@ -214,19 +214,19 @@ pub mod building_an_agent {
     //! 2. Handle [`NewSessionRequest`] to create sessions
     //! 3. Handle [`PromptRequest`] to process prompts
     //!
-    //! Use [`Agent.builder()`](agent_client_protocol_core::Agent) to build agent connections.
+    //! Use [`Agent.builder()`](agent_client_protocol::Agent) to build agent connections.
     //!
     //! # Minimal Example
     //!
     //! ```
-    //! use agent_client_protocol_core::{Agent, Client, ConnectTo, Dispatch, ConnectionTo};
-    //! use agent_client_protocol_core::schema::{
+    //! use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, ConnectionTo};
+    //! use agent_client_protocol::schema::{
     //!     InitializeRequest, InitializeResponse, AgentCapabilities,
     //!     NewSessionRequest, NewSessionResponse, SessionId,
     //!     PromptRequest, PromptResponse, StopReason,
     //! };
     //!
-    //! async fn run_agent(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol_core::Error> {
+    //! async fn run_agent(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
     //!     Agent.builder()
     //!         .name("my-agent")
     //!         // Handle initialization
@@ -235,11 +235,11 @@ pub mod building_an_agent {
     //!                 InitializeResponse::new(req.protocol_version)
     //!                     .agent_capabilities(AgentCapabilities::new())
     //!             )
-    //!         }, agent_client_protocol_core::on_receive_request!())
+    //!         }, agent_client_protocol::on_receive_request!())
     //!         // Handle session creation
     //!         .on_receive_request(async |req: NewSessionRequest, responder, _connection| {
     //!             responder.respond(NewSessionResponse::new(SessionId::new("session-1")))
-    //!         }, agent_client_protocol_core::on_receive_request!())
+    //!         }, agent_client_protocol::on_receive_request!())
     //!         // Handle prompts
     //!         .on_receive_request(async |req: PromptRequest, responder, connection| {
     //!             // Send streaming updates via notifications
@@ -247,11 +247,11 @@ pub mod building_an_agent {
     //!
     //!             // Return final response
     //!             responder.respond(PromptResponse::new(StopReason::EndTurn))
-    //!         }, agent_client_protocol_core::on_receive_request!())
+    //!         }, agent_client_protocol::on_receive_request!())
     //!         // Reject unknown messages
     //!         .on_receive_dispatch(async |message: Dispatch, connection: ConnectionTo<Client>| {
-    //!             message.respond_with_error(agent_client_protocol_core::Error::method_not_found(), connection)
-    //!         }, agent_client_protocol_core::on_receive_dispatch!())
+    //!             message.respond_with_error(agent_client_protocol::Error::method_not_found(), connection)
+    //!         }, agent_client_protocol::on_receive_dispatch!())
     //!         .connect_to(transport)
     //!         .await
     //! }
@@ -287,7 +287,7 @@ pub mod building_an_agent {
     //!         stop_reason: StopReason::EndTurn,
     //!         meta: None,
     //!     })
-    //! }, agent_client_protocol_core::on_receive_request!())
+    //! }, agent_client_protocol::on_receive_request!())
     //! ```
     //!
     //! # Requesting Permissions
@@ -321,13 +321,13 @@ pub mod building_an_agent {
     //! For agents that will be composed with proxies, implement [`ConnectTo`].
     //! See [`reusable_components`] for the pattern.
     //!
-    //! [`InitializeRequest`]: agent_client_protocol_core::schema::InitializeRequest
-    //! [`NewSessionRequest`]: agent_client_protocol_core::schema::NewSessionRequest
-    //! [`PromptRequest`]: agent_client_protocol_core::schema::PromptRequest
-    //! [`SessionNotification`]: agent_client_protocol_core::schema::SessionNotification
-    //! [`RequestPermissionRequest`]: agent_client_protocol_core::schema::RequestPermissionRequest
-    //! [`Agent`]: agent_client_protocol_core::Agent
-    //! [`ConnectTo`]: agent_client_protocol_core::ConnectTo
+    //! [`InitializeRequest`]: agent_client_protocol::schema::InitializeRequest
+    //! [`NewSessionRequest`]: agent_client_protocol::schema::NewSessionRequest
+    //! [`PromptRequest`]: agent_client_protocol::schema::PromptRequest
+    //! [`SessionNotification`]: agent_client_protocol::schema::SessionNotification
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
+    //! [`Agent`]: agent_client_protocol::Agent
+    //! [`ConnectTo`]: agent_client_protocol::ConnectTo
     //! [`reusable_components`]: super::reusable_components
 }
 
@@ -341,8 +341,8 @@ pub mod reusable_components {
     //! # Example
     //!
     //! ```
-    //! use agent_client_protocol_core::{ConnectTo, Agent, Client};
-    //! use agent_client_protocol_core::schema::{
+    //! use agent_client_protocol::{ConnectTo, Agent, Client};
+    //! use agent_client_protocol::schema::{
     //!     InitializeRequest, InitializeResponse, AgentCapabilities,
     //! };
     //!
@@ -351,7 +351,7 @@ pub mod reusable_components {
     //! }
     //!
     //! impl ConnectTo<Client> for MyAgent {
-    //!     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol_core::Error> {
+    //!     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
     //!         Agent.builder()
     //!             .name(&self.name)
     //!             .on_receive_request(async move |req: InitializeRequest, responder, _connection| {
@@ -359,7 +359,7 @@ pub mod reusable_components {
     //!                     InitializeResponse::new(req.protocol_version)
     //!                         .agent_capabilities(AgentCapabilities::new())
     //!                 )
-    //!             }, agent_client_protocol_core::on_receive_request!())
+    //!             }, agent_client_protocol::on_receive_request!())
     //!             .connect_to(client)
     //!             .await
     //!     }
@@ -376,9 +376,9 @@ pub mod reusable_components {
     //! - Use [`ConnectionTo::spawn`] to offload work to a background task
     //! - Use [`on_receiving_result`] to schedule work when a response arrives
     //!
-    //! [`ConnectTo`]: agent_client_protocol_core::ConnectTo
-    //! [`ConnectionTo::spawn`]: agent_client_protocol_core::ConnectionTo::spawn
-    //! [`on_receiving_result`]: agent_client_protocol_core::SentRequest::on_receiving_result
+    //! [`ConnectTo`]: agent_client_protocol::ConnectTo
+    //! [`ConnectionTo::spawn`]: agent_client_protocol::ConnectionTo::spawn
+    //! [`on_receiving_result`]: agent_client_protocol::SentRequest::on_receiving_result
     //! [`agent-client-protocol-conductor`]: https://crates.io/crates/agent-client-protocol-conductor
 }
 
@@ -396,9 +396,9 @@ pub mod custom_message_handlers {
     //! # Example
     //!
     //! ```
-    //! use agent_client_protocol_core::{HandleDispatchFrom, Dispatch, Handled, ConnectionTo, UntypedRole};
-    //! use agent_client_protocol_core::schema::{InitializeRequest, InitializeResponse, AgentCapabilities};
-    //! use agent_client_protocol_core::util::MatchDispatch;
+    //! use agent_client_protocol::{HandleDispatchFrom, Dispatch, Handled, ConnectionTo, UntypedRole};
+    //! use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, AgentCapabilities};
+    //! use agent_client_protocol::util::MatchDispatch;
     //!
     //! struct MyHandler;
     //!
@@ -407,7 +407,7 @@ pub mod custom_message_handlers {
     //!         &mut self,
     //!         message: Dispatch,
     //!         _connection: ConnectionTo<UntypedRole>,
-    //!     ) -> Result<Handled<Dispatch>, agent_client_protocol_core::Error> {
+    //!     ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
     //!         MatchDispatch::new(message)
     //!             .if_request(async |req: InitializeRequest, responder| {
     //!                 responder.respond(
@@ -431,9 +431,9 @@ pub mod custom_message_handlers {
     //! - [`MatchDispatchFrom`] - Use in proxies where messages come from different
     //!   peers (`Client` vs `Agent`) and may need different handling
     //!
-    //! [`HandleDispatchFrom`]: agent_client_protocol_core::HandleDispatchFrom
-    //! [`MatchDispatch`]: agent_client_protocol_core::util::MatchDispatch
-    //! [`MatchDispatchFrom`]: agent_client_protocol_core::util::MatchDispatchFrom
+    //! [`HandleDispatchFrom`]: agent_client_protocol::HandleDispatchFrom
+    //! [`MatchDispatch`]: agent_client_protocol::util::MatchDispatch
+    //! [`MatchDispatchFrom`]: agent_client_protocol::util::MatchDispatchFrom
 }
 
 pub mod global_mcp_server {
@@ -454,8 +454,8 @@ pub mod global_mcp_server {
     //! The simplest way to create an MCP server is with [`McpServer::builder`]:
     //!
     //! ```
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::{ConnectTo, RunWithConnectionTo, Proxy, Conductor};
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::{ConnectTo, RunWithConnectionTo, Proxy, Conductor};
     //! use schemars::JsonSchema;
     //! use serde::{Deserialize, Serialize};
     //!
@@ -471,7 +471,7 @@ pub mod global_mcp_server {
     //!         async |params: EchoParams, _cx| {
     //!             Ok(EchoOutput { echoed: params.message })
     //!         },
-    //!         agent_client_protocol_core::tool_fn!())
+    //!         agent_client_protocol::tool_fn!())
     //!     .build();
     //!
     //! // The proxy component is generic over the MCP server's responder type
@@ -480,7 +480,7 @@ pub mod global_mcp_server {
     //! }
     //!
     //! impl<R: RunWithConnectionTo<Conductor> + Send + 'static> ConnectTo<Conductor> for MyProxy<R> {
-    //!     async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    //!     async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
     //!         Proxy.builder()
     //!             .with_mcp_server(self.mcp_server)
     //!             .connect_to(conductor)
@@ -501,8 +501,8 @@ pub mod global_mcp_server {
     //! use rmcp::handler::server::router::tool::ToolRouter;
     //! use rmcp::handler::server::wrapper::Parameters;
     //! use rmcp::model::*;
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::Conductor;
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::Conductor;
     //! use agent_client_protocol_rmcp::McpServerExt;
     //! use serde::{Deserialize, Serialize};
     //!
@@ -556,9 +556,9 @@ pub mod global_mcp_server {
     //! 2. Passes the modified request through to the next handler
     //! 3. Handles incoming MCP protocol messages (tool calls, etc.) for its URL
     //!
-    //! [`McpServer::builder`]: agent_client_protocol_core::mcp_server::McpServer::builder
+    //! [`McpServer::builder`]: agent_client_protocol::mcp_server::McpServer::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp
-    //! [`with_mcp_server`]: agent_client_protocol_core::Builder::with_mcp_server
+    //! [`with_mcp_server`]: agent_client_protocol::Builder::with_mcp_server
 }
 
 pub mod per_session_mcp_server {
@@ -580,11 +580,11 @@ pub mod per_session_mcp_server {
     //! run code after the session is established:
     //!
     //! ```
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::schema::NewSessionRequest;
-    //! use agent_client_protocol_core::{Client, Proxy, Conductor, ConnectTo};
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::schema::NewSessionRequest;
+    //! use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
     //!
-    //! async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    //! async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
     //!     Proxy.builder()
     //!         .on_receive_request_from(Client, async move |request: NewSessionRequest, responder, connection| {
     //!             // Extract session context from the request
@@ -596,7 +596,7 @@ pub mod per_session_mcp_server {
     //!                     async move |_params: (), _cx| {
     //!                         Ok(workspace_path.display().to_string())
     //!                     }
-    //!                 }, agent_client_protocol_core::tool_fn!())
+    //!                 }, agent_client_protocol::tool_fn!())
     //!                 .build();
     //!
     //!             // Build the session and run code after it starts
@@ -613,7 +613,7 @@ pub mod per_session_mcp_server {
     //!                     tracing::info!(%session_id, "Session started");
     //!                     Ok(())
     //!                 })
-    //!         }, agent_client_protocol_core::on_receive_request!())
+    //!         }, agent_client_protocol::on_receive_request!())
     //!         .connect_to(transport)
     //!         .await
     //! }
@@ -638,17 +638,17 @@ pub mod per_session_mcp_server {
     //! blocking is safe), use [`block_task`] + [`start_session_proxy`]:
     //!
     //! ```
-    //! # use agent_client_protocol_core::mcp_server::McpServer;
-    //! # use agent_client_protocol_core::schema::NewSessionRequest;
-    //! # use agent_client_protocol_core::{Client, Proxy, Conductor, ConnectTo};
-    //! # async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol_core::Error> {
+    //! # use agent_client_protocol::mcp_server::McpServer;
+    //! # use agent_client_protocol::schema::NewSessionRequest;
+    //! # use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
+    //! # async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
     //!     Proxy.builder()
     //!         .on_receive_request_from(Client, async |request: NewSessionRequest, responder, connection| {
     //!             let cwd = request.cwd.clone();
     //!             let mcp_server = McpServer::builder("tools")
     //!                 .tool_fn("get_cwd", "Returns working directory", {
     //!                     async move |_params: (), _cx| Ok(cwd.display().to_string())
-    //!                 }, agent_client_protocol_core::tool_fn!())
+    //!                 }, agent_client_protocol::tool_fn!())
     //!                 .build();
     //!
     //!             let session_id = connection.build_session_from(request)
@@ -659,7 +659,7 @@ pub mod per_session_mcp_server {
     //!
     //!             tracing::info!(%session_id, "Session started");
     //!             Ok(())
-    //!         }, agent_client_protocol_core::on_receive_request!())
+    //!         }, agent_client_protocol::on_receive_request!())
     //!         .connect_to(transport)
     //!         .await
     //! # }
@@ -668,13 +668,13 @@ pub mod per_session_mcp_server {
     //! For patterns where you need to interact with the session before proxying,
     //! use [`start_session`] + [`proxy_remaining_messages`] instead.
     //!
-    //! [`start_session`]: agent_client_protocol_core::SessionBuilder::start_session
-    //! [`proxy_remaining_messages`]: agent_client_protocol_core::ActiveSession::proxy_remaining_messages
+    //! [`start_session`]: agent_client_protocol::SessionBuilder::start_session
+    //! [`proxy_remaining_messages`]: agent_client_protocol::ActiveSession::proxy_remaining_messages
     //!
-    //! [`NewSessionRequest`]: agent_client_protocol_core::schema::NewSessionRequest
-    //! [`on_proxy_session_start`]: agent_client_protocol_core::SessionBuilder::on_proxy_session_start
-    //! [`block_task`]: agent_client_protocol_core::SessionBuilder::block_task
-    //! [`start_session_proxy`]: agent_client_protocol_core::SessionBuilder::start_session_proxy
+    //! [`NewSessionRequest`]: agent_client_protocol::schema::NewSessionRequest
+    //! [`on_proxy_session_start`]: agent_client_protocol::SessionBuilder::on_proxy_session_start
+    //! [`block_task`]: agent_client_protocol::SessionBuilder::block_task
+    //! [`start_session_proxy`]: agent_client_protocol::SessionBuilder::start_session_proxy
 }
 
 pub mod filtering_tools {
@@ -693,22 +693,22 @@ pub mod filtering_tools {
     //! hide specific tools:
     //!
     //! ```
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::{Conductor, RunWithConnectionTo};
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::{Conductor, RunWithConnectionTo};
     //! use schemars::JsonSchema;
     //! use serde::Deserialize;
     //!
     //! #[derive(Debug, Deserialize, JsonSchema)]
     //! struct Params {}
     //!
-    //! fn build_server(enable_admin: bool) -> Result<McpServer<Conductor, impl RunWithConnectionTo<Conductor>>, agent_client_protocol_core::Error> {
+    //! fn build_server(enable_admin: bool) -> Result<McpServer<Conductor, impl RunWithConnectionTo<Conductor>>, agent_client_protocol::Error> {
     //!     let mut builder = McpServer::builder("my-server")
     //!         .tool_fn("echo", "Echo a message",
     //!             async |_p: Params, _cx| Ok("echoed"),
-    //!             agent_client_protocol_core::tool_fn!())
+    //!             agent_client_protocol::tool_fn!())
     //!         .tool_fn("admin", "Admin-only tool",
     //!             async |_p: Params, _cx| Ok("admin action"),
-    //!             agent_client_protocol_core::tool_fn!());
+    //!             agent_client_protocol::tool_fn!());
     //!
     //!     // Conditionally disable the admin tool
     //!     if !enable_admin {
@@ -729,25 +729,25 @@ pub mod filtering_tools {
     //! allow-list where only explicitly enabled tools are available:
     //!
     //! ```
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::{Conductor, RunWithConnectionTo};
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::{Conductor, RunWithConnectionTo};
     //! use schemars::JsonSchema;
     //! use serde::Deserialize;
     //!
     //! #[derive(Debug, Deserialize, JsonSchema)]
     //! struct Params {}
     //!
-    //! fn build_restricted_server() -> Result<McpServer<Conductor, impl RunWithConnectionTo<Conductor>>, agent_client_protocol_core::Error> {
+    //! fn build_restricted_server() -> Result<McpServer<Conductor, impl RunWithConnectionTo<Conductor>>, agent_client_protocol::Error> {
     //!     McpServer::builder("restricted-server")
     //!         .tool_fn("safe", "Safe operation",
     //!             async |_p: Params, _cx| Ok("safe"),
-    //!             agent_client_protocol_core::tool_fn!())
+    //!             agent_client_protocol::tool_fn!())
     //!         .tool_fn("dangerous", "Dangerous operation",
     //!             async |_p: Params, _cx| Ok("danger!"),
-    //!             agent_client_protocol_core::tool_fn!())
+    //!             agent_client_protocol::tool_fn!())
     //!         .tool_fn("experimental", "Experimental feature",
     //!             async |_p: Params, _cx| Ok("experimental"),
-    //!             agent_client_protocol_core::tool_fn!())
+    //!             agent_client_protocol::tool_fn!())
     //!         // Start with all tools disabled
     //!         .disable_all_tools()
     //!         // Only enable the safe tool
@@ -762,8 +762,8 @@ pub mod filtering_tools {
     //! if the tool name doesn't match any registered tool. This helps catch typos:
     //!
     //! ```
-    //! use agent_client_protocol_core::mcp_server::McpServer;
-    //! use agent_client_protocol_core::Conductor;
+    //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol::Conductor;
     //!
     //! // This will error because "ech" is not a registered tool
     //! let result = McpServer::<Conductor, _>::builder("server")
@@ -775,9 +775,9 @@ pub mod filtering_tools {
     //! Calling enable/disable on an already enabled/disabled tool is not an error -
     //! the operations are idempotent.
     //!
-    //! [`disable_tool`]: agent_client_protocol_core::mcp_server::McpServerBuilder::disable_tool
-    //! [`enable_tool`]: agent_client_protocol_core::mcp_server::McpServerBuilder::enable_tool
-    //! [`disable_all_tools`]: agent_client_protocol_core::mcp_server::McpServerBuilder::disable_all_tools
+    //! [`disable_tool`]: agent_client_protocol::mcp_server::McpServerBuilder::disable_tool
+    //! [`enable_tool`]: agent_client_protocol::mcp_server::McpServerBuilder::enable_tool
+    //! [`disable_all_tools`]: agent_client_protocol::mcp_server::McpServerBuilder::disable_all_tools
 }
 
 pub mod running_proxies_with_conductor {
@@ -850,6 +850,6 @@ pub mod running_proxies_with_conductor {
     //! running with the conductor.
     //!
     //! [`agent-client-protocol-conductor`]: https://crates.io/crates/agent-client-protocol-conductor
-    //! [`SuccessorMessage`]: agent_client_protocol_core::schema::SuccessorMessage
+    //! [`SuccessorMessage`]: agent_client_protocol::schema::SuccessorMessage
     //! [`agent-client-protocol-conductor` tests]: https://github.com/anthropics/acp-rust-sdk/tree/main/src/agent-client-protocol-conductor/tests
 }

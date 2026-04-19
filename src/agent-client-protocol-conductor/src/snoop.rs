@@ -1,33 +1,25 @@
-use agent_client_protocol_core::{Channel, ConnectTo, DynConnectTo, Role, jsonrpcmsg};
+use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, Role, jsonrpcmsg};
 use futures::StreamExt;
 use futures_concurrency::future::TryJoin;
 
 pub struct SnooperComponent<R: Role> {
     base_component: DynConnectTo<R>,
     incoming_message: Box<
-        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol_core::Error>
-            + Send
-            + Sync,
+        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error> + Send + Sync,
     >,
     outgoing_message: Box<
-        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol_core::Error>
-            + Send
-            + Sync,
+        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error> + Send + Sync,
     >,
 }
 
 impl<R: Role> SnooperComponent<R> {
     pub fn new(
         base_component: impl ConnectTo<R>,
-        incoming_message: impl FnMut(
-            &jsonrpcmsg::Message,
-        ) -> Result<(), agent_client_protocol_core::Error>
+        incoming_message: impl FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error>
         + Send
         + Sync
         + 'static,
-        outgoing_message: impl FnMut(
-            &jsonrpcmsg::Message,
-        ) -> Result<(), agent_client_protocol_core::Error>
+        outgoing_message: impl FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error>
         + Send
         + Sync
         + 'static,
@@ -44,7 +36,7 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
     async fn connect_to(
         mut self,
         client: impl ConnectTo<R::Counterpart>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let (client_a, mut client_b) = Channel::duplex();
 
         let client_future = client.connect_to(client_a);
@@ -62,7 +54,7 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
                 base_channel
                     .tx
                     .unbounded_send(msg)
-                    .map_err(agent_client_protocol_core::util::internal_error)?;
+                    .map_err(agent_client_protocol::util::internal_error)?;
             }
             Ok(())
         };
@@ -78,7 +70,7 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
                 client_b
                     .tx
                     .unbounded_send(msg)
-                    .map_err(agent_client_protocol_core::util::internal_error)?;
+                    .map_err(agent_client_protocol::util::internal_error)?;
             }
             Ok(())
         };

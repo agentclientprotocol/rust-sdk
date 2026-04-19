@@ -14,7 +14,7 @@ This crate provides helpers for spawning and connecting to ACP agents using the 
 The main use case is spawning an agent process and connecting to it:
 
 ```rust
-use agent_client_protocol_core::{Client, ConnectTo};
+use agent_client_protocol::{Client, ConnectTo};
 use agent_client_protocol_tokio::AcpAgent;
 use std::str::FromStr;
 
@@ -47,11 +47,11 @@ Use `agent-client-protocol-tokio` when you need to:
 - Build tools that orchestrate multiple agents
 
 If you're implementing an agent that listens on stdin/stdout, you only need the core
-[`agent-client-protocol-core`](../agent-client-protocol-core/) crate.
+[`agent-client-protocol`](../agent-client-protocol/) crate.
 
 ## Related Crates
 
-- **[agent-client-protocol-core](../agent-client-protocol-core/)** — Core ACP protocol types and traits
+- **[agent-client-protocol](../agent-client-protocol/)** — Core ACP protocol types and traits
 - **[agent-client-protocol-derive](../agent-client-protocol-derive/)** — Derive macros for JSON-RPC traits
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 

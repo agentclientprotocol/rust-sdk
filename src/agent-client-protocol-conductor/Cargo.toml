@@ -1,6 +1,6 @@
 [package]
 name = "agent-client-protocol-conductor"
-version = "0.1.0"
+version = "0.11.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -18,7 +18,7 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-agent-client-protocol-core.workspace = true
+agent-client-protocol.workspace = true
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-tokio.workspace = true
 agent-client-protocol-trace-viewer.workspace = true

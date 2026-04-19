@@ -1,4 +1,4 @@
-use agent_client_protocol_core::Dispatch;
+use agent_client_protocol::Dispatch;
 use futures::{SinkExt, channel::mpsc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -16,13 +16,13 @@ pub async fn run_tcp_listener(
     tcp_listener: TcpListener,
     acp_url: String,
     mut conductor_tx: mpsc::Sender<ConductorMessage>,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // Accept connections
     loop {
         let (stream, _addr) = tcp_listener
             .accept()
             .await
-            .map_err(agent_client_protocol_core::Error::into_internal_error)?;
+            .map_err(agent_client_protocol::Error::into_internal_error)?;
 
         let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
 
@@ -33,7 +33,7 @@ pub async fn run_tcp_listener(
                 connection: McpBridgeConnection::new(to_mcp_client_tx),
             })
             .await
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
+            .map_err(|_| agent_client_protocol::Error::internal_error())?;
     }
 }
 
@@ -48,7 +48,7 @@ fn make_stdio_actor(
     // The bridge will send MCP requests (tools/call, etc.) to the conductor
     // The conductor can also send responses back
     let transport =
-        agent_client_protocol_core::ByteStreams::new(write_half.compat_write(), read_half.compat());
+        agent_client_protocol::ByteStreams::new(write_half.compat_write(), read_half.compat());
 
     McpBridgeConnectionActor::new(transport, conductor_tx, to_mcp_client_rx)
 }

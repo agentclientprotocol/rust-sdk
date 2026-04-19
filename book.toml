@@ -1,0 +1,14 @@
+[book]
+authors = ["Niko Matsakis"]
+language = "en"
+src = "md"
+title = "Agent Client Protocol Rust SDK"
+description = "Design and architecture documentation for the Agent Client Protocol Rust SDK"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+git-repository-url = "https://github.com/agentclientprotocol/rust-sdk"
+edit-url-template = "https://github.com/agentclientprotocol/rust-sdk/edit/main/{path}"

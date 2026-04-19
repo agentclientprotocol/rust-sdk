@@ -2,12 +2,12 @@
 //!
 //! The agent accepts JSON-serialized [`TestyCommand`] values as prompt text.
 
-use agent_client_protocol_core::schema::{
+use agent_client_protocol::schema::{
     AgentCapabilities, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     McpServer, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId,
     SessionNotification, SessionUpdate, StopReason, TextContent,
 };
-use agent_client_protocol_core::{Agent, Client, ConnectTo, ConnectionTo, Responder};
+use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, Responder};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -88,7 +88,7 @@ impl Testy {
         request: PromptRequest,
         responder: Responder<PromptResponse>,
         connection: ConnectionTo<Client>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();
         let input_text = extract_text_from_prompt(&request.prompt);
 
@@ -258,7 +258,7 @@ impl ConnectTo<Client> for Testy {
     async fn connect_to(
         self,
         client: impl ConnectTo<Agent>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         Agent
             .builder()
             .name("test-agent")
@@ -269,7 +269,7 @@ impl ConnectTo<Client> for Testy {
                             .agent_capabilities(AgentCapabilities::new()),
                     )
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
                 {
@@ -280,7 +280,7 @@ impl ConnectTo<Client> for Testy {
                         responder.respond(NewSessionResponse::new(session_id))
                     }
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
                 {
@@ -293,7 +293,7 @@ impl ConnectTo<Client> for Testy {
                         })
                     }
                 },
-                agent_client_protocol_core::on_receive_request!(),
+                agent_client_protocol::on_receive_request!(),
             )
             .connect_to(client)
             .await

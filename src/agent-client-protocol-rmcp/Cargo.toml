@@ -1,6 +1,6 @@
 [package]
 name = "agent-client-protocol-rmcp"
-version = "0.1.0"
+version = "0.11.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
 
 [dependencies]
-agent-client-protocol-core.workspace = true
+agent-client-protocol.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rmcp.workspace = true

@@ -64,7 +64,7 @@ Binary will be at `target/release/agent-client-protocol-conductor`.
 
 ## Related Crates
 
-- **[agent-client-protocol-core](../agent-client-protocol-core/)** — Core ACP protocol types and traits
+- **[agent-client-protocol](../agent-client-protocol/)** — Core ACP protocol types and traits
 - **[agent-client-protocol-tokio](../agent-client-protocol-tokio/)** — Tokio utilities for process spawning
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 

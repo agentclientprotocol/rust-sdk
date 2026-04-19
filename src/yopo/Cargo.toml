@@ -1,12 +1,13 @@
 [package]
 name = "agent-client-protocol-yopo"
-version = "0.1.0"
+version = "0.11.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "YOPO (You Only Prompt Once) - A simple ACP client for one-shot prompts"
+publish = false
 
 [lib]
 name = "yopo"
@@ -17,7 +18,7 @@ name = "yopo"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol-core.workspace = true
+agent-client-protocol.workspace = true
 agent-client-protocol-tokio.workspace = true
 clap.workspace = true
 tokio.workspace = true

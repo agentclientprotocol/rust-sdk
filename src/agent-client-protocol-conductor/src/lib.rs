@@ -71,7 +71,7 @@
 //! ## Related Crates
 //!
 //! - **[agent-client-protocol-proxy](https://crates.io/crates/agent-client-protocol-proxy)** - Framework for building proxy components
-//! - **[agent-client-protocol-core](https://crates.io/crates/agent-client-protocol-core)** - Core ACP SDK
+//! - **[agent-client-protocol](https://crates.io/crates/agent-client-protocol)** - Core ACP SDK
 //! - **[agent-client-protocol-tokio](https://crates.io/crates/agent-client-protocol-tokio)** - Tokio utilities for process spawning
 
 use std::path::PathBuf;
@@ -91,7 +91,7 @@ pub use self::conductor::*;
 
 use clap::{Parser, Subcommand};
 
-use agent_client_protocol_core::{Client, Conductor, DynConnectTo, schema::InitializeRequest};
+use agent_client_protocol::{Client, Conductor, DynConnectTo, schema::InitializeRequest};
 use agent_client_protocol_tokio::{AcpAgent, Stdio};
 use tracing::Instrument;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -111,10 +111,7 @@ impl InstantiateProxies for CommandLineComponents {
         req: InitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<
-            (InitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol_core::Error,
-        >,
+        Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
     > {
         Box::pin(async move {
             let proxies = self.0.into_iter().map(DynConnectTo::new).collect();
@@ -135,7 +132,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
                 Vec<DynConnectTo<Conductor>>,
                 DynConnectTo<Client>,
             ),
-            agent_client_protocol_core::Error,
+            agent_client_protocol::Error,
         >,
     > {
         Box::pin(async move {
@@ -153,7 +150,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
                 }
             }
 
-            Err(agent_client_protocol_core::util::internal_error(
+            Err(agent_client_protocol::util::internal_error(
                 "no agent component in list",
             ))
         })
@@ -329,7 +326,7 @@ impl ConductorArgs {
         self,
         debug_logger: Option<&debug_logger::DebugLogger>,
         trace_writer: Option<trace::TraceWriter>,
-    ) -> Result<(), agent_client_protocol_core::Error> {
+    ) -> Result<(), agent_client_protocol::Error> {
         match self.command {
             ConductorCommand::Agent { name, components } => {
                 initialize_conductor(
@@ -366,7 +363,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
         CommandLineComponents,
         crate::McpBridgeMode,
     ) -> ConductorImpl<Host>,
-) -> Result<(), agent_client_protocol_core::Error> {
+) -> Result<(), agent_client_protocol::Error> {
     // Parse agents and optionally wrap with debug callbacks
     let providers: Vec<AcpAgent> = components
         .into_iter()
@@ -378,7 +375,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
             }
             Ok(agent)
         })
-        .collect::<Result<Vec<_>, agent_client_protocol_core::Error>>()?;
+        .collect::<Result<Vec<_>, agent_client_protocol::Error>>()?;
 
     // Create Stdio component with optional debug logging
     let stdio = if let Some(logger) = debug_logger {

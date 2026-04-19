@@ -1,4 +1,4 @@
-use agent_client_protocol_core::{
+use agent_client_protocol::{
     ConnectTo, Dispatch, DynConnectTo, role::mcp, schema::McpDisconnectNotification,
 };
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
@@ -34,7 +34,7 @@ impl McpBridgeConnectionActor {
         }
     }
 
-    pub async fn run(self, connection_id: String) -> Result<(), agent_client_protocol_core::Error> {
+    pub async fn run(self, connection_id: String) -> Result<(), agent_client_protocol::Error> {
         info!(connection_id, "MCP bridge connected");
 
         let McpBridgeConnectionActor {
@@ -51,17 +51,17 @@ impl McpBridgeConnectionActor {
                 {
                     let mut conductor_tx = conductor_tx.clone();
                     let connection_id = connection_id.clone();
-                    async move |message: agent_client_protocol_core::Dispatch, _cx| {
+                    async move |message: agent_client_protocol::Dispatch, _cx| {
                         conductor_tx
                             .send(ConductorMessage::McpClientToMcpServer {
                                 connection_id: connection_id.clone(),
                                 message,
                             })
                             .await
-                            .map_err(|_| agent_client_protocol_core::Error::internal_error())
+                            .map_err(|_| agent_client_protocol::Error::internal_error())
                     }
                 },
-                agent_client_protocol_core::on_receive_dispatch!(),
+                agent_client_protocol::on_receive_dispatch!(),
             )
             // When we receive messages from the conductor, forward them to the MCP client
             .connect_with(transport, async move |mcp_connection_to_client| {
@@ -81,7 +81,7 @@ impl McpBridgeConnectionActor {
                 },
             })
             .await
-            .map_err(|_| agent_client_protocol_core::Error::internal_error())?;
+            .map_err(|_| agent_client_protocol::Error::internal_error())?;
 
         result
     }

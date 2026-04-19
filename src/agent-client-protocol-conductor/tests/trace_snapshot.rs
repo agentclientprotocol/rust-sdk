@@ -128,7 +128,7 @@ impl EventNormalizer {
 }
 
 #[tokio::test]
-async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
     // Create channel for collecting trace events
     let (tx, rx) = mpsc::unbounded();
 
@@ -150,7 +150,7 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> 
             McpBridgeMode::default(),
         )
         .trace_to(tx)
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -160,7 +160,7 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol_core::Error> 
     // Run a simple prompt through the conductor
     let result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         yopo::prompt(
-            agent_client_protocol_core::ByteStreams::new(
+            agent_client_protocol::ByteStreams::new(
                 editor_write.compat_write(),
                 editor_read.compat(),
             ),

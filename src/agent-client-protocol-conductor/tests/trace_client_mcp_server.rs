@@ -9,11 +9,11 @@
 //! Unlike trace_mcp_tool_call.rs which tests proxy-hosted MCP servers, this test
 //! verifies that MCP requests travel all the way back to the client.
 
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_core::mcp_server::McpServer;
-use agent_client_protocol_core::schema::{InitializeRequest, ProtocolVersion};
-use agent_client_protocol_core::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use expect_test::expect;
 use futures::StreamExt;
@@ -211,13 +211,13 @@ fn make_echo_mcp_server<R: Role>(
                     call_number: *count,
                 })
             },
-            agent_client_protocol_core::tool_fn_mut!(),
+            agent_client_protocol::tool_fn_mut!(),
         )
         .build()
 }
 
 #[tokio::test]
-async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core::Error> {
+async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Error> {
     // Create channel for collecting trace events
     let (trace_tx, trace_rx) = mpsc::unbounded();
 
@@ -233,7 +233,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core
             McpBridgeMode::default(),
         )
         .trace_to(trace_tx)
-        .run(agent_client_protocol_core::ByteStreams::new(
+        .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),
             conductor_read.compat(),
         ))
@@ -242,11 +242,11 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core
 
     // Run the client with a client-hosted MCP server
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
-        agent_client_protocol_core::Client
+        agent_client_protocol::Client
             .builder()
             .name("test-client")
             .connect_with(
-                agent_client_protocol_core::ByteStreams::new(
+                agent_client_protocol::ByteStreams::new(
                     client_write.compat_write(),
                     client_read.compat(),
                 ),
@@ -449,9 +449,9 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.3.0"),
+                            "version": String("1.5.0"),
                         },
-                        "protocolVersion": String("2025-06-18"),
+                        "protocolVersion": String("2025-11-25"),
                     },
                 },
             ),
@@ -467,10 +467,10 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol_core
                             "tools": Object {},
                         },
                         "instructions": String("A test MCP server hosted by the client"),
-                        "protocolVersion": String("2025-06-18"),
+                        "protocolVersion": String("2025-11-25"),
                         "serverInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.3.0"),
+                            "version": String("1.5.0"),
                         },
                     },
                 },
