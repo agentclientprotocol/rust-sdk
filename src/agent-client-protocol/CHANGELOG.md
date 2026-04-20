@@ -5,6 +5,7 @@
 ### Added
 
 - Migrate to new SDK design ([#117](https://github.com/agentclientprotocol/rust-sdk/pull/117))
+- Migration Guide here: https://agentclientprotocol.github.io/rust-sdk/migration_v0.11.x.html
 
 ### Fixed
 
