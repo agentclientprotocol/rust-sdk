@@ -19,7 +19,7 @@ Key changes:
 
 > How do things work today and what problems does this cause? Why would we change things?
 
-Today's AI agent ecosystem is dominated by monolithic agents. We want people to be able to combine independent components to build custom agents targeting their specific needs. We want them to be able to use these with whatever editors and tooling they have. This is aligned with Symposium's core values of openness, interoperability, and extensibility.
+Today's AI agent ecosystem is dominated by monolithic agents. We want people to be able to combine independent components to build custom agents targeting their specific needs. We want them to be able to use these with whatever editors and tooling they have. This is aligned with ACP's core values of openness, interoperability, and extensibility.
 
 # Motivating Example: Sparkle Integration
 
