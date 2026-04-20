@@ -21,7 +21,7 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "0.10.4" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "0.11.0" }
 agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.11.0" }
 agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.11.0" }
 agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.11.0" }
