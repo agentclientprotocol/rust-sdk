@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Test utilities and mock implementations for the Agent Client Protocol"
+publish = false
 
 [[bin]]
 name = "mcp-echo-server"
