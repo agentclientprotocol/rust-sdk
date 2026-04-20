@@ -163,15 +163,32 @@ pub async fn prompt_with_callback(
                             .otherwise(async |_msg| Ok(()))
                             .await?;
                     }
-                    agent_client_protocol::SessionMessage::StopReason(stop_reason) => match stop_reason {
-                        agent_client_protocol::schema::StopReason::EndTurn => break,
-                        agent_client_protocol::schema::StopReason::MaxTokens => todo!(),
-                        agent_client_protocol::schema::StopReason::MaxTurnRequests => todo!(),
-                        agent_client_protocol::schema::StopReason::Refusal => todo!(),
-                        agent_client_protocol::schema::StopReason::Cancelled => todo!(),
-                        _ => todo!(),
-                    },
-                    _ => todo!(),
+                    agent_client_protocol::SessionMessage::StopReason(stop_reason) => {
+                        match stop_reason {
+                            agent_client_protocol::schema::StopReason::EndTurn => break,
+                            agent_client_protocol::schema::StopReason::MaxTokens => {
+                                tracing::debug!("Agent hit max tokens limit");
+                                break;
+                            }
+                            agent_client_protocol::schema::StopReason::MaxTurnRequests => {
+                                tracing::debug!("Agent hit max turn requests limit");
+                                break;
+                            }
+                            agent_client_protocol::schema::StopReason::Refusal => {
+                                tracing::warn!("Agent refused to continue");
+                                break;
+                            }
+                            agent_client_protocol::schema::StopReason::Cancelled => {
+                                tracing::debug!("Session was cancelled");
+                                break;
+                            }
+                            other => {
+                                tracing::warn!("Unknown stop reason: {:?}", other);
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
 
