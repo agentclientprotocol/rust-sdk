@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 
-//! # agent-client-protocol -- the Symposium Agent Client Protocol (ACP) SDK
+//! # agent-client-protocol -- the Agent Client Protocol (ACP) SDK
 //!
 //! **agent-client-protocol** is a Rust SDK for building [Agent-Client Protocol (ACP)][acp] applications.
 //! ACP is a protocol for communication between AI agents and their clients (IDEs, CLIs, etc.),

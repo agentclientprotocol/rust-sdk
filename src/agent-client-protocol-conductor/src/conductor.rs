@@ -1,4 +1,4 @@
-//! # Conductor: SACP Proxy Chain Orchestrator
+//! # Conductor: ACP Proxy Chain Orchestrator
 //!
 //! This module implements the Conductor conductor, which orchestrates a chain of
 //! proxy components that sit between an editor and an agent, transforming the
