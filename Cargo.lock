@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-schema",
@@ -67,7 +67,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-conductor",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -144,7 +144,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-tokio"
-version = "0.11.0"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-test",

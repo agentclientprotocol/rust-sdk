@@ -21,12 +21,12 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "0.11.0" }
-agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.11.0" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "0.11.1" }
+agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.11.1" }
 agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.11.0" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.11.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.11.1" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-tokio = { path = "src/agent-client-protocol-tokio", version = "0.11.0" }
+agent-client-protocol-tokio = { path = "src/agent-client-protocol-tokio", version = "0.11.1" }
 agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.11.0" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
