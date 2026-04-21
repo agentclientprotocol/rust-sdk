@@ -31,7 +31,7 @@ agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-v
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Core async runtime
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.48", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 
 # Protocol
@@ -40,10 +40,10 @@ agent-client-protocol-schema = { version = "=0.12.0", features = ["tracing"] }
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
-schemars = { version = "1.2", features = ["derive"] }
+schemars = { version = "1.0", features = ["derive"] }
 
 # UUID generation
-uuid = { version = "1.23", features = ["v4"] }
+uuid = { version = "1.18", features = ["v4"] }
 
 # Error handling
 anyhow = "1.0"
@@ -57,14 +57,14 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # MCP SDK
-rmcp = { version = "1.5", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "1.2.0", features = ["server", "transport-io", "schemars"] }
 
 # CLI parsing
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
-hyper = "1.9"
+hyper = "1.0"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
 
@@ -75,11 +75,11 @@ async-trait = "0.1"
 chrono = "0.4"
 derive_more = { version = "2", features = ["from"] }
 futures = "0.3.32"
-futures-concurrency = "7.7"
+futures-concurrency = "7.6.3"
 fxhash = "0.2.1"
 jsonrpcmsg = "0.1.2"
 open = "5"
-rustc-hash = "2.1"
+rustc-hash = "2.1.1"
 shell-words = "1.1"
 strip-ansi-escapes = "0.2"
 
@@ -91,11 +91,11 @@ syn = { version = "2", features = ["full", "extra-traits"] }
 
 # Testing
 expect-test = "1.5"
-regex = "1.12"
+regex = "1.12.2"
 futures-util = { version = "0.3", features = ["io"] }
 piper = "0.2"
 pretty_assertions = "1"
-rustyline = "18"
+rustyline = "17"
 tokio-test = "0.4"
 
 [workspace.lints.rust]
