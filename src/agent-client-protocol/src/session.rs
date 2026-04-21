@@ -565,11 +565,7 @@ where
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
             )
             .on_receiving_result(async move |result| {
-                let PromptResponse {
-                    stop_reason,
-                    meta: _,
-                    ..
-                } = result?;
+                let PromptResponse { stop_reason, .. } = result?;
 
                 update_tx
                     .unbounded_send(SessionMessage::StopReason(stop_reason))
@@ -602,7 +598,6 @@ where
                     .if_notification(async |notif: SessionNotification| match notif.update {
                         SessionUpdate::AgentMessageChunk(ContentChunk {
                             content: ContentBlock::Text(text),
-                            meta: _,
                             ..
                         }) => {
                             output.push_str(&text.text);
