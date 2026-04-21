@@ -1921,17 +1921,15 @@ impl Responder<serde_json::Value> {
         Self {
             method,
             id,
-            send_fn: Box::new(
-                move |response: Result<serde_json::Value, crate::Error>| {
-                    send_raw_message(
-                        &message_tx,
-                        OutgoingMessage::Response {
-                            id: id_clone,
-                            response,
-                        },
-                    )
-                },
-            ),
+            send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                send_raw_message(
+                    &message_tx,
+                    OutgoingMessage::Response {
+                        id: id_clone,
+                        response,
+                    },
+                )
+            }),
         }
     }
 
@@ -2069,18 +2067,16 @@ impl ResponseRouter<serde_json::Value> {
             method,
             id,
             role_id,
-            send_fn: Box::new(
-                move |response: Result<serde_json::Value, crate::Error>| {
-                    sender
-                        .send(ResponsePayload {
-                            result: response,
-                            ack_tx: None,
-                        })
-                        .map_err(|_| {
-                            crate::util::internal_error("failed to send response, receiver dropped")
-                        })
-                },
-            ),
+            send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                sender
+                    .send(ResponsePayload {
+                        result: response,
+                        ack_tx: None,
+                    })
+                    .map_err(|_| {
+                        crate::util::internal_error("failed to send response, receiver dropped")
+                    })
+            }),
         }
     }
 
