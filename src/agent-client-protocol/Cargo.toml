@@ -42,7 +42,6 @@ unstable_session_usage = ["agent-client-protocol-schema/unstable_session_usage"]
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-derive.workspace = true
 anyhow.workspace = true
-boxfnonce.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true
