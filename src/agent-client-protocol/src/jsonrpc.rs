@@ -11,7 +11,6 @@ use std::panic::Location;
 use std::pin::pin;
 use uuid::Uuid;
 
-use boxfnonce::SendBoxFnOnce;
 use futures::channel::{mpsc, oneshot};
 use futures::future::{self, BoxFuture, Either};
 use futures::{AsyncRead, AsyncWrite, StreamExt};
@@ -1900,7 +1899,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: SendBoxFnOnce<'static, (Result<T, crate::Error>,), Result<(), crate::Error>>,
+    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -1922,7 +1921,7 @@ impl Responder<serde_json::Value> {
         Self {
             method,
             id,
-            send_fn: SendBoxFnOnce::new(
+            send_fn: Box::new(
                 move |response: Result<serde_json::Value, crate::Error>| {
                     send_raw_message(
                         &message_tx,
@@ -1988,9 +1987,9 @@ impl<T: JsonRpcResponse> Responder<T> {
         Responder {
             method: self.method,
             id: self.id,
-            send_fn: SendBoxFnOnce::new(move |input: Result<U, crate::Error>| {
+            send_fn: Box::new(move |input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
-                self.send_fn.call(t_value)
+                (self.send_fn)(t_value)
             }),
         }
     }
@@ -2001,7 +2000,7 @@ impl<T: JsonRpcResponse> Responder<T> {
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
-        self.send_fn.call(response)
+        (self.send_fn)(response)
     }
 
     /// Respond to the JSON-RPC request with a value.
@@ -2042,7 +2041,7 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     role_id: RoleId,
 
     /// Function to send the response to the waiting task.
-    send_fn: SendBoxFnOnce<'static, (Result<T, crate::Error>,), Result<(), crate::Error>>,
+    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
@@ -2070,7 +2069,7 @@ impl ResponseRouter<serde_json::Value> {
             method,
             id,
             role_id,
-            send_fn: SendBoxFnOnce::new(
+            send_fn: Box::new(
                 move |response: Result<serde_json::Value, crate::Error>| {
                     sender
                         .send(ResponsePayload {
@@ -2137,9 +2136,9 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
             method: self.method,
             id: self.id,
             role_id: self.role_id,
-            send_fn: SendBoxFnOnce::new(move |input: Result<U, crate::Error>| {
+            send_fn: Box::new(move |input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
-                self.send_fn.call(t_value)
+                (self.send_fn)(t_value)
             }),
         }
     }
@@ -2150,7 +2149,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "response routed to awaiter");
-        self.send_fn.call(response)
+        (self.send_fn)(response)
     }
 
     /// Complete the response by sending a value to the waiting task.
