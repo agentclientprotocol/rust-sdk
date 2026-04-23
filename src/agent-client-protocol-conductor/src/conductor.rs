@@ -739,7 +739,7 @@ where
         client: ConnectionTo<Host::Counterpart>,
         proxy_components: Vec<DynConnectTo<Conductor>>,
     ) -> Result<(), agent_client_protocol::Error> {
-        assert!(self.proxies.is_empty());
+        debug_assert!(self.proxies.is_empty());
 
         let num_proxies = proxy_components.len();
         info!(proxy_count = num_proxies, "spawn_proxies");
