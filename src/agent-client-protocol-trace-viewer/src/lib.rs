@@ -36,19 +36,19 @@ pub struct TraceHandle {
 impl TraceHandle {
     /// Push a new event to the trace.
     pub fn push(&self, event: serde_json::Value) {
-        self.events.lock().unwrap().push(event);
+        self.events.lock().expect("events mutex poisoned").push(event);
     }
 
     /// Get the current number of events.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.events.lock().unwrap().len()
+        self.events.lock().expect("events mutex poisoned").len()
     }
 
     /// Check if empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.events.lock().unwrap().is_empty()
+        self.events.lock().expect("events mutex poisoned").is_empty()
     }
 }
 
@@ -192,7 +192,7 @@ async fn serve_events_from_file(path: &PathBuf) -> Response {
 }
 
 fn serve_events_from_memory(events: &Arc<Mutex<Vec<serde_json::Value>>>) -> Response {
-    let events = events.lock().unwrap();
+    let events = events.lock().expect("events mutex poisoned");
     match serde_json::to_string(&*events) {
         Ok(json) => (StatusCode::OK, [("content-type", "application/json")], json).into_response(),
         Err(e) => (

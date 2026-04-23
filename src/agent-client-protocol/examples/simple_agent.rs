@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
         .on_receive_dispatch(
             async move |message: Dispatch, cx: ConnectionTo<Client>| {
                 // Respond to any other message with an error
-                message.respond_with_error(agent_client_protocol::util::internal_error("TODO"), cx)
+                message.respond_with_error(agent_client_protocol::util::internal_error("unhandled message"), cx)
             },
             agent_client_protocol::on_receive_dispatch!(),
         )

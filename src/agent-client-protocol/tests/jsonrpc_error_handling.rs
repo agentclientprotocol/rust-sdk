@@ -219,8 +219,8 @@ async fn test_incomplete_line() {
     // The server should handle EOF mid-message gracefully
     let result = connection.connect_to(transport).await;
 
-    // Server should terminate cleanly when hitting EOF
-    assert!(result.is_ok() || result.is_err());
+    // Server should terminate cleanly (not hang) when EOF is hit mid-message
+    assert!(result.is_ok(), "expected clean shutdown on EOF, got: {result:?}");
 }
 
 // ============================================================================
