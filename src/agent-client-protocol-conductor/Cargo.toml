@@ -18,7 +18,8 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
+agent-client-protocol-schema.workspace = true
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
 async-stream.workspace = true
@@ -27,14 +28,18 @@ chrono.workspace = true
 clap.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
+hyper.workspace = true
 rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+shell-words.workspace = true
 strip-ansi-escapes.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+tower.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
