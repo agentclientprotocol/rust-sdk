@@ -28,17 +28,6 @@
 //! 3. Presents as a single agent on stdin/stdout
 //! 4. Manages the lifecycle of all processes
 //!
-//! ### MCP Bridge Mode
-//!
-//! Connect stdio to a TCP-based MCP server:
-//!
-//! ```bash
-//! # Bridge stdio to MCP server on localhost:8080
-//! agent-client-protocol-conductor mcp 8080
-//! ```
-//!
-//! This allows stdio-based tools to communicate with TCP MCP servers.
-//!
 //! ## How It Works
 //!
 //! **Component Communication:**
@@ -81,8 +70,6 @@ use std::str::FromStr;
 mod conductor;
 /// Debug logging for conductor
 mod debug_logger;
-/// MCP bridge functionality for TCP-based MCP servers
-mod mcp_bridge;
 mod snoop;
 /// Trace event types for sequence diagram viewer
 pub mod trace;
@@ -219,12 +206,6 @@ pub enum ConductorCommand {
         /// List of proxy commands to chain together
         proxies: Vec<String>,
     },
-
-    /// Run as MCP bridge connecting stdio to TCP
-    Mcp {
-        /// TCP port to connect to on localhost
-        port: u16,
-    },
 }
 
 impl ConductorArgs {
@@ -240,7 +221,6 @@ impl ConductorArgs {
             let components = match &self.command {
                 ConductorCommand::Agent { components, .. } => components.clone(),
                 ConductorCommand::Proxy { proxies, .. } => proxies.clone(),
-                ConductorCommand::Mcp { .. } => Vec::new(),
             };
 
             // Create debug logger
@@ -333,7 +313,6 @@ impl ConductorArgs {
                 )
                 .await
             }
-            ConductorCommand::Mcp { port } => mcp_bridge::run_mcp_bridge(port).await,
         }
     }
 }

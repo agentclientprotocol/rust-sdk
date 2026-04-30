@@ -12,6 +12,7 @@ use agent_client_protocol::RunWithConnectionTo;
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ fn create_echo_proxy() -> DynConnectTo<Conductor> {
             "Returns the current session_id",
             async |_input: EchoInput, context| {
                 Ok(EchoOutput {
-                    acp_id: context.acp_url(),
+                    acp_id: context.acp_id(),
                 })
             },
             agent_client_protocol::tool_fn_mut!(),
@@ -68,14 +69,15 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
 }
 
 #[tokio::test]
-#[ignore = "requires McpOverAcpPolyfill proxy in chain - bridge removed from conductor"]
 async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol::Error> {
     use expect_test::expect;
 
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
+            ProxiesAndAgent::new(Testy::new())
+                .proxy(create_echo_proxy())
+                .proxy(McpOverAcpPolyfill::http()),
         ),
         TestyCommand::ListTools {
             server: "echo_server".to_string(),
@@ -94,12 +96,13 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol::
 }
 
 #[tokio::test]
-#[ignore = "requires McpOverAcpPolyfill proxy in chain - bridge removed from conductor"]
 async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_protocol::Error> {
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_echo_proxy()),
+            ProxiesAndAgent::new(Testy::new())
+                .proxy(create_echo_proxy())
+                .proxy(McpOverAcpPolyfill::http()),
         ),
         TestyCommand::CallTool {
             server: "echo_server".to_string(),

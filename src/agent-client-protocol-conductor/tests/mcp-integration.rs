@@ -13,6 +13,7 @@ use agent_client_protocol::schema::{
     SessionNotification, TextContent,
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use futures::{SinkExt, StreamExt, channel::mpsc};
 
@@ -72,7 +73,9 @@ async fn run_test_with_mode(
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
-        ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
+        ProxiesAndAgent::new(Testy::new())
+            .proxy(mcp_integration::proxy::ProxyComponent)
+            .proxy(McpOverAcpPolyfill::http()),
         async |connection_to_editor| {
             // Send initialization request
             let init_response = recv(
@@ -113,7 +116,9 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
-        ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
+        ProxiesAndAgent::new(Testy::new())
+            .proxy(mcp_integration::proxy::ProxyComponent)
+            .proxy(McpOverAcpPolyfill::http()),
         async |connection_to_editor| {
             // Send initialization request
             let init_response = recv(
@@ -151,7 +156,6 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 }
 
 #[tokio::test]
-#[ignore = "requires McpOverAcpPolyfill proxy in chain - bridge removed from conductor"]
 async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error> {
     // Initialize tracing for debug output
     drop(
@@ -172,7 +176,9 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error>
     let conductor_handle = tokio::spawn(async move {
         ConductorImpl::new_agent(
             "mcp-integration-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
+            ProxiesAndAgent::new(Testy::new())
+                .proxy(mcp_integration::proxy::ProxyComponent)
+                .proxy(McpOverAcpPolyfill::http()),
         )
         .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),

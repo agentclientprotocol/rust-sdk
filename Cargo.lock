@@ -33,6 +33,7 @@ name = "agent-client-protocol-conductor"
 version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
+ "agent-client-protocol-polyfill",
  "agent-client-protocol-test",
  "agent-client-protocol-trace-viewer",
  "agent-client-protocol-yopo",

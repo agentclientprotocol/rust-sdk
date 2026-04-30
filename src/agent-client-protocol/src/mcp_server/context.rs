@@ -8,9 +8,15 @@ pub struct McpConnectionTo<Counterpart: Role> {
 }
 
 impl<Counterpart: Role> McpConnectionTo<Counterpart> {
-    /// The `acp:UUID` that was given.
-    pub fn acp_url(&self) -> String {
+    /// The ACP identifier for this MCP server (e.g., `"acp:UUID"`).
+    pub fn acp_id(&self) -> String {
         self.acp_id.clone()
+    }
+
+    /// The `acp:UUID` that was given.
+    #[deprecated(since = "0.12.0", note = "renamed to `acp_id()`")]
+    pub fn acp_url(&self) -> String {
+        self.acp_id()
     }
 
     /// The host connection context.

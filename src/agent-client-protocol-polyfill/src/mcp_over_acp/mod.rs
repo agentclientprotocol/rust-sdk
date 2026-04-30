@@ -50,6 +50,13 @@ pub(crate) enum BridgeMessage {
         connection: BridgeConnection,
     },
 
+    /// ACP connection ID received — spawn the actor and store the connection.
+    ConnectionEstablished {
+        response: McpConnectResponse,
+        actor: BridgeConnectionActor,
+        connection: BridgeConnection,
+    },
+
     /// MCP message from a bridge client that needs to be forwarded over ACP.
     ClientToServer {
         connection_id: String,
@@ -138,6 +145,7 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
             .builder()
             .name("mcp-over-acp-polyfill")
             .with_responder(BridgeResponder {
+                bridge_tx: bridge_tx.clone(),
                 bridge_rx,
                 bridge_connections: HashMap::new(),
             })
@@ -286,6 +294,7 @@ impl BridgeListeners {
 
 /// Responder that runs alongside the proxy, managing bridge state.
 struct BridgeResponder {
+    bridge_tx: mpsc::Sender<BridgeMessage>,
     bridge_rx: mpsc::Receiver<BridgeMessage>,
     bridge_connections: HashMap<String, BridgeConnection>,
 }
@@ -312,25 +321,34 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeResponder {
                     actor,
                     connection: bridge_conn,
                 } => {
-                    // Send _mcp/connect request back through the chain
+                    // Send _mcp/connect request back through the chain.
+                    // When the response arrives, send ConnectionEstablished back to ourselves.
                     connection
                         .send_request_to(Client, McpConnectRequest { acp_id, meta: None })
                         .on_receiving_result({
-                            let mut bridge_connections = HashMap::new();
-                            let connection = connection.clone();
-                            async move |result| {
-                                match result {
-                                    Ok(McpConnectResponse { connection_id, .. }) => {
-                                        // Store the connection and spawn the actor
-                                        bridge_connections
-                                            .insert(connection_id.clone(), bridge_conn);
-                                        connection.spawn(actor.run(connection_id))?;
-                                        Ok(())
-                                    }
-                                    Err(_) => Ok(()),
-                                }
+                            let mut bridge_tx = self.bridge_tx.clone();
+                            async move |result| match result {
+                                Ok(response) => bridge_tx
+                                    .send(BridgeMessage::ConnectionEstablished {
+                                        response,
+                                        actor,
+                                        connection: bridge_conn,
+                                    })
+                                    .await
+                                    .map_err(|_| agent_client_protocol::Error::internal_error()),
+                                Err(_) => Ok(()),
                             }
                         })?;
+                }
+
+                BridgeMessage::ConnectionEstablished {
+                    response: McpConnectResponse { connection_id, .. },
+                    actor,
+                    connection: bridge_conn,
+                } => {
+                    self.bridge_connections
+                        .insert(connection_id.clone(), bridge_conn);
+                    connection.spawn(actor.run(connection_id))?;
                 }
 
                 BridgeMessage::ClientToServer {
