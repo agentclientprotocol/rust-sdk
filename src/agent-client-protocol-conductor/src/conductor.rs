@@ -475,7 +475,7 @@ where
             // When the connection id arrives, send a message back into this conductor loop with
             // the connection id and the (as yet unspawned) actor.
             ConductorMessage::McpConnectionReceived {
-                acp_url,
+                acp_id,
                 connection,
                 actor,
             } => {
@@ -485,10 +485,7 @@ where
                 self.send_request_to_predecessor_of(
                     client,
                     self.proxies.len(),
-                    McpConnectRequest {
-                        acp_url,
-                        meta: None,
-                    },
+                    McpConnectRequest { acp_id, meta: None },
                 )
                 .on_receiving_result({
                     let mut conductor_tx = self.conductor_tx.clone();
@@ -1284,8 +1281,8 @@ pub enum ConductorMessage {
     /// The request must be sent back over ACP to receive the connection-id.
     /// Once the connection-id is received, the actor must be spawned.
     McpConnectionReceived {
-        /// The acp:$UUID URL identifying this bridge
-        acp_url: String,
+        /// The acp:$UUID identifier for this bridge
+        acp_id: String,
 
         /// The actor that should be spawned once the connection-id is available.
         actor: McpBridgeConnectionActor,

@@ -6,13 +6,18 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use agent_client_protocol::{MetaCapabilityExt, McpAcpTransport};
+//! use agent_client_protocol::{MetaCapability, MetaCapabilityExt};
 //! # use agent_client_protocol::schema::InitializeResponse;
 //! # let init_response: InitializeResponse = unimplemented!();
 //!
-//! let response = init_response.add_meta_capability(McpAcpTransport);
-//! if response.has_meta_capability(McpAcpTransport) {
-//!     // Agent supports MCP-over-ACP bridging
+//! struct Proxy;
+//! impl MetaCapability for Proxy {
+//!     fn key(&self) -> &'static str { "proxy" }
+//! }
+//!
+//! let response = init_response.add_meta_capability(Proxy);
+//! if response.has_meta_capability(Proxy) {
+//!     // Agent has the proxy capability
 //! }
 //! ```
 
@@ -30,19 +35,6 @@ pub trait MetaCapability {
     /// The value to set when adding this capability (defaults to `true`)
     fn value(&self) -> serde_json::Value {
         serde_json::Value::Bool(true)
-    }
-}
-
-/// The mcp_acp_transport capability - indicates support for MCP-over-ACP bridging.
-///
-/// When present in `_meta.symposium.mcp_acp_transport`, signals that the agent
-/// supports having MCP servers with `acp:UUID` transport proxied through the conductor.
-#[derive(Debug)]
-pub struct McpAcpTransport;
-
-impl MetaCapability for McpAcpTransport {
-    fn key(&self) -> &'static str {
-        "mcp_acp_transport"
     }
 }
 
@@ -140,15 +132,22 @@ mod tests {
     use crate::schema::{ClientCapabilities, ProtocolVersion};
     use serde_json::json;
 
+    struct TestCapability;
+    impl MetaCapability for TestCapability {
+        fn key(&self) -> &'static str {
+            "test_cap"
+        }
+    }
+
     #[test]
     fn test_add_capability_to_request() {
         let request = InitializeRequest::new(ProtocolVersion::LATEST);
 
-        let request = request.add_meta_capability(McpAcpTransport);
+        let request = request.add_meta_capability(TestCapability);
 
-        assert!(request.has_meta_capability(McpAcpTransport));
+        assert!(request.has_meta_capability(TestCapability));
         assert_eq!(
-            request.client_capabilities.meta.as_ref().unwrap()["symposium"]["mcp_acp_transport"],
+            request.client_capabilities.meta.as_ref().unwrap()["symposium"]["test_cap"],
             json!(true)
         );
     }
@@ -160,7 +159,7 @@ mod tests {
             "symposium".to_string(),
             json!({
                 "version": "1.0",
-                "mcp_acp_transport": true
+                "test_cap": true
             }),
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
@@ -168,20 +167,20 @@ mod tests {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(client_capabilities);
 
-        let request = request.remove_meta_capability(McpAcpTransport);
+        let request = request.remove_meta_capability(TestCapability);
 
-        assert!(!request.has_meta_capability(McpAcpTransport));
+        assert!(!request.has_meta_capability(TestCapability));
     }
 
     #[test]
     fn test_add_capability_to_response() {
         let response = InitializeResponse::new(ProtocolVersion::LATEST);
 
-        let response = response.add_meta_capability(McpAcpTransport);
+        let response = response.add_meta_capability(TestCapability);
 
-        assert!(response.has_meta_capability(McpAcpTransport));
+        assert!(response.has_meta_capability(TestCapability));
         assert_eq!(
-            response.agent_capabilities.meta.as_ref().unwrap()["symposium"]["mcp_acp_transport"],
+            response.agent_capabilities.meta.as_ref().unwrap()["symposium"]["test_cap"],
             json!(true)
         );
     }

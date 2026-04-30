@@ -83,7 +83,7 @@ impl McpBridgeListeners {
 
         info!(
             server_name = name,
-            acp_url = url,
+            acp_id = url,
             "Detected MCP server with ACP transport, spawning TCP bridge"
         );
 
@@ -100,12 +100,12 @@ impl McpBridgeListeners {
         &mut self,
         connection: ConnectionTo<impl Role>,
         server_name: &str,
-        acp_url: &str,
+        acp_id: &str,
         conductor_tx: &mpsc::Sender<ConductorMessage>,
         mcp_bridge_mode: &crate::McpBridgeMode,
     ) -> anyhow::Result<McpServer> {
         // If there is already a listener for the ACP URL, return its server
-        if let Some(listener) = self.listeners.get(acp_url) {
+        if let Some(listener) = self.listeners.get(acp_id) {
             return Ok(listener.server.clone());
         }
 
@@ -113,7 +113,7 @@ impl McpBridgeListeners {
         let tcp_listener = TcpListener::bind("127.0.0.1:0").await?;
         let tcp_port = tcp_listener.local_addr()?.port();
 
-        info!(acp_url = acp_url, tcp_port, "Bound listener for MCP bridge");
+        info!(acp_id = acp_id, tcp_port, "Bound listener for MCP bridge");
 
         let new_server = match mcp_bridge_mode {
             crate::McpBridgeMode::Stdio { conductor_command } => McpServer::Stdio(
@@ -138,28 +138,28 @@ impl McpBridgeListeners {
 
         // remember for later
         self.listeners.insert(
-            acp_url.to_string(),
+            acp_id.to_string(),
             McpBridgeListener {
                 server: new_server.clone(),
             },
         );
 
         connection.spawn({
-            let acp_url = acp_url.to_string();
+            let acp_id = acp_id.to_string();
             let conductor_tx = conductor_tx.clone();
             let mcp_bridge_mode = mcp_bridge_mode.clone();
             async move {
                 info!(
-                    acp_url = acp_url,
+                    acp_id = acp_id,
                     tcp_port, "now accepting bridge connections"
                 );
 
                 match mcp_bridge_mode {
                     crate::McpBridgeMode::Stdio {
                         conductor_command: _,
-                    } => stdio::run_tcp_listener(tcp_listener, acp_url, conductor_tx).await,
+                    } => stdio::run_tcp_listener(tcp_listener, acp_id, conductor_tx).await,
                     crate::McpBridgeMode::Http => {
-                        http::run_http_listener(tcp_listener, acp_url, conductor_tx).await
+                        http::run_http_listener(tcp_listener, acp_id, conductor_tx).await
                     }
                 }
             }

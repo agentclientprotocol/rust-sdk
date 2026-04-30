@@ -14,7 +14,7 @@ use super::{McpBridgeConnection, McpBridgeConnectionActor};
 /// and the conductor.
 pub async fn run_tcp_listener(
     tcp_listener: TcpListener,
-    acp_url: String,
+    acp_id: String,
     mut conductor_tx: mpsc::Sender<ConductorMessage>,
 ) -> Result<(), agent_client_protocol::Error> {
     // Accept connections
@@ -28,7 +28,7 @@ pub async fn run_tcp_listener(
 
         conductor_tx
             .send(ConductorMessage::McpConnectionReceived {
-                acp_url: acp_url.clone(),
+                acp_id: acp_id.clone(),
                 actor: make_stdio_actor(stream, conductor_tx.clone(), to_mcp_client_rx),
                 connection: McpBridgeConnection::new(to_mcp_client_tx),
             })

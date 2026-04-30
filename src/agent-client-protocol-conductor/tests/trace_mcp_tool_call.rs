@@ -122,7 +122,7 @@ impl EventNormalizer {
                             } else {
                                 self.normalize_json(v)
                             }
-                        } else if k == "url" || k == "acp_url" {
+                        } else if k == "url" || k == "acp_id" {
                             if let serde_json::Value::String(s) = &v {
                                 if s.starts_with("acp:") || s.starts_with("http://localhost:") {
                                     serde_json::Value::String(self.normalize_acp_url(s))
@@ -307,9 +307,6 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     session: None,
                     params: Object {
                         "clientCapabilities": Object {
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                             "fs": Object {
                                 "readTextFile": Bool(false),
                                 "writeTextFile": Bool(false),
@@ -329,9 +326,9 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     is_error: false,
                     payload: Object {
                         "agentCapabilities": Object {
-                            "auth": Object {},
                             "loadSession": Bool(false),
                             "mcpCapabilities": Object {
+                                "acp": Bool(false),
                                 "http": Bool(false),
                                 "sse": Bool(false),
                             },
@@ -372,7 +369,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "_mcp/connect",
                     session: None,
                     params: Object {
-                        "acp_url": String("acp:url:0"),
+                        "acp_id": String("acp:url:0"),
                     },
                 },
             ),

@@ -23,7 +23,7 @@ struct EchoInput {}
 /// Output from the echo tool containing the session_id
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct EchoOutput {
-    acp_url: String,
+    acp_id: String,
 }
 
 /// Create a proxy that provides an MCP server with a session_id echo tool
@@ -36,7 +36,7 @@ fn create_echo_proxy() -> DynConnectTo<Conductor> {
             "Returns the current session_id",
             async |_input: EchoInput, context| {
                 Ok(EchoOutput {
-                    acp_url: context.acp_url(),
+                    acp_id: context.acp_url(),
                 })
             },
             agent_client_protocol::tool_fn_mut!(),
@@ -110,7 +110,7 @@ async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_pro
     )
     .await?;
 
-    let pattern = regex::Regex::new(r#""acp_url":\s*String\("acp:[0-9a-f-]+"\)"#).unwrap();
+    let pattern = regex::Regex::new(r#""acp_id":\s*String\("acp:[0-9a-f-]+"\)"#).unwrap();
     assert!(pattern.is_match(&result), "unexpected result: {result}");
 
     Ok(())

@@ -20,8 +20,8 @@ use std::sync::Arc;
 /// (see [`ConnectionTo::add_dynamic_handler`]) and handles MCP-over-ACP messages
 /// with the appropriate ACP url.
 pub(super) struct McpActiveSession<Counterpart: Role> {
-    /// The ACP URL created for this session
-    acp_url: String,
+    /// The ACP identifier created for this session
+    acp_id: String,
 
     /// The MCP server we are managing
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
@@ -34,9 +34,9 @@ impl<Counterpart: Role> McpActiveSession<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    pub fn new(acp_url: String, mcp_connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+    pub fn new(acp_id: String, mcp_connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
         Self {
-            acp_url,
+            acp_id,
             mcp_connect,
             connections: FxHashMap::default(),
         }
@@ -51,7 +51,7 @@ where
         acp_connection: &ConnectionTo<Counterpart>,
     ) -> Result<Handled<(McpConnectRequest, Responder<McpConnectResponse>)>, crate::Error> {
         // Check that this is for our MCP server
-        if request.acp_url != self.acp_url {
+        if request.acp_id != self.acp_id {
             return Ok(Handled::No {
                 message: (request, responder),
                 retry: false,
@@ -110,7 +110,7 @@ where
 
         // Get the MCP server component
         let spawned_server = self.mcp_connect.connect(McpConnectionTo {
-            acp_url: request.acp_url.clone(),
+            acp_id: request.acp_id.clone(),
             connection: acp_connection.clone(),
         });
 

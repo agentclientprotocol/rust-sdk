@@ -3,14 +3,14 @@ use crate::{ConnectionTo, role::Role};
 /// Context about the ACP and MCP connection available to an MCP server.
 #[derive(Clone, Debug)]
 pub struct McpConnectionTo<Counterpart: Role> {
-    pub(super) acp_url: String,
+    pub(super) acp_id: String,
     pub(super) connection: ConnectionTo<Counterpart>,
 }
 
 impl<Counterpart: Role> McpConnectionTo<Counterpart> {
     /// The `acp:UUID` that was given.
     pub fn acp_url(&self) -> String {
-        self.acp_url.clone()
+        self.acp_id.clone()
     }
 
     /// The host connection context.
