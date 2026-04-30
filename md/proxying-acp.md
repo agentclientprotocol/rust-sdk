@@ -216,9 +216,7 @@ An P/ACP-aware editor provides the following capability during ACP initializatio
 /// supports symposium proxy initialization.
 "_meta": {
     "symposium": {
-        "version": "1.0",
-        "html_panel": true,      // or false, if this is the ToEditor proxy
-        "file_comment": true,    // or false, if this is the ToEditor proxy
+        "version": "1.0"
     }
 }
 ```
