@@ -110,38 +110,26 @@
 //! - Modified `InitializeRequest` to forward downstream
 //! - `Vec<ConnectionTo>` of spawned components
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use agent_client_protocol::{
     Agent, BoxFuture, Client, Conductor, ConnectTo, Dispatch, DynConnectTo, Error, JsonRpcMessage,
     Proxy, Role, RunWithConnectionTo, role::HasPeer, util::MatchDispatch,
 };
 use agent_client_protocol::{
-    Builder, ConnectionTo, JsonRpcNotification, JsonRpcRequest, SentRequest, UntypedMessage,
+    Builder, ConnectionTo, JsonRpcNotification, JsonRpcRequest, SentRequest,
 };
 use agent_client_protocol::{
     HandleDispatchFrom,
-    schema::{InitializeProxyRequest, InitializeRequest, NewSessionRequest},
+    schema::{InitializeProxyRequest, InitializeRequest},
     util::MatchDispatchFrom,
 };
-use agent_client_protocol::{
-    Handled,
-    schema::{
-        McpConnectRequest, McpConnectResponse, McpDisconnectNotification, McpOverAcpMessage,
-        SuccessorMessage,
-    },
-};
+use agent_client_protocol::{Handled, schema::SuccessorMessage};
 use futures::{
     SinkExt, StreamExt,
     channel::mpsc::{self},
 };
 use tracing::{debug, info};
-
-use crate::conductor::mcp_bridge::{
-    McpBridgeConnection, McpBridgeConnectionActor, McpBridgeListeners,
-};
-
-mod mcp_bridge;
 
 /// The conductor manages the proxy chain lifecycle and message routing.
 ///
@@ -153,22 +141,15 @@ pub struct ConductorImpl<Host: ConductorHostRole> {
     host: Host,
     name: String,
     instantiator: Host::Instantiator,
-    mcp_bridge_mode: crate::McpBridgeMode,
     trace_writer: Option<crate::trace::TraceWriter>,
 }
 
 impl<Host: ConductorHostRole> ConductorImpl<Host> {
-    pub fn new(
-        host: Host,
-        name: impl ToString,
-        instantiator: Host::Instantiator,
-        mcp_bridge_mode: crate::McpBridgeMode,
-    ) -> Self {
+    pub fn new(host: Host, name: impl ToString, instantiator: Host::Instantiator) -> Self {
         ConductorImpl {
             name: name.to_string(),
             host,
             instantiator,
-            mcp_bridge_mode,
             trace_writer: None,
         }
     }
@@ -179,20 +160,15 @@ impl ConductorImpl<Agent> {
     pub fn new_agent(
         name: impl ToString,
         instantiator: impl InstantiateProxiesAndAgent + 'static,
-        mcp_bridge_mode: crate::McpBridgeMode,
     ) -> Self {
-        ConductorImpl::new(Agent, name, Box::new(instantiator), mcp_bridge_mode)
+        ConductorImpl::new(Agent, name, Box::new(instantiator))
     }
 }
 
 impl ConductorImpl<Proxy> {
     /// Create a conductor in proxy mode (forwards to another conductor).
-    pub fn new_proxy(
-        name: impl ToString,
-        instantiator: impl InstantiateProxies + 'static,
-        mcp_bridge_mode: crate::McpBridgeMode,
-    ) -> Self {
-        ConductorImpl::new(Proxy, name, Box::new(instantiator), mcp_bridge_mode)
+    pub fn new_proxy(name: impl ToString, instantiator: impl InstantiateProxies + 'static) -> Self {
+        ConductorImpl::new(Proxy, name, Box::new(instantiator))
     }
 }
 
@@ -244,9 +220,6 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             conductor_rx,
             conductor_tx: conductor_tx.clone(),
             instantiator: Some(self.instantiator),
-            bridge_listeners: McpBridgeListeners::default(),
-            bridge_connections: HashMap::default(),
-            mcp_bridge_mode: self.mcp_bridge_mode,
             proxies: Vec::default(),
             successor: Arc::new(agent_client_protocol::util::internal_error(
                 "successor not initialized",
@@ -341,12 +314,6 @@ where
 
     conductor_tx: mpsc::Sender<ConductorMessage>,
 
-    /// Manages the TCP listeners for MCP connections that will be proxied over ACP.
-    bridge_listeners: McpBridgeListeners,
-
-    /// Manages active connections to MCP clients.
-    bridge_connections: HashMap<String, McpBridgeConnection>,
-
     /// The instantiator for lazy initialization.
     /// Set to None after components are instantiated.
     instantiator: Option<Host::Instantiator>,
@@ -360,9 +327,6 @@ where
     /// If the conductor is operating in proxy mode, this will direct messages to the successor.
     /// Populated lazily when the first Initialize request is received; the initial value just returns errors.
     successor: Arc<dyn ConductorSuccessor<Host>>,
-
-    /// Mode for the MCP bridge (determines how to spawn bridge processes).
-    mcp_bridge_mode: crate::McpBridgeMode,
 
     /// Optional trace handle for sequence diagram visualization.
     trace_handle: Option<crate::trace::TraceHandle>,
@@ -379,10 +343,7 @@ where
         f.debug_struct("ConductorResponder")
             .field("conductor_rx", &self.conductor_rx)
             .field("conductor_tx", &self.conductor_tx)
-            .field("bridge_listeners", &self.bridge_listeners)
-            .field("bridge_connections", &self.bridge_connections)
             .field("proxies", &self.proxies)
-            .field("mcp_bridge_mode", &self.mcp_bridge_mode)
             .field("trace_handle", &self.trace_handle)
             .field("host", &self.host)
             .finish_non_exhaustive()
@@ -469,96 +430,6 @@ where
                     "Conductor: AgentToClient received"
                 );
                 self.send_message_to_predecessor_of(client, source_component_index, message)
-            }
-
-            // New MCP connection request. Send it back along the chain to get a connection id.
-            // When the connection id arrives, send a message back into this conductor loop with
-            // the connection id and the (as yet unspawned) actor.
-            ConductorMessage::McpConnectionReceived {
-                acp_id,
-                connection,
-                actor,
-            } => {
-                // MCP connection requests always come from the agent
-                // (we must be in agent mode, in fact), so send the MCP request
-                // to the final proxy.
-                self.send_request_to_predecessor_of(
-                    client,
-                    self.proxies.len(),
-                    McpConnectRequest { acp_id, meta: None },
-                )
-                .on_receiving_result({
-                    let mut conductor_tx = self.conductor_tx.clone();
-                    async move |result| {
-                        match result {
-                            Ok(response) => conductor_tx
-                                .send(ConductorMessage::McpConnectionEstablished {
-                                    response,
-                                    actor,
-                                    connection,
-                                })
-                                .await
-                                .map_err(|_| agent_client_protocol::Error::internal_error()),
-                            Err(_) => {
-                                // Error occurred, just drop the connection.
-                                Ok(())
-                            }
-                        }
-                    }
-                })
-            }
-
-            // MCP connection successfully established. Spawn the actor
-            // and insert the connection into our map for future reference.
-            ConductorMessage::McpConnectionEstablished {
-                response: McpConnectResponse { connection_id, .. },
-                actor,
-                connection,
-            } => {
-                self.bridge_connections
-                    .insert(connection_id.clone(), connection);
-                client.spawn(actor.run(connection_id))
-            }
-
-            // Message meant for the MCP client received. Forward it to the appropriate actor's mailbox.
-            ConductorMessage::McpClientToMcpServer {
-                connection_id,
-                message,
-            } => {
-                let wrapped = message.map(
-                    |request, responder| {
-                        (
-                            McpOverAcpMessage {
-                                connection_id: connection_id.clone(),
-                                message: request,
-                                meta: None,
-                            },
-                            responder,
-                        )
-                    },
-                    |notification| McpOverAcpMessage {
-                        connection_id: connection_id.clone(),
-                        message: notification,
-                        meta: None,
-                    },
-                );
-
-                // We only get MCP-over-ACP requests when we are in bridging MCP for the final agent,
-                // so send them to the final proxy.
-                self.send_message_to_predecessor_of(
-                    client,
-                    SourceComponentIndex::Successor,
-                    wrapped,
-                )
-            }
-
-            // MCP client disconnected. Remove it from our map and send the
-            // notification backwards along the chain.
-            ConductorMessage::McpConnectionDisconnected { notification } => {
-                // We only get MCP-over-ACP requests when we are in bridging MCP for the final agent.
-
-                self.bridge_connections.remove(&notification.connection_id);
-                self.send_notification_to_predecessor_of(client, self.proxies.len(), notification)
             }
         }
     }
@@ -913,7 +784,7 @@ where
     /// running as a proxy).
     async fn forward_message_to_agent(
         &mut self,
-        client_connection: ConnectionTo<Host::Counterpart>,
+        _client_connection: ConnectionTo<Host::Counterpart>,
         message: Dispatch,
         agent_connection: ConnectionTo<Agent>,
     ) -> Result<(), Error> {
@@ -925,63 +796,8 @@ where
                 )
             })
             .await
-            .if_request(async |mut request: NewSessionRequest, responder| {
-                // When forwarding "session/new" to the agent,
-                // we adjust MCP servers to manage "acp:" URLs.
-                for mcp_server in &mut request.mcp_servers {
-                    self.bridge_listeners
-                        .transform_mcp_server(
-                            client_connection.clone(),
-                            mcp_server,
-                            &self.conductor_tx,
-                            &self.mcp_bridge_mode,
-                        )
-                        .await?;
-                }
-
-                agent_connection
-                    .send_request(request)
-                    .forward_response_to(responder)
-            })
-            .await
-            .if_request(
-                async |request: McpOverAcpMessage<UntypedMessage>, responder| {
-                    let McpOverAcpMessage {
-                        connection_id,
-                        message: mcp_request,
-                        ..
-                    } = request;
-                    self.bridge_connections
-                        .get_mut(&connection_id)
-                        .ok_or_else(|| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "unknown connection id: {connection_id}"
-                            ))
-                        })?
-                        .send(Dispatch::Request(mcp_request, responder))
-                        .await
-                },
-            )
-            .await
-            .if_notification(async |notification: McpOverAcpMessage<UntypedMessage>| {
-                let McpOverAcpMessage {
-                    connection_id,
-                    message: mcp_notification,
-                    ..
-                } = notification;
-                self.bridge_connections
-                    .get_mut(&connection_id)
-                    .ok_or_else(|| {
-                        agent_client_protocol::util::internal_error(format!(
-                            "unknown connection id: {connection_id}"
-                        ))
-                    })?
-                    .send(Dispatch::Notification(mcp_notification))
-                    .await
-            })
-            .await
             .otherwise(async |message| {
-                // Otherwise, just send the message along "as is".
+                // Forward all other messages to the agent as-is.
                 agent_connection.send_proxied_message_to(Agent, message)
             })
             .await
@@ -1275,47 +1091,6 @@ pub enum ConductorMessage {
     RightToLeft {
         source_component_index: SourceComponentIndex,
         message: Dispatch,
-    },
-
-    /// A pending MCP bridge connection request request.
-    /// The request must be sent back over ACP to receive the connection-id.
-    /// Once the connection-id is received, the actor must be spawned.
-    McpConnectionReceived {
-        /// The acp:$UUID identifier for this bridge
-        acp_id: String,
-
-        /// The actor that should be spawned once the connection-id is available.
-        actor: McpBridgeConnectionActor,
-
-        /// The connection to the bridge
-        connection: McpBridgeConnection,
-    },
-
-    /// A pending MCP bridge connection request request.
-    /// The request must be sent back over ACP to receive the connection-id.
-    /// Once the connection-id is received, the actor must be spawned.
-    McpConnectionEstablished {
-        response: McpConnectResponse,
-
-        /// The actor that should be spawned once the connection-id is available.
-        actor: McpBridgeConnectionActor,
-
-        /// The connection to the bridge
-        connection: McpBridgeConnection,
-    },
-
-    /// MCP message (request or notification) received from a bridge that needs to be routed to the final proxy.
-    ///
-    /// Sent when the bridge receives an MCP tool call from the agent and forwards it
-    /// to the conductor via TCP. The conductor routes this to the appropriate proxy component.
-    McpClientToMcpServer {
-        connection_id: String,
-        message: Dispatch,
-    },
-
-    /// Message sent when MCP client disconnects
-    McpConnectionDisconnected {
-        notification: McpDisconnectNotification,
     },
 }
 

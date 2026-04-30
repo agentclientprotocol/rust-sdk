@@ -11,7 +11,7 @@ use agent_client_protocol::schema::{
     NewSessionResponse, ProtocolVersion, SessionId,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -172,7 +172,6 @@ async fn run_test(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
                 ProxiesAndAgent::new(agent).proxies(proxies),
-                McpBridgeMode::default(),
             )
             .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),

@@ -168,21 +168,6 @@ impl trace::WriteEvent for TraceHandleWriter {
     }
 }
 
-/// Mode for the MCP bridge.
-#[derive(Debug, Clone, Default)]
-pub enum McpBridgeMode {
-    /// Use stdio-based MCP bridge with a conductor subprocess.
-    Stdio {
-        /// Command and args to spawn conductor MCP bridge processes.
-        /// E.g., vec!["conductor"] or vec!["cargo", "run", "-p", "conductor", "--"]
-        conductor_command: Vec<String>,
-    },
-
-    /// Use HTTP-based MCP bridge
-    #[default]
-    Http,
-}
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct ConductorArgs {
@@ -358,11 +343,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
     trace_writer: Option<trace::TraceWriter>,
     name: String,
     components: Vec<String>,
-    new_conductor: impl FnOnce(
-        String,
-        CommandLineComponents,
-        crate::McpBridgeMode,
-    ) -> ConductorImpl<Host>,
+    new_conductor: impl FnOnce(String, CommandLineComponents) -> ConductorImpl<Host>,
 ) -> Result<(), agent_client_protocol::Error> {
     // Parse agents and optionally wrap with debug callbacks
     let providers: Vec<AcpAgent> = components
@@ -385,11 +366,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
     };
 
     // Create conductor with optional trace writer
-    let mut conductor = new_conductor(
-        name,
-        CommandLineComponents(providers),
-        McpBridgeMode::default(),
-    );
+    let mut conductor = new_conductor(name, CommandLineComponents(providers));
     if let Some(writer) = trace_writer {
         conductor = conductor.with_trace_writer(writer);
     }

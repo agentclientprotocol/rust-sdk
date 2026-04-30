@@ -8,7 +8,7 @@
 //! Run `just prep-tests` before running this test.
 
 use agent_client_protocol::AcpAgent;
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use tokio::io::duplex;
@@ -43,7 +43,6 @@ async fn test_trace_generation() -> Result<(), agent_client_protocol::Error> {
         ConductorImpl::new_agent(
             "conductor".to_string(),
             ProxiesAndAgent::new(eliza_agent).proxy(arrow_proxy_agent),
-            McpBridgeMode::default(),
         )
         .trace_to_path(&trace_path_clone)
         .expect("Failed to create trace writer")

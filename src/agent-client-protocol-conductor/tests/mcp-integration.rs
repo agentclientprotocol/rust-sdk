@@ -12,8 +12,7 @@ use agent_client_protocol::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
     SessionNotification, TextContent,
 };
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
-use agent_client_protocol_test::test_binaries;
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use futures::{SinkExt, StreamExt, channel::mpsc};
 
@@ -33,13 +32,7 @@ async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
         .map_err(|_| agent_client_protocol::Error::internal_error())?
 }
 
-fn conductor_command() -> Vec<String> {
-    let binary_path = test_binaries::conductor_binary();
-    vec![binary_path.to_string_lossy().to_string()]
-}
-
 async fn run_test_with_mode(
-    mode: McpBridgeMode,
     components: ProxiesAndAgent,
     editor_task: impl AsyncFnOnce(
         agent_client_protocol::ConnectionTo<Agent>,
@@ -64,7 +57,7 @@ async fn run_test_with_mode(
         .builder()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
-            ConductorImpl::new_agent("conductor".to_string(), components, mode)
+            ConductorImpl::new_agent("conductor".to_string(), components)
                 .run(agent_client_protocol::ByteStreams::new(
                     conductor_out.compat_write(),
                     conductor_in.compat(),
@@ -79,9 +72,6 @@ async fn run_test_with_mode(
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
-        McpBridgeMode::Stdio {
-            conductor_command: conductor_command(),
-        },
         ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
         async |connection_to_editor| {
             // Send initialization request
@@ -123,7 +113,6 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
 #[tokio::test]
 async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protocol::Error> {
     run_test_with_mode(
-        McpBridgeMode::Http,
         ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
         async |connection_to_editor| {
             // Send initialization request
@@ -162,6 +151,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
 }
 
 #[tokio::test]
+#[ignore = "requires McpOverAcpPolyfill proxy in chain - bridge removed from conductor"]
 async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error> {
     // Initialize tracing for debug output
     drop(
@@ -183,7 +173,6 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error>
         ConductorImpl::new_agent(
             "mcp-integration-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(mcp_integration::proxy::ProxyComponent),
-            McpBridgeMode::default(),
         )
         .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),

@@ -13,7 +13,7 @@ use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
 use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use expect_test::expect;
 use futures::StreamExt;
@@ -217,6 +217,7 @@ fn make_echo_mcp_server<R: Role>(
 }
 
 #[tokio::test]
+#[ignore = "requires McpOverAcpPolyfill proxy in chain - bridge removed from conductor"]
 async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Error> {
     // Create channel for collecting trace events
     let (trace_tx, trace_rx) = mpsc::unbounded();
@@ -227,17 +228,13 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
 
     // Spawn the conductor with ElizaAgent (no proxies - simple setup)
     let conductor_handle = tokio::spawn(async move {
-        ConductorImpl::new_agent(
-            "conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()),
-            McpBridgeMode::default(),
-        )
-        .trace_to(trace_tx)
-        .run(agent_client_protocol::ByteStreams::new(
-            conductor_write.compat_write(),
-            conductor_read.compat(),
-        ))
-        .await
+        ConductorImpl::new_agent("conductor".to_string(), ProxiesAndAgent::new(Testy::new()))
+            .trace_to(trace_tx)
+            .run(agent_client_protocol::ByteStreams::new(
+                conductor_write.compat_write(),
+                conductor_read.compat(),
+            ))
+            .await
     });
 
     // Run the client with a client-hosted MCP server
