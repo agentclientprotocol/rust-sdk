@@ -10,8 +10,13 @@ use super::BridgeMessage;
 /// and the ACP proxy chain.
 #[derive(Debug)]
 pub(crate) struct BridgeConnectionActor {
+    /// How to connect to the MCP server (e.g., stdio or HTTP transport).
     transport: DynConnectTo<mcp::Client>,
+
+    /// Sender for messages back to the polyfill's bridge responder loop.
     bridge_tx: mpsc::Sender<BridgeMessage>,
+
+    /// Receiver for messages from the polyfill to forward to the MCP client.
     to_mcp_client_rx: mpsc::Receiver<Dispatch>,
 }
 

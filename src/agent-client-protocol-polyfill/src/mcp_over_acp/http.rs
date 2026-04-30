@@ -45,11 +45,14 @@ pub async fn run_http_listener(
     Ok(())
 }
 
+/// A component that receives HTTP requests/responses using the HTTP transport
+/// defined by the MCP protocol.
 struct HttpMcpBridge {
     listener: tokio::net::TcpListener,
 }
 
 impl HttpMcpBridge {
+    /// Creates a new HTTP-MCP bridge from an existing TCP listener.
     fn new(listener: tokio::net::TcpListener) -> Self {
         Self { listener }
     }
@@ -80,6 +83,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
     }
 }
 
+/// Error type for responding to malformed HTTP requests.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 struct HttpError(#[from] agent_client_protocol::Error);
@@ -97,10 +101,25 @@ impl IntoResponse for HttpError {
     }
 }
 
+/// Run a webserver listening on `listener` for HTTP requests at `/`
+/// and communicating those requests over `channel` to the JSON-RPC server.
 async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client_protocol::Error> {
     let (registration_tx, registration_rx) = mpsc::unbounded();
     let state = BridgeState { registration_tx };
 
+    // The way that the MCP protocol works is a bit "special".
+    //
+    // Clients *POST* messages to `/`. Those are submitted to the MCP server.
+    // If the message is a REQUEST, then the client waits until it gets a reply.
+    // It expects the server to close the connection after responding.
+    //
+    // Clients can also issue a *GET* request. This will result in a stream of messages.
+    //
+    // Non-reply messages can be sent to any open stream (POST, GET, etc) but must be sent to
+    // exactly one.
+    //
+    // There are provisions for "resuming" from a blocked point by tagging each message in the SSE
+    // stream with an id, but we are not implementing that because I am lazy.
     async {
         let app = Router::new()
             .route("/", post(handle_post).get(handle_get))
@@ -114,36 +133,47 @@ async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client
     .await
 }
 
+/// The state we pass to our POST/GET handlers.
 struct BridgeState {
+    /// Where to send registration messages.
     registration_tx: mpsc::UnboundedSender<HttpMessage>,
 }
 
+/// Messages from HTTP handlers to the bridge server.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum HttpMessage {
+    /// A JSON-RPC request (has an id, expects a response via the channel).
     Request {
         http_request_id: uuid::Uuid,
         request: agent_client_protocol::jsonrpcmsg::Request,
         response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
+    /// A JSON-RPC notification (no id, no response expected).
     Notification {
         http_request_id: uuid::Uuid,
         request: agent_client_protocol::jsonrpcmsg::Request,
     },
+    /// A JSON-RPC response from the client.
     Response {
         http_request_id: uuid::Uuid,
         response: agent_client_protocol::jsonrpcmsg::Response,
     },
+    /// A GET request to open an SSE stream for server-initiated messages.
     Get {
         http_request_id: uuid::Uuid,
         response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
 }
 
+/// Clone of `agent_client_protocol::jsonrpcmsg::Id` since it does not impl `Hash`.
 #[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Debug, Clone)]
 enum JsonRpcId {
+    /// String identifier.
     String(String),
+    /// Numeric identifier.
     Number(u64),
+    /// Null identifier (for notifications).
     Null,
 }
 
@@ -172,6 +202,7 @@ impl RunningServer {
         }
     }
 
+    /// The main loop: listen for incoming HTTP messages and outgoing JSON-RPC messages.
     async fn run(
         mut self,
         mut channel: Channel,
@@ -215,6 +246,7 @@ impl RunningServer {
         Ok(())
     }
 
+    /// Handle an incoming HTTP message (request, notification, response, or GET).
     fn handle_http_message(
         &mut self,
         message: HttpMessage,
@@ -339,6 +371,9 @@ impl RegisteredSession {
     }
 }
 
+/// Accept a POST request carrying a JSON-RPC message from an MCP client.
+/// For requests (messages with id), we return an SSE stream.
+/// For notifications/responses (messages without id), we return 202 Accepted.
 async fn handle_post(
     State(state): State<Arc<BridgeState>>,
     body: String,
@@ -392,6 +427,8 @@ async fn handle_post(
     }
 }
 
+/// Accept a GET request from an MCP client.
+/// Opens an SSE stream for server-initiated messages.
 async fn handle_get(
     State(state): State<Arc<BridgeState>>,
 ) -> Result<Sse<impl Stream<Item = Result<axum::response::sse::Event, HttpError>>>, HttpError> {

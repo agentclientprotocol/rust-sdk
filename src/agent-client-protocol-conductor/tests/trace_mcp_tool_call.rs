@@ -351,7 +351,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "agentCapabilities": Object {
                             "loadSession": Bool(false),
                             "mcpCapabilities": Object {
-                                "acp": Bool(false),
+                                "acp": Bool(true),
                                 "http": Bool(false),
                                 "sse": Bool(false),
                             },
@@ -378,7 +378,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "agentCapabilities": Object {
                             "loadSession": Bool(false),
                             "mcpCapabilities": Object {
-                                "acp": Bool(false),
+                                "acp": Bool(true),
                                 "http": Bool(false),
                                 "sse": Bool(false),
                             },

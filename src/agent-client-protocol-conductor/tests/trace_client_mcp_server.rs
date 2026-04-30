@@ -337,7 +337,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                         "agentCapabilities": Object {
                             "loadSession": Bool(false),
                             "mcpCapabilities": Object {
-                                "acp": Bool(false),
+                                "acp": Bool(true),
                                 "http": Bool(false),
                                 "sse": Bool(false),
                             },

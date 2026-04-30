@@ -28,8 +28,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use agent_client_protocol::schema::{
-    McpConnectRequest, McpConnectResponse, McpDisconnectNotification, McpOverAcpMessage, McpServer,
-    McpServerHttp, McpServerStdio, NewSessionRequest,
+    InitializeProxyRequest, McpConnectRequest, McpConnectResponse, McpDisconnectNotification,
+    McpOverAcpMessage, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
 };
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, Proxy, Role,
@@ -149,6 +149,23 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
                 bridge_rx,
                 bridge_connections: HashMap::new(),
             })
+            .on_receive_request_from(
+                Client,
+                async move |request: InitializeProxyRequest,
+                            responder,
+                            cx: ConnectionTo<Conductor>| {
+                    // Forward initialize to successor, then set mcpCapabilities.acp = true
+                    // in the response to advertise that we handle MCP-over-ACP.
+                    cx.send_request_to(Agent, request.initialize)
+                        .on_receiving_result(async move |result| {
+                            responder.respond_with_result(result.map(|mut response| {
+                                response.agent_capabilities.mcp_capabilities.acp = true;
+                                response
+                            }))
+                        })
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
             .on_receive_request_from(
                 Client,
                 {
