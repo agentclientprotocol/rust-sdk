@@ -108,7 +108,7 @@ P/ACP's orchestrator is called the **Conductor** (binary name: `conductor`). The
 
 **Key adaptation: MCP Bridge**
 
-- If the agent supports `mcp_acp_transport`, conductor passes MCP servers with ACP transport through unchanged
+- If the agent supports `mcpCapabilities.acp`, conductor passes MCP servers with ACP transport through unchanged
 - If not, conductor spawns `conductor mcp $port` processes to bridge between stdio (MCP) and ACP messages
 - Components can provide MCP servers without requiring agent modifications
 - See "MCP Bridge" section in Implementation Details for full protocol
@@ -356,26 +356,28 @@ Components declare MCP servers with ACP transport by using the HTTP MCP server f
 
 The `acp:$UUID` URL signals ACP transport. The component generates the UUID to identify which component handles calls to this MCP server.
 
-#### Agent Capability: `mcp_acp_transport`
+#### Agent Capability: `mcpCapabilities.acp`
 
 Agents that natively support MCP-over-ACP declare this capability:
 
 ```json
 {
-  "_meta": {
-    "mcp_acp_transport": true
+  "agentCapabilities": {
+    "mcpCapabilities": {
+      "acp": true
+    }
   }
 }
 ```
 
 **Conductor behavior:**
 
-- If the final agent has `mcp_acp_transport: true`, conductor passes MCP server declarations through unchanged
+- If the final agent has `mcpCapabilities.acp: true`, conductor passes MCP server declarations through unchanged
 - If the final agent lacks this capability, conductor performs **bridging adaptation**:
   1. Binds a fresh TCP port (e.g., `localhost:54321`)
   2. Transforms the MCP server declaration to use `conductor mcp $port` as the command
   3. Spawns `conductor mcp $port` which connects back via TCP and bridges to ACP messages
-  4. Always advertises `mcp_acp_transport: true` to intermediate components
+  4. Always advertises `mcpCapabilities.acp: true` to intermediate components
 
 #### Bridging Transformation Example
 
@@ -391,7 +393,7 @@ Agents that natively support MCP-over-ACP declare this capability:
 }
 ```
 
-**Transformed spec (passed to agent without `mcp_acp_transport`):**
+**Transformed spec (passed to agent without `mcpCapabilities.acp`):**
 
 ```json
 {
@@ -586,12 +588,12 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 **Phase 2: Conductor Agent Mode - MCP Detection & Bridging**
 
 - [ ] Detect `"transport": "http", "url": "acp:$UUID"` MCP servers in initialization
-- [ ] Check final agent for `mcp_acp_transport` capability
+- [ ] Check final agent for `mcpCapabilities.acp` capability
 - [ ] Bind ephemeral TCP ports when bridging needed
 - [ ] Transform MCP server specs to use `conductor mcp $port`
 - [ ] Spawn `conductor mcp $port` subprocess per ACP-transport MCP server
 - [ ] Store mapping: `UUID → TCP port → bridge process`
-- [ ] Always advertise `mcp_acp_transport: true` to intermediate components
+- [ ] Always advertise `mcpCapabilities.acp: true` to intermediate components
 - [ ] Integration test: full chain with MCP bridging
 
 **Phase 3: `_mcp/*` Message Routing**

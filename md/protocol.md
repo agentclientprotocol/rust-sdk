@@ -286,21 +286,23 @@ Send an MCP notification over the ACP connection. Bidirectional like `_mcp/reque
 }
 ```
 
-### Agent Capability: `mcp_acp_transport`
+### Agent Capability: `mcpCapabilities.acp`
 
 Agents that natively support MCP-over-ACP declare this capability:
 
 ```json
 {
-  "_meta": {
-    "mcp_acp_transport": true
+  "agentCapabilities": {
+    "mcpCapabilities": {
+      "acp": true
+    }
   }
 }
 ```
 
 **Conductor behavior:**
 
-- If the agent has `mcp_acp_transport: true`, conductor passes MCP server declarations through unchanged
+- If the agent has `mcpCapabilities.acp: true`, conductor passes MCP server declarations through unchanged
 - If the agent lacks this capability, conductor performs **bridging adaptation**:
   1. Binds a TCP port (e.g., `localhost:54321`)
   2. Transforms MCP server to use `conductor mcp PORT` command with stdio transport

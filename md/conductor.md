@@ -93,12 +93,12 @@ See [Proxy Mode](#proxy-mode) below for hierarchical chain details.
 
 When components provide MCP servers with ACP transport (`"url": "acp:$UUID"`):
 
-**If agent has `mcp_acp_transport` capability:**
+**If agent has `mcpCapabilities.acp` capability:**
 
 - Pass through MCP server declarations unchanged
 - Agent handles `_mcp/*` messages natively
 
-**If agent lacks `mcp_acp_transport` capability:**
+**If agent lacks `mcpCapabilities.acp` capability:**
 
 - Bind TCP port for each ACP-transport MCP server
 - Transform MCP server spec to use `conductor mcp $port`
