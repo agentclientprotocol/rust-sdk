@@ -1,18 +1,14 @@
 use crate::schema::{
-    AuthenticateRequest, AuthenticateResponse, InitializeRequest, InitializeResponse,
-    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
-    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, SetSessionModeRequest,
-    SetSessionModeResponse,
+    AuthenticateRequest, AuthenticateResponse, CloseSessionRequest, CloseSessionResponse,
+    InitializeRequest, InitializeResponse, ListSessionsRequest, ListSessionsResponse,
+    LoadSessionRequest, LoadSessionResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+    PromptResponse, ResumeSessionRequest, ResumeSessionResponse, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
-#[cfg(feature = "unstable_session_close")]
-use crate::schema::{CloseSessionRequest, CloseSessionResponse};
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::{ForkSessionRequest, ForkSessionResponse};
 #[cfg(feature = "unstable_logout")]
 use crate::schema::{LogoutRequest, LogoutResponse};
-#[cfg(feature = "unstable_session_resume")]
-use crate::schema::{ResumeSessionRequest, ResumeSessionResponse};
 #[cfg(feature = "unstable_session_model")]
 use crate::schema::{SetSessionModelRequest, SetSessionModelResponse};
 
@@ -43,11 +39,9 @@ impl_jsonrpc_request!(
 );
 #[cfg(feature = "unstable_session_fork")]
 impl_jsonrpc_request!(ForkSessionRequest, ForkSessionResponse, "session/fork");
-#[cfg(feature = "unstable_session_resume")]
 impl_jsonrpc_request!(
     ResumeSessionRequest,
     ResumeSessionResponse,
     "session/resume"
 );
-#[cfg(feature = "unstable_session_close")]
 impl_jsonrpc_request!(CloseSessionRequest, CloseSessionResponse, "session/close");

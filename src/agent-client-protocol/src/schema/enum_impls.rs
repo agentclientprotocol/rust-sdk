@@ -17,9 +17,7 @@ impl_jsonrpc_request_enum!(ClientRequest {
     ListSessionsRequest => "session/list",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionRequest => "session/fork",
-    #[cfg(feature = "unstable_session_resume")]
     ResumeSessionRequest => "session/resume",
-    #[cfg(feature = "unstable_session_close")]
     CloseSessionRequest => "session/close",
     SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
