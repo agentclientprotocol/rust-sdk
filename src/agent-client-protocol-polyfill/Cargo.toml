@@ -12,14 +12,12 @@ categories = ["development-tools"]
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
-agent-client-protocol-schema.workspace = true
 anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 thiserror = "2.0"
 tokio.workspace = true

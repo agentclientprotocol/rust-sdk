@@ -22,8 +22,6 @@ agent-client-protocol = { workspace = true }
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
-async-stream.workspace = true
-axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
 futures.workspace = true
@@ -34,7 +32,6 @@ serde.workspace = true
 serde_json.workspace = true
 shell-words.workspace = true
 strip-ansi-escapes.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tower.workspace = true
