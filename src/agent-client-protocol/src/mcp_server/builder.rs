@@ -395,11 +395,8 @@ impl<Counterpart: Role> ConnectTo<role::mcp::Client> for McpServerConnection<Cou
         let run_client = async {
             let byte_streams =
                 ByteStreams::new(mcp_client_write.compat_write(), mcp_client_read.compat());
-            <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(
-                byte_streams,
-                client,
-            )
-            .await
+            <ByteStreams<_, _> as ConnectTo<role::mcp::Client>>::connect_to(byte_streams, client)
+                .await
         };
 
         let run_server = async {

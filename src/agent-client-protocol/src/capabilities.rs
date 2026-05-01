@@ -17,7 +17,7 @@
 //! ```
 
 use crate::schema::{InitializeRequest, InitializeResponse};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Trait for capabilities stored in the `_meta.symposium` object.
 ///
