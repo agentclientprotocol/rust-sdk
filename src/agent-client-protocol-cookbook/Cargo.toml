@@ -11,14 +11,13 @@ keywords = ["acp", "agent", "proxy", "mcp", "cookbook"]
 categories = ["development-tools"]
 
 [dependencies]
-agent-client-protocol-conductor.workspace = true
+
+[dev-dependencies]
 agent-client-protocol.workspace = true
 agent-client-protocol-rmcp.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
 tracing.workspace = true
 
 [lints]

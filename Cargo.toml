@@ -47,7 +47,6 @@ uuid = { version = "1.18", features = ["v4"] }
 anyhow = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
-tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # MCP SDK
@@ -58,9 +57,6 @@ clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
-hyper = "1.0"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["fs"] }
 async-process = "2"
 async-stream = "0.3.6"
 blocking = "1"
@@ -75,7 +71,6 @@ strip-ansi-escapes = "0.2"
 
 
 # Proc macros
-proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full", "extra-traits"] }
 
