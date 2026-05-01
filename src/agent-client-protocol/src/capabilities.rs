@@ -67,8 +67,7 @@ impl MetaCapabilityExt for InitializeRequest {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .map(|v| !matches!(v, Value::Bool(false) | Value::Null))
-            .unwrap_or(false)
+            .is_some_and(|v| !matches!(v, Value::Bool(false) | Value::Null))
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
@@ -105,8 +104,7 @@ impl MetaCapabilityExt for InitializeResponse {
             .as_ref()
             .and_then(|meta| meta.get("symposium"))
             .and_then(|symposium| symposium.get(capability.key()))
-            .map(|v| !matches!(v, Value::Bool(false) | Value::Null))
-            .unwrap_or(false)
+            .is_some_and(|v| !matches!(v, Value::Bool(false) | Value::Null))
     }
 
     fn add_meta_capability(mut self, capability: impl MetaCapability) -> Self {
