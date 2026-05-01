@@ -36,7 +36,10 @@ pub struct TraceHandle {
 impl TraceHandle {
     /// Push a new event to the trace.
     pub fn push(&self, event: serde_json::Value) {
-        self.events.lock().expect("events mutex poisoned").push(event);
+        self.events
+            .lock()
+            .expect("events mutex poisoned")
+            .push(event);
     }
 
     /// Get the current number of events.
@@ -48,7 +51,10 @@ impl TraceHandle {
     /// Check if empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.events.lock().expect("events mutex poisoned").is_empty()
+        self.events
+            .lock()
+            .expect("events mutex poisoned")
+            .is_empty()
     }
 }
 
