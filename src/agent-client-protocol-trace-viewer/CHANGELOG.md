@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v0.11.0...agent-client-protocol-trace-viewer-v0.11.1) - 2026-05-01
+
+### Other
+
+- Trim dependencies ([#149](https://github.com/agentclientprotocol/rust-sdk/pull/149))
+- remove unreachable!() and improve error messages ([#139](https://github.com/agentclientprotocol/rust-sdk/pull/139))
+
 ## [0.11.0](https://github.com/agentclientprotocol/rust-sdk/releases/tag/agent-client-protocol-trace-viewer-v0.11.0) - 2026-04-20
 
 ### Added

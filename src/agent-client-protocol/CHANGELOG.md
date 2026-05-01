@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.2](https://github.com/agentclientprotocol/rust-sdk/compare/v0.11.1...v0.11.2) - 2026-05-01
+
+### Added
+
+- Stabilize session/close and session/resume ([#147](https://github.com/agentclientprotocol/rust-sdk/pull/147))
+- remove direct dependency on tokio  ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
+
+### Fixed
+
+- propagate client connection errors and check capability value truthiness ([#108](https://github.com/agentclientprotocol/rust-sdk/pull/108))
+
+### Other
+
+- Trim dependencies ([#149](https://github.com/agentclientprotocol/rust-sdk/pull/149))
+- remove unreachable!() and improve error messages ([#139](https://github.com/agentclientprotocol/rust-sdk/pull/139))
+
 ## [0.11.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.11.0...v0.11.1) - 2026-04-21
 
 ### Fixed
