@@ -46,7 +46,7 @@ jobs:
         run: cargo build --all-targets --all-features
 
       - name: Install just
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@711e1c3275189d76dcc4d34ddea63bf96ac49090
         with:
           tool: just
 
