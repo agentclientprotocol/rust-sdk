@@ -449,7 +449,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.5.0"),
+                            "version": String("1.6.0"),
                         },
                         "protocolVersion": String("2025-11-25"),
                     },
@@ -470,7 +470,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                         "protocolVersion": String("2025-11-25"),
                         "serverInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.5.0"),
+                            "version": String("1.6.0"),
                         },
                     },
                 },
