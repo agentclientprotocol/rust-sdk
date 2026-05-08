@@ -8,6 +8,8 @@ use std::{any::TypeId, fmt::Debug, future::Future, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
+use agent_client_protocol_schema::ProtocolVersion;
+
 use crate::schema::{METHOD_SUCCESSOR_MESSAGE, SuccessorMessage};
 use crate::util::json_cast;
 use crate::{Builder, ConnectionTo, Dispatch, Handled, JsonRpcMessage, UntypedMessage};
@@ -95,17 +97,20 @@ pub enum RemoteStyle {
 }
 
 impl RemoteStyle {
-    pub(crate) fn transform_outgoing_message<M: JsonRpcMessage>(
+    pub(crate) fn transform_outgoing_message_for_protocol<M: JsonRpcMessage>(
         &self,
         msg: M,
+        protocol_version: ProtocolVersion,
     ) -> Result<UntypedMessage, crate::Error> {
         match self {
-            RemoteStyle::Counterpart | RemoteStyle::Predecessor => msg.to_untyped_message(),
+            RemoteStyle::Counterpart | RemoteStyle::Predecessor => {
+                msg.to_untyped_message_for_protocol(protocol_version)
+            }
             RemoteStyle::Successor => SuccessorMessage {
                 message: msg,
                 meta: None,
             }
-            .to_untyped_message(),
+            .to_untyped_message_for_protocol(protocol_version),
         }
     }
 }

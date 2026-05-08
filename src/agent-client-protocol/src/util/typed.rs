@@ -22,6 +22,7 @@ use jsonrpcmsg::Params;
 use crate::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, Responder, ResponseRouter, UntypedMessage,
+    jsonrpc::ProtocolState,
     role::{HasPeer, Role, handle_incoming_dispatch},
     util::json_cast,
 };
@@ -64,6 +65,7 @@ use crate::{
 #[derive(Debug)]
 pub struct MatchDispatch {
     state: Result<Handled<Dispatch>, crate::Error>,
+    protocol_state: ProtocolState,
 }
 
 impl MatchDispatch {
@@ -74,6 +76,20 @@ impl MatchDispatch {
                 message,
                 retry: false,
             }),
+            protocol_state: ProtocolState::new(),
+        }
+    }
+
+    pub(crate) fn new_with_protocol_state(
+        message: Dispatch,
+        protocol_state: ProtocolState,
+    ) -> Self {
+        Self {
+            state: Ok(Handled::No {
+                message,
+                retry: false,
+            }),
+            protocol_state,
         }
     }
 
@@ -82,7 +98,10 @@ impl MatchDispatch {
     /// This is useful when composing with [`MatchDispatchFrom`] which applies
     /// peer transforms before delegating to `MatchDispatch` for parsing.
     pub fn from_handled(state: Result<Handled<Dispatch>, crate::Error>) -> Self {
-        Self { state }
+        Self {
+            state,
+            protocol_state: ProtocolState::new(),
+        }
     }
 
     /// Try to handle the message as a request of type `Req`.
@@ -105,8 +124,16 @@ impl MatchDispatch {
             self.state = match dispatch {
                 Dispatch::Request(untyped_request, untyped_responder) => {
                     if Req::matches_method(untyped_request.method()) {
-                        match Req::parse_message(untyped_request.method(), untyped_request.params())
-                        {
+                        let protocol_version =
+                            self.protocol_state.protocol_version_for_incoming_message(
+                                untyped_request.method(),
+                                untyped_request.params(),
+                            );
+                        match Req::parse_message_for_protocol(
+                            untyped_request.method(),
+                            untyped_request.params(),
+                            protocol_version,
+                        ) {
                             Ok(typed_request) => {
                                 let typed_responder = untyped_responder.cast();
                                 match op(typed_request, typed_responder).await {
@@ -115,7 +142,9 @@ impl MatchDispatch {
                                         Handled::No {
                                             message: (request, responder),
                                             retry: request_retry,
-                                        } => match request.to_untyped_message() {
+                                        } => match request
+                                            .to_untyped_message_for_protocol(protocol_version)
+                                        {
                                             Ok(untyped) => Ok(Handled::No {
                                                 message: Dispatch::Request(
                                                     untyped,
@@ -166,9 +195,15 @@ impl MatchDispatch {
             self.state = match dispatch {
                 Dispatch::Notification(untyped_notification) => {
                     if N::matches_method(untyped_notification.method()) {
-                        match N::parse_message(
+                        let protocol_version =
+                            self.protocol_state.protocol_version_for_incoming_message(
+                                untyped_notification.method(),
+                                untyped_notification.params(),
+                            );
+                        match N::parse_message_for_protocol(
                             untyped_notification.method(),
                             untyped_notification.params(),
+                            protocol_version,
                         ) {
                             Ok(typed_notification) => match op(typed_notification).await {
                                 Ok(result) => match result.into_handled() {
@@ -176,7 +211,9 @@ impl MatchDispatch {
                                     Handled::No {
                                         message: notification,
                                         retry: notification_retry,
-                                    } => match notification.to_untyped_message() {
+                                    } => match notification
+                                        .to_untyped_message_for_protocol(protocol_version)
+                                    {
                                         Ok(untyped) => Ok(Handled::No {
                                             message: Dispatch::Notification(untyped),
                                             retry: retry | notification_retry,
@@ -220,7 +257,9 @@ impl MatchDispatch {
             retry,
         }) = self.state
         {
-            self.state = match dispatch.into_typed_dispatch::<R, N>() {
+            self.state = match dispatch
+                .into_typed_dispatch_for_protocol::<R, N>(&self.protocol_state)
+            {
                 Ok(Ok(typed_dispatch)) => match op(typed_dispatch).await {
                     Ok(result) => match result.into_handled() {
                         Handled::Yes => Ok(Handled::Yes),
@@ -230,26 +269,63 @@ impl MatchDispatch {
                         } => {
                             let untyped = match typed_dispatch {
                                 Dispatch::Request(request, responder) => {
-                                    match request.to_untyped_message() {
+                                    let protocol_version =
+                                        self.protocol_state.protocol_version_for_outgoing_message(
+                                            request.method(),
+                                            request.protocol_version_hint(),
+                                        );
+                                    match request.to_untyped_message_for_protocol(protocol_version)
+                                    {
                                         Ok(untyped) => {
                                             Dispatch::Request(untyped, responder.erase_to_json())
                                         }
-                                        Err(err) => return Self { state: Err(err) },
+                                        Err(err) => {
+                                            return Self {
+                                                state: Err(err),
+                                                protocol_state: self.protocol_state,
+                                            };
+                                        }
                                     }
                                 }
                                 Dispatch::Notification(notification) => {
-                                    match notification.to_untyped_message() {
+                                    let protocol_version =
+                                        self.protocol_state.protocol_version_for_outgoing_message(
+                                            notification.method(),
+                                            notification.protocol_version_hint(),
+                                        );
+                                    match notification
+                                        .to_untyped_message_for_protocol(protocol_version)
+                                    {
                                         Ok(untyped) => Dispatch::Notification(untyped),
-                                        Err(err) => return Self { state: Err(err) },
+                                        Err(err) => {
+                                            return Self {
+                                                state: Err(err),
+                                                protocol_state: self.protocol_state,
+                                            };
+                                        }
                                     }
                                 }
                                 Dispatch::Response(result, router) => {
                                     let method = router.method();
                                     let untyped_result = match result {
-                                        Ok(response) => match response.into_json(method) {
-                                            Ok(json) => Ok(json),
-                                            Err(err) => return Self { state: Err(err) },
-                                        },
+                                        Ok(response) => {
+                                            let protocol_version = self
+                                                .protocol_state
+                                                .protocol_version_for_outgoing_response(
+                                                    method, &response,
+                                                );
+                                            match response
+                                                .into_json_for_protocol(method, protocol_version)
+                                            {
+                                                Ok(json) => Ok(json),
+                                                Err(err) => {
+                                                    return Self {
+                                                        state: Err(err),
+                                                        protocol_state: self.protocol_state,
+                                                    };
+                                                }
+                                            }
+                                        }
                                         Err(err) => Err(err),
                                     };
                                     Dispatch::Response(untyped_result, router.erase_to_json())
@@ -305,7 +381,18 @@ impl MatchDispatch {
                         // Method matches, parse the response
                         let typed_router: ResponseRouter<Req::Response> = router.cast();
                         let typed_result = match result {
-                            Ok(value) => Req::Response::from_value(typed_router.method(), value),
+                            Ok(value) => {
+                                let protocol_version =
+                                    self.protocol_state.protocol_version_for_incoming_response(
+                                        typed_router.method(),
+                                        &value,
+                                    );
+                                Req::Response::from_value_for_protocol(
+                                    typed_router.method(),
+                                    value,
+                                    protocol_version,
+                                )
+                            }
                             Err(err) => Err(err),
                         };
 
@@ -318,7 +405,18 @@ impl MatchDispatch {
                                 } => {
                                     // Convert typed result back to untyped
                                     let untyped_result = match result {
-                                        Ok(response) => response.into_json(router.method()),
+                                        Ok(response) => {
+                                            let protocol_version = self
+                                                .protocol_state
+                                                .protocol_version_for_outgoing_response(
+                                                    router.method(),
+                                                    &response,
+                                                );
+                                            response.into_json_for_protocol(
+                                                router.method(),
+                                                protocol_version,
+                                            )
+                                        }
                                         Err(err) => Err(err),
                                     };
                                     Ok(Handled::No {
@@ -518,14 +616,18 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         H: crate::IntoHandled<(Req, Responder<Req::Response>)>,
     {
         if let Ok(Handled::No { message, retry: _ }) = self.state {
+            let protocol_state = self.connection.protocol_state();
             self.state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
+                async move |dispatch, _connection| {
                     // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch).if_request(op).await.done()
+                    MatchDispatch::new_with_protocol_state(dispatch, protocol_state)
+                        .if_request(op)
+                        .await
+                        .done()
                 },
             )
             .await;
@@ -575,14 +677,15 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         H: crate::IntoHandled<N>,
     {
         if let Ok(Handled::No { message, retry: _ }) = self.state {
+            let protocol_state = self.connection.protocol_state();
             self.state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
+                async move |dispatch, _connection| {
                     // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch)
+                    MatchDispatch::new_with_protocol_state(dispatch, protocol_state)
                         .if_notification(op)
                         .await
                         .done()
@@ -612,14 +715,18 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         H: crate::IntoHandled<Dispatch<Req, N>>,
     {
         if let Ok(Handled::No { message, retry: _ }) = self.state {
+            let protocol_state = self.connection.protocol_state();
             self.state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
+                async move |dispatch, _connection| {
                     // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch).if_message(op).await.done()
+                    MatchDispatch::new_with_protocol_state(dispatch, protocol_state)
+                        .if_message(op)
+                        .await
+                        .done()
                 },
             )
             .await;
@@ -649,10 +756,11 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
             )>,
     {
         if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = MatchDispatch::new(message)
-                .if_response_to::<Req, H>(op)
-                .await
-                .done();
+            self.state =
+                MatchDispatch::new_with_protocol_state(message, self.connection.protocol_state())
+                    .if_response_to::<Req, H>(op)
+                    .await
+                    .done();
         }
         self
     }
@@ -700,14 +808,15 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
             )>,
     {
         if let Ok(Handled::No { message, retry: _ }) = self.state {
+            let protocol_state = self.connection.protocol_state();
             self.state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
                 self.connection.clone(),
-                async |dispatch, _connection| {
+                async move |dispatch, _connection| {
                     // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch)
+                    MatchDispatch::new_with_protocol_state(dispatch, protocol_state)
                         .if_response_to::<Req, H>(op)
                         .await
                         .done()

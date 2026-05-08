@@ -3,7 +3,7 @@
 //! These types are intended to become part of the ACP protocol specification.
 
 use crate::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, UntypedMessage};
-use agent_client_protocol_schema::InitializeResponse;
+use agent_client_protocol_schema::{InitializeResponse, ProtocolVersion};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -37,10 +37,19 @@ impl<M: JsonRpcMessage> JsonRpcMessage for SuccessorMessage<M> {
     }
 
     fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
+        self.to_untyped_message_for_protocol(ProtocolVersion::LATEST)
+    }
+
+    fn to_untyped_message_for_protocol(
+        &self,
+        protocol_version: ProtocolVersion,
+    ) -> Result<UntypedMessage, crate::Error> {
         UntypedMessage::new(
             METHOD_SUCCESSOR_MESSAGE,
             SuccessorMessage {
-                message: self.message.to_untyped_message()?,
+                message: self
+                    .message
+                    .to_untyped_message_for_protocol(protocol_version)?,
                 meta: self.meta.clone(),
             },
         )
@@ -55,6 +64,29 @@ impl<M: JsonRpcMessage> JsonRpcMessage for SuccessorMessage<M> {
             return Err(crate::Error::method_not_found());
         }
         let inner = M::parse_message(&outer.message.method, &outer.message.params)?;
+        Ok(SuccessorMessage {
+            message: inner,
+            meta: outer.meta,
+        })
+    }
+
+    fn parse_message_for_protocol(
+        method: &str,
+        params: &impl Serialize,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, crate::Error> {
+        if method != METHOD_SUCCESSOR_MESSAGE {
+            return Err(crate::Error::method_not_found());
+        }
+        let outer = crate::util::json_cast_params::<_, SuccessorMessage<UntypedMessage>>(params)?;
+        if !M::matches_method(&outer.message.method) {
+            return Err(crate::Error::method_not_found());
+        }
+        let inner = M::parse_message_for_protocol(
+            &outer.message.method,
+            &outer.message.params,
+            protocol_version,
+        )?;
         Ok(SuccessorMessage {
             message: inner,
             meta: outer.meta,

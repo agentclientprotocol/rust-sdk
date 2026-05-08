@@ -29,6 +29,17 @@ macro_rules! impl_jsonrpc_request {
                 $crate::UntypedMessage::new($method, self)
             }
 
+            fn protocol_version_hint(&self) -> Option<$crate::schema::ProtocolVersion> {
+                if $method != "initialize" {
+                    return None;
+                }
+
+                serde_json::to_value(self)
+                    .ok()
+                    .and_then(|value| value.get("protocolVersion").cloned())
+                    .and_then(|value| serde_json::from_value(value).ok())
+            }
+
             fn parse_message(
                 method: &str,
                 params: &impl serde::Serialize,
@@ -47,6 +58,20 @@ macro_rules! impl_jsonrpc_request {
         impl $crate::JsonRpcResponse for $resp {
             fn into_json(self, _method: &str) -> Result<serde_json::Value, $crate::Error> {
                 serde_json::to_value(self).map_err($crate::Error::into_internal_error)
+            }
+
+            fn protocol_version_hint(
+                &self,
+                method: &str,
+            ) -> Option<$crate::schema::ProtocolVersion> {
+                if method != "initialize" {
+                    return None;
+                }
+
+                serde_json::to_value(self)
+                    .ok()
+                    .and_then(|value| value.get("protocolVersion").cloned())
+                    .and_then(|value| serde_json::from_value(value).ok())
             }
 
             fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, $crate::Error> {

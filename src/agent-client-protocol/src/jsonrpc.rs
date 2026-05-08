@@ -1,6 +1,6 @@
 //! Core JSON-RPC server support.
 
-use agent_client_protocol_schema::SessionId;
+use agent_client_protocol_schema::{ProtocolVersion, SessionId};
 // Re-export jsonrpcmsg for use in public API
 pub use jsonrpcmsg;
 
@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use futures::channel::{mpsc, oneshot};
@@ -1178,11 +1179,13 @@ impl<
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
         let (new_task_tx, new_task_rx) = mpsc::unbounded();
         let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let protocol_state = ProtocolState::new();
         let connection = ConnectionTo::new(
             me.counterpart(),
             outgoing_tx,
             new_task_tx,
             dynamic_handler_tx,
+            protocol_state.clone(),
         );
 
         // Convert transport into server - this returns a channel for us to use
@@ -1216,6 +1219,7 @@ impl<
                         incoming_actor::incoming_protocol_actor(
                             me.counterpart(),
                             &connection,
+                            protocol_state.clone(),
                             transport_incoming_rx,
                             dynamic_handler_rx,
                             reply_rx,
@@ -1348,6 +1352,130 @@ enum OutgoingMessage {
     Error { error: crate::Error },
 }
 
+/// Version negotiation state for an ACP connection.
+///
+/// The JSON-RPC transport itself is version agnostic, but ACP messages need to
+/// know which protocol schema should be used on the wire. This state is shared
+/// by the connection handle and both protocol actors so typed SDK APIs can stay
+/// version-neutral while serialization follows the negotiated protocol.
+#[derive(Clone, Debug)]
+pub(crate) struct ProtocolState {
+    inner: Arc<Mutex<ProtocolNegotiation>>,
+}
+
+impl Default for ProtocolState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProtocolState {
+    /// Create a protocol state with no negotiated ACP version yet.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(ProtocolNegotiation::NotInitialized)),
+        }
+    }
+
+    /// Return the negotiated ACP protocol version, if initialization completed.
+    #[must_use]
+    pub(crate) fn negotiated_protocol_version(&self) -> Option<ProtocolVersion> {
+        match *self.inner.lock().expect("protocol state mutex poisoned") {
+            ProtocolNegotiation::NotInitialized => None,
+            ProtocolNegotiation::Negotiated(version) => Some(version),
+        }
+    }
+
+    pub(crate) fn set_negotiated_protocol_version(&self, version: ProtocolVersion) {
+        *self.inner.lock().expect("protocol state mutex poisoned") =
+            ProtocolNegotiation::Negotiated(version);
+    }
+
+    pub(crate) fn protocol_version_for_outgoing_message(
+        &self,
+        method: &str,
+        version_hint: Option<ProtocolVersion>,
+    ) -> ProtocolVersion {
+        if is_initialize_method(method) {
+            return version_hint.unwrap_or(ProtocolVersion::LATEST);
+        }
+
+        self.negotiated_protocol_version()
+            .unwrap_or(ProtocolVersion::LATEST)
+    }
+
+    pub(crate) fn protocol_version_for_incoming_message(
+        &self,
+        method: &str,
+        params: &serde_json::Value,
+    ) -> ProtocolVersion {
+        if is_initialize_method(method) {
+            return protocol_version_from_params(params).unwrap_or(ProtocolVersion::LATEST);
+        }
+
+        self.negotiated_protocol_version()
+            .unwrap_or(ProtocolVersion::LATEST)
+    }
+
+    pub(crate) fn protocol_version_for_outgoing_response<T: JsonRpcResponse>(
+        &self,
+        method: &str,
+        response: &T,
+    ) -> ProtocolVersion {
+        if is_initialize_method(method) {
+            return response
+                .protocol_version_hint(method)
+                .unwrap_or(ProtocolVersion::LATEST);
+        }
+
+        self.negotiated_protocol_version()
+            .unwrap_or(ProtocolVersion::LATEST)
+    }
+
+    pub(crate) fn protocol_version_for_incoming_response(
+        &self,
+        method: &str,
+        value: &serde_json::Value,
+    ) -> ProtocolVersion {
+        if is_initialize_method(method) {
+            return protocol_version_from_params(value).unwrap_or(ProtocolVersion::LATEST);
+        }
+
+        self.negotiated_protocol_version()
+            .unwrap_or(ProtocolVersion::LATEST)
+    }
+
+    pub(crate) fn observe_outgoing_response(&self, method: &str, version: ProtocolVersion) {
+        if is_initialize_method(method) {
+            self.set_negotiated_protocol_version(version);
+        }
+    }
+
+    pub(crate) fn observe_incoming_response(&self, method: &str, version: ProtocolVersion) {
+        if is_initialize_method(method) {
+            self.set_negotiated_protocol_version(version);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProtocolNegotiation {
+    NotInitialized,
+    Negotiated(ProtocolVersion),
+}
+
+fn is_initialize_method(method: &str) -> bool {
+    method == "initialize" || method == crate::schema::METHOD_INITIALIZE_PROXY
+}
+
+fn protocol_version_from_params(params: &serde_json::Value) -> Option<ProtocolVersion> {
+    params
+        .get("protocolVersion")
+        .or_else(|| params.get("initialize")?.get("protocolVersion"))
+        .and_then(|version| serde_json::from_value(version.clone()).ok())
+}
+
 /// Return type from JrHandler; indicates whether the request was handled or not.
 #[must_use]
 #[derive(Debug)]
@@ -1424,6 +1552,7 @@ pub struct ConnectionTo<Counterpart: Role> {
     message_tx: OutgoingMessageTx,
     task_tx: TaskTx,
     dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+    protocol_state: ProtocolState,
 }
 
 impl<Counterpart: Role> ConnectionTo<Counterpart> {
@@ -1432,18 +1561,34 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         message_tx: mpsc::UnboundedSender<OutgoingMessage>,
         task_tx: mpsc::UnboundedSender<Task>,
         dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+        protocol_state: ProtocolState,
     ) -> Self {
         Self {
             counterpart,
             message_tx,
             task_tx,
             dynamic_handler_tx,
+            protocol_state,
         }
     }
 
     /// Return the counterpart role this connection is talking to.
     pub fn counterpart(&self) -> Counterpart {
         self.counterpart.clone()
+    }
+
+    /// Return the ACP protocol version negotiated by `initialize`, if known.
+    ///
+    /// This is `None` before an `initialize` response has been observed on the
+    /// connection. Generic JSON-RPC connections that never use ACP initialize may
+    /// also remain uninitialized.
+    #[must_use]
+    pub fn negotiated_protocol_version(&self) -> Option<ProtocolVersion> {
+        self.protocol_state.negotiated_protocol_version()
+    }
+
+    pub(crate) fn protocol_state(&self) -> ProtocolState {
+        self.protocol_state.clone()
     }
 
     /// Spawns a task that will run so long as the JSON-RPC connection is being served.
@@ -1658,11 +1803,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         let method = request.method().to_string();
+        let protocol_version = self
+            .protocol_state
+            .protocol_version_for_outgoing_message(&method, request.protocol_version_hint());
         let id = jsonrpcmsg::Id::String(uuid::Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
-        match remote_style.transform_outgoing_message(request) {
+        match remote_style.transform_outgoing_message_for_protocol(request, protocol_version) {
             Ok(untyped) => {
                 // Transform the message for the target role
                 let message = OutgoingMessage::Request {
@@ -1709,8 +1857,15 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
         }
 
-        SentRequest::new(id, method.clone(), self.task_tx.clone(), response_rx)
-            .map(move |json| <Req::Response>::from_value(&method, json))
+        let protocol_state = self.protocol_state.clone();
+        SentRequest::new(id, method.clone(), self.task_tx.clone(), response_rx).map(move |json| {
+            let response_protocol_version =
+                protocol_state.protocol_version_for_incoming_response(&method, &json);
+            let response =
+                <Req::Response>::from_value_for_protocol(&method, json, response_protocol_version)?;
+            protocol_state.observe_incoming_response(&method, response_protocol_version);
+            Ok(response)
+        })
     }
 
     /// Send an outgoing notification to the default counterpart peer (no reply expected).
@@ -1752,6 +1907,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     where
         Counterpart: HasPeer<Peer>,
     {
+        let protocol_version = self.protocol_state.protocol_version_for_outgoing_message(
+            notification.method(),
+            notification.protocol_version_hint(),
+        );
         let remote_style = self.counterpart.remote_style(peer);
         tracing::debug!(
             role = std::any::type_name::<Counterpart>(),
@@ -1761,7 +1920,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             original_method = notification.method(),
             "send_notification_to"
         );
-        let transformed = remote_style.transform_outgoing_message(notification)?;
+        let transformed =
+            remote_style.transform_outgoing_message_for_protocol(notification, protocol_version)?;
         tracing::debug!(
             transformed_method = %transformed.method,
             "send_notification_to transformed"
@@ -1889,6 +2049,8 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+
+    protocol_state: ProtocolState,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -1905,12 +2067,26 @@ impl Responder<serde_json::Value> {
     /// Create a new request context for an incoming request.
     ///
     /// The response will be serialized to JSON and sent over the wire.
-    fn new(message_tx: OutgoingMessageTx, method: String, id: jsonrpcmsg::Id) -> Self {
+    fn new(
+        message_tx: OutgoingMessageTx,
+        method: String,
+        id: jsonrpcmsg::Id,
+        protocol_state: ProtocolState,
+    ) -> Self {
         let id_clone = id.clone();
+        let method_for_response = method.clone();
+        let protocol_state_for_response = protocol_state.clone();
         Self {
             method,
             id,
+            protocol_state,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                let response = response.inspect(|value| {
+                    let protocol_version = protocol_state_for_response
+                        .protocol_version_for_incoming_response(&method_for_response, value);
+                    protocol_state_for_response
+                        .observe_outgoing_response(&method_for_response, protocol_version);
+                });
                 send_raw_message(
                     &message_tx,
                     OutgoingMessage::Response {
@@ -1926,8 +2102,14 @@ impl Responder<serde_json::Value> {
     ///
     /// The provided type `T` will be serialized to JSON before sending.
     pub fn cast<T: JsonRpcResponse>(self) -> Responder<T> {
-        self.wrap_params(move |method, value| match value {
-            Ok(value) => T::into_json(value, method),
+        self.wrap_params_with_protocol(move |method, value, protocol_state| match value {
+            Ok(value) => {
+                let protocol_version =
+                    protocol_state.protocol_version_for_outgoing_response(method, &value);
+                let json = T::into_json_for_protocol(value, method, protocol_version)?;
+                protocol_state.observe_outgoing_response(method, protocol_version);
+                Ok(json)
+            }
             Err(e) => Err(e),
         })
     }
@@ -1950,7 +2132,14 @@ impl<T: JsonRpcResponse> Responder<T> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> Responder<serde_json::Value> {
-        self.wrap_params(|method, value| T::from_value(method, value?))
+        self.wrap_params_with_protocol(|method, value, protocol_state| {
+            let value = value?;
+            let protocol_version =
+                protocol_state.protocol_version_for_incoming_response(method, &value);
+            let parsed = T::from_value_for_protocol(method, value, protocol_version)?;
+            protocol_state.observe_incoming_response(method, protocol_version);
+            Ok(parsed)
+        })
     }
 
     /// Return a new Responder with a different method name.
@@ -1959,6 +2148,7 @@ impl<T: JsonRpcResponse> Responder<T> {
             method,
             id: self.id,
             send_fn: self.send_fn,
+            protocol_state: self.protocol_state,
         }
     }
 
@@ -1970,13 +2160,30 @@ impl<T: JsonRpcResponse> Responder<T> {
         self,
         wrap_fn: impl FnOnce(&str, Result<U, crate::Error>) -> Result<T, crate::Error> + Send + 'static,
     ) -> Responder<U> {
-        let method = self.method.clone();
+        self.wrap_params_with_protocol(move |method, value, _protocol_state| wrap_fn(method, value))
+    }
+
+    fn wrap_params_with_protocol<U: JsonRpcResponse>(
+        self,
+        wrap_fn: impl FnOnce(&str, Result<U, crate::Error>, &ProtocolState) -> Result<T, crate::Error>
+        + Send
+        + 'static,
+    ) -> Responder<U> {
+        let Responder {
+            method,
+            id,
+            send_fn,
+            protocol_state,
+        } = self;
+        let method_for_wrap = method.clone();
+        let protocol_state_for_wrap = protocol_state.clone();
         Responder {
-            method: self.method,
-            id: self.id,
+            method,
+            id,
+            protocol_state,
             send_fn: Box::new(move |input: Result<U, crate::Error>| {
-                let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value)
+                let t_value = wrap_fn(&method_for_wrap, input, &protocol_state_for_wrap);
+                send_fn(t_value)
             }),
         }
     }
@@ -2171,11 +2378,42 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
     /// Convert this message into an untyped message.
     fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error>;
 
+    /// Return a protocol version embedded in this message, when the message
+    /// itself participates in version negotiation.
+    ///
+    /// Only initialization messages normally return a value here. Other
+    /// messages should rely on the connection's negotiated protocol version.
+    fn protocol_version_hint(&self) -> Option<ProtocolVersion> {
+        None
+    }
+
+    /// Convert this message into an untyped wire message for a specific ACP
+    /// protocol version.
+    ///
+    /// Message types that are version-specific can override this to downgrade
+    /// or emit native wire JSON based on the negotiated version.
+    fn to_untyped_message_for_protocol(
+        &self,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<UntypedMessage, crate::Error> {
+        self.to_untyped_message()
+    }
+
     /// Parse this type from a method name and parameters.
     ///
     /// Returns an error if the method doesn't match or deserialization fails.
     /// Callers should use `matches_method` first to check if this type handles the method.
     fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error>;
+
+    /// Parse this type from a method name and parameters for a specific ACP
+    /// protocol version.
+    fn parse_message_for_protocol(
+        method: &str,
+        params: &impl Serialize,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<Self, crate::Error> {
+        Self::parse_message(method, params)
+    }
 }
 
 /// Defines the "payload" of a successful response to a JSON-RPC request.
@@ -2198,8 +2436,34 @@ pub trait JsonRpcResponse: 'static + Debug + Sized + Send + Clone {
     /// Convert this message into a JSON value.
     fn into_json(self, method: &str) -> Result<serde_json::Value, crate::Error>;
 
+    /// Return a negotiated protocol version embedded in this response, when
+    /// this response participates in version negotiation.
+    fn protocol_version_hint(&self, _method: &str) -> Option<ProtocolVersion> {
+        None
+    }
+
+    /// Convert this response into a JSON value for a specific ACP protocol
+    /// version.
+    fn into_json_for_protocol(
+        self,
+        method: &str,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<serde_json::Value, crate::Error> {
+        self.into_json(method)
+    }
+
     /// Parse a JSON value into the response type.
     fn from_value(method: &str, value: serde_json::Value) -> Result<Self, crate::Error>;
+
+    /// Parse a JSON value into the response type for a specific ACP protocol
+    /// version.
+    fn from_value_for_protocol(
+        method: &str,
+        value: serde_json::Value,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<Self, crate::Error> {
+        Self::from_value(method, value)
+    }
 }
 
 impl JsonRpcResponse for serde_json::Value {
@@ -2411,8 +2675,12 @@ impl Dispatch {
     /// * `Ok(Err(self))` if not
     /// * `Err` if has the correct method for the given types but parsing fails
     #[tracing::instrument(skip(self), fields(Request = ?std::any::type_name::<Req>(), Notif = ?std::any::type_name::<Notif>()), level = "trace", ret)]
-    pub(crate) fn into_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
+    pub(crate) fn into_typed_dispatch_for_protocol<
+        Req: JsonRpcRequest,
+        Notif: JsonRpcNotification,
+    >(
         self,
+        protocol_state: &ProtocolState,
     ) -> Result<Result<Dispatch<Req, Notif>, Dispatch>, crate::Error> {
         tracing::debug!(
             message = ?self,
@@ -2421,7 +2689,13 @@ impl Dispatch {
         match self {
             Dispatch::Request(message, responder) => {
                 if Req::matches_method(&message.method) {
-                    match Req::parse_message(&message.method, &message.params) {
+                    let protocol_version = protocol_state
+                        .protocol_version_for_incoming_message(&message.method, &message.params);
+                    match Req::parse_message_for_protocol(
+                        &message.method,
+                        &message.params,
+                        protocol_version,
+                    ) {
                         Ok(req) => {
                             tracing::trace!(?req, "parsed ok");
                             Ok(Ok(Dispatch::Request(req, responder.cast())))
@@ -2439,7 +2713,13 @@ impl Dispatch {
 
             Dispatch::Notification(message) => {
                 if Notif::matches_method(&message.method) {
-                    match Notif::parse_message(&message.method, &message.params) {
+                    let protocol_version = protocol_state
+                        .protocol_version_for_incoming_message(&message.method, &message.params);
+                    match Notif::parse_message_for_protocol(
+                        &message.method,
+                        &message.params,
+                        protocol_version,
+                    ) {
                         Ok(notif) => {
                             tracing::trace!(?notif, "parse ok");
                             Ok(Ok(Dispatch::Notification(notif)))
@@ -2461,8 +2741,16 @@ impl Dispatch {
                     // Parse the response result
                     let typed_result = match result {
                         Ok(value) => {
-                            match <Req::Response as JsonRpcResponse>::from_value(method, value) {
+                            let protocol_version = protocol_state
+                                .protocol_version_for_incoming_response(method, &value);
+                            match <Req::Response as JsonRpcResponse>::from_value_for_protocol(
+                                method,
+                                value,
+                                protocol_version,
+                            ) {
                                 Ok(parsed) => {
+                                    protocol_state
+                                        .observe_incoming_response(method, protocol_version);
                                     tracing::trace!(?parsed, "parse ok");
                                     Ok(parsed)
                                 }

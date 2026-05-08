@@ -116,7 +116,17 @@ where
                             "RequestHandler::handle_request"
                         );
                         if Req::matches_method(&message.method) {
-                            match Req::parse_message(&message.method, &message.params) {
+                            let protocol_version = connection
+                                .protocol_state
+                                .protocol_version_for_incoming_message(
+                                    &message.method,
+                                    &message.params,
+                                );
+                            match Req::parse_message_for_protocol(
+                                &message.method,
+                                &message.params,
+                                protocol_version,
+                            ) {
                                 Ok(req) => {
                                     tracing::trace!(
                                         ?req,
@@ -137,7 +147,9 @@ where
                                             retry,
                                         } => {
                                             // Handler returned the request back, convert to untyped
-                                            let untyped = request.to_untyped_message()?;
+                                            let untyped = request.to_untyped_message_for_protocol(
+                                                protocol_version,
+                                            )?;
                                             Ok(Handled::No {
                                                 message: Dispatch::Request(
                                                     untyped,
@@ -244,7 +256,17 @@ where
                             "NotificationHandler::handle_dispatch"
                         );
                         if Notif::matches_method(&message.method) {
-                            match Notif::parse_message(&message.method, &message.params) {
+                            let protocol_version = connection
+                                .protocol_state
+                                .protocol_version_for_incoming_message(
+                                    &message.method,
+                                    &message.params,
+                                );
+                            match Notif::parse_message_for_protocol(
+                                &message.method,
+                                &message.params,
+                                protocol_version,
+                            ) {
                                 Ok(notif) => {
                                     tracing::trace!(
                                         ?notif,
@@ -260,7 +282,10 @@ where
                                             retry,
                                         } => {
                                             // Handler returned the notification back, convert to untyped
-                                            let untyped = notification.to_untyped_message()?;
+                                            let untyped = notification
+                                                .to_untyped_message_for_protocol(
+                                                    protocol_version,
+                                                )?;
                                             Ok(Handled::No {
                                                 message: Dispatch::Notification(untyped),
                                                 retry,
@@ -362,18 +387,30 @@ where
             self.peer.clone(),
             dispatch,
             connection,
-            async |dispatch, connection| match dispatch.into_typed_dispatch::<Req, Notif>()? {
+            async |dispatch, connection| match dispatch
+                .into_typed_dispatch_for_protocol::<Req, Notif>(&connection.protocol_state)?
+            {
                 Ok(typed_dispatch) => {
-                    let result =
-                        (self.to_future_hack)(&mut self.handler, typed_dispatch, connection)
-                            .await?;
+                    let result = (self.to_future_hack)(
+                        &mut self.handler,
+                        typed_dispatch,
+                        connection.clone(),
+                    )
+                    .await?;
                     match result.into_handled() {
                         Handled::Yes => Ok(Handled::Yes),
                         Handled::No {
                             message: Dispatch::Request(request, responder),
                             retry,
                         } => {
-                            let untyped = request.to_untyped_message()?;
+                            let protocol_version = connection
+                                .protocol_state
+                                .protocol_version_for_outgoing_message(
+                                    request.method(),
+                                    request.protocol_version_hint(),
+                                );
+                            let untyped =
+                                request.to_untyped_message_for_protocol(protocol_version)?;
                             Ok(Handled::No {
                                 message: Dispatch::Request(untyped, responder.erase_to_json()),
                                 retry,
@@ -383,7 +420,14 @@ where
                             message: Dispatch::Notification(notification),
                             retry,
                         } => {
-                            let untyped = notification.to_untyped_message()?;
+                            let protocol_version = connection
+                                .protocol_state
+                                .protocol_version_for_outgoing_message(
+                                    notification.method(),
+                                    notification.protocol_version_hint(),
+                                );
+                            let untyped =
+                                notification.to_untyped_message_for_protocol(protocol_version)?;
                             Ok(Handled::No {
                                 message: Dispatch::Notification(untyped),
                                 retry,
@@ -395,7 +439,14 @@ where
                         } => {
                             let method = responder.method();
                             let untyped_result = match result {
-                                Ok(response) => response.into_json(method).map(Ok),
+                                Ok(response) => {
+                                    let protocol_version = connection
+                                        .protocol_state
+                                        .protocol_version_for_outgoing_response(method, &response);
+                                    response
+                                        .into_json_for_protocol(method, protocol_version)
+                                        .map(Ok)
+                                }
                                 Err(err) => Ok(Err(err)),
                             }?;
                             Ok(Handled::No {

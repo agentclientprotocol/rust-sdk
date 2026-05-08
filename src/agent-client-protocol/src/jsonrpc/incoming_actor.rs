@@ -14,6 +14,7 @@ use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
 use crate::jsonrpc::HandleDispatchFrom;
 use crate::jsonrpc::OutgoingMessage;
+use crate::jsonrpc::ProtocolState;
 use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseRouter;
@@ -46,6 +47,7 @@ struct PendingReply {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
+    protocol_state: ProtocolState,
     transport_rx: mpsc::UnboundedReceiver<Result<jsonrpcmsg::Message, crate::Error>>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     reply_rx: mpsc::UnboundedReceiver<ReplyMessage>,
@@ -130,7 +132,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 Ok(message) => match message {
                     jsonrpcmsg::Message::Request(request) => {
                         tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
-                        let dispatch = dispatch_from_request(connection, request);
+                        let dispatch = dispatch_from_request(connection, &protocol_state, request);
                         dispatch_dispatch(
                             counterpart.clone(),
                             connection,
@@ -198,6 +200,7 @@ enum IncomingProtocolMsg<Counterpart: Role> {
 /// Report an error back to the server if it does not get handled.
 fn dispatch_from_request<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
+    protocol_state: &ProtocolState,
     request: jsonrpcmsg::Request,
 ) -> Dispatch {
     let message = UntypedMessage::new(&request.method, &request.params).expect("well-formed JSON");
@@ -209,6 +212,7 @@ fn dispatch_from_request<Counterpart: Role>(
                 connection.message_tx.clone(),
                 request.method.clone(),
                 id.clone(),
+                protocol_state.clone(),
             ),
         ),
         None => Dispatch::Notification(message),
