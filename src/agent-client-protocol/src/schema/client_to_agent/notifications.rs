@@ -1,3 +1,1 @@
-use crate::schema::CancelNotification;
-
-impl_jsonrpc_notification!(CancelNotification, "session/cancel");
+client_notification_methods!(impl_v1_notification_singletons);

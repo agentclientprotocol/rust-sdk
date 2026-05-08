@@ -1,3 +1,1 @@
-use crate::schema::SessionNotification;
-
-impl_jsonrpc_notification!(SessionNotification, "session/update");
+agent_notification_methods!(impl_v1_notification_singletons);

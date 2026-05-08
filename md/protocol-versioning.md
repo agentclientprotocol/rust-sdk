@@ -83,6 +83,22 @@ The negotiated version is visible through
 `ConnectionTo::negotiated_protocol_version()`. It is `None` before initialize
 completes.
 
+## Adding Or Changing Methods
+
+The SDK keeps protocol method metadata in
+`src/agent-client-protocol/src/schema/methods.rs`. Add or update rows there
+when the schema adds a request or notification. Those rows drive:
+
+- the v1 single-message `JsonRpc*` impls,
+- the v1 enum dispatch impls,
+- the v2 single-message compatibility impls, and
+- the v2 enum dispatch compatibility impls.
+
+Schema shape changes still need explicit conversion support in the schema
+crate's `schema::v2::conversion` module. Once the conversion exists, the SDK's
+message layer can keep exposing v2 Rust types while writing v1 or v2 JSON based
+on the negotiated initialize result.
+
 ## Current Limits
 
 - The runtime codec is wired up, but the current draft v2 schema still mostly

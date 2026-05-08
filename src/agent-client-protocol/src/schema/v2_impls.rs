@@ -431,199 +431,61 @@ impl JsonRpcResponse for v2::InitializeResponse {
         Ok(v1.into_v2()?)
     }
 }
-impl_v2_jsonrpc_request!(
-    v2::AuthenticateRequest,
-    schema::AuthenticateRequest,
-    v2::AuthenticateResponse,
-    schema::AuthenticateResponse,
-    "authenticate"
-);
-#[cfg(feature = "unstable_logout")]
-impl_v2_jsonrpc_request!(
-    v2::LogoutRequest,
-    schema::LogoutRequest,
-    v2::LogoutResponse,
-    schema::LogoutResponse,
-    "logout"
-);
-impl_v2_jsonrpc_request!(
-    v2::NewSessionRequest,
-    schema::NewSessionRequest,
-    v2::NewSessionResponse,
-    schema::NewSessionResponse,
-    "session/new"
-);
-impl_v2_jsonrpc_request!(
-    v2::LoadSessionRequest,
-    schema::LoadSessionRequest,
-    v2::LoadSessionResponse,
-    schema::LoadSessionResponse,
-    "session/load"
-);
-impl_v2_jsonrpc_request!(
-    v2::ListSessionsRequest,
-    schema::ListSessionsRequest,
-    v2::ListSessionsResponse,
-    schema::ListSessionsResponse,
-    "session/list"
-);
-#[cfg(feature = "unstable_session_fork")]
-impl_v2_jsonrpc_request!(
-    v2::ForkSessionRequest,
-    schema::ForkSessionRequest,
-    v2::ForkSessionResponse,
-    schema::ForkSessionResponse,
-    "session/fork"
-);
-impl_v2_jsonrpc_request!(
-    v2::ResumeSessionRequest,
-    schema::ResumeSessionRequest,
-    v2::ResumeSessionResponse,
-    schema::ResumeSessionResponse,
-    "session/resume"
-);
-impl_v2_jsonrpc_request!(
-    v2::CloseSessionRequest,
-    schema::CloseSessionRequest,
-    v2::CloseSessionResponse,
-    schema::CloseSessionResponse,
-    "session/close"
-);
-impl_v2_jsonrpc_request!(
-    v2::SetSessionModeRequest,
-    schema::SetSessionModeRequest,
-    v2::SetSessionModeResponse,
-    schema::SetSessionModeResponse,
-    "session/set_mode"
-);
-impl_v2_jsonrpc_request!(
-    v2::SetSessionConfigOptionRequest,
-    schema::SetSessionConfigOptionRequest,
-    v2::SetSessionConfigOptionResponse,
-    schema::SetSessionConfigOptionResponse,
-    "session/set_config_option"
-);
-impl_v2_jsonrpc_request!(
-    v2::PromptRequest,
-    schema::PromptRequest,
-    v2::PromptResponse,
-    schema::PromptResponse,
-    "session/prompt"
-);
-#[cfg(feature = "unstable_session_model")]
-impl_v2_jsonrpc_request!(
-    v2::SetSessionModelRequest,
-    schema::SetSessionModelRequest,
-    v2::SetSessionModelResponse,
-    schema::SetSessionModelResponse,
-    "session/set_model"
-);
 
-impl_v2_jsonrpc_notification!(
-    v2::CancelNotification,
-    schema::CancelNotification,
-    "session/cancel"
-);
+macro_rules! impl_v2_request_singletons {
+    ([
+        $( $(#[$meta:meta])* (
+            $variant:ident,
+            $v1_req:ty,
+            $v1_resp:ty,
+            $v2_req:ty,
+            $v2_resp:ty,
+            $method:literal
+        ), )*
+    ], $ext_variant:ident) => {
+        $(
+            $(#[$meta])*
+            impl_v2_request_singleton!($variant, $v1_req, $v1_resp, $v2_req, $v2_resp, $method);
+        )*
+    };
+}
 
-// Agent -> Client requests.
-impl_v2_jsonrpc_request!(
-    v2::WriteTextFileRequest,
-    schema::WriteTextFileRequest,
-    v2::WriteTextFileResponse,
-    schema::WriteTextFileResponse,
-    "fs/write_text_file"
-);
-impl_v2_jsonrpc_request!(
-    v2::ReadTextFileRequest,
-    schema::ReadTextFileRequest,
-    v2::ReadTextFileResponse,
-    schema::ReadTextFileResponse,
-    "fs/read_text_file"
-);
-impl_v2_jsonrpc_request!(
-    v2::RequestPermissionRequest,
-    schema::RequestPermissionRequest,
-    v2::RequestPermissionResponse,
-    schema::RequestPermissionResponse,
-    "session/request_permission"
-);
-impl_v2_jsonrpc_request!(
-    v2::CreateTerminalRequest,
-    schema::CreateTerminalRequest,
-    v2::CreateTerminalResponse,
-    schema::CreateTerminalResponse,
-    "terminal/create"
-);
-impl_v2_jsonrpc_request!(
-    v2::TerminalOutputRequest,
-    schema::TerminalOutputRequest,
-    v2::TerminalOutputResponse,
-    schema::TerminalOutputResponse,
-    "terminal/output"
-);
-impl_v2_jsonrpc_request!(
-    v2::ReleaseTerminalRequest,
-    schema::ReleaseTerminalRequest,
-    v2::ReleaseTerminalResponse,
-    schema::ReleaseTerminalResponse,
-    "terminal/release"
-);
-impl_v2_jsonrpc_request!(
-    v2::WaitForTerminalExitRequest,
-    schema::WaitForTerminalExitRequest,
-    v2::WaitForTerminalExitResponse,
-    schema::WaitForTerminalExitResponse,
-    "terminal/wait_for_exit"
-);
-impl_v2_jsonrpc_request!(
-    v2::KillTerminalRequest,
-    schema::KillTerminalRequest,
-    v2::KillTerminalResponse,
-    schema::KillTerminalResponse,
-    "terminal/kill"
-);
+macro_rules! impl_v2_request_singleton {
+    (
+        InitializeRequest,
+        $v1_req:ty,
+        $v1_resp:ty,
+        $v2_req:ty,
+        $v2_resp:ty,
+        $method:literal
+    ) => {};
+    ($variant:ident, $v1_req:ty, $v1_resp:ty, $v2_req:ty, $v2_resp:ty, $method:literal) => {
+        impl_v2_jsonrpc_request!($v2_req, $v1_req, $v2_resp, $v1_resp, $method);
+    };
+}
 
-impl_v2_jsonrpc_notification!(
-    v2::SessionNotification,
-    schema::SessionNotification,
-    "session/update"
-);
+macro_rules! impl_v2_notification_singletons {
+    ([
+        $( $(#[$meta:meta])* (
+            $variant:ident,
+            $v1_notif:ty,
+            $v2_notif:ty,
+            $method:literal
+        ), )*
+    ], $ext_variant:ident) => {
+        $(
+            $(#[$meta])*
+            impl_v2_jsonrpc_notification!($v2_notif, $v1_notif, $method);
+        )*
+    };
+}
 
-impl_v2_jsonrpc_request_enum!(v2::ClientRequest, schema::ClientRequest {
-    InitializeRequest => "initialize",
-    AuthenticateRequest => "authenticate",
-    #[cfg(feature = "unstable_logout")]
-    LogoutRequest => "logout",
-    NewSessionRequest => "session/new",
-    LoadSessionRequest => "session/load",
-    ListSessionsRequest => "session/list",
-    #[cfg(feature = "unstable_session_fork")]
-    ForkSessionRequest => "session/fork",
-    ResumeSessionRequest => "session/resume",
-    CloseSessionRequest => "session/close",
-    SetSessionModeRequest => "session/set_mode",
-    SetSessionConfigOptionRequest => "session/set_config_option",
-    PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelRequest => "session/set_model",
-    [ext] ExtMethodRequest,
-});
-impl_v2_jsonrpc_notification_enum!(v2::ClientNotification, schema::ClientNotification {
-    CancelNotification => "session/cancel",
-    [ext] ExtNotification,
-});
-impl_v2_jsonrpc_request_enum!(v2::AgentRequest, schema::AgentRequest {
-    WriteTextFileRequest => "fs/write_text_file",
-    ReadTextFileRequest => "fs/read_text_file",
-    RequestPermissionRequest => "session/request_permission",
-    CreateTerminalRequest => "terminal/create",
-    TerminalOutputRequest => "terminal/output",
-    ReleaseTerminalRequest => "terminal/release",
-    WaitForTerminalExitRequest => "terminal/wait_for_exit",
-    KillTerminalRequest => "terminal/kill",
-    [ext] ExtMethodRequest,
-});
-impl_v2_jsonrpc_notification_enum!(v2::AgentNotification, schema::AgentNotification {
-    SessionNotification => "session/update",
-    [ext] ExtNotification,
-});
+client_request_methods!(impl_v2_request_singletons);
+agent_request_methods!(impl_v2_request_singletons);
+client_notification_methods!(impl_v2_notification_singletons);
+agent_notification_methods!(impl_v2_notification_singletons);
+
+impl_v2_client_request_enum!();
+impl_v2_client_notification_enum!();
+impl_v2_agent_request_enum!();
+impl_v2_agent_notification_enum!();

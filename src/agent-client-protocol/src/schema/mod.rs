@@ -245,6 +245,8 @@ macro_rules! impl_jsonrpc_notification_enum {
 }
 
 // Internal organization
+#[macro_use]
+mod methods;
 mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
