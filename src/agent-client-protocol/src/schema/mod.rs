@@ -224,6 +224,8 @@ mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
 mod proxy_protocol;
+#[cfg(feature = "unstable_protocol_v2")]
+mod v2_impls;
 
 // Re-export everything from agent_client_protocol_schema
 pub use agent_client_protocol_schema::*;

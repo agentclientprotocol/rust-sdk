@@ -6,6 +6,7 @@
 
 - [Design Overview](./design.md)
 - [Protocol Reference](./protocol.md)
+- [Protocol Versioning](./protocol-versioning.md)
 
 # Conductor (agent-client-protocol-conductor)
 
