@@ -1,0 +1,44 @@
+[package]
+name = "agent-client-protocol-http"
+version = "0.12.1"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "HTTP and WebSocket transport for the Agent Client Protocol (ACP)"
+keywords = ["acp", "agent", "protocol", "http", "websocket"]
+categories = ["development-tools", "web-programming::http-server"]
+
+[dependencies]
+agent-client-protocol.workspace = true
+jsonrpcmsg.workspace = true
+
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+tokio-util.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+# Server
+axum = { workspace = true, features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors"] }
+async-stream = { workspace = true }
+uuid = { workspace = true }
+
+# Client
+reqwest = { workspace = true, features = ["stream"] }
+eventsource-stream = { workspace = true }
+url = { workspace = true }
+tokio-tungstenite = "0.29"
+
+[dev-dependencies]
+agent-client-protocol = { workspace = true }
+agent-client-protocol-test.workspace = true
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

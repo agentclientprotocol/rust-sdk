@@ -6,6 +6,7 @@ members = [
     # dev-dependency edges, but cargo publish still validates them.
     "src/agent-client-protocol-polyfill",
     "src/agent-client-protocol-conductor",
+    "src/agent-client-protocol-http",
     "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-test",
     "src/agent-client-protocol-trace-viewer",
@@ -28,6 +29,7 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 agent-client-protocol = { path = "src/agent-client-protocol", version = "0.12.1" }
 agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.12.1" }
 agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.11.1" }
+agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "0.12.1" }
 agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.12.1" }
 agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.11.2" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
@@ -63,6 +65,9 @@ clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+eventsource-stream = "0.2"
+url = "2.5"
 async-process = "2"
 async-stream = "0.3.6"
 blocking = "1"
