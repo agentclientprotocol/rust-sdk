@@ -2,7 +2,6 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use agent_client_protocol_schema::NewSessionRequest;
 use futures::{StreamExt, channel::mpsc};
 use uuid::Uuid;
 
@@ -18,6 +17,7 @@ use crate::{
         builder::McpServerBuilder,
     },
     role::{self, HasPeer},
+    schema::NewSessionRequest,
     util::MatchDispatchFrom,
 };
 

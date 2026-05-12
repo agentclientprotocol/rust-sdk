@@ -224,9 +224,18 @@ mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
 mod proxy_protocol;
+#[cfg(feature = "unstable_protocol_v2")]
+pub(crate) mod v2_compat;
 
 // Re-export everything from agent_client_protocol_schema
+#[cfg(feature = "unstable_protocol_v2")]
+pub use agent_client_protocol_schema::v2::*;
+#[cfg(not(feature = "unstable_protocol_v2"))]
 pub use agent_client_protocol_schema::*;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use agent_client_protocol_schema::{
+    IntoMaybeUndefined, IntoOption, MaybeUndefined, ProtocolVersion, SkipListener,
+};
 
 // Re-export proxy/MCP protocol types
 pub use proxy_protocol::*;

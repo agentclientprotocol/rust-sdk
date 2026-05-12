@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Add `unstable_protocol_v2` support that uses draft v2 schema types by default while negotiating v1 or v2 wire payloads internally.
+
 ## [0.11.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.11.0...v0.11.1) - 2026-04-21
 
 ### Fixed

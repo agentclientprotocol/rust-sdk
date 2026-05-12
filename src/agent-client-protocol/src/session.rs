@@ -1,9 +1,5 @@
 use std::{future::Future, marker::PhantomData, path::Path};
 
-use agent_client_protocol_schema::{
-    ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, SessionModeState, SessionNotification, SessionUpdate, StopReason,
-};
 use futures::channel::{mpsc, oneshot};
 
 use crate::{
@@ -14,7 +10,11 @@ use crate::{
     },
     mcp_server::McpServer,
     role::{HasPeer, acp::ProxySessionMessages},
-    schema::SessionId,
+    schema::{
+        ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
+        PromptResponse, SessionId, SessionModeState, SessionNotification, SessionUpdate,
+        StopReason,
+    },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
 

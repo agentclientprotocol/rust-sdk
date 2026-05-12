@@ -230,8 +230,16 @@ where
                     "Response variant cannot be unwrapped as SuccessorMessage",
                 )
             })?;
-            let SuccessorMessage { message, meta } = json_cast(untyped_message.params())?;
-            let successor_dispatch = dispatch.try_map_message(|_| Ok(message))?;
+            let SuccessorMessage { message, meta }: SuccessorMessage<UntypedMessage> =
+                json_cast(untyped_message.params())?;
+            let method = message.method().to_string();
+            let successor_dispatch = match dispatch {
+                Dispatch::Request(_, responder) => {
+                    Dispatch::Request(message, responder.wrap_method(method))
+                }
+                Dispatch::Notification(_) => Dispatch::Notification(message),
+                Dispatch::Response(_, _) => unreachable!("response dispatches were rejected above"),
+            };
             tracing::trace!(
                 unwrapped_method = %successor_dispatch.method(),
                 "handle_incoming_dispatch: unwrapped to inner message"

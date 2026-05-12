@@ -4,6 +4,10 @@ use futures::channel::mpsc;
 
 use crate::jsonrpc::OutgoingMessage;
 use crate::jsonrpc::ReplyMessage;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::jsonrpc::ResponsePayload;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v2_compat::ProtocolState;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
 
@@ -27,6 +31,7 @@ pub(super) async fn outgoing_protocol_actor(
     mut outgoing_rx: mpsc::UnboundedReceiver<OutgoingMessage>,
     reply_tx: mpsc::UnboundedSender<ReplyMessage>,
     transport_tx: mpsc::UnboundedSender<Result<jsonrpcmsg::Message, crate::Error>>,
+    #[cfg(feature = "unstable_protocol_v2")] protocol_state: ProtocolState,
 ) -> Result<(), crate::Error> {
     while let Some(message) = outgoing_rx.next().await {
         tracing::debug!(?message, "outgoing_protocol_actor");
@@ -40,6 +45,18 @@ pub(super) async fn outgoing_protocol_actor(
                 untyped,
                 response_tx,
             } => {
+                #[cfg(feature = "unstable_protocol_v2")]
+                let untyped = match protocol_state.convert_outgoing_request(untyped) {
+                    Ok(untyped) => untyped,
+                    Err(error) => {
+                        drop(response_tx.send(ResponsePayload {
+                            result: Err(error),
+                            ack_tx: None,
+                        }));
+                        continue;
+                    }
+                };
+
                 // Record where the reply should be sent once it arrives.
                 reply_tx
                     .unbounded_send(ReplyMessage::Subscribe {
@@ -53,31 +70,55 @@ pub(super) async fn outgoing_protocol_actor(
                 jsonrpcmsg::Message::Request(untyped.into_jsonrpc_msg(Some(id))?)
             }
             OutgoingMessage::Notification { untyped } => {
+                #[cfg(feature = "unstable_protocol_v2")]
+                let untyped = match protocol_state.convert_outgoing_notification(untyped) {
+                    Ok(untyped) => untyped,
+                    Err(error) => {
+                        tracing::warn!(
+                            ?error,
+                            "dropping outgoing notification that cannot be converted"
+                        );
+                        continue;
+                    }
+                };
+
                 let msg = untyped.into_jsonrpc_msg(None)?;
                 jsonrpcmsg::Message::Request(msg)
             }
             OutgoingMessage::Response {
                 id,
-                response: Ok(value),
+                method,
+                response,
             } => {
-                tracing::debug!(?id, "Sending success response");
-                jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(value, Some(id)))
-            }
-            OutgoingMessage::Response {
-                id,
-                response: Err(error),
-            } => {
-                tracing::warn!(?id, ?error, "Sending error response");
-                // Convert crate::Error to jsonrpcmsg::Error
-                let jsonrpc_error = jsonrpcmsg::Error {
-                    code: error.code.into(),
-                    message: error.message,
-                    data: error.data,
-                };
-                jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(
-                    jsonrpc_error,
-                    Some(id),
-                ))
+                #[cfg(not(feature = "unstable_protocol_v2"))]
+                drop(method);
+
+                #[cfg(feature = "unstable_protocol_v2")]
+                let response = protocol_state
+                    .convert_outgoing_response(&method, response)
+                    .unwrap_or_else(Err);
+
+                match response {
+                    Ok(value) => {
+                        tracing::debug!(?id, "Sending success response");
+                        jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(
+                            value,
+                            Some(id),
+                        ))
+                    }
+                    Err(error) => {
+                        tracing::warn!(?id, ?error, "Sending error response");
+                        let jsonrpc_error = jsonrpcmsg::Error {
+                            code: error.code.into(),
+                            message: error.message,
+                            data: error.data,
+                        };
+                        jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(
+                            jsonrpc_error,
+                            Some(id),
+                        ))
+                    }
+                }
             }
             OutgoingMessage::Error { error } => {
                 // Convert crate::Error to jsonrpcmsg::Error

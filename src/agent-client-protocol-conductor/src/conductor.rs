@@ -834,7 +834,13 @@ where
                             conductor_tx
                                 .send(ConductorMessage::LeftToRight {
                                     target_component_index: component_index + 1,
-                                    message: dispatch.map(|r, cx| (r.message, cx), |n| n.message),
+                                    message: dispatch.map(
+                                        |r, responder| {
+                                            let method = r.message.method().to_string();
+                                            (r.message, responder.wrap_method(method))
+                                        },
+                                        |n| n.message,
+                                    ),
                                 })
                                 .await
                                 .map_err(agent_client_protocol::util::internal_error)

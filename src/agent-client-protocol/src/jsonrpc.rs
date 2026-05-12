@@ -1,6 +1,5 @@
 //! Core JSON-RPC server support.
 
-use agent_client_protocol_schema::SessionId;
 // Re-export jsonrpcmsg for use in public API
 pub use jsonrpcmsg;
 
@@ -34,6 +33,7 @@ use crate::jsonrpc::task_actor::{Task, TaskTx};
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
+use crate::schema::{METHOD_SUCCESSOR_MESSAGE, SessionId};
 use crate::util::json_cast;
 use crate::{Agent, Client, ConnectTo, RoleId};
 
@@ -1178,11 +1178,15 @@ impl<
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
         let (new_task_tx, new_task_rx) = mpsc::unbounded();
         let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        #[cfg(feature = "unstable_protocol_v2")]
+        let protocol_state = crate::schema::v2_compat::ProtocolState::default();
         let connection = ConnectionTo::new(
             me.counterpart(),
             outgoing_tx,
             new_task_tx,
             dynamic_handler_tx,
+            #[cfg(feature = "unstable_protocol_v2")]
+            protocol_state.clone(),
         );
 
         // Convert transport into server - this returns a channel for us to use
@@ -1211,6 +1215,8 @@ impl<
                             outgoing_rx,
                             reply_tx.clone(),
                             transport_outgoing_tx,
+                            #[cfg(feature = "unstable_protocol_v2")]
+                            protocol_state.clone(),
                         ),
                         // Protocol layer: jsonrpcmsg::Message → handler/reply routing
                         incoming_actor::incoming_protocol_actor(
@@ -1220,6 +1226,8 @@ impl<
                             dynamic_handler_rx,
                             reply_rx,
                             handler,
+                            #[cfg(feature = "unstable_protocol_v2")]
+                            protocol_state.clone(),
                         ),
                         task_actor::task_actor(new_task_rx, &connection),
                         responder.run_with_connection_to(connection.clone()),
@@ -1341,6 +1349,8 @@ enum OutgoingMessage {
     Response {
         id: jsonrpcmsg::Id,
 
+        method: String,
+
         response: Result<serde_json::Value, crate::Error>,
     },
 
@@ -1424,6 +1434,8 @@ pub struct ConnectionTo<Counterpart: Role> {
     message_tx: OutgoingMessageTx,
     task_tx: TaskTx,
     dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+    #[cfg(feature = "unstable_protocol_v2")]
+    protocol_state: crate::schema::v2_compat::ProtocolState,
 }
 
 impl<Counterpart: Role> ConnectionTo<Counterpart> {
@@ -1432,18 +1444,31 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         message_tx: mpsc::UnboundedSender<OutgoingMessage>,
         task_tx: mpsc::UnboundedSender<Task>,
         dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+        #[cfg(feature = "unstable_protocol_v2")]
+        protocol_state: crate::schema::v2_compat::ProtocolState,
     ) -> Self {
         Self {
             counterpart,
             message_tx,
             task_tx,
             dynamic_handler_tx,
+            #[cfg(feature = "unstable_protocol_v2")]
+            protocol_state,
         }
     }
 
     /// Return the counterpart role this connection is talking to.
     pub fn counterpart(&self) -> Counterpart {
         self.counterpart.clone()
+    }
+
+    /// Return the protocol version negotiated by the initialize handshake.
+    ///
+    /// This is `None` until an `initialize` response is sent or received.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn negotiated_protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
+        self.protocol_state.negotiated_protocol_version()
     }
 
     /// Spawns a task that will run so long as the JSON-RPC connection is being served.
@@ -1662,12 +1687,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let (response_tx, response_rx) = oneshot::channel();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
+        let mut response_method = method.clone();
         match remote_style.transform_outgoing_message(request) {
             Ok(untyped) => {
+                response_method = response_method_for_outgoing_request(&method, &untyped);
                 // Transform the message for the target role
                 let message = OutgoingMessage::Request {
                     id: id.clone(),
-                    method: method.clone(),
+                    method: response_method.clone(),
                     role_id,
                     untyped,
                     response_tx,
@@ -1709,8 +1736,13 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
         }
 
-        SentRequest::new(id, method.clone(), self.task_tx.clone(), response_rx)
-            .map(move |json| <Req::Response>::from_value(&method, json))
+        SentRequest::new(
+            id,
+            response_method.clone(),
+            self.task_tx.clone(),
+            response_rx,
+        )
+        .map(move |json| <Req::Response>::from_value(&response_method, json))
     }
 
     /// Send an outgoing notification to the default counterpart peer (no reply expected).
@@ -1811,6 +1843,16 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 }
 
+fn response_method_for_outgoing_request(method: &str, untyped: &UntypedMessage) -> String {
+    if untyped.method == METHOD_SUCCESSOR_MESSAGE
+        && let Some(serde_json::Value::String(inner_method)) = untyped.params.get("method")
+    {
+        return inner_method.clone();
+    }
+
+    method.to_string()
+}
+
 #[derive(Clone, Debug)]
 pub struct DynamicHandlerRegistration<R: Role> {
     uuid: Uuid,
@@ -1888,7 +1930,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: Box<dyn FnOnce(String, Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -1910,15 +1952,18 @@ impl Responder<serde_json::Value> {
         Self {
             method,
             id,
-            send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                send_raw_message(
-                    &message_tx,
-                    OutgoingMessage::Response {
-                        id: id_clone,
-                        response,
-                    },
-                )
-            }),
+            send_fn: Box::new(
+                move |method, response: Result<serde_json::Value, crate::Error>| {
+                    send_raw_message(
+                        &message_tx,
+                        OutgoingMessage::Response {
+                            id: id_clone,
+                            method,
+                            response,
+                        },
+                    )
+                },
+            ),
         }
     }
 
@@ -1970,13 +2015,17 @@ impl<T: JsonRpcResponse> Responder<T> {
         self,
         wrap_fn: impl FnOnce(&str, Result<U, crate::Error>) -> Result<T, crate::Error> + Send + 'static,
     ) -> Responder<U> {
-        let method = self.method.clone();
+        let Self {
+            method,
+            id,
+            send_fn,
+        } = self;
         Responder {
-            method: self.method,
-            id: self.id,
-            send_fn: Box::new(move |input: Result<U, crate::Error>| {
+            method,
+            id,
+            send_fn: Box::new(move |method, input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value)
+                send_fn(method, t_value)
             }),
         }
     }
@@ -1986,8 +2035,13 @@ impl<T: JsonRpcResponse> Responder<T> {
         self,
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, "respond called");
-        (self.send_fn)(response)
+        let Self {
+            method,
+            id,
+            send_fn,
+        } = self;
+        tracing::debug!(id = ?id, "respond called");
+        send_fn(method, response)
     }
 
     /// Respond to the JSON-RPC request with a value.

@@ -20,6 +20,8 @@ use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v2_compat::ProtocolState;
 
 use crate::role::Role;
 
@@ -50,6 +52,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     reply_rx: mpsc::UnboundedReceiver<ReplyMessage>,
     mut handler: impl HandleDispatchFrom<Counterpart>,
+    #[cfg(feature = "unstable_protocol_v2")] protocol_state: ProtocolState,
 ) -> Result<(), crate::Error> {
     let mut my_rx = transport_rx
         .map(IncomingProtocolMsg::Transport)
@@ -96,6 +99,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     for pending_message in pending_messages {
                         tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
                         let id = pending_message.id();
+                        let method = pending_message.method().to_string();
                         match handler
                             .dyn_handle_dispatch_from(pending_message, connection.clone())
                             .await
@@ -112,7 +116,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             }
                             Err(err) => {
                                 tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message, reporting back");
-                                report_handler_error(connection, id, err)?;
+                                report_handler_error(connection, id, method, err)?;
                             }
                         }
                     }
@@ -131,6 +135,16 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     jsonrpcmsg::Message::Request(request) => {
                         tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
                         let dispatch = dispatch_from_request(connection, request);
+                        #[cfg(feature = "unstable_protocol_v2")]
+                        let dispatch = match protocol_state.convert_incoming_dispatch(dispatch) {
+                            Ok(dispatch) => dispatch,
+                            Err(error) => {
+                                error
+                                    .dispatch
+                                    .respond_with_error(error.error, connection.clone())?;
+                                continue;
+                            }
+                        };
                         dispatch_dispatch(
                             counterpart.clone(),
                             connection,
@@ -158,6 +172,18 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             if let Some(pending_reply) = pending_replies.remove(&id_json) {
                                 // Route the response through the handler chain
                                 let dispatch = dispatch_from_response(id, pending_reply, result);
+                                #[cfg(feature = "unstable_protocol_v2")]
+                                let dispatch = match protocol_state
+                                    .convert_incoming_dispatch(dispatch)
+                                {
+                                    Ok(dispatch) => dispatch,
+                                    Err(error) => {
+                                        error
+                                            .dispatch
+                                            .respond_with_error(error.error, connection.clone())?;
+                                        continue;
+                                    }
+                                };
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -275,7 +301,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
         Err(err) => {
             tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored, reporting back to remote");
-            return report_handler_error(connection, id, err);
+            return report_handler_error(connection, id, method, err);
         }
     }
 
@@ -299,7 +325,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
             Err(err) => {
                 tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored, reporting back to remote");
-                return report_handler_error(connection, id, err);
+                return report_handler_error(connection, id, method, err);
             }
         }
     }
@@ -327,7 +353,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 handler = "default",
                 "Default handler errored, reporting back to remote"
             );
-            return report_handler_error(connection, id, err);
+            return report_handler_error(connection, id, method, err);
         }
     }
 
@@ -367,6 +393,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 fn report_handler_error<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     id: Option<serde_json::Value>,
+    method: String,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
     match id {
@@ -377,6 +404,7 @@ fn report_handler_error<Counterpart: Role>(
                 &connection.message_tx,
                 OutgoingMessage::Response {
                     id: jsonrpc_id,
+                    method,
                     response: Err(error),
                 },
             )
