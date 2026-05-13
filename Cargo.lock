@@ -34,7 +34,6 @@ version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
- "agent-client-protocol-schema",
  "agent-client-protocol-test",
  "agent-client-protocol-trace-viewer",
  "agent-client-protocol-yopo",
@@ -44,20 +43,16 @@ dependencies = [
  "expect-test",
  "futures",
  "futures-concurrency",
- "hyper",
  "regex",
  "rmcp",
  "rustc-hash",
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "shell-words",
  "strip-ansi-escapes",
  "tokio",
  "tokio-util",
- "tower",
  "tracing",
- "tracing-appender",
  "tracing-subscriber",
  "uuid",
 ]
@@ -577,15 +572,6 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
-dependencies = [
- "crossbeam-utils",
-]
 
 [[package]]
 name = "crossbeam-utils"
@@ -1982,12 +1968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "symlink"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
-
-[[package]]
 name = "syn"
 version = "2.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2212,19 +2192,6 @@ dependencies = [
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",
-]
-
-[[package]]
-name = "tracing-appender"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "050686193eb999b4bb3bc2acfa891a13da00f79734704c4b8b4ef1a10b368a3c"
-dependencies = [
- "crossbeam-channel",
- "symlink",
- "thiserror",
- "time",
- "tracing-subscriber",
 ]
 
 [[package]]
