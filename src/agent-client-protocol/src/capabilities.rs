@@ -192,7 +192,7 @@ mod tests {
             "symposium".to_string(),
             json!({
                 "version": "1.0",
-                "mcp_acp_transport": false
+                "test_cap": false
             }),
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
@@ -200,7 +200,7 @@ mod tests {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(client_capabilities);
 
-        assert!(!request.has_meta_capability(McpAcpTransport));
+        assert!(!request.has_meta_capability(TestCapability));
     }
 
     #[test]
@@ -210,7 +210,7 @@ mod tests {
             "symposium".to_string(),
             json!({
                 "version": "1.0",
-                "mcp_acp_transport": null
+                "test_cap": null
             }),
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
@@ -218,6 +218,6 @@ mod tests {
         let request = InitializeRequest::new(ProtocolVersion::LATEST)
             .client_capabilities(client_capabilities);
 
-        assert!(!request.has_meta_capability(McpAcpTransport));
+        assert!(!request.has_meta_capability(TestCapability));
     }
 }
