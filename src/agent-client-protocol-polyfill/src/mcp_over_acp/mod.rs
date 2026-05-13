@@ -91,7 +91,7 @@ impl BridgeConnection {
 }
 
 /// Mode for the MCP bridge transport.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum BridgeMode {
     /// Use stdio-based MCP bridge with a subprocess.
     Stdio {
@@ -100,13 +100,8 @@ pub enum BridgeMode {
     },
 
     /// Use HTTP-based MCP bridge (default).
+    #[default]
     Http,
-}
-
-impl Default for BridgeMode {
-    fn default() -> Self {
-        BridgeMode::Http
-    }
 }
 
 /// MCP-over-ACP polyfill proxy.
@@ -119,6 +114,7 @@ pub struct McpOverAcpPolyfill {
 
 impl McpOverAcpPolyfill {
     /// Create a polyfill using HTTP bridge mode.
+    #[must_use]
     pub fn http() -> Self {
         Self {
             mode: BridgeMode::Http,
@@ -126,6 +122,7 @@ impl McpOverAcpPolyfill {
     }
 
     /// Create a polyfill using stdio bridge mode.
+    #[must_use]
     pub fn stdio(conductor_command: Vec<String>) -> Self {
         Self {
             mode: BridgeMode::Stdio { conductor_command },
