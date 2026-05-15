@@ -105,3 +105,7 @@ struct_field_names = "allow"
 too_many_lines = "allow"
 type_complexity = "allow"
 wildcard_imports = "allow"
+
+[patch.crates-io]
+# Temporary: consume session/setTitle schema types before they are released.
+agent-client-protocol-schema = { git = "https://github.com/daniel-agentee/agent-client-protocol", rev = "23977c0193c786d0747464a46b5a561ca15c62e2" }
