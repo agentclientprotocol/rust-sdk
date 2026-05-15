@@ -4,8 +4,7 @@ use agent_client_protocol::schema::v1::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAction, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationFormMode,
-    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error, ErrorCode,
-    UrlElicitationRequiredData, UrlElicitationRequiredItem,
+    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error,
 };
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use serde::Serialize;
@@ -123,29 +122,6 @@ fn client_capabilities_can_declare_elicitation_modes() {
     assert!(parsed.elicitation.is_some());
 }
 
-#[test]
-fn url_elicitation_required_error_helper_is_available() {
-    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
-        "elicit_1",
-        "https://example.com/connect",
-        "Connect your account",
-    )]);
-    let error = Error::url_elicitation_required().data(json_value(data).unwrap());
-
-    assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
-    assert_eq!(
-        error.data.unwrap(),
-        json!({
-            "elicitations": [{
-                "mode": "url",
-                "elicitationId": "elicit_1",
-                "url": "https://example.com/connect",
-                "message": "Connect your account"
-            }]
-        })
-    );
-}
-
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
@@ -191,10 +167,14 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
     use agent_client_protocol::{Agent, Client};
     use std::collections::BTreeMap;
 
+    fn v2_implementation() -> v2::Implementation {
+        v2::Implementation::new("rust-sdk-test", "0.0.0")
+    }
+
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,
     ) -> v2::InitializeResponse {
-        v2::InitializeResponse::new(protocol_version)
+        v2::InitializeResponse::new(protocol_version, v2_implementation())
             .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
     }
 
