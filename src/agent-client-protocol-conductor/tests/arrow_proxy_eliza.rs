@@ -8,7 +8,7 @@
 //! Run `just prep-tests` before running this test.
 
 use agent_client_protocol::AcpAgent;
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, testy};
 use agent_client_protocol_test::testy::TestyCommand;
 use tokio::io::duplex;
@@ -32,7 +32,6 @@ async fn test_conductor_with_arrow_proxy_and_test_agent() -> Result<(), agent_cl
         ConductorImpl::new_agent(
             "conductor".to_string(),
             ProxiesAndAgent::new(test_agent).proxy(arrow_proxy_agent),
-            McpBridgeMode::default(),
         )
         .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),

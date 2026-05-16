@@ -4,32 +4,31 @@ use agent_client_protocol::{
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use tracing::info;
 
-use crate::conductor::ConductorMessage;
+use super::BridgeMessage;
 
-/// Trait for actors that handle MCP bridge connections.
-///
-/// Implementations bridge between MCP clients and the conductor's ACP message flow.
+/// Actor that bridges a single MCP connection between a local MCP client
+/// and the ACP proxy chain.
 #[derive(Debug)]
-pub struct McpBridgeConnectionActor {
-    /// How to connect to the MCP server
+pub(crate) struct BridgeConnectionActor {
+    /// How to connect to the MCP server (e.g., stdio or HTTP transport).
     transport: DynConnectTo<mcp::Client>,
 
-    /// Sender for messages to the conductor
-    conductor_tx: mpsc::Sender<ConductorMessage>,
+    /// Sender for messages back to the polyfill's bridge responder loop.
+    bridge_tx: mpsc::Sender<BridgeMessage>,
 
-    /// Receiver for messages from the conductor to the MCP client
+    /// Receiver for messages from the polyfill to forward to the MCP client.
     to_mcp_client_rx: mpsc::Receiver<Dispatch>,
 }
 
-impl McpBridgeConnectionActor {
+impl BridgeConnectionActor {
     pub fn new(
         component: impl ConnectTo<mcp::Client>,
-        conductor_tx: mpsc::Sender<ConductorMessage>,
+        bridge_tx: mpsc::Sender<BridgeMessage>,
         to_mcp_client_rx: mpsc::Receiver<Dispatch>,
     ) -> Self {
         Self {
             transport: DynConnectTo::new(component),
-            conductor_tx,
+            bridge_tx,
             to_mcp_client_rx,
         }
     }
@@ -37,23 +36,22 @@ impl McpBridgeConnectionActor {
     pub async fn run(self, connection_id: String) -> Result<(), agent_client_protocol::Error> {
         info!(connection_id, "MCP bridge connected");
 
-        let McpBridgeConnectionActor {
+        let Self {
             transport,
-            mut conductor_tx,
+            mut bridge_tx,
             to_mcp_client_rx,
         } = self;
 
         let result = mcp::Client
             .builder()
-            .name(format!("mpc-client-to-conductor({connection_id})"))
-            // When we receive a message from the MCP client, forward it to the conductor
+            .name(format!("mcp-client-to-polyfill({connection_id})"))
             .on_receive_dispatch(
                 {
-                    let mut conductor_tx = conductor_tx.clone();
+                    let mut bridge_tx = bridge_tx.clone();
                     let connection_id = connection_id.clone();
-                    async move |message: agent_client_protocol::Dispatch, _cx| {
-                        conductor_tx
-                            .send(ConductorMessage::McpClientToMcpServer {
+                    async move |message: Dispatch, _cx| {
+                        bridge_tx
+                            .send(BridgeMessage::ClientToServer {
                                 connection_id: connection_id.clone(),
                                 message,
                             })
@@ -63,7 +61,6 @@ impl McpBridgeConnectionActor {
                 },
                 agent_client_protocol::on_receive_dispatch!(),
             )
-            // When we receive messages from the conductor, forward them to the MCP client
             .connect_with(transport, async move |mcp_connection_to_client| {
                 let mut to_mcp_client_rx = to_mcp_client_rx;
                 while let Some(message) = to_mcp_client_rx.next().await {
@@ -73,8 +70,8 @@ impl McpBridgeConnectionActor {
             })
             .await;
 
-        conductor_tx
-            .send(ConductorMessage::McpConnectionDisconnected {
+        bridge_tx
+            .send(BridgeMessage::Disconnected {
                 notification: McpDisconnectNotification {
                     connection_id,
                     meta: None,

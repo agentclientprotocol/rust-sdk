@@ -53,7 +53,7 @@ sequenceDiagram
 
     Proxy->>Conductor: session/new {<br/>  mcp_servers: [{<br/>    name: "research-tools",<br/>    url: "acp:uuid-123"<br/>  }]<br/>}
 
-    Note over Conductor: Detects acp: transport<br/>Agent lacks mcp_acp_transport capability
+    Note over Conductor: Detects acp: transport<br/>Agent lacks mcpCapabilities.acp
 
     Conductor->>Conductor: Bind TCP listener on port 54321
 

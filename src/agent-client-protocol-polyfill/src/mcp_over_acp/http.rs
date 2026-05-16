@@ -1,3 +1,5 @@
+//! HTTP-based MCP bridge transport.
+
 use agent_client_protocol::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
 use axum::{
     Router,
@@ -17,32 +19,25 @@ use std::{
 };
 use tokio::net::TcpListener;
 
-use crate::conductor::{
-    ConductorMessage,
-    mcp_bridge::{McpBridgeConnection, McpBridgeConnectionActor},
-};
+use super::{BridgeConnection, BridgeMessage, actor::BridgeConnectionActor};
 
-/// Runs an HTTP listener for MCP bridge connections
+/// Runs an HTTP listener for MCP bridge connections.
 pub async fn run_http_listener(
     tcp_listener: TcpListener,
-    acp_url: String,
-    mut conductor_tx: mpsc::Sender<ConductorMessage>,
+    acp_id: String,
+    mut bridge_tx: mpsc::Sender<BridgeMessage>,
 ) -> Result<(), agent_client_protocol::Error> {
     let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
 
-    // When we send this message to the conductor,
-    // it is going to go through a step or two and eventually
-    // spawn the McpBridgeConnectionActor, which will ferry MCP requests
-    // back and forth.
-    conductor_tx
-        .send(ConductorMessage::McpConnectionReceived {
-            acp_url,
-            actor: McpBridgeConnectionActor::new(
+    bridge_tx
+        .send(BridgeMessage::ConnectionReceived {
+            acp_id,
+            actor: BridgeConnectionActor::new(
                 HttpMcpBridge::new(tcp_listener),
-                conductor_tx.clone(),
+                bridge_tx.clone(),
                 to_mcp_client_rx,
             ),
-            connection: McpBridgeConnection::new(to_mcp_client_tx),
+            connection: BridgeConnection::new(to_mcp_client_tx),
         })
         .await
         .map_err(|_| agent_client_protocol::Error::internal_error())?;
@@ -50,7 +45,8 @@ pub async fn run_http_listener(
     Ok(())
 }
 
-/// A component that receives HTTP requests/responses using the HTTP transport defined by the MCP protocol.
+/// A component that receives HTTP requests/responses using the HTTP transport
+/// defined by the MCP protocol.
 struct HttpMcpBridge {
     listener: tokio::net::TcpListener,
 }
@@ -87,7 +83,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
     }
 }
 
-/// Error type that we use to respond to malformed HTTP requests.
+/// Error type for responding to malformed HTTP requests.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 struct HttpError(#[from] agent_client_protocol::Error);
@@ -109,7 +105,6 @@ impl IntoResponse for HttpError {
 /// and communicating those requests over `channel` to the JSON-RPC server.
 async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client_protocol::Error> {
     let (registration_tx, registration_rx) = mpsc::unbounded();
-
     let state = BridgeState { registration_tx };
 
     // The way that the MCP protocol works is a bit "special".
@@ -120,11 +115,11 @@ async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client
     //
     // Clients can also issue a *GET* request. This will result in a stream of messages.
     //
-    // Non-reply messages can be send to any open stream (POST, GET, etc) but must be sent to
+    // Non-reply messages can be sent to any open stream (POST, GET, etc) but must be sent to
     // exactly one.
     //
-    // There are provisions for "resuming" from a blocked point by tagging each message in the SSE stream
-    // with an id, but we are not implementing that because I am lazy.
+    // There are provisions for "resuming" from a blocked point by tagging each message in the SSE
+    // stream with an id, but we are not implementing that because I am lazy.
     async {
         let app = Router::new()
             .route("/", post(handle_post).get(handle_get))
@@ -146,38 +141,39 @@ struct BridgeState {
 
 /// Messages from HTTP handlers to the bridge server.
 #[derive(Debug)]
+#[allow(dead_code)]
 enum HttpMessage {
-    /// A JSON-RPC request (has an id, expects a response via the channel)
+    /// A JSON-RPC request (has an id, expects a response via the channel).
     Request {
         http_request_id: uuid::Uuid,
         request: agent_client_protocol::jsonrpcmsg::Request,
         response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
-    /// A JSON-RPC notification (no id, no response expected)
+    /// A JSON-RPC notification (no id, no response expected).
     Notification {
         http_request_id: uuid::Uuid,
         request: agent_client_protocol::jsonrpcmsg::Request,
     },
-    /// A JSON-RPC response from the client
+    /// A JSON-RPC response from the client.
     Response {
         http_request_id: uuid::Uuid,
         response: agent_client_protocol::jsonrpcmsg::Response,
     },
-    /// A GET request to open an SSE stream for server-initiated messages
+    /// A GET request to open an SSE stream for server-initiated messages.
     Get {
         http_request_id: uuid::Uuid,
         response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
     },
 }
 
-/// Clone of `agent_client_protocol::jsonrpcmsg::Id` since for unfathomable reasons that does not impl Hash
+/// Clone of `agent_client_protocol::jsonrpcmsg::Id` since it does not impl `Hash`.
 #[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Debug, Clone)]
 enum JsonRpcId {
-    /// String identifier
+    /// String identifier.
     String(String),
-    /// Numeric identifier
+    /// Numeric identifier.
     Number(u64),
-    /// Null identifier (for notifications)
+    /// Null identifier (for notifications).
     Null,
 }
 
@@ -207,11 +203,6 @@ impl RunningServer {
     }
 
     /// The main loop: listen for incoming HTTP messages and outgoing JSON-RPC messages.
-    ///
-    /// # Parameters
-    ///
-    /// * `channel`: The channel to use for sending/receiving JSON-RPC messages.
-    /// * `http_rx`: The receiver for messages from HTTP handlers.
     async fn run(
         mut self,
         mut channel: Channel,
@@ -236,7 +227,6 @@ impl RunningServer {
                 MultiplexMessage::FromHttpToChannel(http_message) => {
                     self.handle_http_message(http_message, &mut channel.tx)?;
                 }
-
                 MultiplexMessage::FromChannelToHttp(message) => {
                     let message = message.unwrap_or_else(|err| {
                         agent_client_protocol::jsonrpcmsg::Message::Response(
@@ -246,19 +236,12 @@ impl RunningServer {
                             ),
                         )
                     });
-                    tracing::debug!(
-                        queue_len = self.message_deque.len() + 1,
-                        ?message,
-                        "enqueuing outgoing message"
-                    );
                     self.message_deque.push_back(message);
                 }
             }
 
             self.drain_jsonrpc_messages();
         }
-
-        tracing::trace!("http connection terminating");
 
         Ok(())
     }
@@ -279,175 +262,92 @@ impl RunningServer {
             } => {
                 tracing::debug!(%http_request_id, ?request, "handling request");
                 let request_id = request.id.clone().map(JsonRpcId::from);
-
-                // Send to the JSON-RPC server
                 channel_tx
                     .unbounded_send(Ok(Message::Request(request)))
                     .map_err(agent_client_protocol::util::internal_error)?;
-
-                // Register to receive the response
                 let session = RegisteredSession::new(response_tx);
                 if let Some(id) = request_id {
-                    tracing::debug!(%http_request_id, session_id = %session.id, ?id, "registering waiting session");
                     self.waiting_sessions.insert(id, session);
                 } else {
-                    // Request without id - treat like a general session
-                    tracing::debug!(%http_request_id, session_id = %session.id, "registering general session (request without id)");
                     self.general_sessions.push(session);
                 }
             }
-
             HttpMessage::Notification {
-                http_request_id,
+                http_request_id: _,
                 request,
             } => {
-                tracing::debug!(%http_request_id, ?request, "handling notification");
-                // Just forward to the server, no response tracking needed
                 channel_tx
                     .unbounded_send(Ok(Message::Request(request)))
                     .map_err(agent_client_protocol::util::internal_error)?;
             }
-
             HttpMessage::Response {
-                http_request_id,
+                http_request_id: _,
                 response,
             } => {
-                tracing::debug!(%http_request_id, ?response, "handling response");
-                // Forward to the server
                 channel_tx
                     .unbounded_send(Ok(Message::Response(response)))
                     .map_err(agent_client_protocol::util::internal_error)?;
             }
-
             HttpMessage::Get {
-                http_request_id,
+                http_request_id: _,
                 response_tx,
             } => {
-                let session = RegisteredSession::new(response_tx);
-                tracing::debug!(
-                    %http_request_id,
-                    session_id = %session.id,
-                    queued_messages = self.message_deque.len(),
-                    "handling GET (opening SSE stream)"
-                );
-                // Register as a general session to receive server-initiated messages
-                self.general_sessions.push(session);
+                self.general_sessions
+                    .push(RegisteredSession::new(response_tx));
             }
         }
-
-        // Purge closed sessions for good hygiene
         self.purge_closed_sessions();
-
         Ok(())
     }
 
-    /// Remove messages from the queue and send them.
-    /// Stop if we cannot find places to send them.
     fn drain_jsonrpc_messages(&mut self) {
-        if !self.message_deque.is_empty() {
-            tracing::debug!(
-                queue_len = self.message_deque.len(),
-                general_sessions = self.general_sessions.len(),
-                waiting_sessions = self.waiting_sessions.len(),
-                "draining message queue"
-            );
-        }
-
         while let Some(message) = self.message_deque.pop_front() {
-            match self.try_dispatch_jsonrpc_message(message) {
-                None => {
-                    tracing::debug!(
-                        remaining = self.message_deque.len(),
-                        "message dispatched successfully"
-                    );
-                }
-
-                Some(message) => {
-                    tracing::debug!(
-                        remaining = self.message_deque.len() + 1,
-                        "no available session, re-enqueuing message"
-                    );
-                    self.message_deque.push_front(message);
-                    break;
-                }
+            if let Some(message) = self.try_dispatch_jsonrpc_message(message) {
+                self.message_deque.push_front(message);
+                break;
             }
         }
     }
 
-    /// Invoked when there is an outgoing JSON-RPC message to send.
-    /// Tries to find a suitable place to send it.
-    /// If it succeeds, returns `None`.
-    /// If there is no place to send it, returns `Some(message)`.
     fn try_dispatch_jsonrpc_message(
         &mut self,
         mut message: agent_client_protocol::jsonrpcmsg::Message,
     ) -> Option<agent_client_protocol::jsonrpcmsg::Message> {
-        // Extract the id of the message we are replying to, if any
         let message_id = match &message {
             Message::Response(response) => response.id.as_ref().map(|v| v.clone().into()),
             Message::Request(_) => None,
         };
 
-        tracing::debug!(?message_id, "attempting to dispatch JSON-RPC message");
-
-        // If there is a specific id, try to send the message to that sender.
-        // This also removes them from the list of waiting sessions.
         if let Some(ref message_id) = message_id
             && let Some(session) = self.waiting_sessions.remove(message_id)
         {
-            tracing::debug!(session_id = %session.id, "found waiting session, attempting send");
-
             match session.outgoing_tx.unbounded_send(message) {
-                // Successfully sent the message, return
-                Ok(()) => {
-                    tracing::debug!(session_id = %session.id, "sent to waiting session");
-                    return None;
-                }
-
-                // If the sender died, just recover the message and send it to anyone.
+                Ok(()) => return None,
                 Err(m) => {
-                    tracing::debug!(session_id = %session.id, "waiting session disconnected");
-                    // If that sender is dead, remove them from the list
-                    // and recover the message.
                     assert!(m.is_disconnected());
                     message = m.into_inner();
                 }
             }
         }
 
-        // Try to find *somewhere* to send the message
         self.purge_closed_sessions();
-        tracing::debug!(
-            general_sessions = self.general_sessions.len(),
-            waiting_sessions = self.waiting_sessions.len(),
-            "trying to find any active session"
-        );
         let all_sessions = self
             .general_sessions
             .iter_mut()
             .chain(self.waiting_sessions.values_mut());
         for session in all_sessions {
-            tracing::trace!(session_id = %session.id, "trying session");
             match session.outgoing_tx.unbounded_send(message) {
-                Ok(()) => {
-                    tracing::debug!(session_id = %session.id, "sent to session");
-                    return None;
-                }
-
+                Ok(()) => return None,
                 Err(m) => {
-                    tracing::debug!(session_id = %session.id, "session disconnected, trying next");
                     assert!(m.is_disconnected());
                     message = m.into_inner();
                 }
             }
         }
 
-        // If we don't find anywhere to send the message, return it.
         Some(message)
     }
 
-    /// Purge sessions from the bridge state where the receiver is closed.
-    /// This happens when the HTTP client disconnects.
     fn purge_closed_sessions(&mut self) {
         self.general_sessions
             .retain(|session| !session.outgoing_tx.is_closed());
@@ -457,6 +357,7 @@ impl RunningServer {
 }
 
 struct RegisteredSession {
+    #[allow(dead_code)]
     id: uuid::Uuid,
     outgoing_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
 }
@@ -478,15 +379,11 @@ async fn handle_post(
     body: String,
 ) -> Result<Response, HttpError> {
     let http_request_id = uuid::Uuid::new_v4();
-
-    // Parse incoming JSON-RPC message
     let message: agent_client_protocol::jsonrpcmsg::Message =
         serde_json::from_str(&body).map_err(agent_client_protocol::util::parse_error)?;
 
     match message {
         Message::Request(request) if request.id.is_some() => {
-            tracing::debug!(%http_request_id, method = %request.method, "POST request received");
-            // Request with id - return SSE stream for response
             let (tx, mut rx) = mpsc::unbounded();
             state
                 .registration_tx
@@ -499,20 +396,15 @@ async fn handle_post(
 
             let stream = async_stream::stream! {
                 while let Some(message) = rx.next().await {
-                    tracing::debug!(%http_request_id, "sending SSE event");
                     match axum::response::sse::Event::default().json_data(message) {
                         Ok(v) => yield Ok(v),
                         Err(e) => yield Err(HttpError::from(e)),
                     }
                 }
-                tracing::debug!(%http_request_id, "SSE stream completed");
             };
             Ok(Sse::new(stream).into_response())
         }
-
         Message::Request(request) => {
-            tracing::debug!(%http_request_id, method = %request.method, "POST notification received");
-            // Request without id is a notification
             state
                 .registration_tx
                 .unbounded_send(HttpMessage::Notification {
@@ -522,10 +414,7 @@ async fn handle_post(
                 .map_err(agent_client_protocol::util::internal_error)?;
             Ok(StatusCode::ACCEPTED.into_response())
         }
-
         Message::Response(response) => {
-            tracing::debug!(%http_request_id, "POST response received");
-            // Response from client (rare, but possible in MCP)
             state
                 .registration_tx
                 .unbounded_send(HttpMessage::Response {
@@ -544,8 +433,6 @@ async fn handle_get(
     State(state): State<Arc<BridgeState>>,
 ) -> Result<Sse<impl Stream<Item = Result<axum::response::sse::Event, HttpError>>>, HttpError> {
     let http_request_id = uuid::Uuid::new_v4();
-    tracing::debug!(%http_request_id, "GET request received");
-
     let (tx, mut rx) = mpsc::unbounded();
     state
         .registration_tx
@@ -557,13 +444,11 @@ async fn handle_get(
 
     let stream = async_stream::stream! {
         while let Some(message) = rx.next().await {
-            tracing::debug!(%http_request_id, "sending SSE event");
             match axum::response::sse::Event::default().json_data(message) {
                 Ok(v) => yield Ok(v),
                 Err(e) => yield Err(HttpError::from(e)),
             }
         }
-        tracing::debug!(%http_request_id, "SSE stream completed");
     };
 
     Ok(Sse::new(stream))

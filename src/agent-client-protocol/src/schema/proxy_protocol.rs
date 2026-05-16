@@ -79,8 +79,8 @@ pub const METHOD_MCP_CONNECT_REQUEST: &str = "_mcp/connect";
 #[derive(Debug, Clone, Serialize, Deserialize, crate::JsonRpcRequest)]
 #[request(method = "_mcp/connect", response = McpConnectResponse, crate = crate)]
 pub struct McpConnectRequest {
-    /// The ACP URL to connect to (e.g., "acp:uuid")
-    pub acp_url: String,
+    /// The ACP identifier for the server (e.g., "acp:uuid"), matching `McpServerAcp.id`
+    pub acp_id: String,
 
     /// Optional metadata
     #[serde(skip_serializing_if = "Option::is_none")]

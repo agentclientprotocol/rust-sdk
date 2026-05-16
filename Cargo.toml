@@ -4,6 +4,7 @@ members = [
     "src/agent-client-protocol-conductor",
     "src/agent-client-protocol-cookbook",
     "src/agent-client-protocol-derive",
+    "src/agent-client-protocol-polyfill",
     "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-test",
     "src/agent-client-protocol-trace-viewer",
@@ -50,7 +51,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # MCP SDK
-rmcp = { version = "1.6.0", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "1.2.0", features = ["server", "transport-io", "schemars"] }
 
 # CLI parsing
 clap = { version = "4.5", features = ["derive"] }

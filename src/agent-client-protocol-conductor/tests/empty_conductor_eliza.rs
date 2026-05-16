@@ -7,7 +7,7 @@
 //! 4. The full chain works end-to-end
 
 use agent_client_protocol::{Conductor, ConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -24,11 +24,7 @@ impl ConnectTo<Conductor> for MockEmptyConductor {
         // Create an empty conductor with no components - it should act as a passthrough
         let empty_components: Vec<agent_client_protocol::DynConnectTo<Conductor>> = vec![];
         ConnectTo::<Conductor>::connect_to(
-            ConductorImpl::new_proxy(
-                "empty-conductor".to_string(),
-                empty_components,
-                McpBridgeMode::default(),
-            ),
+            ConductorImpl::new_proxy("empty-conductor".to_string(), empty_components),
             client,
         )
         .await
@@ -57,7 +53,6 @@ async fn test_conductor_with_empty_conductor_and_test_agent()
         ConductorImpl::new_agent(
             "outer-conductor".to_string(),
             ProxiesAndAgent::new(Testy::new()).proxy(MockEmptyConductor),
-            McpBridgeMode::default(),
         )
         .run(agent_client_protocol::ByteStreams::new(
             conductor_write.compat_write(),

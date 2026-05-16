@@ -33,12 +33,11 @@ name = "agent-client-protocol-conductor"
 version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
+ "agent-client-protocol-polyfill",
  "agent-client-protocol-test",
  "agent-client-protocol-trace-viewer",
  "agent-client-protocol-yopo",
  "anyhow",
- "async-stream",
- "axum",
  "chrono",
  "clap",
  "expect-test",
@@ -51,7 +50,6 @@ dependencies = [
  "serde",
  "serde_json",
  "strip-ansi-escapes",
- "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
@@ -77,6 +75,25 @@ version = "0.11.0"
 dependencies = [
  "quote",
  "syn",
+]
+
+[[package]]
+name = "agent-client-protocol-polyfill"
+version = "0.11.1"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "async-stream",
+ "axum",
+ "futures",
+ "futures-concurrency",
+ "rustc-hash",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

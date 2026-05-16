@@ -5,7 +5,8 @@
 
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -60,8 +61,9 @@ async fn test_tool_returning_string() -> Result<(), agent_client_protocol::Error
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
-            McpBridgeMode::default(),
+            ProxiesAndAgent::new(Testy::new())
+                .proxy(create_test_proxy())
+                .proxy(McpOverAcpPolyfill::http()),
         ),
         TestyCommand::CallTool {
             server: "test_server".to_string(),
@@ -86,8 +88,9 @@ async fn test_tool_returning_integer() -> Result<(), agent_client_protocol::Erro
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
-            ProxiesAndAgent::new(Testy::new()).proxy(create_test_proxy()),
-            McpBridgeMode::default(),
+            ProxiesAndAgent::new(Testy::new())
+                .proxy(create_test_proxy())
+                .proxy(McpOverAcpPolyfill::http()),
         ),
         TestyCommand::CallTool {
             server: "test_server".to_string(),

@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+
+- **Removed `McpAcpTransport`** struct and its `MetaCapability` impl. MCP-over-ACP support is now advertised via `mcpCapabilities.acp` in `InitializeResponse`, not `_meta.symposium.mcp_acp_transport`.
+- **Renamed `McpConnectRequest.acp_url` to `acp_id`** to match `McpServerAcp.id` and the MCP-over-ACP RFD.
+
+### Added
+
+- `McpConnectionTo::acp_id()` method.
+
+### Deprecated
+
+- `McpConnectionTo::acp_url()` — use `acp_id()` instead.
+
 ## [0.11.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.11.0...v0.11.1) - 2026-04-21
 
 ### Fixed

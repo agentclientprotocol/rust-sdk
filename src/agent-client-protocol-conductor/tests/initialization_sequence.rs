@@ -10,7 +10,7 @@ use agent_client_protocol::schema::{
     ProtocolVersion,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::Testy;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -137,7 +137,6 @@ async fn run_test_with_components(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
                 ProxiesAndAgent::new(Testy::new()).proxies(proxies),
-                McpBridgeMode::default(),
             )
             .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),
@@ -305,7 +304,6 @@ async fn run_bad_proxy_test(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
                 ProxiesAndAgent::new(agent).proxies(proxies),
-                McpBridgeMode::default(),
             )
             .run(agent_client_protocol::ByteStreams::new(
                 conductor_out.compat_write(),

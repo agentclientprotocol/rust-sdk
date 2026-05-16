@@ -18,11 +18,9 @@ path = "src/main.rs"
 test-support = []
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true }
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
-async-stream.workspace = true
-axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
 futures.workspace = true
@@ -31,7 +29,6 @@ rustc-hash.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 strip-ansi-escapes.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
@@ -39,12 +36,14 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
 agent-client-protocol-test.workspace = true
 yopo.workspace = true
 expect-test.workspace = true
 regex.workspace = true
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
 schemars.workspace = true
+agent-client-protocol-polyfill = { path = "../agent-client-protocol-polyfill" }
 
 [lints]
 workspace = true

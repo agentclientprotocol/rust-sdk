@@ -28,17 +28,6 @@
 //! 3. Presents as a single agent on stdin/stdout
 //! 4. Manages the lifecycle of all processes
 //!
-//! ### MCP Bridge Mode
-//!
-//! Connect stdio to a TCP-based MCP server:
-//!
-//! ```bash
-//! # Bridge stdio to MCP server on localhost:8080
-//! agent-client-protocol-conductor mcp 8080
-//! ```
-//!
-//! This allows stdio-based tools to communicate with TCP MCP servers.
-//!
 //! ## How It Works
 //!
 //! **Component Communication:**
@@ -81,8 +70,6 @@ use std::str::FromStr;
 mod conductor;
 /// Debug logging for conductor
 mod debug_logger;
-/// MCP bridge functionality for TCP-based MCP servers
-mod mcp_bridge;
 mod snoop;
 /// Trace event types for sequence diagram viewer
 pub mod trace;
@@ -168,21 +155,6 @@ impl trace::WriteEvent for TraceHandleWriter {
     }
 }
 
-/// Mode for the MCP bridge.
-#[derive(Debug, Clone, Default)]
-pub enum McpBridgeMode {
-    /// Use stdio-based MCP bridge with a conductor subprocess.
-    Stdio {
-        /// Command and args to spawn conductor MCP bridge processes.
-        /// E.g., vec!["conductor"] or vec!["cargo", "run", "-p", "conductor", "--"]
-        conductor_command: Vec<String>,
-    },
-
-    /// Use HTTP-based MCP bridge
-    #[default]
-    Http,
-}
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct ConductorArgs {
@@ -234,12 +206,6 @@ pub enum ConductorCommand {
         /// List of proxy commands to chain together
         proxies: Vec<String>,
     },
-
-    /// Run as MCP bridge connecting stdio to TCP
-    Mcp {
-        /// TCP port to connect to on localhost
-        port: u16,
-    },
 }
 
 impl ConductorArgs {
@@ -255,7 +221,6 @@ impl ConductorArgs {
             let components = match &self.command {
                 ConductorCommand::Agent { components, .. } => components.clone(),
                 ConductorCommand::Proxy { proxies, .. } => proxies.clone(),
-                ConductorCommand::Mcp { .. } => Vec::new(),
             };
 
             // Create debug logger
@@ -348,7 +313,6 @@ impl ConductorArgs {
                 )
                 .await
             }
-            ConductorCommand::Mcp { port } => mcp_bridge::run_mcp_bridge(port).await,
         }
     }
 }
@@ -358,11 +322,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
     trace_writer: Option<trace::TraceWriter>,
     name: String,
     components: Vec<String>,
-    new_conductor: impl FnOnce(
-        String,
-        CommandLineComponents,
-        crate::McpBridgeMode,
-    ) -> ConductorImpl<Host>,
+    new_conductor: impl FnOnce(String, CommandLineComponents) -> ConductorImpl<Host>,
 ) -> Result<(), agent_client_protocol::Error> {
     // Parse agents and optionally wrap with debug callbacks
     let providers: Vec<AcpAgent> = components
@@ -385,11 +345,7 @@ async fn initialize_conductor<Host: ConductorHostRole>(
     };
 
     // Create conductor with optional trace writer
-    let mut conductor = new_conductor(
-        name,
-        CommandLineComponents(providers),
-        McpBridgeMode::default(),
-    );
+    let mut conductor = new_conductor(name, CommandLineComponents(providers));
     if let Some(writer) = trace_writer {
         conductor = conductor.with_trace_writer(writer);
     }

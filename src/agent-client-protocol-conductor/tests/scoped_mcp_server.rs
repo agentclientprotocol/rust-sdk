@@ -6,7 +6,8 @@
 
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::{Agent, Conductor, ConnectTo, Proxy, Role, RunWithConnectionTo};
-use agent_client_protocol_conductor::{ConductorImpl, McpBridgeMode, ProxiesAndAgent};
+use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,8 +21,9 @@ use std::sync::Mutex;
 async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_protocol::Error> {
     let conductor = ConductorImpl::new_agent(
         "conductor".to_string(),
-        ProxiesAndAgent::new(Testy::new()).proxy(ScopedProxy),
-        McpBridgeMode::default(),
+        ProxiesAndAgent::new(Testy::new())
+            .proxy(ScopedProxy)
+            .proxy(McpOverAcpPolyfill::http()),
     );
 
     let result = yopo::prompt(
@@ -54,8 +56,7 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
         .connect_with(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
-                ProxiesAndAgent::new(Testy::new()),
-                McpBridgeMode::default(),
+                ProxiesAndAgent::new(Testy::new()).proxy(McpOverAcpPolyfill::http()),
             ),
             async |cx| {
                 // Initialize first

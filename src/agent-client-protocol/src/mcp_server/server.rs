@@ -48,8 +48,8 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     /// The host role that is serving up this MCP server
     phantom: PhantomData<Counterpart>,
 
-    /// The ACP URL we assigned for this mcp server; always unique
-    acp_url: String,
+    /// The ACP identifier we assigned for this mcp server; always unique
+    acp_id: String,
 
     /// The "connect" instance
     connect: Arc<dyn McpServerConnect<Counterpart>>,
@@ -69,7 +69,7 @@ impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpServer")
             .field("phantom", &self.phantom)
-            .field("acp_url", &self.acp_url)
+            .field("acp_id", &self.acp_id)
             .field("responder", &self.responder)
             .finish_non_exhaustive()
     }
@@ -94,7 +94,7 @@ where
     pub fn new(c: impl McpServerConnect<Counterpart>, responder: Run) -> Self {
         McpServer {
             phantom: PhantomData,
-            acp_url: format!("acp:{}", Uuid::new_v4()),
+            acp_id: format!("acp:{}", Uuid::new_v4()),
             connect: Arc::new(c),
             responder,
         }
@@ -107,11 +107,11 @@ where
     {
         let Self {
             phantom: _,
-            acp_url,
+            acp_id,
             connect,
             responder,
         } = self;
-        (McpNewSessionHandler::new(acp_url, connect), responder)
+        (McpNewSessionHandler::new(acp_id, connect), responder)
     }
 }
 
@@ -120,7 +120,7 @@ pub(crate) struct McpNewSessionHandler<Counterpart: Role>
 where
     Counterpart: HasPeer<Agent>,
 {
-    acp_url: String,
+    acp_id: String,
     connect: Arc<dyn McpServerConnect<Counterpart>>,
     active_session: McpActiveSession<Counterpart>,
 }
@@ -129,10 +129,10 @@ impl<Counterpart: Role> McpNewSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    pub fn new(acp_url: String, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+    pub fn new(acp_id: String, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
         Self {
-            active_session: McpActiveSession::new(acp_url.clone(), connect.clone()),
-            acp_url,
+            active_session: McpActiveSession::new(acp_id.clone(), connect.clone()),
+            acp_id,
             connect,
         }
     }
@@ -140,7 +140,7 @@ where
     /// Modify the new session request to include this MCP server.
     fn modify_new_session_request(&self, request: &mut NewSessionRequest) {
         request.mcp_servers.push(crate::schema::McpServer::Http(
-            crate::schema::McpServerHttp::new(self.connect.name(), self.acp_url.clone()),
+            crate::schema::McpServerHttp::new(self.connect.name(), self.acp_id.clone()),
         ));
     }
 }
@@ -208,7 +208,7 @@ where
         client: impl ConnectTo<role::mcp::Server>,
     ) -> Result<(), crate::Error> {
         let Self {
-            acp_url,
+            acp_id,
             connect,
             responder,
             phantom: _,
@@ -229,7 +229,7 @@ where
             .with_spawned(async move |connection_to_client| {
                 let spawned_server: DynConnectTo<role::mcp::Client> =
                     connect.connect(McpConnectionTo {
-                        acp_url,
+                        acp_id,
                         connection: connection_to_client.clone(),
                     });
 
