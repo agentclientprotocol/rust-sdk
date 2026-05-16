@@ -2,13 +2,15 @@
 members = [
     "src/agent-client-protocol",
     "src/agent-client-protocol-conductor",
-    "src/agent-client-protocol-cookbook",
     "src/agent-client-protocol-derive",
     "src/agent-client-protocol-polyfill",
     "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-test",
     "src/agent-client-protocol-trace-viewer",
     "src/yopo",
+    # Keep cookbook last: release-plz currently ignores versioned
+    # dev-dependency edges, but cargo publish still validates them.
+    "src/agent-client-protocol-cookbook",
 ]
 resolver = "3"
 
