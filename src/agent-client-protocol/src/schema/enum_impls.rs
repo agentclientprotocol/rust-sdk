@@ -15,6 +15,8 @@ impl_jsonrpc_request_enum!(ClientRequest {
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",
+    #[cfg(feature = "unstable_session_delete")]
+    DeleteSessionRequest => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionRequest => "session/fork",
     ResumeSessionRequest => "session/resume",

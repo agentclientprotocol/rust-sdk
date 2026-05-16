@@ -9,6 +9,7 @@
 
 ### Added
 
+- *(unstable)* Add support for `session/delete` method.
 - `McpConnectionTo::acp_id()` method.
 
 ### Deprecated
