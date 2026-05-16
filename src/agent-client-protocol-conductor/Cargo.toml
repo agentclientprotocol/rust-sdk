@@ -43,7 +43,7 @@ expect-test.workspace = true
 regex.workspace = true
 rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
 schemars.workspace = true
-agent-client-protocol-polyfill = { path = "../agent-client-protocol-polyfill" }
+agent-client-protocol-polyfill.workspace = true
 
 [lints]
 workspace = true
