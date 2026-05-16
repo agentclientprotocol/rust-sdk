@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.11.1...agent-client-protocol-conductor-v0.12.0) - 2026-05-16
+
+### Added
+
+- extract mcp-over-acp proxy ([#146](https://github.com/agentclientprotocol/rust-sdk/pull/146))
+- remove direct dependency on tokio  ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
+
+### Other
+
+- *(deps)* update Rust dependencies ([#166](https://github.com/agentclientprotocol/rust-sdk/pull/166))
+- *(deps)* bump the minor group with 7 updates ([#152](https://github.com/agentclientprotocol/rust-sdk/pull/152))
+- Trim dependencies ([#149](https://github.com/agentclientprotocol/rust-sdk/pull/149))
+- remove unreachable!() and improve error messages ([#139](https://github.com/agentclientprotocol/rust-sdk/pull/139))
+
 ### Breaking Changes
 
 - **Removed `McpBridgeMode`** and the `mcp_bridge_mode` parameter from `ConductorImpl::new`, `new_agent`, and `new_proxy`. MCP-over-ACP bridging is no longer built into the conductor. Use `agent-client-protocol-polyfill::mcp_over_acp::McpOverAcpPolyfill` as a proxy in the chain instead.

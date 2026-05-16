@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.11.1...v0.12.0) - 2026-05-16
+
+### Added
+
+- *(acp)* add unstable session delete support ([#165](https://github.com/agentclientprotocol/rust-sdk/pull/165))
+- extract mcp-over-acp proxy ([#146](https://github.com/agentclientprotocol/rust-sdk/pull/146))
+- Stabilize session/close and session/resume ([#147](https://github.com/agentclientprotocol/rust-sdk/pull/147))
+- remove direct dependency on tokio  ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
+
+### Fixed
+
+- propagate client connection errors and check capability value truthiness ([#108](https://github.com/agentclientprotocol/rust-sdk/pull/108))
+
+### Other
+
+- Trim dependencies ([#149](https://github.com/agentclientprotocol/rust-sdk/pull/149))
+- remove unreachable!() and improve error messages ([#139](https://github.com/agentclientprotocol/rust-sdk/pull/139))
+
 ### Breaking Changes
 
 - **Removed `McpAcpTransport`** struct and its `MetaCapability` impl. MCP-over-ACP support is now advertised via `mcpCapabilities.acp` in `InitializeResponse`, not `_meta.symposium.mcp_acp_transport`.
