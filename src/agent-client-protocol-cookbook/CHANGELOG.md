@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v0.11.1...agent-client-protocol-cookbook-v0.11.2) - 2026-05-16
+
+### Added
+
+- remove direct dependency on tokio  ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
+
+### Other
+
+- Trim dependencies ([#149](https://github.com/agentclientprotocol/rust-sdk/pull/149))
+
 ## [0.11.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v0.11.0...agent-client-protocol-cookbook-v0.11.1) - 2026-04-21
 
 ### Other
