@@ -22,6 +22,7 @@ unstable = [
     "unstable_mcp_over_acp",
     "unstable_message_id",
     "unstable_session_additional_directories",
+    "unstable_session_delete",
     "unstable_session_fork",
     "unstable_session_model",
     "unstable_session_usage",
@@ -32,6 +33,7 @@ unstable_logout = ["agent-client-protocol-schema/unstable_logout"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
 unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
 unstable_session_additional_directories = ["agent-client-protocol-schema/unstable_session_additional_directories"]
+unstable_session_delete = ["agent-client-protocol-schema/unstable_session_delete"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_session_model = ["agent-client-protocol-schema/unstable_session_model"]
 unstable_session_usage = ["agent-client-protocol-schema/unstable_session_usage"]
