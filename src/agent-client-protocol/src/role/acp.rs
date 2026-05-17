@@ -17,6 +17,10 @@ pub struct Client;
 impl Role for Client {
     type Counterpart = Agent;
 
+    fn builder(self) -> Builder<Self> {
+        Builder::new(self).v1_client()
+    }
+
     async fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
@@ -40,7 +44,19 @@ impl Role for Client {
 impl Client {
     /// Create a connection builder for a client.
     pub fn builder(self) -> Builder<Client, NullHandler, NullRun> {
-        Builder::new(self)
+        <Self as Role>::builder(self)
+    }
+
+    /// Create a client builder that requires an ACP protocol v2 agent.
+    ///
+    /// If the agent negotiates v1 during initialization, the initialize
+    /// request resolves with an error so callers can choose an explicit v1
+    /// fallback path.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature.
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub fn v2(self) -> Builder<Client, NullHandler, NullRun> {
+        self.builder().v2_client()
     }
 
     /// Connect to `agent` and run `main_fn` with the [`ConnectionTo`].
@@ -71,6 +87,10 @@ pub struct Agent;
 
 impl Role for Agent {
     type Counterpart = Client;
+
+    fn builder(self) -> Builder<Self> {
+        Builder::new(self).v1_agent()
+    }
 
     fn role_id(&self) -> RoleId {
         RoleId::from_singleton(self)
@@ -105,7 +125,19 @@ impl Role for Agent {
 impl Agent {
     /// Create a connection builder for an agent.
     pub fn builder(self) -> Builder<Agent, NullHandler, NullRun> {
-        Builder::new(self)
+        <Self as Role>::builder(self)
+    }
+
+    /// Create an agent builder that uses the ACP protocol v2 API.
+    ///
+    /// The SDK will negotiate v1 or v2 during initialization and convert
+    /// supported messages at the transport boundary, so handlers can be written
+    /// against v2 types while still serving v1 clients.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature.
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub fn v2(self) -> Builder<Agent, NullHandler, NullRun> {
+        self.builder().v2_agent()
     }
 }
 

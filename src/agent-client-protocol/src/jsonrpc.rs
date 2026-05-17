@@ -19,6 +19,7 @@ mod dynamic_handler;
 pub(crate) mod handlers;
 mod incoming_actor;
 mod outgoing_actor;
+mod protocol_compat;
 pub(crate) mod run;
 mod task_actor;
 mod transport_actor;
@@ -28,6 +29,7 @@ pub use crate::jsonrpc::handlers::NullHandler;
 use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
+use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
 use crate::jsonrpc::task_actor::{Task, TaskTx};
@@ -554,6 +556,9 @@ where
 
     /// Responder for background tasks.
     responder: Runner,
+
+    /// Protocol version mode for the public API and wire compatibility layer.
+    protocol_mode: ProtocolMode,
 }
 
 impl<Host: Role> Builder<Host, NullHandler, NullRun> {
@@ -566,6 +571,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun> {
             name: None,
             handler: NullHandler,
             responder: NullRun,
+            protocol_mode: ProtocolMode::disabled(),
         }
     }
 }
@@ -581,6 +587,7 @@ where
             name: None,
             handler,
             responder: NullRun,
+            protocol_mode: ProtocolMode::disabled(),
         }
     }
 }
@@ -594,6 +601,28 @@ impl<
     /// Set the "name" of this connection -- used only for debugging logs.
     pub fn name(mut self, name: impl ToString) -> Self {
         self.name = Some(name.to_string());
+        self
+    }
+
+    pub(crate) fn v1_agent(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v1_agent();
+        self
+    }
+
+    pub(crate) fn v1_client(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v1_client();
+        self
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_agent(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_agent();
+        self
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_client(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_client();
         self
     }
 
@@ -613,14 +642,22 @@ impl<
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
     > {
+        let Builder {
+            name: other_name,
+            handler: other_handler,
+            responder: other_responder,
+            protocol_mode: other_protocol_mode,
+            host: _,
+        } = other;
         Builder {
             host: self.host,
             name: self.name,
             handler: ChainedHandler::new(
                 self.handler,
-                NamedHandler::new(other.name, other.handler),
+                NamedHandler::new(other_name, other_handler),
             ),
-            responder: ChainRun::new(self.responder, other.responder),
+            responder: ChainRun::new(self.responder, other_responder),
+            protocol_mode: self.protocol_mode.merge(other_protocol_mode),
         }
     }
 
@@ -637,6 +674,7 @@ impl<
             name: self.name,
             handler: ChainedHandler::new(self.handler, handler),
             responder: self.responder,
+            protocol_mode: self.protocol_mode,
         }
     }
 
@@ -653,6 +691,7 @@ impl<
             name: self.name,
             handler: self.handler,
             responder: ChainRun::new(self.responder, responder),
+            protocol_mode: self.protocol_mode,
         }
     }
 
@@ -1173,6 +1212,7 @@ impl<
             handler,
             responder,
             host: me,
+            protocol_mode,
         } = self;
 
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
@@ -1198,6 +1238,7 @@ impl<
         } = transport_channel;
 
         let (reply_tx, reply_rx) = mpsc::unbounded();
+        let protocol_compat = ProtocolCompat::new(protocol_mode);
 
         let future = crate::util::instrument_with_connection_name(name, {
             let connection = connection.clone();
@@ -1211,6 +1252,7 @@ impl<
                             outgoing_rx,
                             reply_tx.clone(),
                             transport_outgoing_tx,
+                            protocol_compat.clone(),
                         ),
                         // Protocol layer: jsonrpcmsg::Message → handler/reply routing
                         incoming_actor::incoming_protocol_actor(
@@ -1220,6 +1262,7 @@ impl<
                             dynamic_handler_rx,
                             reply_rx,
                             handler,
+                            protocol_compat,
                         ),
                         task_actor::task_actor(new_task_rx, &connection),
                         responder.run_with_connection_to(connection.clone()),
@@ -1340,6 +1383,9 @@ enum OutgoingMessage {
     /// Send a response to a message from the server
     Response {
         id: jsonrpcmsg::Id,
+
+        /// Method of the incoming request this response completes.
+        method: String,
 
         response: Result<serde_json::Value, crate::Error>,
     },
@@ -1907,6 +1953,7 @@ impl Responder<serde_json::Value> {
     /// The response will be serialized to JSON and sent over the wire.
     fn new(message_tx: OutgoingMessageTx, method: String, id: jsonrpcmsg::Id) -> Self {
         let id_clone = id.clone();
+        let method_clone = method.clone();
         Self {
             method,
             id,
@@ -1915,6 +1962,7 @@ impl Responder<serde_json::Value> {
                     &message_tx,
                     OutgoingMessage::Response {
                         id: id_clone,
+                        method: method_clone,
                         response,
                     },
                 )
