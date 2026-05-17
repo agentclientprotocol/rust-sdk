@@ -52,3 +52,34 @@ jobs:
 
       - name: Run tests
         run: just test
+
+  feature-powerset:
+    name: Feature powerset (${{ matrix.partition }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: ["1/4", "2/4", "3/4", "4/4"]
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6
+        with:
+          toolchain: stable
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@c070f87102a1c75b3183910f391c1cb887fe13c8
+        with:
+          tool: cargo-hack
+
+      - name: Check feature powerset
+        # `default` is empty and `unstable` is an aggregate alias for the
+        # individual unstable_* features, so excluding both avoids checking
+        # duplicate combinations. The regular CI all-features build still covers
+        # the aggregate feature.
+        run: cargo hack check --workspace --feature-powerset --exclude-features default,unstable --no-dev-deps --partition ${{ matrix.partition }}
