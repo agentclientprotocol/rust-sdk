@@ -1,5 +1,6 @@
 #[cfg(not(feature = "unstable_protocol_v2"))]
 mod imp {
+    #![allow(clippy::unused_self, clippy::unnecessary_wraps)]
     use crate::UntypedMessage;
 
     #[derive(Clone, Copy, Debug, Default)]

@@ -124,7 +124,7 @@ async fn v2_agent_rejects_initialize_without_protocol_version() -> Result<(), Er
 #[tokio::test(flavor = "current_thread")]
 async fn v2_agent_rejects_initialize_with_malformed_protocol_version() -> Result<(), Error> {
     let mut params = Map::new();
-    params.insert("protocolVersion".into(), serde_json::json!(100000));
+    params.insert("protocolVersion".into(), serde_json::json!(100_000));
 
     assert_malformed_initialize_rejected(params).await
 }
