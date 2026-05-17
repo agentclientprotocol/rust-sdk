@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v0.12.0...agent-client-protocol-polyfill-v0.12.1) - 2026-05-17
+
+### Other
+
+- updated the following local packages: agent-client-protocol
+
 ## [0.12.0](https://github.com/agentclientprotocol/rust-sdk/releases/tag/agent-client-protocol-polyfill-v0.12.0) - 2026-05-16
 
 ### Added

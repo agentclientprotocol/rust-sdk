@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -30,7 +30,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "0.12.0"
+version = "0.12.1"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
