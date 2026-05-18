@@ -68,10 +68,7 @@ pub(super) async fn outgoing_protocol_actor(
             } => match protocol_compat.outgoing_response(&method, response) {
                 Ok(value) => {
                     tracing::debug!(?id, "Sending success response");
-                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(
-                        value,
-                        Some(id),
-                    ))
+                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(value, Some(id)))
                 }
                 Err(error) => {
                     tracing::warn!(?id, %method, ?error, "Sending error response");

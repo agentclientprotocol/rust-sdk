@@ -134,7 +134,7 @@ mod imp {
                 (Self::Disabled, other) => other,
                 (this, Self::Disabled) => this,
                 (Self::Acp(this), Self::Acp(other)) => {
-                    debug_assert_eq!(
+                    assert_eq!(
                         this.api, other.api,
                         "cannot merge ACP builders with different API protocol versions; \
                          handler chains share a single API surface",
@@ -212,7 +212,7 @@ mod imp {
                 return self.incoming_initialize_request(mode, message);
             }
 
-            convert_message(message, self.negotiated(), mode.api)
+            convert_message(message, self.active_wire_version(), mode.api)
         }
 
         pub(crate) fn outgoing_message(
@@ -225,9 +225,10 @@ mod imp {
 
             let wire_version = if message.method() == "initialize" {
                 set_protocol_version(&mut message.params, mode.latest_supported)?;
+                self.set_pending_initialize(mode.latest_supported);
                 mode.latest_supported
             } else {
-                self.negotiated()
+                self.active_wire_version()
             };
 
             convert_message(message, mode.api, wire_version)
@@ -247,7 +248,7 @@ mod imp {
                 return self.incoming_initialize_response(mode, value);
             }
 
-            convert_response(method, value, self.negotiated(), mode.api)
+            convert_response(method, value, self.active_wire_version(), mode.api)
         }
 
         pub(crate) fn outgoing_response(
@@ -279,7 +280,7 @@ mod imp {
                 self.set_negotiated(negotiated);
                 negotiated
             } else {
-                self.negotiated()
+                self.active_wire_version()
             };
 
             convert_response(method, value, mode.api, wire_version)
@@ -306,6 +307,7 @@ mod imp {
             mode: AcpProtocolMode,
             mut value: serde_json::Value,
         ) -> Result<serde_json::Value, crate::Error> {
+            let _pending_initialize = self.take_pending_initialize();
             let Some(response_version) = protocol_version_from_value(&value) else {
                 return Ok(value);
             };
@@ -351,11 +353,12 @@ mod imp {
             }
         }
 
-        fn negotiated(&self) -> ProtocolVersionKind {
-            self.state
+        fn active_wire_version(&self) -> ProtocolVersionKind {
+            let state = self
+                .state
                 .lock()
-                .expect("protocol compatibility state mutex poisoned")
-                .negotiated
+                .expect("protocol compatibility state mutex poisoned");
+            state.pending_initialize.unwrap_or(state.negotiated)
         }
 
         fn set_negotiated(&self, negotiated: ProtocolVersionKind) {
@@ -617,6 +620,77 @@ mod imp {
             required.as_protocol_version(),
             negotiated.as_protocol_version(),
         ))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn negotiated(compat: &ProtocolCompat) -> ProtocolVersionKind {
+            compat
+                .state
+                .lock()
+                .expect("protocol compatibility state mutex poisoned")
+                .negotiated
+        }
+
+        #[test]
+        fn initialize_request_sets_active_wire_version_before_response() -> Result<(), crate::Error>
+        {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_agent());
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
+
+            compat.incoming_message(UntypedMessage::new(
+                "initialize",
+                v2::InitializeRequest::new(ProtocolVersion::V2),
+            )?)?;
+
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+
+            compat.outgoing_response(
+                "initialize",
+                Ok(serde_json::to_value(v2::InitializeResponse::new(
+                    ProtocolVersion::V2,
+                ))?),
+            )?;
+
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V2);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+            Ok(())
+        }
+
+        #[test]
+        fn outgoing_initialize_sets_active_wire_version_before_response() -> Result<(), crate::Error>
+        {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_client());
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
+
+            compat.outgoing_message(UntypedMessage::new(
+                "initialize",
+                v2::InitializeRequest::new(ProtocolVersion::V1),
+            )?)?;
+
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+
+            compat.incoming_response(
+                "initialize",
+                Ok(serde_json::to_value(v2::InitializeResponse::new(
+                    ProtocolVersion::V2,
+                ))?),
+            )?;
+
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V2);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+            Ok(())
+        }
+
+        #[test]
+        #[should_panic(expected = "cannot merge ACP builders with different API protocol versions")]
+        fn merging_different_api_protocol_modes_panics() {
+            let _ = ProtocolMode::v1_agent().merge(ProtocolMode::v2_agent());
+        }
     }
 }
 
