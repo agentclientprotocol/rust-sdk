@@ -134,6 +134,11 @@ mod imp {
                 (Self::Disabled, other) => other,
                 (this, Self::Disabled) => this,
                 (Self::Acp(this), Self::Acp(other)) => {
+                    debug_assert_eq!(
+                        this.api, other.api,
+                        "cannot merge ACP builders with different API protocol versions; \
+                         handler chains share a single API surface",
+                    );
                     if this.latest_supported >= other.latest_supported {
                         Self::Acp(this)
                     } else {
@@ -250,13 +255,22 @@ mod imp {
             method: &str,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
-            let mut value = result?;
             let Some(mode) = self.mode else {
-                return Ok(value);
+                return result;
             };
 
+            // Always drain any pending initialize state so a failed initialize
+            // doesn't leak negotiation state to a subsequent request.
+            let pending_initialize = if method == "initialize" {
+                self.take_pending_initialize()
+            } else {
+                None
+            };
+
+            let mut value = result?;
+
             let wire_version = if method == "initialize" {
-                let negotiated = self.take_pending_initialize().unwrap_or_else(|| {
+                let negotiated = pending_initialize.unwrap_or_else(|| {
                     protocol_version_from_value(&value)
                         .and_then(ProtocolVersionKind::from_protocol_version)
                         .unwrap_or(mode.latest_supported)

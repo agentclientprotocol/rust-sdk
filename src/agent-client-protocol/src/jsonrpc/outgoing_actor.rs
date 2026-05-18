@@ -64,29 +64,29 @@ pub(super) async fn outgoing_protocol_actor(
             OutgoingMessage::Response {
                 id,
                 method,
-                response: Ok(value),
-            } => {
-                let value = protocol_compat.outgoing_response(&method, Ok(value))?;
-                tracing::debug!(?id, "Sending success response");
-                jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(value, Some(id)))
-            }
-            OutgoingMessage::Response {
-                id,
-                method,
-                response: Err(error),
-            } => {
-                tracing::warn!(?id, %method, ?error, "Sending error response");
-                // Convert crate::Error to jsonrpcmsg::Error
-                let jsonrpc_error = jsonrpcmsg::Error {
-                    code: error.code.into(),
-                    message: error.message,
-                    data: error.data,
-                };
-                jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(
-                    jsonrpc_error,
-                    Some(id),
-                ))
-            }
+                response,
+            } => match protocol_compat.outgoing_response(&method, response) {
+                Ok(value) => {
+                    tracing::debug!(?id, "Sending success response");
+                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(
+                        value,
+                        Some(id),
+                    ))
+                }
+                Err(error) => {
+                    tracing::warn!(?id, %method, ?error, "Sending error response");
+                    // Convert crate::Error to jsonrpcmsg::Error
+                    let jsonrpc_error = jsonrpcmsg::Error {
+                        code: error.code.into(),
+                        message: error.message,
+                        data: error.data,
+                    };
+                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(
+                        jsonrpc_error,
+                        Some(id),
+                    ))
+                }
+            },
             OutgoingMessage::Error { error } => {
                 // Convert crate::Error to jsonrpcmsg::Error
                 let jsonrpc_error = jsonrpcmsg::Error {
