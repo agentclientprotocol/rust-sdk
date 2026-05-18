@@ -438,8 +438,7 @@ mod imp {
     }
 
     fn public_to_v2_message(message: UntypedMessage) -> Result<UntypedMessage, crate::Error> {
-        let method = message.method().to_string();
-        let params = message.params().clone();
+        let UntypedMessage { method, params } = message;
 
         if let Some(message) = try_convert_message_to_v2::<ClientRequest>(&method, &params)? {
             return Ok(message);
@@ -454,12 +453,11 @@ mod imp {
             return Ok(message);
         }
 
-        Ok(message)
+        Ok(UntypedMessage { method, params })
     }
 
     fn v2_to_public_message(message: UntypedMessage) -> Result<UntypedMessage, crate::Error> {
-        let method = message.method().to_string();
-        let params = message.params().clone();
+        let UntypedMessage { method, params } = message;
 
         if let Some(message) = try_convert_message_to_v1::<v2::ClientRequest>(&method, &params)? {
             return Ok(message);
@@ -477,7 +475,7 @@ mod imp {
             return Ok(message);
         }
 
-        Ok(message)
+        Ok(UntypedMessage { method, params })
     }
 
     fn public_to_v2_response(
