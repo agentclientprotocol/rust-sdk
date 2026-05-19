@@ -239,15 +239,15 @@ mod imp {
             method: &str,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
-            let value = result?;
             let Some(mode) = self.mode else {
-                return Ok(value);
+                return result;
             };
 
             if method == "initialize" {
-                return self.incoming_initialize_response(mode, value);
+                return self.incoming_initialize_response(mode, result);
             }
 
+            let value = result?;
             convert_response(method, value, self.active_wire_version(), mode.api)
         }
 
@@ -305,9 +305,10 @@ mod imp {
         fn incoming_initialize_response(
             &self,
             mode: AcpProtocolMode,
-            mut value: serde_json::Value,
+            result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
             let _pending_initialize = self.take_pending_initialize();
+            let mut value = result?;
             let Some(response_version) = protocol_version_from_value(&value) else {
                 return Ok(value);
             };
@@ -683,6 +684,31 @@ mod imp {
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V2);
             assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+            Ok(())
+        }
+
+        #[test]
+        fn failed_incoming_initialize_response_clears_pending_wire_version()
+        -> Result<(), crate::Error> {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_client());
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
+
+            compat.outgoing_message(UntypedMessage::new(
+                "initialize",
+                v2::InitializeRequest::new(ProtocolVersion::V1),
+            )?)?;
+
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+
+            let result = compat.incoming_response(
+                "initialize",
+                Err(crate::Error::invalid_request().data("initialize failed")),
+            );
+
+            assert!(result.is_err());
+            assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
             Ok(())
         }
 
