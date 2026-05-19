@@ -219,11 +219,47 @@ macro_rules! impl_jsonrpc_notification_enum {
     };
 }
 
+/// Implement `JsonRpcResponse` for an enum that dispatches across multiple
+/// response types, with an extension method fallback.
+macro_rules! impl_jsonrpc_response_enum {
+    ($enum:ty {
+        $( $(#[$meta:meta])* $variant:ident => $method:literal, )*
+        [ext] $ext_variant:ident,
+    }) => {
+        impl $crate::JsonRpcResponse for $enum {
+            fn into_json(
+                self,
+                _method: &str,
+            ) -> Result<serde_json::Value, $crate::Error> {
+                serde_json::to_value(self).map_err($crate::Error::into_internal_error)
+            }
+
+            fn from_value(
+                method: &str,
+                value: serde_json::Value,
+            ) -> Result<Self, $crate::Error> {
+                match method {
+                    $( $(#[$meta])* $method => $crate::util::json_cast(value).map(Self::$variant), )*
+                    _ => {
+                        if method.starts_with('_') {
+                            $crate::util::json_cast(value).map(Self::$ext_variant)
+                        } else {
+                            Err($crate::Error::method_not_found())
+                        }
+                    }
+                }
+            }
+        }
+    };
+}
+
 // Internal organization
 mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
 mod proxy_protocol;
+#[cfg(feature = "unstable_protocol_v2")]
+mod v2_impls;
 
 // Re-export everything from agent_client_protocol_schema
 pub use agent_client_protocol_schema::*;
