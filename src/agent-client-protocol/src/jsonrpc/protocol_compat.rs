@@ -309,9 +309,7 @@ mod imp {
         ) -> Result<serde_json::Value, crate::Error> {
             let _pending_initialize = self.take_pending_initialize();
             let mut value = result?;
-            let Some(response_version) = protocol_version_from_value(&value) else {
-                return Ok(value);
-            };
+            let response_version = required_protocol_version_from_value(&value)?;
             if !self.supports(response_version) {
                 return Err(unsupported_protocol_version(response_version));
             }
@@ -709,6 +707,34 @@ mod imp {
             assert!(result.is_err());
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
             assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
+            Ok(())
+        }
+
+        #[test]
+        fn incoming_initialize_response_requires_protocol_version() -> Result<(), crate::Error> {
+            for value in [
+                serde_json::json!({}),
+                serde_json::json!({ "protocolVersion": 100_000 }),
+            ] {
+                let compat = ProtocolCompat::new(ProtocolMode::v2_client());
+                compat.outgoing_message(UntypedMessage::new(
+                    "initialize",
+                    v2::InitializeRequest::new(ProtocolVersion::V1),
+                )?)?;
+
+                let error = compat
+                    .incoming_response("initialize", Ok(value))
+                    .expect_err("initialize responses must declare an ACP protocol version");
+                let data = error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.as_str())
+                    .unwrap_or_default();
+                assert!(data.contains("protocolVersion"), "{error:?}");
+                assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
+                assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
+            }
+
             Ok(())
         }
 
