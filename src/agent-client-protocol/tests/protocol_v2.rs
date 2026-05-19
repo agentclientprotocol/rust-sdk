@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::{self, ProtocolVersion, v2};
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Role,
-    UntypedRole, jsonrpcmsg,
+    Agent, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
+    NullHandler, Role, UntypedRole, jsonrpcmsg,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
@@ -98,6 +98,29 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
     ))
 }
 
+async fn assert_v2_client_rejected_by_v1_agent(agent: impl ConnectTo<Client>) -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("v1 agent protocol mode should reject v2 clients");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains("required ACP protocol version 2"),
+                "{error:?}"
+            );
+            Ok(())
+        })
+        .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn non_acp_initialize_is_not_rewritten() -> Result<(), Error> {
     UntypedRole
@@ -162,6 +185,32 @@ async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Err
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn builder_new_v1_agent_rejects_v2_client_negotiation() -> Result<(), Error> {
+    let agent = Builder::new(Agent).on_receive_request(
+        async |initialize: schema::InitializeRequest, responder, _cx| {
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+            responder.respond(schema::InitializeResponse::new(initialize.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    assert_v2_client_rejected_by_v1_agent(agent).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn builder_new_with_v1_agent_rejects_v2_client_negotiation() -> Result<(), Error> {
+    let agent = Builder::new_with(Agent, NullHandler).on_receive_request(
+        async |initialize: schema::InitializeRequest, responder, _cx| {
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+            responder.respond(schema::InitializeResponse::new(initialize.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    assert_v2_client_rejected_by_v1_agent(agent).await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(), Error> {
     let agent = Agent.v2().on_receive_request(
         async |initialize: v2::InitializeRequest, responder, _cx| {
@@ -205,6 +254,9 @@ fn v2_extension_enum_parsing_preserves_method_prefix() -> Result<(), Error> {
 #[cfg(feature = "unstable_mcp_over_acp")]
 #[test]
 fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
+    fn assert_request<Req: JsonRpcRequest>() {}
+    fn assert_notification<Notif: agent_client_protocol::JsonRpcNotification>() {}
+
     macro_rules! assert_message_mapping {
         ($ty:ty, $method:literal, $params:expr, $pattern:pat) => {{
             let message = <$ty as JsonRpcMessage>::parse_message($method, &$params)?;
@@ -220,6 +272,11 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
             assert!(matches!(response, $pattern));
         }};
     }
+
+    assert_request::<v2::ConnectMcpRequest>();
+    assert_request::<v2::MessageMcpRequest>();
+    assert_request::<v2::DisconnectMcpRequest>();
+    assert_notification::<v2::MessageMcpNotification>();
 
     assert_message_mapping!(
         schema::ClientRequest,
@@ -286,6 +343,34 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
             "notifications/tools/list"
         ))?,
         schema::AgentNotification::MessageMcpNotification(_)
+    );
+
+    assert_message_mapping!(
+        v2::MessageMcpRequest,
+        "mcp/message",
+        json_value(v2::MessageMcpRequest::new("conn-1", "tools/list"))?,
+        v2::MessageMcpRequest { .. }
+    );
+    assert_message_mapping!(
+        v2::MessageMcpNotification,
+        "mcp/message",
+        json_value(v2::MessageMcpNotification::new(
+            "conn-1",
+            "notifications/tools/list"
+        ))?,
+        v2::MessageMcpNotification { .. }
+    );
+    assert_message_mapping!(
+        v2::ConnectMcpRequest,
+        "mcp/connect",
+        json_value(v2::ConnectMcpRequest::new("server-1"))?,
+        v2::ConnectMcpRequest { .. }
+    );
+    assert_message_mapping!(
+        v2::DisconnectMcpRequest,
+        "mcp/disconnect",
+        json_value(v2::DisconnectMcpRequest::new("conn-1"))?,
+        v2::DisconnectMcpRequest { .. }
     );
 
     assert_message_mapping!(

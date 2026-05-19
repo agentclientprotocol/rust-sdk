@@ -267,8 +267,12 @@ impl_v2_jsonrpc_request!(
     v2::SetSessionModelResponse,
     "session/set_model"
 );
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
 impl_v2_jsonrpc_notification!(v2::CancelNotification, "session/cancel");
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_v2_jsonrpc_notification!(v2::MessageMcpNotification, "mcp/message");
 
 impl_v2_jsonrpc_request!(
     v2::WriteTextFileRequest,
@@ -309,6 +313,14 @@ impl_v2_jsonrpc_request!(
     v2::KillTerminalRequest,
     v2::KillTerminalResponse,
     "terminal/kill"
+);
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_v2_jsonrpc_request!(v2::ConnectMcpRequest, v2::ConnectMcpResponse, "mcp/connect");
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_v2_jsonrpc_request!(
+    v2::DisconnectMcpRequest,
+    v2::DisconnectMcpResponse,
+    "mcp/disconnect"
 );
 
 impl_v2_jsonrpc_notification!(v2::SessionNotification, "session/update");

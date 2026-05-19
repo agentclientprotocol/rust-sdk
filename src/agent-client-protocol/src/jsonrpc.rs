@@ -6,6 +6,7 @@ pub use jsonrpcmsg;
 
 // Types re-exported from crate root
 use serde::{Deserialize, Serialize};
+use std::any::TypeId;
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
@@ -561,6 +562,18 @@ where
     protocol_mode: ProtocolMode,
 }
 
+fn default_protocol_mode<Host: Role>() -> ProtocolMode {
+    let role = TypeId::of::<Host>();
+
+    if role == TypeId::of::<Agent>() {
+        ProtocolMode::v1_agent()
+    } else if role == TypeId::of::<Client>() {
+        ProtocolMode::v1_client()
+    } else {
+        ProtocolMode::disabled()
+    }
+}
+
 impl<Host: Role> Builder<Host, NullHandler, NullRun> {
     /// Create a new connection builder for the given role.
     /// This type follows a builder pattern; use other methods to configure and then invoke
@@ -571,7 +584,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun> {
             name: None,
             handler: NullHandler,
             responder: NullRun,
-            protocol_mode: ProtocolMode::disabled(),
+            protocol_mode: default_protocol_mode::<Host>(),
         }
     }
 }
@@ -587,7 +600,7 @@ where
             name: None,
             handler,
             responder: NullRun,
-            protocol_mode: ProtocolMode::disabled(),
+            protocol_mode: default_protocol_mode::<Host>(),
         }
     }
 }
