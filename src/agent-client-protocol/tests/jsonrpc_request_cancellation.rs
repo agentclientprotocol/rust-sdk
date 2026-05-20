@@ -630,7 +630,7 @@ async fn request_handler_can_observe_cancellation_from_responder() {
                     let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
                         message: "cancel me".into(),
                     });
-                    cx.cancel_request(&request)?;
+                    request.cancel()?;
                     Ok(request
                         .block_task()
                         .await

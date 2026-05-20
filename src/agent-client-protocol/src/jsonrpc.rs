@@ -2096,20 +2096,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         )
     }
 
-    /// Send a `$/cancel_request` notification for an outgoing request.
-    ///
-    /// This is a convenience wrapper around [`SentRequest::cancel`].
-    ///
-    /// Cancellation is cooperative: the peer may ignore the notification, may
-    /// reply to the original request with [`Error::request_cancelled`], or may
-    /// return a normal response with partial data.
-    ///
-    /// [`Error::request_cancelled`]: crate::Error::request_cancelled
-    #[cfg(feature = "unstable_cancel_request")]
-    pub fn cancel_request<T>(&self, request: &SentRequest<T>) -> Result<(), crate::Error> {
-        request.cancel()
-    }
-
     /// Send a `$/cancel_request` notification for an arbitrary request ID to
     /// the default counterpart peer.
     #[cfg(feature = "unstable_cancel_request")]
