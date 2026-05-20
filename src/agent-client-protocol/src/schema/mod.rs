@@ -257,6 +257,7 @@ macro_rules! impl_jsonrpc_response_enum {
 mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
+mod protocol_level;
 mod proxy_protocol;
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_impls;

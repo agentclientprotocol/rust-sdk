@@ -108,6 +108,8 @@ pub mod jsonrpcmsg {
     pub use jsonrpcmsg::{Error, Id, Message, Params, Request, Response};
 }
 
+#[cfg(feature = "unstable_cancel_request")]
+pub use jsonrpc::RequestCancellation;
 pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,

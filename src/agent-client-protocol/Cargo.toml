@@ -18,6 +18,7 @@ default = []
 unstable = [
     "unstable_auth_methods",
     "unstable_boolean_config",
+    "unstable_cancel_request",
     "unstable_logout",
     "unstable_mcp_over_acp",
     "unstable_message_id",
@@ -29,6 +30,7 @@ unstable = [
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
+unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
 unstable_logout = ["agent-client-protocol-schema/unstable_logout"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
 unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]

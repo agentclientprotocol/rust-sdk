@@ -62,6 +62,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         FxHashMap::default();
     let mut pending_messages: Vec<Dispatch> = vec![];
 
+    let request_cancellations = super::RequestCancellationRegistry::default();
+
     // Map from request ID to (method, sender) for response dispatch.
     // Keys are JSON values because jsonrpcmsg::Id doesn't implement Eq.
     // The method is stored to allow routing responses through typed handlers.
@@ -135,7 +137,12 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                         tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
                         let request_method = request.method.clone();
                         let request_id = request.id.clone();
-                        match dispatch_from_request(connection, request, &protocol_compat) {
+                        match dispatch_from_request(
+                            connection,
+                            request,
+                            &protocol_compat,
+                            &request_cancellations,
+                        ) {
                             Ok(dispatch) => {
                                 dispatch_dispatch(
                                     counterpart.clone(),
@@ -144,6 +151,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &mut dynamic_handlers,
                                     &mut handler,
                                     &mut pending_messages,
+                                    &request_cancellations,
                                 )
                                 .await?;
                             }
@@ -183,6 +191,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &mut dynamic_handlers,
                                     &mut handler,
                                     &mut pending_messages,
+                                    &request_cancellations,
                                 )
                                 .await?;
                             } else {
@@ -218,6 +227,7 @@ fn dispatch_from_request<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     request: jsonrpcmsg::Request,
     protocol_compat: &ProtocolCompat,
+    request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<Dispatch, crate::Error> {
     let message = UntypedMessage::new(&request.method, &request.params).expect("well-formed JSON");
     let message = protocol_compat.incoming_message(message)?;
@@ -229,6 +239,7 @@ fn dispatch_from_request<Counterpart: Role>(
                 connection.message_tx.clone(),
                 request.method.clone(),
                 id.clone(),
+                request_cancellations,
             ),
         )),
         None => Ok(Dispatch::Notification(message)),
@@ -268,6 +279,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
     dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
     handler: &mut impl HandleDispatchFrom<Counterpart>,
     pending_messages: &mut Vec<Dispatch>,
+    request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<(), crate::Error> {
     tracing::trace!(?dispatch, "dispatch_dispatch");
 
@@ -275,6 +287,22 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let id = dispatch.id();
     let method = dispatch.method().to_string();
+
+    match request_cancellations.cancel_if_requested(&dispatch) {
+        Ok(true) => {
+            tracing::debug!(?method, "Marked request as cancelled");
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!(
+                ?method,
+                ?id,
+                ?err,
+                "Request cancellation notification errored"
+            );
+            return report_handler_error(connection, id, method, err);
+        }
+    }
 
     // First, apply the handlers given by the user.
     tracing::trace!(handler = ?handler.describe_chain(), "Attempting handler chain");
@@ -349,6 +377,11 @@ async fn dispatch_dispatch<Counterpart: Role>(
             );
             return report_handler_error(connection, id, method, err);
         }
+    }
+
+    if super::is_protocol_level_notification(&dispatch) {
+        tracing::debug!(?method, "Ignoring unhandled protocol-level notification");
+        return Ok(());
     }
 
     // If the message was never handled, check whether the retry flag was set.
