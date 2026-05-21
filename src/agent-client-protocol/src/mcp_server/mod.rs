@@ -36,10 +36,16 @@
 mod active_session;
 mod connect;
 mod context;
+mod registry;
 mod server;
 mod tool;
+mod tool_fn;
 
 pub use connect::McpServerConnect;
 pub use context::McpConnectionTo;
+pub use registry::{
+    EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
+};
 pub use server::McpServer;
 pub use tool::McpTool;
+pub use tool_fn::{tool_fn, tool_fn_mut};

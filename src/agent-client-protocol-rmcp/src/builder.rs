@@ -1,46 +1,11 @@
 //! MCP server builder for creating MCP servers.
 
-use std::{collections::HashSet, marker::PhantomData, pin::pin, sync::Arc};
+use std::{marker::PhantomData, pin::pin, sync::Arc};
 
-use futures::{
-    SinkExt,
-    channel::{mpsc, oneshot},
-    future::{BoxFuture, Either},
-};
+use futures::future::{BoxFuture, Either};
 use futures_concurrency::future::TryJoin;
-use rustc_hash::FxHashMap;
-
-/// Tracks which tools are enabled.
-///
-/// - `DenyList`: All tools enabled except those in the set (default)
-/// - `AllowList`: Only tools in the set are enabled
-#[derive(Clone, Debug)]
-pub enum EnabledTools {
-    /// All tools enabled except those in the deny set.
-    DenyList(HashSet<String>),
-    /// Only tools in the allow set are enabled.
-    AllowList(HashSet<String>),
-}
-
-impl Default for EnabledTools {
-    fn default() -> Self {
-        EnabledTools::DenyList(HashSet::new())
-    }
-}
-
-impl EnabledTools {
-    /// Check if a tool is enabled.
-    #[must_use]
-    pub fn is_enabled(&self, name: &str) -> bool {
-        match self {
-            EnabledTools::DenyList(deny) => !deny.contains(name),
-            EnabledTools::AllowList(allow) => allow.contains(name),
-        }
-    }
-}
 use rmcp::{
     ErrorData, ServerHandler,
-    handler::server::tool::{schema_for_output, schema_for_type},
     model::{CallToolResult, ListToolsResult, Tool},
 };
 use schemars::JsonSchema;
@@ -50,11 +15,11 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use agent_client_protocol as acp;
 use agent_client_protocol::{
     ByteStreams, ChainRun, ConnectTo, DynConnectTo, NullRun, RunWithConnectionTo,
-    mcp_server::{McpConnectionTo, McpServer, McpServerConnect, McpTool},
+    mcp_server::{
+        McpConnectionTo, McpServer, McpServerConnect, McpTool, McpToolMetadata, McpToolRegistry,
+    },
     role::{self, Role},
 };
-
-use crate::responder::{ToolCall, ToolFnMutResponder, ToolFnResponder};
 
 /// Builder for creating MCP servers with tools.
 ///
@@ -85,42 +50,8 @@ where
 {
     phantom: PhantomData<Counterpart>,
     name: String,
-    data: McpServerData<Counterpart>,
+    data: McpToolRegistry<Counterpart>,
     responder: Responder,
-}
-
-#[derive(Debug)]
-struct McpServerData<Counterpart: Role> {
-    instructions: Option<String>,
-    tool_models: Vec<rmcp::model::Tool>,
-    tools: FxHashMap<String, RegisteredTool<Counterpart>>,
-    enabled_tools: EnabledTools,
-}
-
-/// A registered tool with its metadata.
-struct RegisteredTool<Counterpart: Role> {
-    tool: Arc<dyn ErasedMcpTool<Counterpart>>,
-    /// Whether this tool returns structured output (i.e., has an output_schema).
-    has_structured_output: bool,
-}
-
-impl<Counterpart: Role + std::fmt::Debug> std::fmt::Debug for RegisteredTool<Counterpart> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegisteredTool")
-            .field("has_structured_output", &self.has_structured_output)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<Host: Role> Default for McpServerData<Host> {
-    fn default() -> Self {
-        Self {
-            instructions: None,
-            tool_models: Vec::new(),
-            tools: FxHashMap::default(),
-            enabled_tools: EnabledTools::default(),
-        }
-    }
 }
 
 impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
@@ -128,7 +59,7 @@ impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
         Self {
             name,
             phantom: PhantomData,
-            data: McpServerData::default(),
+            data: McpToolRegistry::default(),
             responder: NullRun,
         }
     }
@@ -141,23 +72,14 @@ where
     /// Set the server instructions that are provided to the client.
     #[must_use]
     pub fn instructions(mut self, instructions: impl ToString) -> Self {
-        self.data.instructions = Some(instructions.to_string());
+        self.data.set_instructions(instructions);
         self
     }
 
     /// Add a tool to the server.
     #[must_use]
     pub fn tool(mut self, tool: impl McpTool<Counterpart> + 'static) -> Self {
-        let tool_model = make_tool_model(&tool);
-        let has_structured_output = tool_model.output_schema.is_some();
-        self.data.tool_models.push(tool_model);
-        self.data.tools.insert(
-            tool.name(),
-            RegisteredTool {
-                tool: make_erased_mcp_tool(tool),
-                has_structured_output,
-            },
-        );
+        self.data.register_tool(tool);
         self
     }
 
@@ -165,7 +87,7 @@ where
     /// with [`enable_tool`](Self::enable_tool) will be available.
     #[must_use]
     pub fn disable_all_tools(mut self) -> Self {
-        self.data.enabled_tools = EnabledTools::AllowList(HashSet::new());
+        self.data.disable_all_tools();
         self
     }
 
@@ -173,7 +95,7 @@ where
     /// except those explicitly disabled with [`disable_tool`](Self::disable_tool).
     #[must_use]
     pub fn enable_all_tools(mut self) -> Self {
-        self.data.enabled_tools = EnabledTools::DenyList(HashSet::new());
+        self.data.enable_all_tools();
         self
     }
 
@@ -181,17 +103,7 @@ where
     ///
     /// Returns an error if the tool is not registered.
     pub fn disable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
-        if !self.data.tools.contains_key(name) {
-            return Err(acp::Error::invalid_request().data(format!("unknown tool: {name}")));
-        }
-        match &mut self.data.enabled_tools {
-            EnabledTools::DenyList(deny) => {
-                deny.insert(name.to_string());
-            }
-            EnabledTools::AllowList(allow) => {
-                allow.remove(name);
-            }
-        }
+        self.data.disable_tool(name)?;
         Ok(self)
     }
 
@@ -199,17 +111,7 @@ where
     ///
     /// Returns an error if the tool is not registered.
     pub fn enable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
-        if !self.data.tools.contains_key(name) {
-            return Err(acp::Error::invalid_request().data(format!("unknown tool: {name}")));
-        }
-        match &mut self.data.enabled_tools {
-            EnabledTools::DenyList(deny) => {
-                deny.remove(name);
-            }
-            EnabledTools::AllowList(allow) => {
-                allow.insert(name.to_string());
-            }
-        }
+        self.data.enable_tool(name)?;
         Ok(self)
     }
 
@@ -269,19 +171,9 @@ where
         Ret: JsonSchema + Serialize + 'static + Send,
         F: AsyncFnMut(P, McpConnectionTo<Counterpart>) -> Result<Ret, acp::Error> + Send,
     {
-        let (call_tx, call_rx) = mpsc::channel(128);
-        self.tool_with_responder(
-            ToolFnTool {
-                name: name.to_string(),
-                description: description.to_string(),
-                call_tx,
-            },
-            ToolFnMutResponder {
-                func,
-                call_rx,
-                tool_future_fn: Box::new(tool_future_hack),
-            },
-        )
+        let (tool, responder) =
+            acp::mcp_server::tool_fn_mut(name, description, func, tool_future_hack);
+        self.tool_with_responder(tool, responder)
     }
 
     /// Convenience wrapper for defining a stateless tool that can run concurrently.
@@ -326,19 +218,8 @@ where
             + Sync
             + 'static,
     {
-        let (call_tx, call_rx) = mpsc::channel(128);
-        self.tool_with_responder(
-            ToolFnTool {
-                name: name.to_string(),
-                description: description.to_string(),
-                call_tx,
-            },
-            ToolFnResponder {
-                func,
-                call_rx,
-                tool_future_fn: Box::new(tool_future_hack),
-            },
-        )
+        let (tool, responder) = acp::mcp_server::tool_fn(name, description, func, tool_future_hack);
+        self.tool_with_responder(tool, responder)
     }
 
     /// Create an MCP server from this builder.
@@ -358,7 +239,7 @@ where
 
 struct McpServerBuilt<Counterpart: Role> {
     name: String,
-    data: Arc<McpServerData<Counterpart>>,
+    data: Arc<McpToolRegistry<Counterpart>>,
 }
 
 impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {
@@ -379,7 +260,7 @@ impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counter
 
 /// An MCP server instance connected to the ACP framework.
 pub(crate) struct McpServerConnection<Counterpart: Role> {
-    data: Arc<McpServerData<Counterpart>>,
+    data: Arc<McpToolRegistry<Counterpart>>,
     mcp_connection: McpConnectionTo<Counterpart>,
 }
 
@@ -423,30 +304,20 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         // Lookup the tool definition, erroring if not found or disabled
-        let Some(registered) = self.data.tools.get(&request.name[..]) else {
+        let Some(registered) = self.data.enabled_tool(&request.name) else {
             return Err(rmcp::model::ErrorData::invalid_params(
                 format!("tool `{}` not found", request.name),
                 None,
             ));
         };
 
-        // Treat disabled tools as not found
-        if !self.data.enabled_tools.is_enabled(&request.name) {
-            return Err(rmcp::model::ErrorData::invalid_params(
-                format!("tool `{}` not found", request.name),
-                None,
-            ));
-        }
-
         // Convert input into JSON
         let serde_value = serde_json::to_value(request.arguments).expect("valid json");
 
         // Execute the user's tool, unless cancellation occurs
-        let has_structured_output = registered.has_structured_output;
+        let has_structured_output = registered.has_structured_output();
         match futures::future::select(
-            registered
-                .tool
-                .call_tool(serde_value, self.mcp_connection.clone()),
+            registered.call_tool(serde_value, self.mcp_connection.clone()),
             pin!(context.ct.cancelled()),
         )
         .await
@@ -481,10 +352,8 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
         // Return only enabled tools
         let tools: Vec<_> = self
             .data
-            .tool_models
-            .iter()
-            .filter(|t| self.data.enabled_tools.is_enabled(&t.name))
-            .cloned()
+            .enabled_tools()
+            .map(|tool| make_tool_model(tool.metadata()))
             .collect();
         Ok(ListToolsResult::with_all_items(tools))
     }
@@ -499,69 +368,32 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
         .with_server_info(rmcp::model::Implementation::default())
         .with_protocol_version(rmcp::model::ProtocolVersion::default());
 
-        if let Some(instr) = self.data.instructions.clone() {
-            base.with_instructions(instr)
+        if let Some(instructions) = self.data.instructions() {
+            base.with_instructions(instructions.to_string())
         } else {
             base
         }
     }
 }
 
-/// Erased version of the MCP tool trait that is dyn-compatible.
-trait ErasedMcpTool<Counterpart: Role>: Send + Sync {
-    fn call_tool(
-        &self,
-        input: serde_json::Value,
-        connection: McpConnectionTo<Counterpart>,
-    ) -> BoxFuture<'_, Result<serde_json::Value, acp::Error>>;
-}
-
-/// Create an `rmcp` tool model from our [`McpTool`] trait.
-fn make_tool_model<R: Role, M: McpTool<R>>(tool: &M) -> Tool {
+/// Create an `rmcp` tool model from runtime-neutral MCP tool metadata.
+fn make_tool_model(metadata: &McpToolMetadata) -> Tool {
     let mut tool = rmcp::model::Tool::new(
-        tool.name(),
-        tool.description(),
-        schema_for_type::<M::Input>(),
+        metadata.name().to_string(),
+        metadata.description().to_string(),
+        metadata.input_schema().clone(),
     )
     .with_execution(rmcp::model::ToolExecution::new());
 
-    if let Ok(schema) = schema_for_output::<M::Output>() {
-        // schema_for_output returns Err for non-object types (strings, integers, etc.)
-        // since MCP structured output requires JSON objects. We set
-        // output_schema to None for these tools, signaling unstructured output.
-        tool = tool.with_raw_output_schema(schema);
+    if let Some(title) = metadata.title() {
+        tool = tool.with_title(title.to_string());
+    }
+
+    if let Some(schema) = metadata.output_schema() {
+        tool = tool.with_raw_output_schema(schema.clone());
     }
 
     tool
-}
-
-/// Create a [`ErasedMcpTool`] from a [`McpTool`], erasing the type details.
-fn make_erased_mcp_tool<'s, R: Role, M: McpTool<R> + 's>(
-    tool: M,
-) -> Arc<dyn ErasedMcpTool<R> + 's> {
-    struct ErasedMcpToolImpl<M> {
-        tool: M,
-    }
-
-    impl<R, M> ErasedMcpTool<R> for ErasedMcpToolImpl<M>
-    where
-        R: Role,
-        M: McpTool<R>,
-    {
-        fn call_tool(
-            &self,
-            input: serde_json::Value,
-            context: McpConnectionTo<R>,
-        ) -> BoxFuture<'_, Result<serde_json::Value, acp::Error>> {
-            Box::pin(async move {
-                let input = serde_json::from_value(input).map_err(acp::util::internal_error)?;
-                serde_json::to_value(self.tool.call_tool(input, context).await?)
-                    .map_err(acp::util::internal_error)
-            })
-        }
-    }
-
-    Arc::new(ErasedMcpToolImpl { tool })
 }
 
 /// Convert an [`agent_client_protocol::Error`] into an [`rmcp::ErrorData`].
@@ -570,51 +402,5 @@ fn to_rmcp_error(error: acp::Error) -> rmcp::ErrorData {
         code: rmcp::model::ErrorCode(error.code.into()),
         message: error.message.into(),
         data: error.data,
-    }
-}
-
-/// MCP tool used for `tool_fn` and `tooL_fn_mut`.
-/// Each time it is invoked, it sends a `ToolCall`  message to `call_tx`.
-struct ToolFnTool<P, Ret, R: Role> {
-    name: String,
-    description: String,
-    call_tx: mpsc::Sender<ToolCall<P, Ret, R>>,
-}
-
-impl<P, Ret, R> McpTool<R> for ToolFnTool<P, Ret, R>
-where
-    R: Role,
-    P: JsonSchema + DeserializeOwned + 'static + Send,
-    Ret: JsonSchema + Serialize + 'static + Send,
-{
-    type Input = P;
-    type Output = Ret;
-
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn description(&self) -> String {
-        self.description.clone()
-    }
-
-    async fn call_tool(
-        &self,
-        params: P,
-        mcp_connection: McpConnectionTo<R>,
-    ) -> Result<Ret, acp::Error> {
-        let (result_tx, result_rx) = oneshot::channel();
-
-        self.call_tx
-            .clone()
-            .send(ToolCall {
-                params,
-                mcp_connection,
-                result_tx,
-            })
-            .await
-            .map_err(acp::util::internal_error)?;
-
-        result_rx.await.map_err(acp::util::internal_error)?
     }
 }

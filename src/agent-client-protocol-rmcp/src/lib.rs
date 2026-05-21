@@ -37,11 +37,10 @@ use rmcp::ServiceExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod builder;
-mod responder;
 
-pub use agent_client_protocol::mcp_server::McpTool;
+pub use agent_client_protocol::mcp_server::{EnabledTools, McpTool};
 pub use agent_client_protocol::{tool_fn, tool_fn_mut};
-pub use builder::{EnabledTools, McpServerBuilder};
+pub use builder::McpServerBuilder;
 
 /// Extension constructors for ACP MCP servers backed by `rmcp`.
 pub trait McpServerExt<Counterpart: Role> {
