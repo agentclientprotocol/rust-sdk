@@ -1358,6 +1358,9 @@ enum ReplyMessage {
         method: String,
 
         sender: oneshot::Sender<ResponsePayload>,
+
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     },
 }
 
@@ -1654,6 +1657,9 @@ enum OutgoingMessage {
 
         /// where to send the response when it arrives (includes ack channel)
         response_tx: oneshot::Sender<ResponsePayload>,
+
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     },
 
     /// Send a notification to the server.
@@ -2003,6 +2009,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     role_id,
                     untyped,
                     response_tx,
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation_disarm: cancellation.disarm_handle(),
                 };
 
                 match self.message_tx.unbounded_send(message) {
@@ -2455,6 +2463,8 @@ impl ResponseRouter<serde_json::Value> {
         id: jsonrpcmsg::Id,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     ) -> Self {
         let response_method = method.clone();
         let response_id = id.clone();
@@ -2475,6 +2485,9 @@ impl ResponseRouter<serde_json::Value> {
                         id = ?response_id,
                         "dropped response because local receiver was gone"
                     );
+                } else {
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation_disarm.disarm();
                 }
                 Ok(())
             }),
@@ -3184,16 +3197,34 @@ fn jsonrpc_id_to_request_id(id: &jsonrpcmsg::Id) -> Result<crate::schema::Reques
 }
 
 #[cfg(feature = "unstable_cancel_request")]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+pub(crate) struct SentRequestCancellationDisarm {
+    armed: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl SentRequestCancellationDisarm {
+    fn new() -> Self {
+        Self {
+            armed: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn disarm(&self) {
+        self.armed.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
 enum SentRequestCancellation {
     Send {
         message_tx: OutgoingMessageTx,
         notification: UntypedMessage,
-        armed: Arc<AtomicBool>,
+        disarm: SentRequestCancellationDisarm,
     },
     Failed {
         error: String,
-        armed: Arc<AtomicBool>,
+        disarm: SentRequestCancellationDisarm,
     },
 }
 
@@ -3211,25 +3242,25 @@ impl SentRequestCancellation {
                 )
             })
             .map_err(|error| error.to_string());
+        let disarm = SentRequestCancellationDisarm::new();
 
         match notification {
             Ok(notification) => Self::Send {
                 message_tx,
                 notification,
-                armed: Arc::new(AtomicBool::new(true)),
+                disarm,
             },
-            Err(error) => Self::Failed {
-                error,
-                armed: Arc::new(AtomicBool::new(true)),
-            },
+            Err(error) => Self::Failed { error, disarm },
         }
     }
 
     fn disarm(&self) {
+        self.disarm_handle().disarm();
+    }
+
+    fn disarm_handle(&self) -> SentRequestCancellationDisarm {
         match self {
-            Self::Send { armed, .. } | Self::Failed { armed, .. } => {
-                armed.store(false, Ordering::Release);
-            }
+            Self::Send { disarm, .. } | Self::Failed { disarm, .. } => disarm.clone(),
         }
     }
 
@@ -3238,9 +3269,9 @@ impl SentRequestCancellation {
             Self::Send {
                 message_tx,
                 notification,
-                armed,
+                disarm,
             } => {
-                if !armed.swap(false, Ordering::AcqRel) {
+                if !disarm.armed.swap(false, Ordering::AcqRel) {
                     return Ok(());
                 }
 
@@ -3251,8 +3282,8 @@ impl SentRequestCancellation {
                     },
                 )
             }
-            Self::Failed { error, armed } => {
-                if !armed.swap(false, Ordering::AcqRel) {
+            Self::Failed { error, disarm } => {
+                if !disarm.armed.swap(false, Ordering::AcqRel) {
                     return Ok(());
                 }
 
@@ -3279,17 +3310,17 @@ impl Debug for SentRequestCancellation {
         match self {
             Self::Send {
                 notification,
-                armed,
+                disarm,
                 ..
             } => f
                 .debug_struct("SentRequestCancellation")
                 .field("notification", notification)
-                .field("armed", &armed.load(Ordering::Acquire))
+                .field("armed", &disarm.armed.load(Ordering::Acquire))
                 .finish(),
-            Self::Failed { error, armed } => f
+            Self::Failed { error, disarm } => f
                 .debug_struct("SentRequestCancellation")
                 .field("error", error)
-                .field("armed", &armed.load(Ordering::Acquire))
+                .field("armed", &disarm.armed.load(Ordering::Acquire))
                 .finish(),
         }
     }

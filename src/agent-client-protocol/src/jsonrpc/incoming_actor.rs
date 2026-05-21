@@ -30,6 +30,8 @@ struct PendingReply {
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<crate::jsonrpc::ResponsePayload>,
+    #[cfg(feature = "unstable_cancel_request")]
+    cancellation_disarm: super::SentRequestCancellationDisarm,
 }
 
 /// Incoming protocol actor: The central dispatch loop for a connection.
@@ -78,6 +80,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     role_id,
                     method,
                     sender,
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation_disarm,
                 } => {
                     tracing::trace!(?id, %method, "incoming_actor: subscribing to response");
                     let id = serde_json::to_value(&id).unwrap();
@@ -87,6 +91,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             method,
                             role_id,
                             sender,
+                            #[cfg(feature = "unstable_cancel_request")]
+                            cancellation_disarm,
                         },
                     );
                 }
@@ -260,10 +266,19 @@ fn dispatch_from_response(
         method,
         role_id,
         sender,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm,
     } = pending_reply;
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
-    let router = ResponseRouter::new(method.clone(), id.clone(), role_id, sender);
+    let router = ResponseRouter::new(
+        method.clone(),
+        id.clone(),
+        role_id,
+        sender,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm,
+    );
     Dispatch::Response(result, router)
 }
 

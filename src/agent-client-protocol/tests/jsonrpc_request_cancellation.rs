@@ -629,6 +629,78 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn response_buffered_before_drop_disarms_auto_cancellation() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_for_handler = received.clone();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        received_for_handler
+                            .lock()
+                            .unwrap()
+                            .push(notification.request_id);
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let response = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "buffered".into(),
+                    });
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    drop(request);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                    cx.send_request(SimpleRequest {
+                        message: "after buffered".into(),
+                    })
+                    .block_task()
+                    .await
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.result, "echo: after buffered");
+            assert!(received.lock().unwrap().is_empty());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn completed_sent_request_does_not_send_cancellation_on_drop() {
     use tokio::task::LocalSet;
 
