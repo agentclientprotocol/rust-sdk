@@ -58,7 +58,7 @@ impl JsonRpcMessage for SimpleRequest {
         method == "simple_method"
     }
 
-    fn method(&self) -> &str {
+    fn method(&self) -> &'static str {
         "simple_method"
     }
 

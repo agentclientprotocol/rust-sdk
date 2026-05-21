@@ -62,7 +62,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         FxHashMap::default();
     let mut pending_messages: Vec<Dispatch> = vec![];
 
-    let request_cancellations = super::RequestCancellationRegistry::default();
+    let request_cancellations = super::RequestCancellationRegistry::new();
 
     // Map from request ID to (method, sender) for response dispatch.
     // Keys are JSON values because jsonrpcmsg::Id doesn't implement Eq.

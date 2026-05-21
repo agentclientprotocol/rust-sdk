@@ -1491,6 +1491,10 @@ struct ResponderCancellation;
 
 #[cfg(feature = "unstable_cancel_request")]
 impl RequestCancellationRegistry {
+    fn new() -> Self {
+        Self::default()
+    }
+
     fn register(&self, id: serde_json::Value) -> ResponderCancellation {
         let cancellation = RequestCancellation::new();
         self.inner
@@ -1536,10 +1540,23 @@ impl RequestCancellationRegistry {
 
 #[cfg(not(feature = "unstable_cancel_request"))]
 impl RequestCancellationRegistry {
+    fn new() -> Self {
+        Self
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled stub mirrors the real registry API"
+    )]
     fn register(&self, _id: serde_json::Value) -> ResponderCancellation {
         ResponderCancellation
     }
 
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "feature-disabled stub mirrors the real registry API"
+    )]
     fn cancel_if_requested(&self, _dispatch: &Dispatch) -> Result<bool, crate::Error> {
         Ok(false)
     }
@@ -2319,6 +2336,7 @@ impl<T: JsonRpcResponse> Responder<T> {
     ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
     #[cfg(feature = "unstable_cancel_request")]
+    #[must_use]
     pub fn cancellation(&self) -> RequestCancellation {
         self.cancellation.cancellation()
     }
