@@ -6,15 +6,16 @@ use futures::{
     future::BoxFuture,
 };
 
-use crate::{
-    ConnectionTo, jsonrpc::run::RunWithConnectionTo, mcp_server::McpConnectionTo, role::Role,
+use agent_client_protocol as acp;
+use agent_client_protocol::{
+    ConnectionTo, RunWithConnectionTo, mcp_server::McpConnectionTo, role::Role,
 };
 
 /// A tool call request sent through the channel.
 pub(super) struct ToolCall<P, R, MyRole: Role> {
     pub(crate) params: P,
     pub(crate) mcp_connection: McpConnectionTo<MyRole>,
-    pub(crate) result_tx: futures::channel::oneshot::Sender<Result<R, crate::Error>>,
+    pub(crate) result_tx: futures::channel::oneshot::Sender<Result<R, acp::Error>>,
 }
 
 /// Responder for a `tool_fn` closure that receives tool calls through a channel
@@ -27,7 +28,7 @@ pub(super) struct ToolFnMutResponder<F, P, R, Counterpart: Role> {
                 &'a mut F,
                 P,
                 McpConnectionTo<Counterpart>,
-            ) -> BoxFuture<'a, Result<R, crate::Error>>
+            ) -> BoxFuture<'a, Result<R, acp::Error>>
             + Send,
     >,
 }
@@ -44,7 +45,7 @@ where
     async fn run_with_connection_to(
         self,
         _connection: ConnectionTo<Counterpart1>,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<(), acp::Error> {
         let ToolFnMutResponder {
             mut func,
             mut call_rx,
@@ -59,7 +60,7 @@ where
             let result = tool_future_fn(&mut func, params, mcp_connection).await;
             result_tx
                 .send(result)
-                .map_err(|_| crate::util::internal_error("failed to send MCP result"))?;
+                .map_err(|_| acp::util::internal_error("failed to send MCP result"))?;
         }
         Ok(())
     }
@@ -75,7 +76,7 @@ pub(super) struct ToolFnResponder<F, P, R, Counterpart: Role> {
                 &'a F,
                 P,
                 McpConnectionTo<Counterpart>,
-            ) -> BoxFuture<'a, Result<R, crate::Error>>
+            ) -> BoxFuture<'a, Result<R, acp::Error>>
             + Send
             + Sync,
     >,
@@ -93,13 +94,13 @@ where
     async fn run_with_connection_to(
         self,
         _connection: ConnectionTo<Counterpart1>,
-    ) -> Result<(), crate::Error> {
+    ) -> Result<(), acp::Error> {
         let ToolFnResponder {
             func,
             call_rx,
             tool_future_fn,
         } = self;
-        crate::util::process_stream_concurrently(
+        acp::util::process_stream_concurrently(
             call_rx,
             async |tool_call| {
                 fn hack<'a, F, P, R, MyRole>(
@@ -111,11 +112,11 @@ where
                         &'a F,
                         P,
                         McpConnectionTo<MyRole>,
-                    ) -> BoxFuture<'a, Result<R, crate::Error>>
+                    ) -> BoxFuture<'a, Result<R, acp::Error>>
                                 + Send
                                 + Sync
                         ),
-                    result_tx: oneshot::Sender<Result<R, crate::Error>>,
+                    result_tx: oneshot::Sender<Result<R, acp::Error>>,
                 ) -> BoxFuture<'a, ()>
                 where
                     MyRole: Role,

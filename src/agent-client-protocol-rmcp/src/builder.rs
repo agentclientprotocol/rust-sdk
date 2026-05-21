@@ -47,25 +47,26 @@ use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-use super::{McpConnectionTo, McpTool};
-use crate::{
-    ByteStreams, ConnectTo, DynConnectTo,
-    jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo},
-    mcp_server::{
-        McpServer, McpServerConnect,
-        responder::{ToolCall, ToolFnMutResponder, ToolFnResponder},
-    },
+use agent_client_protocol as acp;
+use agent_client_protocol::{
+    ByteStreams, ChainRun, ConnectTo, DynConnectTo, NullRun, RunWithConnectionTo,
+    mcp_server::{McpConnectionTo, McpServer, McpServerConnect, McpTool},
     role::{self, Role},
 };
 
+use crate::responder::{ToolCall, ToolFnMutResponder, ToolFnResponder};
+
 /// Builder for creating MCP servers with tools.
 ///
-/// Use [`McpServer::builder`] to create a new builder, then chain methods to
+/// Use [`crate::McpServerExt::builder`] to create a new builder, then chain methods to
 /// configure the server and call [`build`](Self::build) to create the server.
 ///
 /// # Example
 ///
 /// ```rust,ignore
+/// use agent_client_protocol::mcp_server::McpServer;
+/// use agent_client_protocol_rmcp::McpServerExt;
+///
 /// let server = McpServer::builder("my-server".to_string())
 ///     .instructions("A helpful assistant")
 ///     .tool(EchoTool)
@@ -73,7 +74,7 @@ use crate::{
 ///         "greet",
 ///         "Greet someone by name",
 ///         async |input: GreetInput, _cx| Ok(format!("Hello, {}!", input.name)),
-///         agent_client_protocol::tool_fn!(),
+///         agent_client_protocol_rmcp::tool_fn!(),
 ///     )
 ///     .build();
 /// ```
@@ -179,9 +180,9 @@ where
     /// Disable a specific tool by name.
     ///
     /// Returns an error if the tool is not registered.
-    pub fn disable_tool(mut self, name: &str) -> Result<Self, crate::Error> {
+    pub fn disable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
         if !self.data.tools.contains_key(name) {
-            return Err(crate::Error::invalid_request().data(format!("unknown tool: {name}")));
+            return Err(acp::Error::invalid_request().data(format!("unknown tool: {name}")));
         }
         match &mut self.data.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -197,9 +198,9 @@ where
     /// Enable a specific tool by name.
     ///
     /// Returns an error if the tool is not registered.
-    pub fn enable_tool(mut self, name: &str) -> Result<Self, crate::Error> {
+    pub fn enable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
         if !self.data.tools.contains_key(name) {
-            return Err(crate::Error::invalid_request().data(format!("unknown tool: {name}")));
+            return Err(acp::Error::invalid_request().data(format!("unknown tool: {name}")));
         }
         match &mut self.data.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -259,14 +260,14 @@ where
             &'a mut F,
             P,
             McpConnectionTo<Counterpart>,
-        ) -> BoxFuture<'a, Result<Ret, crate::Error>>
+        ) -> BoxFuture<'a, Result<Ret, acp::Error>>
         + Send
         + 'static,
     ) -> McpServerBuilder<Counterpart, impl RunWithConnectionTo<Counterpart>>
     where
         P: JsonSchema + DeserializeOwned + 'static + Send,
         Ret: JsonSchema + Serialize + 'static + Send,
-        F: AsyncFnMut(P, McpConnectionTo<Counterpart>) -> Result<Ret, crate::Error> + Send,
+        F: AsyncFnMut(P, McpConnectionTo<Counterpart>) -> Result<Ret, acp::Error> + Send,
     {
         let (call_tx, call_rx) = mpsc::channel(128);
         self.tool_with_responder(
@@ -312,7 +313,7 @@ where
             &'a F,
             P,
             McpConnectionTo<Counterpart>,
-        ) -> BoxFuture<'a, Result<Ret, crate::Error>>
+        ) -> BoxFuture<'a, Result<Ret, acp::Error>>
         + Send
         + Sync
         + 'static,
@@ -320,7 +321,7 @@ where
     where
         P: JsonSchema + DeserializeOwned + 'static + Send,
         Ret: JsonSchema + Serialize + 'static + Send,
-        F: AsyncFn(P, McpConnectionTo<Counterpart>) -> Result<Ret, crate::Error>
+        F: AsyncFn(P, McpConnectionTo<Counterpart>) -> Result<Ret, acp::Error>
             + Send
             + Sync
             + 'static,
@@ -342,8 +343,8 @@ where
 
     /// Create an MCP server from this builder.
     ///
-    /// This builder can be attached to new sessions (see [`SessionBuilder::with_mcp_server`](`crate::SessionBuilder::with_mcp_server`))
-    /// or served up as part of a proxy (see [`Builder::with_mcp_server`](`crate::Builder::with_mcp_server`)).
+    /// This builder can be attached to new sessions (see [`SessionBuilder::with_mcp_server`](`agent_client_protocol::SessionBuilder::with_mcp_server`))
+    /// or served up as part of a proxy (see [`Builder::with_mcp_server`](`agent_client_protocol::Builder::with_mcp_server`)).
     pub fn build(self) -> McpServer<Counterpart, Responder> {
         McpServer::new(
             McpServerBuilt {
@@ -383,10 +384,7 @@ pub(crate) struct McpServerConnection<Counterpart: Role> {
 }
 
 impl<Counterpart: Role> ConnectTo<role::mcp::Client> for McpServerConnection<Counterpart> {
-    async fn connect_to(
-        self,
-        client: impl ConnectTo<role::mcp::Server>,
-    ) -> Result<(), crate::Error> {
+    async fn connect_to(self, client: impl ConnectTo<role::mcp::Server>) -> Result<(), acp::Error> {
         // Create tokio byte streams that rmcp expects
         let (mcp_server_stream, mcp_client_stream) = tokio::io::duplex(8192);
         let (mcp_server_read, mcp_server_write) = tokio::io::split(mcp_server_stream);
@@ -403,14 +401,14 @@ impl<Counterpart: Role> ConnectTo<role::mcp::Client> for McpServerConnection<Cou
             // Run the rmcp server with the server side of the duplex stream
             let running_server = rmcp::ServiceExt::serve(self, (mcp_server_read, mcp_server_write))
                 .await
-                .map_err(crate::Error::into_internal_error)?;
+                .map_err(acp::Error::into_internal_error)?;
 
             // Wait for the server to finish
             running_server
                 .waiting()
                 .await
                 .map(|_quit_reason| ())
-                .map_err(crate::Error::into_internal_error)
+                .map_err(acp::Error::into_internal_error)
         };
 
         (run_client, run_server).try_join().await?;
@@ -515,7 +513,7 @@ trait ErasedMcpTool<Counterpart: Role>: Send + Sync {
         &self,
         input: serde_json::Value,
         connection: McpConnectionTo<Counterpart>,
-    ) -> BoxFuture<'_, Result<serde_json::Value, crate::Error>>;
+    ) -> BoxFuture<'_, Result<serde_json::Value, acp::Error>>;
 }
 
 /// Create an `rmcp` tool model from our [`McpTool`] trait.
@@ -554,11 +552,11 @@ fn make_erased_mcp_tool<'s, R: Role, M: McpTool<R> + 's>(
             &self,
             input: serde_json::Value,
             context: McpConnectionTo<R>,
-        ) -> BoxFuture<'_, Result<serde_json::Value, crate::Error>> {
+        ) -> BoxFuture<'_, Result<serde_json::Value, acp::Error>> {
             Box::pin(async move {
-                let input = serde_json::from_value(input).map_err(crate::util::internal_error)?;
+                let input = serde_json::from_value(input).map_err(acp::util::internal_error)?;
                 serde_json::to_value(self.tool.call_tool(input, context).await?)
-                    .map_err(crate::util::internal_error)
+                    .map_err(acp::util::internal_error)
             })
         }
     }
@@ -566,8 +564,8 @@ fn make_erased_mcp_tool<'s, R: Role, M: McpTool<R> + 's>(
     Arc::new(ErasedMcpToolImpl { tool })
 }
 
-/// Convert a [`crate::Error`] into an [`rmcp::ErrorData`].
-fn to_rmcp_error(error: crate::Error) -> rmcp::ErrorData {
+/// Convert an [`agent_client_protocol::Error`] into an [`rmcp::ErrorData`].
+fn to_rmcp_error(error: acp::Error) -> rmcp::ErrorData {
     rmcp::ErrorData {
         code: rmcp::model::ErrorCode(error.code.into()),
         message: error.message.into(),
@@ -604,7 +602,7 @@ where
         &self,
         params: P,
         mcp_connection: McpConnectionTo<R>,
-    ) -> Result<Ret, crate::Error> {
+    ) -> Result<Ret, acp::Error> {
         let (result_tx, result_rx) = oneshot::channel();
 
         self.call_tx
@@ -615,8 +613,8 @@ where
                 result_tx,
             })
             .await
-            .map_err(crate::util::internal_error)?;
+            .map_err(acp::util::internal_error)?;
 
-        result_rx.await.map_err(crate::util::internal_error)?
+        result_rx.await.map_err(acp::util::internal_error)?
     }
 }

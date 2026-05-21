@@ -77,9 +77,10 @@
 //! You can attach MCP (Model Context Protocol) servers to a session to provide
 //! tools to the agent:
 //!
-//! ```
+//! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol::mcp_server::McpServer;
+//! # use agent_client_protocol_rmcp::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # let my_mcp_server = McpServer::<Agent, _>::builder("tools").build();
 //! # Client.builder().connect_with(transport, async |cx| {

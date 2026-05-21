@@ -1,4 +1,4 @@
-//! MCP server builder for creating MCP servers.
+//! MCP server attachment and routing for ACP sessions.
 
 use std::{marker::PhantomData, sync::Arc};
 
@@ -13,10 +13,7 @@ use crate::{
         DynamicHandlerRegistration,
         run::{NullRun, RunWithConnectionTo},
     },
-    mcp_server::{
-        McpConnectionTo, McpServerConnect, active_session::McpActiveSession,
-        builder::McpServerBuilder,
-    },
+    mcp_server::{McpConnectionTo, McpServerConnect, active_session::McpActiveSession},
     role::{self, HasPeer},
     util::MatchDispatchFrom,
 };
@@ -30,14 +27,8 @@ use crate::{
 ///
 /// # Creating an MCP Server
 ///
-/// Use [`McpServer::builder`] to create a server with tools:
-///
-/// ```rust,ignore
-/// let server = McpServer::builder("my-server".to_string())
-///     .instructions("A helpful assistant")
-///     .tool(MyTool)
-///     .build();
-/// ```
+/// The `agent-client-protocol-rmcp` crate provides builder APIs for MCP tools
+/// backed by the `rmcp` crate.
 ///
 /// Or implement [`McpServerConnect`](`super::McpServerConnect`) for custom server behavior:
 ///
@@ -58,8 +49,8 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     /// Some futures direct messages back through channels to this future which actually
     /// handles responding to the client.
     ///
-    /// This is how we bridge the gap between the rmcp implementation,
-    /// which requires `'static`, and our APIs, which do not.
+    /// Some connector implementations use this to run support tasks alongside
+    /// the message handler.
     responder: Run,
 }
 
@@ -75,13 +66,6 @@ impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
     }
 }
 
-impl<Host: Role> McpServer<Host, NullRun> {
-    /// Create an empty server with no content.
-    pub fn builder(name: impl ToString) -> McpServerBuilder<Host, NullRun> {
-        McpServerBuilder::new(name.to_string())
-    }
-}
-
 impl<Counterpart: Role, Run> McpServer<Counterpart, Run>
 where
     Run: RunWithConnectionTo<Counterpart>,
@@ -90,7 +74,8 @@ where
     ///
     /// # See also
     ///
-    /// See [`Self::builder`] to construct MCP servers from Rust code.
+    /// See `agent-client-protocol-rmcp` to construct MCP servers from Rust code
+    /// with `rmcp`.
     pub fn new(c: impl McpServerConnect<Counterpart>, responder: Run) -> Self {
         McpServer {
             phantom: PhantomData,

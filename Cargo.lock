@@ -16,7 +16,6 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "jsonrpcmsg",
- "rmcp",
  "rustc-hash",
  "schemars 1.2.1",
  "serde",
@@ -34,6 +33,7 @@ version = "0.12.1"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
+ "agent-client-protocol-rmcp",
  "agent-client-protocol-test",
  "agent-client-protocol-trace-viewer",
  "agent-client-protocol-yopo",
@@ -101,10 +101,13 @@ name = "agent-client-protocol-rmcp"
 version = "0.11.2"
 dependencies = [
  "agent-client-protocol",
+ "futures",
  "futures-concurrency",
  "rmcp",
+ "rustc-hash",
  "schemars 1.2.1",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",

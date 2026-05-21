@@ -147,7 +147,10 @@ mod stdio;
 pub use stdio::Stdio;
 
 /// This is a hack that must be given as the final argument of
-/// [`McpServerBuilder::tool_fn`](`crate::mcp_server::McpServerBuilder::tool_fn`) when defining tools.
+/// the MCP server builder's `tool_fn_mut` method when defining tools.
+///
+/// The `agent-client-protocol-rmcp` crate provides the builder this macro is
+/// typically used with.
 /// Look away, lest ye be blinded by its vileness!
 ///
 /// Fine, if you MUST know, it's a horrific workaround for not having
@@ -162,7 +165,10 @@ macro_rules! tool_fn_mut {
 }
 
 /// This is a hack that must be given as the final argument of
-/// [`McpServerBuilder::tool_fn`](`crate::mcp_server::McpServerBuilder::tool_fn`) when defining stateless concurrent tools.
+/// the MCP server builder's `tool_fn` method when defining stateless concurrent tools.
+///
+/// The `agent-client-protocol-rmcp` crate provides the builder this macro is
+/// typically used with.
 /// See [`tool_fn_mut!`] for the gory details.
 #[macro_export]
 macro_rules! tool_fn {
