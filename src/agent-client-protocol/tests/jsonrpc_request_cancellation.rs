@@ -480,6 +480,222 @@ async fn sent_request_can_send_cancellation_for_its_id() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dropped_sent_request_sends_cancellation_for_its_id() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_for_handler = received.clone();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |_request: SimpleRequest,
+                           _responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| { Ok(()) },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        received_for_handler
+                            .lock()
+                            .unwrap()
+                            .push(notification.request_id);
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let expected_id = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "abandoned".into(),
+                    });
+                    let expected_id = request.id();
+                    drop(request);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    Ok(expected_id)
+                })
+                .await
+                .unwrap();
+
+            let received = received.lock().unwrap();
+            assert_eq!(received.len(), 1);
+            assert_eq!(serde_json::to_value(&received[0]).unwrap(), expected_id);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn late_response_after_dropped_sent_request_does_not_close_connection() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_for_handler = received.clone();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           connection: ConnectionTo<UntypedRole>| {
+                        if request.message == "late" {
+                            connection.spawn(async move {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                responder.respond(SimpleResponse {
+                                    result: "late response".into(),
+                                })
+                            })?;
+                            return Ok(());
+                        }
+
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        received_for_handler
+                            .lock()
+                            .unwrap()
+                            .push(notification.request_id);
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let (expected_id, response) = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "late".into(),
+                    });
+                    let expected_id = request.id();
+                    drop(request);
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                    let response = cx
+                        .send_request(SimpleRequest {
+                            message: "after late".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    Ok((expected_id, response))
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.result, "echo: after late");
+            let received = received.lock().unwrap();
+            assert_eq!(received.len(), 1);
+            assert_eq!(serde_json::to_value(&received[0]).unwrap(), expected_id);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn completed_sent_request_does_not_send_cancellation_on_drop() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let received_for_handler = received.clone();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        received_for_handler
+                            .lock()
+                            .unwrap()
+                            .push(notification.request_id);
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let response = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let response = cx
+                        .send_request(SimpleRequest {
+                            message: "complete".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    Ok(response)
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(response.result, "echo: complete");
+            assert!(received.lock().unwrap().is_empty());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn forward_response_to_propagates_cancellation_to_downstream_request() {
     use tokio::task::LocalSet;
 

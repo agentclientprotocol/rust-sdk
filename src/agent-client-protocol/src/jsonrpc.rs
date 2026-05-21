@@ -2008,6 +2008,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 match self.message_tx.unbounded_send(message) {
                     Ok(()) => (),
                     Err(error) => {
+                        #[cfg(feature = "unstable_cancel_request")]
+                        cancellation.disarm();
+
                         let OutgoingMessage::Request {
                             method,
                             response_tx,
@@ -2030,6 +2033,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
 
             Err(err) => {
+                #[cfg(feature = "unstable_cancel_request")]
+                cancellation.disarm();
+
                 response_tx
                     .send(ResponsePayload {
                         result: Err(crate::util::internal_error(format!(
@@ -2442,26 +2448,35 @@ impl ResponseRouter<serde_json::Value> {
     /// Create a new response context for routing a response to a local awaiter.
     ///
     /// When `respond_with_result` is called, the response is sent through the oneshot
-    /// channel to the code that originally sent the request.
+    /// channel to the code that originally sent the request. If that receiver was
+    /// dropped, the response is discarded because there is no local awaiter left.
     pub(crate) fn new(
         method: String,
         id: jsonrpcmsg::Id,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
     ) -> Self {
+        let response_method = method.clone();
+        let response_id = id.clone();
         Self {
             method,
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                sender
+                if sender
                     .send(ResponsePayload {
                         result: response,
                         ack_tx: None,
                     })
-                    .map_err(|_| {
-                        crate::util::internal_error("failed to send response, receiver dropped")
-                    })
+                    .is_err()
+                {
+                    tracing::debug!(
+                        method = %response_method,
+                        id = ?response_id,
+                        "dropped response because local receiver was gone"
+                    );
+                }
+                Ok(())
             }),
         }
     }
@@ -3174,9 +3189,11 @@ enum SentRequestCancellation {
     Send {
         message_tx: OutgoingMessageTx,
         notification: UntypedMessage,
+        armed: Arc<AtomicBool>,
     },
     Failed {
         error: String,
+        armed: Arc<AtomicBool>,
     },
 }
 
@@ -3199,8 +3216,20 @@ impl SentRequestCancellation {
             Ok(notification) => Self::Send {
                 message_tx,
                 notification,
+                armed: Arc::new(AtomicBool::new(true)),
             },
-            Err(error) => Self::Failed { error },
+            Err(error) => Self::Failed {
+                error,
+                armed: Arc::new(AtomicBool::new(true)),
+            },
+        }
+    }
+
+    fn disarm(&self) {
+        match self {
+            Self::Send { armed, .. } | Self::Failed { armed, .. } => {
+                armed.store(false, Ordering::Release);
+            }
         }
     }
 
@@ -3209,15 +3238,37 @@ impl SentRequestCancellation {
             Self::Send {
                 message_tx,
                 notification,
-            } => send_raw_message(
-                message_tx,
-                OutgoingMessage::Notification {
-                    untyped: notification.clone(),
-                },
-            ),
-            Self::Failed { error } => Err(crate::util::internal_error(format!(
-                "failed to create cancel request notification: {error}"
-            ))),
+                armed,
+            } => {
+                if !armed.swap(false, Ordering::AcqRel) {
+                    return Ok(());
+                }
+
+                send_raw_message(
+                    message_tx,
+                    OutgoingMessage::Notification {
+                        untyped: notification.clone(),
+                    },
+                )
+            }
+            Self::Failed { error, armed } => {
+                if !armed.swap(false, Ordering::AcqRel) {
+                    return Ok(());
+                }
+
+                Err(crate::util::internal_error(format!(
+                    "failed to create cancel request notification: {error}"
+                )))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Drop for SentRequestCancellation {
+    fn drop(&mut self) {
+        if let Err(error) = self.send() {
+            tracing::debug!(?error, "failed to auto-cancel dropped request");
         }
     }
 }
@@ -3226,13 +3277,19 @@ impl SentRequestCancellation {
 impl Debug for SentRequestCancellation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Send { notification, .. } => f
+            Self::Send {
+                notification,
+                armed,
+                ..
+            } => f
                 .debug_struct("SentRequestCancellation")
                 .field("notification", notification)
+                .field("armed", &armed.load(Ordering::Acquire))
                 .finish(),
-            Self::Failed { error } => f
+            Self::Failed { error, armed } => f
                 .debug_struct("SentRequestCancellation")
                 .field("error", error)
+                .field("armed", &armed.load(Ordering::Acquire))
                 .finish(),
         }
     }
@@ -3410,6 +3467,8 @@ impl<T: JsonRpcResponse> SentRequest<T> {
                 }
             };
 
+            downstream_cancellation.disarm();
+
             let ResponsePayload { result, ack_tx } = response.map_err(|err| {
                 crate::util::internal_error(format!("response to `{method}` never received: {err}"))
             })?;
@@ -3501,6 +3560,9 @@ impl<T: JsonRpcResponse> SentRequest<T> {
                 result: Ok(json_value),
                 ack_tx,
             }) => {
+                #[cfg(feature = "unstable_cancel_request")]
+                self.cancellation.disarm();
+
                 // Ack immediately - we're in a spawned task, so the dispatch loop
                 // can continue while we process the value.
                 if let Some(tx) = ack_tx {
@@ -3515,15 +3577,23 @@ impl<T: JsonRpcResponse> SentRequest<T> {
                 result: Err(err),
                 ack_tx,
             }) => {
+                #[cfg(feature = "unstable_cancel_request")]
+                self.cancellation.disarm();
+
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
                 }
                 Err(err)
             }
-            Err(err) => Err(crate::util::internal_error(format!(
-                "response to `{}` never received: {}",
-                self.method, err
-            ))),
+            Err(err) => {
+                #[cfg(feature = "unstable_cancel_request")]
+                self.cancellation.disarm();
+
+                Err(crate::util::internal_error(format!(
+                    "response to `{}` never received: {}",
+                    self.method, err
+                )))
+            }
         }
     }
 
@@ -3673,11 +3743,16 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         let method = self.method;
         let response_rx = self.response_rx;
         let to_result = self.to_result;
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation = self.cancellation;
         let location = Location::caller();
 
         Task::new(location, async move {
             match response_rx.await {
                 Ok(ResponsePayload { result, ack_tx }) => {
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation.disarm();
+
                     // Convert the result using to_result for Ok values
                     let typed_result = match result {
                         Ok(json_value) => to_result(json_value),
@@ -3695,9 +3770,14 @@ impl<T: JsonRpcResponse> SentRequest<T> {
 
                     outcome
                 }
-                Err(err) => Err(crate::util::internal_error(format!(
-                    "response to `{method}` never received: {err}"
-                ))),
+                Err(err) => {
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation.disarm();
+
+                    Err(crate::util::internal_error(format!(
+                        "response to `{method}` never received: {err}"
+                    )))
+                }
             }
         })
         .spawn(&task_tx)

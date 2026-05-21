@@ -28,6 +28,11 @@ The `SentRequest` remembers the peer and any proxy wrapping used for the
 original request, so this also works for requests sent through
 `ConnectionTo::send_request_to`.
 
+Dropping a `SentRequest` before a response is received also sends
+`$/cancel_request`. This covers abandoned request handles and futures: once a
+response is received by `block_task`, `on_receiving_result`, or
+`forward_response_to`, the SDK disarms the automatic cancellation.
+
 If you already have the JSON-RPC request ID, send the notification directly:
 
 ```rust

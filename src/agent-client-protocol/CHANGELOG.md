@@ -4,7 +4,7 @@
 
 ### Added
 
-- *(unstable)* Add SDK support for protocol-level request cancellation, including `SentRequest::cancel`, request-local cancellation helpers on `Responder`, and forwarded cancellation propagation.
+- *(unstable)* Add SDK support for protocol-level request cancellation, including `SentRequest::cancel`, automatic cancellation when a `SentRequest` is dropped before receiving a response, request-local cancellation helpers on `Responder`, and forwarded cancellation propagation.
 
 ## [0.12.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.0...v0.12.1) - 2026-05-17
 
