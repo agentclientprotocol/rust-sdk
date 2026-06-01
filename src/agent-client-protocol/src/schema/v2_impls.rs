@@ -215,7 +215,6 @@ impl_v2_jsonrpc_request!(
     v2::AuthenticateResponse,
     "authenticate"
 );
-#[cfg(feature = "unstable_logout")]
 impl_v2_jsonrpc_request!(v2::LogoutRequest, v2::LogoutResponse, "logout");
 impl_v2_jsonrpc_request!(v2::NewSessionRequest, v2::NewSessionResponse, "session/new");
 impl_v2_jsonrpc_request!(
@@ -328,7 +327,6 @@ impl_v2_jsonrpc_notification!(v2::SessionNotification, "session/update");
 impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",
     AuthenticateRequest => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutRequest => "logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
@@ -352,7 +350,6 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
 impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     InitializeResponse => "initialize",
     AuthenticateResponse => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutResponse => "logout",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
