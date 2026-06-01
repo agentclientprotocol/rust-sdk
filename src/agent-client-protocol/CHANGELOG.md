@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.1...v0.13.0) - 2026-06-01
+
+### Added
+
+- *(acp)* stabilize logout support ([#185](https://github.com/agentclientprotocol/rust-sdk/pull/185))
+- *(acp)* Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
+- *(acp)* Add unstable (very experimental!) protocol v2 support ([#170](https://github.com/agentclientprotocol/rust-sdk/pull/170))
+
 ### Changed
 
 - Move the `rmcp`-backed MCP server builder to `agent-client-protocol-rmcp`, removing `tokio`, `tokio-util`, and `rmcp` from the core crate's normal dependency graph.
