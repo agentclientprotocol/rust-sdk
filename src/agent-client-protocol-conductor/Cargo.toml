@@ -14,9 +14,6 @@ categories = ["development-tools"]
 name = "agent-client-protocol-conductor"
 path = "src/main.rs"
 
-[features]
-test-support = []
-
 [dependencies]
 agent-client-protocol = { workspace = true }
 agent-client-protocol-trace-viewer.workspace = true
