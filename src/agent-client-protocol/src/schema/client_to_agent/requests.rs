@@ -10,8 +10,6 @@ use crate::schema::{
 use crate::schema::{DeleteSessionRequest, DeleteSessionResponse};
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::{ForkSessionRequest, ForkSessionResponse};
-#[cfg(feature = "unstable_session_model")]
-use crate::schema::{SetSessionModelRequest, SetSessionModelResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");
@@ -37,12 +35,6 @@ impl_jsonrpc_request!(
     "session/set_config_option"
 );
 
-#[cfg(feature = "unstable_session_model")]
-impl_jsonrpc_request!(
-    SetSessionModelRequest,
-    SetSessionModelResponse,
-    "session/set_model"
-);
 #[cfg(feature = "unstable_session_fork")]
 impl_jsonrpc_request!(ForkSessionRequest, ForkSessionResponse, "session/fork");
 impl_jsonrpc_request!(

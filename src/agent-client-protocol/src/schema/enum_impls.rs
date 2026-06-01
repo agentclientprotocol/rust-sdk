@@ -26,8 +26,6 @@ impl_jsonrpc_request_enum!(ClientRequest {
     SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelRequest => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
@@ -49,8 +47,6 @@ impl_jsonrpc_response_enum!(AgentResponse {
     SetSessionModeResponse => "session/set_mode",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelResponse => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,
