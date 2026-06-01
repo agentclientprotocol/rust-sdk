@@ -250,22 +250,11 @@ impl_v2_jsonrpc_request!(
     "session/close"
 );
 impl_v2_jsonrpc_request!(
-    v2::SetSessionModeRequest,
-    v2::SetSessionModeResponse,
-    "session/set_mode"
-);
-impl_v2_jsonrpc_request!(
     v2::SetSessionConfigOptionRequest,
     v2::SetSessionConfigOptionResponse,
     "session/set_config_option"
 );
 impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt");
-#[cfg(feature = "unstable_session_model")]
-impl_v2_jsonrpc_request!(
-    v2::SetSessionModelRequest,
-    v2::SetSessionModelResponse,
-    "session/set_model"
-);
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
@@ -337,11 +326,8 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     ForkSessionRequest => "session/fork",
     ResumeSessionRequest => "session/resume",
     CloseSessionRequest => "session/close",
-    SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelRequest => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
@@ -360,11 +346,8 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     ForkSessionResponse => "session/fork",
     ResumeSessionResponse => "session/resume",
     CloseSessionResponse => "session/close",
-    SetSessionModeResponse => "session/set_mode",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelResponse => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,

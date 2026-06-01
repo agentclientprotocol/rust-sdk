@@ -101,8 +101,6 @@ macro_rules! impl_jsonrpc_notification {
 /// impl_jsonrpc_request_enum!(ClientRequest {
 ///     InitializeRequest => "initialize",
 ///     PromptRequest => "session/prompt",
-///     #[cfg(feature = "unstable_session_model")]
-///     SetSessionModelRequest => "session/set_model",
 ///     [ext] ExtMethodRequest,
 /// });
 /// ```
