@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Move the `rmcp`-backed MCP server builder to `agent-client-protocol-rmcp`, removing `tokio`, `tokio-util`, and `rmcp` from the core crate's normal dependency graph.
+
 ## [0.12.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.0...v0.12.1) - 2026-05-17
 
 ### Other

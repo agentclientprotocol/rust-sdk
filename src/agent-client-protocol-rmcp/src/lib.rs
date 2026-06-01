@@ -5,7 +5,16 @@
 //!
 //! ## Usage
 //!
-//! Create an MCP server from an rmcp service using the extension trait:
+//! Build an MCP server with tools using the extension trait:
+//!
+//! ```ignore
+//! use agent_client_protocol::mcp_server::McpServer;
+//! use agent_client_protocol_rmcp::McpServerExt;
+//!
+//! let server = McpServer::builder("my-tools").build();
+//! ```
+//!
+//! Or create an MCP server from an rmcp service:
 //!
 //! ```ignore
 //! use agent_client_protocol::mcp_server::McpServer;
@@ -21,21 +30,30 @@
 //! ```
 
 use agent_client_protocol::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
-use agent_client_protocol::role::{self, HasPeer};
-use agent_client_protocol::{Agent, ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
+use agent_client_protocol::role;
+use agent_client_protocol::{ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
 use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-pub trait McpServerExt<Counterpart: Role>
-where
-    Counterpart: HasPeer<Agent>,
-{
+mod builder;
+
+pub use agent_client_protocol::mcp_server::{EnabledTools, McpTool};
+pub use agent_client_protocol::{tool_fn, tool_fn_mut};
+pub use builder::McpServerBuilder;
+
+/// Extension constructors for ACP MCP servers backed by `rmcp`.
+pub trait McpServerExt<Counterpart: Role> {
+    /// Create an MCP server builder for defining tools in Rust code.
+    fn builder(name: impl ToString) -> McpServerBuilder<Counterpart, NullRun> {
+        McpServerBuilder::new(name.to_string())
+    }
+
     /// Create an MCP server from something that implements the [`McpServerConnect`] trait.
     ///
     /// # See also
     ///
-    /// See [`McpServer::builder`] to construct MCP servers from Rust code.
+    /// See [`Self::builder`] to construct MCP servers from Rust code.
     fn from_rmcp<S>(
         name: impl ToString,
         new_fn: impl Fn() -> S + Send + Sync + 'static,
@@ -77,10 +95,7 @@ where
     }
 }
 
-impl<Counterpart: Role> McpServerExt<Counterpart> for McpServer<Counterpart> where
-    Counterpart: HasPeer<Agent>
-{
-}
+impl<Counterpart: Role> McpServerExt<Counterpart> for McpServer<Counterpart> {}
 
 /// Component wrapper for rmcp services.
 struct RmcpServerComponent<S> {

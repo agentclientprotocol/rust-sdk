@@ -15,6 +15,7 @@ use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
+use agent_client_protocol_rmcp::McpServerExt as _;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use expect_test::expect;
 use futures::StreamExt;

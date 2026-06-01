@@ -46,7 +46,6 @@ futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true
 jsonrpcmsg.workspace = true
-rmcp = { workspace = true, features = ["server"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -55,13 +54,13 @@ uuid.workspace = true
 async-process.workspace = true
 blocking.workspace = true
 shell-words.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
 
 [dev-dependencies]
 agent-client-protocol-test.workspace = true
 clap.workspace = true
 expect-test.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [lints]
 workspace = true

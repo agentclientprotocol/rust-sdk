@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add the MCP server builder APIs moved out of `agent-client-protocol`, keeping `rmcp` and Tokio dependencies in this integration crate.
+
 ## [0.11.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v0.11.1...agent-client-protocol-rmcp-v0.11.2) - 2026-05-16
 
 ### Other

@@ -455,6 +455,7 @@ pub mod global_mcp_server {
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol_rmcp::McpServerExt;
     //! use agent_client_protocol::{ConnectTo, RunWithConnectionTo, Proxy, Conductor};
     //! use schemars::JsonSchema;
     //! use serde::{Deserialize, Serialize};
@@ -556,7 +557,7 @@ pub mod global_mcp_server {
     //! 2. Passes the modified request through to the next handler
     //! 3. Handles incoming MCP protocol messages (tool calls, etc.) for its URL
     //!
-    //! [`McpServer::builder`]: agent_client_protocol::mcp_server::McpServer::builder
+    //! [`McpServer::builder`]: agent_client_protocol_rmcp::McpServerExt::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp
     //! [`with_mcp_server`]: agent_client_protocol::Builder::with_mcp_server
 }
@@ -581,6 +582,7 @@ pub mod per_session_mcp_server {
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol_rmcp::McpServerExt;
     //! use agent_client_protocol::schema::NewSessionRequest;
     //! use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
     //!
@@ -639,6 +641,7 @@ pub mod per_session_mcp_server {
     //!
     //! ```
     //! # use agent_client_protocol::mcp_server::McpServer;
+    //! # use agent_client_protocol_rmcp::McpServerExt;
     //! # use agent_client_protocol::schema::NewSessionRequest;
     //! # use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
     //! # async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
@@ -694,6 +697,7 @@ pub mod filtering_tools {
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol_rmcp::McpServerExt;
     //! use agent_client_protocol::{Conductor, RunWithConnectionTo};
     //! use schemars::JsonSchema;
     //! use serde::Deserialize;
@@ -730,6 +734,7 @@ pub mod filtering_tools {
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol_rmcp::McpServerExt;
     //! use agent_client_protocol::{Conductor, RunWithConnectionTo};
     //! use schemars::JsonSchema;
     //! use serde::Deserialize;
@@ -763,6 +768,7 @@ pub mod filtering_tools {
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
+    //! use agent_client_protocol_rmcp::McpServerExt;
     //! use agent_client_protocol::Conductor;
     //!
     //! // This will error because "ech" is not a registered tool
@@ -775,9 +781,9 @@ pub mod filtering_tools {
     //! Calling enable/disable on an already enabled/disabled tool is not an error -
     //! the operations are idempotent.
     //!
-    //! [`disable_tool`]: agent_client_protocol::mcp_server::McpServerBuilder::disable_tool
-    //! [`enable_tool`]: agent_client_protocol::mcp_server::McpServerBuilder::enable_tool
-    //! [`disable_all_tools`]: agent_client_protocol::mcp_server::McpServerBuilder::disable_all_tools
+    //! [`disable_tool`]: agent_client_protocol_rmcp::McpServerBuilder::disable_tool
+    //! [`enable_tool`]: agent_client_protocol_rmcp::McpServerBuilder::enable_tool
+    //! [`disable_all_tools`]: agent_client_protocol_rmcp::McpServerBuilder::disable_all_tools
 }
 
 pub mod running_proxies_with_conductor {

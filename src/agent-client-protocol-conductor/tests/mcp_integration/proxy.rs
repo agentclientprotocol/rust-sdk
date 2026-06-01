@@ -2,6 +2,7 @@
 
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::{Conductor, ConnectTo, Proxy};
+use agent_client_protocol_rmcp::McpServerExt as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
