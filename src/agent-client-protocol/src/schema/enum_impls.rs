@@ -13,7 +13,6 @@ use crate::schema::{
 impl_jsonrpc_request_enum!(ClientRequest {
     InitializeRequest => "initialize",
     AuthenticateRequest => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutRequest => "logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
@@ -37,7 +36,6 @@ impl_jsonrpc_request_enum!(ClientRequest {
 impl_jsonrpc_response_enum!(AgentResponse {
     InitializeResponse => "initialize",
     AuthenticateResponse => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutResponse => "logout",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
