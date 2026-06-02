@@ -72,6 +72,8 @@ impl_jsonrpc_request_enum!(AgentRequest {
     ReleaseTerminalRequest => "terminal/release",
     WaitForTerminalExitRequest => "terminal/wait_for_exit",
     KillTerminalRequest => "terminal/kill",
+    #[cfg(feature = "unstable_elicitation")]
+    CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpRequest => "mcp/connect",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -90,6 +92,8 @@ impl_jsonrpc_response_enum!(ClientResponse {
     ReleaseTerminalResponse => "terminal/release",
     WaitForTerminalExitResponse => "terminal/wait_for_exit",
     KillTerminalResponse => "terminal/kill",
+    #[cfg(feature = "unstable_elicitation")]
+    CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpResponse => "mcp/connect",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -101,6 +105,8 @@ impl_jsonrpc_response_enum!(ClientResponse {
 
 impl_jsonrpc_notification_enum!(AgentNotification {
     SessionNotification => "session/update",
+    #[cfg(feature = "unstable_elicitation")]
+    CompleteElicitationNotification => "elicitation/complete",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpNotification => "mcp/message",
     [ext] ExtNotification,
