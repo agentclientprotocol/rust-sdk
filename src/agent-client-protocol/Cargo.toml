@@ -10,6 +10,10 @@ description = "Core protocol types and traits for the Agent Client Protocol"
 keywords = ["acp", "agent", "protocol", "ai"]
 categories = ["development-tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = []
 
