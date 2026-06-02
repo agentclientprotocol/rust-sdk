@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- *(unstable)* Add JSON-RPC support for elicitation requests and notifications.
+
 ## [0.13.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.0...v0.13.1) - 2026-06-01
 
 ### Added
