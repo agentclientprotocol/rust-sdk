@@ -31,11 +31,11 @@ fn trace_context_meta() -> Meta {
     let mut meta = Meta::new();
     meta.insert(
         "traceparent".into(),
-        Value::String("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".into()),
+        Value::String("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0b902b7-01".into()),
     );
     meta.insert(
         "tracestate".into(),
-        Value::String("rojo=00f067aa0ba902b7".into()),
+        Value::String("rojo=00f067aa0b902b7".into()),
     );
     meta.insert("baggage".into(), Value::String("tenant=acme".into()));
     meta
