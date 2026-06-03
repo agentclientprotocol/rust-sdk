@@ -2,12 +2,12 @@
 members = [
     "src/agent-client-protocol",
     "src/agent-client-protocol-derive",
-    # Keep polyfill before conductor: release-plz currently ignores versioned
+    # Keep polyfill and rmcp before conductor: release-plz currently ignores versioned
     # dev-dependency edges, but cargo publish still validates them.
     "src/agent-client-protocol-polyfill",
+    "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-conductor",
     "src/agent-client-protocol-http",
-    "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-test",
     "src/agent-client-protocol-trace-viewer",
     "src/yopo",
@@ -26,18 +26,18 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "0.12.1" }
-agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.12.1" }
-agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.11.1" }
-agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "0.12.1" }
-agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.12.1" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.11.2" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "0.13.1" }
+agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.13.1" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.13.1" }
+agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "0.13.1" }
+agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.13.1" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.13.1" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.11.1" }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.13.1" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=0.13.2", features = ["tracing"] }
+agent-client-protocol-schema = { version = "=0.13.5", features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", features = ["full"] }

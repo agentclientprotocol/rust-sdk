@@ -215,7 +215,6 @@ impl_v2_jsonrpc_request!(
     v2::AuthenticateResponse,
     "authenticate"
 );
-#[cfg(feature = "unstable_logout")]
 impl_v2_jsonrpc_request!(v2::LogoutRequest, v2::LogoutResponse, "logout");
 impl_v2_jsonrpc_request!(v2::NewSessionRequest, v2::NewSessionResponse, "session/new");
 impl_v2_jsonrpc_request!(
@@ -251,22 +250,11 @@ impl_v2_jsonrpc_request!(
     "session/close"
 );
 impl_v2_jsonrpc_request!(
-    v2::SetSessionModeRequest,
-    v2::SetSessionModeResponse,
-    "session/set_mode"
-);
-impl_v2_jsonrpc_request!(
     v2::SetSessionConfigOptionRequest,
     v2::SetSessionConfigOptionResponse,
     "session/set_config_option"
 );
 impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt");
-#[cfg(feature = "unstable_session_model")]
-impl_v2_jsonrpc_request!(
-    v2::SetSessionModelRequest,
-    v2::SetSessionModelResponse,
-    "session/set_model"
-);
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
@@ -314,6 +302,12 @@ impl_v2_jsonrpc_request!(
     v2::KillTerminalResponse,
     "terminal/kill"
 );
+#[cfg(feature = "unstable_elicitation")]
+impl_v2_jsonrpc_request!(
+    v2::CreateElicitationRequest,
+    v2::CreateElicitationResponse,
+    "elicitation/create"
+);
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_request!(v2::ConnectMcpRequest, v2::ConnectMcpResponse, "mcp/connect");
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -324,11 +318,12 @@ impl_v2_jsonrpc_request!(
 );
 
 impl_v2_jsonrpc_notification!(v2::SessionNotification, "session/update");
+#[cfg(feature = "unstable_elicitation")]
+impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
 
 impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",
     AuthenticateRequest => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutRequest => "logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
@@ -339,11 +334,8 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     ForkSessionRequest => "session/fork",
     ResumeSessionRequest => "session/resume",
     CloseSessionRequest => "session/close",
-    SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelRequest => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
@@ -352,7 +344,6 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
 impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     InitializeResponse => "initialize",
     AuthenticateResponse => "authenticate",
-    #[cfg(feature = "unstable_logout")]
     LogoutResponse => "logout",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
@@ -363,11 +354,8 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     ForkSessionResponse => "session/fork",
     ResumeSessionResponse => "session/resume",
     CloseSessionResponse => "session/close",
-    SetSessionModeResponse => "session/set_mode",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
-    #[cfg(feature = "unstable_session_model")]
-    SetSessionModelResponse => "session/set_model",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,
@@ -389,6 +377,8 @@ impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
     ReleaseTerminalRequest => "terminal/release",
     WaitForTerminalExitRequest => "terminal/wait_for_exit",
     KillTerminalRequest => "terminal/kill",
+    #[cfg(feature = "unstable_elicitation")]
+    CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpRequest => "mcp/connect",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -407,6 +397,8 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
     ReleaseTerminalResponse => "terminal/release",
     WaitForTerminalExitResponse => "terminal/wait_for_exit",
     KillTerminalResponse => "terminal/kill",
+    #[cfg(feature = "unstable_elicitation")]
+    CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpResponse => "mcp/connect",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -418,6 +410,8 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
 
 impl_v2_jsonrpc_notification_enum!(v2::AgentNotification {
     SessionNotification => "session/update",
+    #[cfg(feature = "unstable_elicitation")]
+    CompleteElicitationNotification => "elicitation/complete",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpNotification => "mcp/message",
     [ext] ExtNotification,

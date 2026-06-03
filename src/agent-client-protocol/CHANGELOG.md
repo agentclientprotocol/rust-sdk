@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Added
+
+- *(unstable)* Add JSON-RPC support for elicitation requests and notifications.
+
+## [0.13.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.0...v0.13.1) - 2026-06-01
+
+### Added
+
+- *(deps)* bump schema to 0.13.5 ([#188](https://github.com/agentclientprotocol/rust-sdk/pull/188))
+
+## [0.13.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.1...v0.13.0) - 2026-06-01
+
+### Added
+
+- *(acp)* stabilize logout support ([#185](https://github.com/agentclientprotocol/rust-sdk/pull/185))
+- *(acp)* Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
+- *(acp)* Add unstable (very experimental!) protocol v2 support ([#170](https://github.com/agentclientprotocol/rust-sdk/pull/170))
+
+### Changed
+
+- Move the `rmcp`-backed MCP server builder to `agent-client-protocol-rmcp`, removing `tokio`, `tokio-util`, and `rmcp` from the core crate's normal dependency graph.
+
 ## [0.12.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.0...v0.12.1) - 2026-05-17
 
 ### Other

@@ -1,6 +1,6 @@
 [package]
 name = "agent-client-protocol-conductor"
-version = "0.12.1"
+version = "0.13.1"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -13,9 +13,6 @@ categories = ["development-tools"]
 [[bin]]
 name = "agent-client-protocol-conductor"
 path = "src/main.rs"
-
-[features]
-test-support = []
 
 [dependencies]
 agent-client-protocol = { workspace = true }
@@ -37,6 +34,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
+agent-client-protocol-rmcp.workspace = true
 agent-client-protocol-test.workspace = true
 yopo.workspace = true
 expect-test.workspace = true

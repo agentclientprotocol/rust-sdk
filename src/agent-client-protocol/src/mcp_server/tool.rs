@@ -16,7 +16,7 @@ use super::McpConnectionTo;
 /// # Example
 ///
 /// ```rust,ignore
-/// use agent_client_protocol::mcp_server::{McpTool, McpContext};
+/// use agent_client_protocol::mcp_server::{McpConnectionTo, McpTool};
 /// use schemars::JsonSchema;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -47,7 +47,7 @@ use super::McpConnectionTo;
 ///     async fn call_tool(
 ///         &self,
 ///         input: EchoInput,
-///         _context: McpContext<R>,
+///         _context: McpConnectionTo<R>,
 ///     ) -> Result<EchoOutput, agent_client_protocol::Error> {
 ///         Ok(EchoOutput {
 ///             echoed: format!("Echo: {}", input.message),

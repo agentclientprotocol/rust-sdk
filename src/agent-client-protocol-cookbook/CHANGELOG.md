@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v0.11.3...agent-client-protocol-cookbook-v0.13.1) - 2026-06-01
+
+### Other
+
+- release ([#187](https://github.com/agentclientprotocol/rust-sdk/pull/187))
+
+## [0.11.3](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v0.11.2...agent-client-protocol-cookbook-v0.11.3) - 2026-06-01
+
+### Added
+
+- *(acp)* Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
+
 ## [0.11.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v0.11.1...agent-client-protocol-cookbook-v0.11.2) - 2026-05-16
 
 ### Added
