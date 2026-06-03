@@ -8,6 +8,10 @@
 - [Protocol Reference](./protocol.md)
 - [Protocol V2](./protocol-v2.md)
 
+# Transports
+
+- [HTTP / WebSocket Transport](./http-transport.md)
+
 # Conductor (agent-client-protocol-conductor)
 
 - [Conductor Design](./conductor.md)
