@@ -22,8 +22,12 @@ pub struct SuccessorMessage<M: JsonRpcMessage = UntypedMessage> {
     #[serde(flatten)]
     pub message: M,
 
-    /// Optional metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional `_meta` metadata.
+    #[serde(
+        rename = "_meta",
+        alias = "meta",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meta: Option<serde_json::Value>,
 }
 
@@ -82,8 +86,12 @@ pub struct McpConnectRequest {
     /// The ACP identifier for the server (e.g., "acp:uuid"), matching `McpServerAcp.id`
     pub acp_id: String,
 
-    /// Optional metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional `_meta` metadata.
+    #[serde(
+        rename = "_meta",
+        alias = "meta",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meta: Option<serde_json::Value>,
 }
 
@@ -94,8 +102,12 @@ pub struct McpConnectResponse {
     /// Unique identifier for the established MCP connection
     pub connection_id: String,
 
-    /// Optional metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional `_meta` metadata.
+    #[serde(
+        rename = "_meta",
+        alias = "meta",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meta: Option<serde_json::Value>,
 }
 
@@ -109,8 +121,12 @@ pub struct McpDisconnectNotification {
     /// The id of the connection to disconnect.
     pub connection_id: String,
 
-    /// Optional metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional `_meta` metadata.
+    #[serde(
+        rename = "_meta",
+        alias = "meta",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meta: Option<serde_json::Value>,
 }
 
@@ -131,8 +147,12 @@ pub struct McpOverAcpMessage<M = UntypedMessage> {
     #[serde(flatten)]
     pub message: M,
 
-    /// Optional metadata
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Optional `_meta` metadata.
+    #[serde(
+        rename = "_meta",
+        alias = "meta",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub meta: Option<serde_json::Value>,
 }
 
