@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.1...v0.14.0) - 2026-06-05
+
+### Added
+
+- Stabilize session/delete, message ids, and context usage ([#199](https://github.com/agentclientprotocol/rust-sdk/pull/199))
+- *(acp)* add unstable elicitation support ([#197](https://github.com/agentclientprotocol/rust-sdk/pull/197))
+
+### Fixed
+
+- *(acp)* Serialize proxy metadata as _meta ([#198](https://github.com/agentclientprotocol/rust-sdk/pull/198))
+
+### Other
+
+- Add features to docs.rs ([#190](https://github.com/agentclientprotocol/rust-sdk/pull/190))
+
 ### Added
 
 - *(unstable)* Add JSON-RPC support for elicitation requests and notifications.
