@@ -227,7 +227,6 @@ impl_v2_jsonrpc_request!(
     v2::ListSessionsResponse,
     "session/list"
 );
-#[cfg(feature = "unstable_session_delete")]
 impl_v2_jsonrpc_request!(
     v2::DeleteSessionRequest,
     v2::DeleteSessionResponse,
@@ -263,44 +262,9 @@ impl_v2_jsonrpc_notification!(v2::CancelNotification, "session/cancel");
 impl_v2_jsonrpc_notification!(v2::MessageMcpNotification, "mcp/message");
 
 impl_v2_jsonrpc_request!(
-    v2::WriteTextFileRequest,
-    v2::WriteTextFileResponse,
-    "fs/write_text_file"
-);
-impl_v2_jsonrpc_request!(
-    v2::ReadTextFileRequest,
-    v2::ReadTextFileResponse,
-    "fs/read_text_file"
-);
-impl_v2_jsonrpc_request!(
     v2::RequestPermissionRequest,
     v2::RequestPermissionResponse,
     "session/request_permission"
-);
-impl_v2_jsonrpc_request!(
-    v2::CreateTerminalRequest,
-    v2::CreateTerminalResponse,
-    "terminal/create"
-);
-impl_v2_jsonrpc_request!(
-    v2::TerminalOutputRequest,
-    v2::TerminalOutputResponse,
-    "terminal/output"
-);
-impl_v2_jsonrpc_request!(
-    v2::ReleaseTerminalRequest,
-    v2::ReleaseTerminalResponse,
-    "terminal/release"
-);
-impl_v2_jsonrpc_request!(
-    v2::WaitForTerminalExitRequest,
-    v2::WaitForTerminalExitResponse,
-    "terminal/wait_for_exit"
-);
-impl_v2_jsonrpc_request!(
-    v2::KillTerminalRequest,
-    v2::KillTerminalResponse,
-    "terminal/kill"
 );
 #[cfg(feature = "unstable_elicitation")]
 impl_v2_jsonrpc_request!(
@@ -328,7 +292,6 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",
-    #[cfg(feature = "unstable_session_delete")]
     DeleteSessionRequest => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionRequest => "session/fork",
@@ -348,7 +311,6 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
     ListSessionsResponse => "session/list",
-    #[cfg(feature = "unstable_session_delete")]
     DeleteSessionResponse => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionResponse => "session/fork",
@@ -369,14 +331,7 @@ impl_v2_jsonrpc_notification_enum!(v2::ClientNotification {
 });
 
 impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
-    WriteTextFileRequest => "fs/write_text_file",
-    ReadTextFileRequest => "fs/read_text_file",
     RequestPermissionRequest => "session/request_permission",
-    CreateTerminalRequest => "terminal/create",
-    TerminalOutputRequest => "terminal/output",
-    ReleaseTerminalRequest => "terminal/release",
-    WaitForTerminalExitRequest => "terminal/wait_for_exit",
-    KillTerminalRequest => "terminal/kill",
     #[cfg(feature = "unstable_elicitation")]
     CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -389,14 +344,7 @@ impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
 });
 
 impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
-    WriteTextFileResponse => "fs/write_text_file",
-    ReadTextFileResponse => "fs/read_text_file",
     RequestPermissionResponse => "session/request_permission",
-    CreateTerminalResponse => "terminal/create",
-    TerminalOutputResponse => "terminal/output",
-    ReleaseTerminalResponse => "terminal/release",
-    WaitForTerminalExitResponse => "terminal/wait_for_exit",
-    KillTerminalResponse => "terminal/kill",
     #[cfg(feature = "unstable_elicitation")]
     CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]

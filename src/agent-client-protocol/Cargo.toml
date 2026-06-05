@@ -23,20 +23,16 @@ unstable = [
     "unstable_auth_methods",
     "unstable_boolean_config",
     "unstable_elicitation",
+    "unstable_end_turn_token_usage",
     "unstable_mcp_over_acp",
-    "unstable_message_id",
-    "unstable_session_delete",
     "unstable_session_fork",
-    "unstable_session_usage",
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
 unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
+unstable_end_turn_token_usage = ["agent-client-protocol-schema/unstable_end_turn_token_usage"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
-unstable_message_id = ["agent-client-protocol-schema/unstable_message_id"]
-unstable_session_delete = ["agent-client-protocol-schema/unstable_session_delete"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
-unstable_session_usage = ["agent-client-protocol-schema/unstable_session_usage"]
 unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
 
 [dependencies]

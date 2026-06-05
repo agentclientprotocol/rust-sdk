@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable_session_delete")]
-
 use agent_client_protocol::schema::{ClientRequest, DeleteSessionRequest, DeleteSessionResponse};
 use agent_client_protocol::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use serde_json::json;
