@@ -308,17 +308,17 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "_proxy/initialize",
                     session: None,
                     params: Object {
+                        "protocolVersion": Number(1),
                         "clientCapabilities": Object {
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                             "fs": Object {
                                 "readTextFile": Bool(false),
                                 "writeTextFile": Bool(false),
                             },
                             "terminal": Bool(false),
+                            "auth": Object {
+                                "terminal": Bool(false),
+                            },
                         },
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -332,17 +332,17 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "_proxy/initialize",
                     session: None,
                     params: Object {
+                        "protocolVersion": Number(1),
                         "clientCapabilities": Object {
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                             "fs": Object {
                                 "readTextFile": Bool(false),
                                 "writeTextFile": Bool(false),
                             },
                             "terminal": Bool(false),
+                            "auth": Object {
+                                "terminal": Bool(false),
+                            },
                         },
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -354,23 +354,23 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     id: String("id:1"),
                     is_error: false,
                     payload: Object {
+                        "protocolVersion": Number(1),
                         "agentCapabilities": Object {
-                            "auth": Object {},
                             "loadSession": Bool(false),
-                            "mcpCapabilities": Object {
-                                "acp": Bool(true),
-                                "http": Bool(false),
-                                "sse": Bool(false),
-                            },
                             "promptCapabilities": Object {
+                                "image": Bool(false),
                                 "audio": Bool(false),
                                 "embeddedContext": Bool(false),
-                                "image": Bool(false),
+                            },
+                            "mcpCapabilities": Object {
+                                "http": Bool(false),
+                                "sse": Bool(false),
+                                "acp": Bool(true),
                             },
                             "sessionCapabilities": Object {},
+                            "auth": Object {},
                         },
                         "authMethods": Array [],
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -382,23 +382,23 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     id: String("id:0"),
                     is_error: false,
                     payload: Object {
+                        "protocolVersion": Number(1),
                         "agentCapabilities": Object {
-                            "auth": Object {},
                             "loadSession": Bool(false),
-                            "mcpCapabilities": Object {
-                                "acp": Bool(true),
-                                "http": Bool(false),
-                                "sse": Bool(false),
-                            },
                             "promptCapabilities": Object {
+                                "image": Bool(false),
                                 "audio": Bool(false),
                                 "embeddedContext": Bool(false),
-                                "image": Bool(false),
+                            },
+                            "mcpCapabilities": Object {
+                                "http": Bool(false),
+                                "sse": Bool(false),
+                                "acp": Bool(true),
                             },
                             "sessionCapabilities": Object {},
+                            "auth": Object {},
                         },
                         "authMethods": Array [],
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -430,10 +430,10 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "cwd": String("/"),
                         "mcpServers": Array [
                             Object {
-                                "headers": Array [],
-                                "name": String("test"),
                                 "type": String("http"),
+                                "name": String("test"),
                                 "url": String("acp:url:0"),
+                                "headers": Array [],
                             },
                         ],
                     },
@@ -499,13 +499,13 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "session/prompt",
                     session: None,
                     params: Object {
+                        "sessionId": String("session:0"),
                         "prompt": Array [
                             Object {
-                                "text": String("{\"command\":\"call_tool\",\"server\":\"test\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from trace test!\"}}"),
                                 "type": String("text"),
+                                "text": String("{\"command\":\"call_tool\",\"server\":\"test\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from trace test!\"}}"),
                             },
                         ],
-                        "sessionId": String("session:0"),
                     },
                 },
             ),
@@ -519,13 +519,13 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "session/prompt",
                     session: None,
                     params: Object {
+                        "sessionId": String("session:0"),
                         "prompt": Array [
                             Object {
-                                "text": String("{\"command\":\"call_tool\",\"server\":\"test\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from trace test!\"}}"),
                                 "type": String("text"),
+                                "text": String("{\"command\":\"call_tool\",\"server\":\"test\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from trace test!\"}}"),
                             },
                         ],
-                        "sessionId": String("session:0"),
                     },
                 },
             ),
@@ -539,12 +539,12 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "initialize",
                     session: None,
                     params: Object {
+                        "protocolVersion": String("2025-11-25"),
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
                             "version": String("1.7.0"),
                         },
-                        "protocolVersion": String("2025-11-25"),
                     },
                 },
             ),
@@ -556,15 +556,15 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     id: String("id:7"),
                     is_error: false,
                     payload: Object {
+                        "protocolVersion": String("2025-11-25"),
                         "capabilities": Object {
                             "tools": Object {},
                         },
-                        "instructions": String("A simple test MCP server with an echo tool"),
-                        "protocolVersion": String("2025-11-25"),
                         "serverInfo": Object {
                             "name": String("rmcp"),
                             "version": String("1.7.0"),
                         },
+                        "instructions": String("A simple test MCP server with an echo tool"),
                     },
                 },
             ),
@@ -592,10 +592,10 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "_meta": Object {
                             "progressToken": Number(0),
                         },
+                        "name": String("echo"),
                         "arguments": Object {
                             "message": String("Hello from trace test!"),
                         },
-                        "name": String("echo"),
                     },
                 },
             ),
@@ -609,14 +609,14 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     payload: Object {
                         "content": Array [
                             Object {
-                                "text": String("{\"result\":\"Echo: Hello from trace test!\"}"),
                                 "type": String("text"),
+                                "text": String("{\"result\":\"Echo: Hello from trace test!\"}"),
                             },
                         ],
-                        "isError": Bool(false),
                         "structuredContent": Object {
                             "result": String("Echo: Hello from trace test!"),
                         },
+                        "isError": Bool(false),
                     },
                 },
             ),
@@ -631,11 +631,11 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     params: Object {
                         "sessionId": String("session:0"),
                         "update": Object {
-                            "content": Object {
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
-                                "type": String("text"),
-                            },
                             "sessionUpdate": String("agent_message_chunk"),
+                            "content": Object {
+                                "type": String("text"),
+                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                            },
                         },
                     },
                 },
@@ -663,11 +663,11 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     params: Object {
                         "sessionId": String("session:0"),
                         "update": Object {
-                            "content": Object {
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
-                                "type": String("text"),
-                            },
                             "sessionUpdate": String("agent_message_chunk"),
+                            "content": Object {
+                                "type": String("text"),
+                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                            },
                         },
                     },
                 },

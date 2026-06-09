@@ -190,17 +190,17 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                     method: "_proxy/initialize",
                     session: None,
                     params: Object {
+                        "protocolVersion": Number(1),
                         "clientCapabilities": Object {
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                             "fs": Object {
                                 "readTextFile": Bool(false),
                                 "writeTextFile": Bool(false),
                             },
                             "terminal": Bool(false),
+                            "auth": Object {
+                                "terminal": Bool(false),
+                            },
                         },
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -212,23 +212,23 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                     id: String("id:0"),
                     is_error: false,
                     payload: Object {
+                        "protocolVersion": Number(1),
                         "agentCapabilities": Object {
-                            "auth": Object {},
                             "loadSession": Bool(false),
-                            "mcpCapabilities": Object {
-                                "acp": Bool(false),
-                                "http": Bool(false),
-                                "sse": Bool(false),
-                            },
                             "promptCapabilities": Object {
+                                "image": Bool(false),
                                 "audio": Bool(false),
                                 "embeddedContext": Bool(false),
-                                "image": Bool(false),
+                            },
+                            "mcpCapabilities": Object {
+                                "http": Bool(false),
+                                "sse": Bool(false),
+                                "acp": Bool(false),
                             },
                             "sessionCapabilities": Object {},
+                            "auth": Object {},
                         },
                         "authMethods": Array [],
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -269,13 +269,13 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                     method: "session/prompt",
                     session: None,
                     params: Object {
+                        "sessionId": String("session:0"),
                         "prompt": Array [
                             Object {
-                                "text": String("{\"command\":\"greet\"}"),
                                 "type": String("text"),
+                                "text": String("{\"command\":\"greet\"}"),
                             },
                         ],
-                        "sessionId": String("session:0"),
                     },
                 },
             ),
@@ -290,11 +290,11 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                     params: Object {
                         "sessionId": String("session:0"),
                         "update": Object {
-                            "content": Object {
-                                "text": String("Hello, world!"),
-                                "type": String("text"),
-                            },
                             "sessionUpdate": String("agent_message_chunk"),
+                            "content": Object {
+                                "type": String("text"),
+                                "text": String("Hello, world!"),
+                            },
                         },
                     },
                 },
