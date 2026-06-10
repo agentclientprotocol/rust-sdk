@@ -81,10 +81,6 @@ mod capabilities;
 pub mod component;
 /// Core concepts for understanding and using agent-client-protocol
 pub mod concepts;
-/// Cookbook of common patterns for building ACP components
-pub mod cookbook;
-/// JSON-RPC handler types for building custom message handlers
-pub mod handler;
 /// JSON-RPC connection and handler infrastructure
 mod jsonrpc;
 /// MCP server support for providing MCP tools over ACP
