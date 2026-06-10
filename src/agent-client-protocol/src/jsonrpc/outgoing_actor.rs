@@ -2,9 +2,9 @@
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 
-use crate::jsonrpc::OutgoingMessage;
 use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
+use crate::jsonrpc::{OutgoingMessage, RawJsonRpcMessage};
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
 
@@ -17,17 +17,17 @@ pub(crate) fn send_raw_message(
         .map_err(crate::util::internal_error)
 }
 
-/// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level jsonrpcmsg::Message.
+/// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level RawJsonRpcMessage.
 ///
 /// This actor handles JSON-RPC protocol semantics:
 /// - Subscribes to reply_actor for response correlation
-/// - Converts OutgoingMessage variants to jsonrpcmsg::Message
+/// - Converts OutgoingMessage variants to RawJsonRpcMessage
 ///
 /// This is the protocol layer - it has no knowledge of how messages are transported.
 pub(super) async fn outgoing_protocol_actor(
     mut outgoing_rx: mpsc::UnboundedReceiver<OutgoingMessage>,
     reply_tx: mpsc::UnboundedSender<ReplyMessage>,
-    transport_tx: mpsc::UnboundedSender<Result<jsonrpcmsg::Message, crate::Error>>,
+    transport_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
     while let Some(message) = outgoing_rx.next().await {
@@ -46,7 +46,7 @@ pub(super) async fn outgoing_protocol_actor(
             } => {
                 let request = match protocol_compat
                     .outgoing_message(untyped)
-                    .and_then(|untyped| untyped.into_jsonrpc_msg(Some(id.clone())))
+                    .and_then(|untyped| untyped.into_raw_jsonrpc_message(Some(id.clone())))
                 {
                     Ok(request) => request,
                     Err(error) => {
@@ -70,12 +70,12 @@ pub(super) async fn outgoing_protocol_actor(
                     })
                     .map_err(crate::Error::into_internal_error)?;
 
-                jsonrpcmsg::Message::Request(request)
+                request
             }
             OutgoingMessage::Notification { untyped } => {
-                let msg = match protocol_compat
+                match protocol_compat
                     .outgoing_message(untyped)
-                    .and_then(|untyped| untyped.into_jsonrpc_msg(None))
+                    .and_then(|untyped| untyped.into_raw_jsonrpc_message(None))
                 {
                     Ok(msg) => msg,
                     Err(error) => {
@@ -85,8 +85,7 @@ pub(super) async fn outgoing_protocol_actor(
                         );
                         continue;
                     }
-                };
-                jsonrpcmsg::Message::Request(msg)
+                }
             }
             OutgoingMessage::Response {
                 id,
@@ -95,32 +94,20 @@ pub(super) async fn outgoing_protocol_actor(
             } => match protocol_compat.outgoing_response(&method, response) {
                 Ok(value) => {
                     tracing::debug!(?id, "Sending success response");
-                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::success_v2(value, Some(id)))
+                    RawJsonRpcMessage::response(id, Ok(value))
                 }
                 Err(error) => {
                     tracing::warn!(?id, %method, ?error, "Sending error response");
-                    // Convert crate::Error to jsonrpcmsg::Error
-                    let jsonrpc_error = jsonrpcmsg::Error {
-                        code: error.code.into(),
-                        message: error.message,
-                        data: error.data,
-                    };
-                    jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(
-                        jsonrpc_error,
-                        Some(id),
-                    ))
+                    RawJsonRpcMessage::response(id, Err(error))
                 }
             },
             OutgoingMessage::Error { error } => {
-                // Convert crate::Error to jsonrpcmsg::Error
-                let jsonrpc_error = jsonrpcmsg::Error {
-                    code: error.code.into(),
-                    message: error.message,
-                    data: error.data,
-                };
-                // Response with id: None means this is an error notification that couldn't be
-                // correlated to a specific request (e.g., parse error before we could read the id)
-                jsonrpcmsg::Message::Response(jsonrpcmsg::Response::error_v2(jsonrpc_error, None))
+                // JSON-RPC reports parse/invalid-request errors with id null when
+                // they cannot be correlated to a specific request.
+                RawJsonRpcMessage::response(
+                    agent_client_protocol_schema::RequestId::Null,
+                    Err(error),
+                )
             }
         };
 
@@ -168,7 +155,7 @@ mod tests {
 
         outgoing_tx
             .unbounded_send(OutgoingMessage::Request {
-                id: jsonrpcmsg::Id::Number(1),
+                id: agent_client_protocol_schema::RequestId::Number(1),
                 role_id: crate::Agent.role_id(),
                 method: "session/new".into(),
                 untyped: malformed_v2_known_method()?,
@@ -234,10 +221,10 @@ mod tests {
             .next()
             .await
             .expect("valid notification should still be sent")?;
-        let jsonrpcmsg::Message::Request(request) = message else {
+        let RawJsonRpcMessage::Notification(request) = message else {
             panic!("expected outgoing notification request, got {message:?}");
         };
-        assert_eq!(request.method, "_local/notify");
+        assert_eq!(&*request.method, "_local/notify");
         assert!(transport_rx.next().await.is_none());
 
         Ok(())

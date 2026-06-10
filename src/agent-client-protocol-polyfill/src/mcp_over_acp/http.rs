@@ -1,6 +1,12 @@
 //! HTTP-based MCP bridge transport.
 
-use agent_client_protocol::{BoxFuture, Channel, ConnectTo, jsonrpcmsg::Message, role::mcp};
+use agent_client_protocol::{
+    BoxFuture, Channel, ConnectTo, RawJsonRpcMessage, RawJsonRpcParams,
+    role::mcp,
+    schema::{
+        Notification as RpcNotification, Request as RpcRequest, RequestId, Response as RpcResponse,
+    },
+};
 use axum::{
     Router,
     extract::State,
@@ -146,51 +152,30 @@ enum HttpMessage {
     /// A JSON-RPC request (has an id, expects a response via the channel).
     Request {
         http_request_id: uuid::Uuid,
-        request: agent_client_protocol::jsonrpcmsg::Request,
-        response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
+        request: RpcRequest<RawJsonRpcParams>,
+        response_tx: mpsc::UnboundedSender<RawJsonRpcMessage>,
     },
     /// A JSON-RPC notification (no id, no response expected).
     Notification {
         http_request_id: uuid::Uuid,
-        request: agent_client_protocol::jsonrpcmsg::Request,
+        request: RpcNotification<RawJsonRpcParams>,
     },
     /// A JSON-RPC response from the client.
     Response {
         http_request_id: uuid::Uuid,
-        response: agent_client_protocol::jsonrpcmsg::Response,
+        response: RpcResponse<serde_json::Value>,
     },
     /// A GET request to open an SSE stream for server-initiated messages.
     Get {
         http_request_id: uuid::Uuid,
-        response_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
+        response_tx: mpsc::UnboundedSender<RawJsonRpcMessage>,
     },
 }
 
-/// Clone of `agent_client_protocol::jsonrpcmsg::Id` since it does not impl `Hash`.
-#[derive(Eq, PartialEq, PartialOrd, Ord, Hash, Debug, Clone)]
-enum JsonRpcId {
-    /// String identifier.
-    String(String),
-    /// Numeric identifier.
-    Number(u64),
-    /// Null identifier (for notifications).
-    Null,
-}
-
-impl From<agent_client_protocol::jsonrpcmsg::Id> for JsonRpcId {
-    fn from(id: agent_client_protocol::jsonrpcmsg::Id) -> Self {
-        match id {
-            agent_client_protocol::jsonrpcmsg::Id::String(s) => JsonRpcId::String(s),
-            agent_client_protocol::jsonrpcmsg::Id::Number(n) => JsonRpcId::Number(n),
-            agent_client_protocol::jsonrpcmsg::Id::Null => JsonRpcId::Null,
-        }
-    }
-}
-
 struct RunningServer {
-    waiting_sessions: FxHashMap<JsonRpcId, RegisteredSession>,
+    waiting_sessions: FxHashMap<RequestId, RegisteredSession>,
     general_sessions: Vec<RegisteredSession>,
-    message_deque: VecDeque<agent_client_protocol::jsonrpcmsg::Message>,
+    message_deque: VecDeque<RawJsonRpcMessage>,
 }
 
 impl RunningServer {
@@ -211,9 +196,7 @@ impl RunningServer {
         #[derive(Debug)]
         enum MultiplexMessage {
             FromHttpToChannel(HttpMessage),
-            FromChannelToHttp(
-                Result<agent_client_protocol::jsonrpcmsg::Message, agent_client_protocol::Error>,
-            ),
+            FromChannelToHttp(Result<RawJsonRpcMessage, agent_client_protocol::Error>),
         }
 
         let mut merged_stream = http_rx
@@ -229,12 +212,7 @@ impl RunningServer {
                 }
                 MultiplexMessage::FromChannelToHttp(message) => {
                     let message = message.unwrap_or_else(|err| {
-                        agent_client_protocol::jsonrpcmsg::Message::Response(
-                            agent_client_protocol::jsonrpcmsg::Response::error(
-                                agent_client_protocol::util::into_jsonrpc_error(err),
-                                None,
-                            ),
-                        )
+                        RawJsonRpcMessage::response(RequestId::Null, Err(err))
                     });
                     self.message_deque.push_back(message);
                 }
@@ -251,7 +229,7 @@ impl RunningServer {
         &mut self,
         message: HttpMessage,
         channel_tx: &mut mpsc::UnboundedSender<
-            Result<agent_client_protocol::jsonrpcmsg::Message, agent_client_protocol::Error>,
+            Result<RawJsonRpcMessage, agent_client_protocol::Error>,
         >,
     ) -> Result<(), agent_client_protocol::Error> {
         match message {
@@ -261,23 +239,19 @@ impl RunningServer {
                 response_tx,
             } => {
                 tracing::debug!(%http_request_id, ?request, "handling request");
-                let request_id = request.id.clone().map(JsonRpcId::from);
+                let request_id = request.id.clone();
                 channel_tx
-                    .unbounded_send(Ok(Message::Request(request)))
+                    .unbounded_send(Ok(RawJsonRpcMessage::Request(request)))
                     .map_err(agent_client_protocol::util::internal_error)?;
                 let session = RegisteredSession::new(response_tx);
-                if let Some(id) = request_id {
-                    self.waiting_sessions.insert(id, session);
-                } else {
-                    self.general_sessions.push(session);
-                }
+                self.waiting_sessions.insert(request_id, session);
             }
             HttpMessage::Notification {
                 http_request_id: _,
                 request,
             } => {
                 channel_tx
-                    .unbounded_send(Ok(Message::Request(request)))
+                    .unbounded_send(Ok(RawJsonRpcMessage::Notification(request)))
                     .map_err(agent_client_protocol::util::internal_error)?;
             }
             HttpMessage::Response {
@@ -285,7 +259,7 @@ impl RunningServer {
                 response,
             } => {
                 channel_tx
-                    .unbounded_send(Ok(Message::Response(response)))
+                    .unbounded_send(Ok(RawJsonRpcMessage::Response(response)))
                     .map_err(agent_client_protocol::util::internal_error)?;
             }
             HttpMessage::Get {
@@ -311,12 +285,9 @@ impl RunningServer {
 
     fn try_dispatch_jsonrpc_message(
         &mut self,
-        mut message: agent_client_protocol::jsonrpcmsg::Message,
-    ) -> Option<agent_client_protocol::jsonrpcmsg::Message> {
-        let message_id = match &message {
-            Message::Response(response) => response.id.as_ref().map(|v| v.clone().into()),
-            Message::Request(_) => None,
-        };
+        mut message: RawJsonRpcMessage,
+    ) -> Option<RawJsonRpcMessage> {
+        let message_id = message.response_id().cloned();
 
         if let Some(ref message_id) = message_id
             && let Some(session) = self.waiting_sessions.remove(message_id)
@@ -359,11 +330,11 @@ impl RunningServer {
 struct RegisteredSession {
     #[allow(dead_code)]
     id: uuid::Uuid,
-    outgoing_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>,
+    outgoing_tx: mpsc::UnboundedSender<RawJsonRpcMessage>,
 }
 
 impl RegisteredSession {
-    fn new(outgoing_tx: mpsc::UnboundedSender<agent_client_protocol::jsonrpcmsg::Message>) -> Self {
+    fn new(outgoing_tx: mpsc::UnboundedSender<RawJsonRpcMessage>) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             outgoing_tx,
@@ -379,11 +350,11 @@ async fn handle_post(
     body: String,
 ) -> Result<Response, HttpError> {
     let http_request_id = uuid::Uuid::new_v4();
-    let message: agent_client_protocol::jsonrpcmsg::Message =
+    let message: RawJsonRpcMessage =
         serde_json::from_str(&body).map_err(agent_client_protocol::util::parse_error)?;
 
     match message {
-        Message::Request(request) if request.id.is_some() => {
+        RawJsonRpcMessage::Request(request) => {
             let (tx, mut rx) = mpsc::unbounded();
             state
                 .registration_tx
@@ -404,7 +375,7 @@ async fn handle_post(
             };
             Ok(Sse::new(stream).into_response())
         }
-        Message::Request(request) => {
+        RawJsonRpcMessage::Notification(request) => {
             state
                 .registration_tx
                 .unbounded_send(HttpMessage::Notification {
@@ -414,7 +385,7 @@ async fn handle_post(
                 .map_err(agent_client_protocol::util::internal_error)?;
             Ok(StatusCode::ACCEPTED.into_response())
         }
-        Message::Response(response) => {
+        RawJsonRpcMessage::Response(response) => {
             state
                 .registration_tx
                 .unbounded_send(HttpMessage::Response {

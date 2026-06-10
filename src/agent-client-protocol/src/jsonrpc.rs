@@ -1,8 +1,9 @@
 //! Core JSON-RPC server support.
 
-use agent_client_protocol_schema::SessionId;
-// Re-export jsonrpcmsg for use in public API
-pub use jsonrpcmsg;
+use agent_client_protocol_schema::{
+    JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification,
+    Request as RpcRequest, RequestId, Response as RpcResponse, SessionId,
+};
 
 // Types re-exported from crate root
 use serde::{Deserialize, Serialize};
@@ -12,9 +13,10 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
+use std::sync::Arc;
 #[cfg(feature = "unstable_cancel_request")]
 use std::sync::{
-    Arc, Mutex,
+    Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use uuid::Uuid;
@@ -46,8 +48,182 @@ use crate::jsonrpc::task_actor::{Task, TaskTx};
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
-use crate::util::json_cast;
 use crate::{Agent, Client, ConnectTo, RoleId};
+
+/// Raw JSON-RPC message transported by [`Channel`].
+///
+/// This uses the JSON-RPC envelope types from `agent-client-protocol-schema`
+/// while keeping method params as raw, JSON-RPC-valid params at the transport boundary.
+#[derive(Debug, Clone)]
+pub enum RawJsonRpcMessage {
+    /// A JSON-RPC request with an id and expected response.
+    Request(RpcRequest<RawJsonRpcParams>),
+    /// A JSON-RPC notification without a response.
+    Notification(RpcNotification<RawJsonRpcParams>),
+    /// A JSON-RPC response to a prior request.
+    Response(RpcResponse<serde_json::Value>),
+}
+
+/// Raw JSON-RPC request or notification parameters.
+///
+/// JSON-RPC params, when present, must be either an array or an object.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawJsonRpcParams {
+    /// Positional JSON-RPC params.
+    Array(Vec<serde_json::Value>),
+    /// Named JSON-RPC params.
+    Object(serde_json::Map<String, serde_json::Value>),
+}
+
+impl RawJsonRpcParams {
+    /// Convert a JSON value into JSON-RPC params.
+    pub fn from_value(value: serde_json::Value) -> Result<Option<Self>, crate::Error> {
+        match value {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::Array(array) => Ok(Some(Self::Array(array))),
+            serde_json::Value::Object(object) => Ok(Some(Self::Object(object))),
+            _ => {
+                Err(crate::Error::invalid_params()
+                    .data("JSON-RPC params must be an object or array"))
+            }
+        }
+    }
+
+    /// Convert params back into a JSON value.
+    #[must_use]
+    pub fn into_value(self) -> serde_json::Value {
+        match self {
+            Self::Array(array) => serde_json::Value::Array(array),
+            Self::Object(object) => serde_json::Value::Object(object),
+        }
+    }
+}
+
+impl Serialize for RawJsonRpcParams {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Array(array) => array.serialize(serializer),
+            Self::Object(object) => object.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RawJsonRpcParams {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Array(array) => Ok(Self::Array(array)),
+            serde_json::Value::Object(object) => Ok(Self::Object(object)),
+            _ => Err(serde::de::Error::custom(
+                "JSON-RPC params must be an object or array",
+            )),
+        }
+    }
+}
+
+impl RawJsonRpcMessage {
+    /// Build a raw JSON-RPC request message.
+    pub fn request(
+        method: String,
+        params: serde_json::Value,
+        id: RequestId,
+    ) -> Result<Self, crate::Error> {
+        Ok(Self::Request(RpcRequest {
+            id,
+            method: Arc::from(method),
+            params: RawJsonRpcParams::from_value(params)?,
+        }))
+    }
+
+    /// Build a raw JSON-RPC notification message.
+    pub fn notification(method: String, params: serde_json::Value) -> Result<Self, crate::Error> {
+        Ok(Self::Notification(RpcNotification {
+            method: Arc::from(method),
+            params: RawJsonRpcParams::from_value(params)?,
+        }))
+    }
+
+    /// Build a raw JSON-RPC response message.
+    #[must_use]
+    pub fn response(id: RequestId, response: Result<serde_json::Value, crate::Error>) -> Self {
+        Self::Response(RpcResponse::new(id, response))
+    }
+
+    /// The response id, if this is a response.
+    #[must_use]
+    pub fn response_id(&self) -> Option<&RequestId> {
+        match self {
+            Self::Response(RpcResponse::Result { id, .. } | RpcResponse::Error { id, .. }) => {
+                Some(id)
+            }
+            Self::Request(_) | Self::Notification(_) => None,
+        }
+    }
+}
+
+impl Serialize for RawJsonRpcMessage {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Request(request) => {
+                VersionedJsonRpcMessage::wrap(request.clone()).serialize(serializer)
+            }
+            Self::Notification(notification) => {
+                VersionedJsonRpcMessage::wrap(notification.clone()).serialize(serializer)
+            }
+            Self::Response(response) => {
+                VersionedJsonRpcMessage::wrap(response.clone()).serialize(serializer)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RawJsonRpcMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("method").is_some() {
+            if value.get("id").is_some() {
+                let request = serde_json::from_value::<
+                    VersionedJsonRpcMessage<RpcRequest<RawJsonRpcParams>>,
+                >(value)
+                .map_err(serde::de::Error::custom)?
+                .into_inner();
+                Ok(Self::Request(request))
+            } else {
+                let notification = serde_json::from_value::<
+                    VersionedJsonRpcMessage<RpcNotification<RawJsonRpcParams>>,
+                >(value)
+                .map_err(serde::de::Error::custom)?
+                .into_inner();
+                Ok(Self::Notification(notification))
+            }
+        } else if value.get("result").is_some() || value.get("error").is_some() {
+            let response = serde_json::from_value::<
+                VersionedJsonRpcMessage<RpcResponse<serde_json::Value>>,
+            >(value)
+            .map_err(serde::de::Error::custom)?
+            .into_inner();
+            Ok(Self::Response(response))
+        } else {
+            Err(serde::de::Error::custom("invalid JSON-RPC message"))
+        }
+    }
+}
+
+fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value {
+    params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)
+}
 
 /// Handlers process incoming JSON-RPC messages on a connection.
 ///
@@ -1121,7 +1297,7 @@ impl<
     /// - An error occurs
     /// - One of your handlers returns an error
     ///
-    /// The transport is responsible for serializing and deserializing `jsonrpcmsg::Message`
+    /// The transport is responsible for serializing and deserializing [`RawJsonRpcMessage`]
     /// values to/from the underlying I/O mechanism (byte streams, channels, etc.).
     ///
     /// Use this mode when you only need to respond to incoming messages and don't need
@@ -1269,14 +1445,14 @@ impl<
 
                 let background = async {
                     futures::try_join!(
-                        // Protocol layer: OutgoingMessage → jsonrpcmsg::Message
+                        // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
                         outgoing_actor::outgoing_protocol_actor(
                             outgoing_rx,
                             reply_tx.clone(),
                             transport_outgoing_tx,
                             protocol_compat.clone(),
                         ),
-                        // Protocol layer: jsonrpcmsg::Message → handler/reply routing
+                        // Protocol layer: RawJsonRpcMessage -> handler/reply routing
                         incoming_actor::incoming_protocol_actor(
                             me.counterpart(),
                             &connection,
@@ -1348,7 +1524,7 @@ enum ReplyMessage {
     /// along with an ack channel that must be signaled when processing is complete.
     /// The method name is stored to allow routing responses through typed handlers.
     Subscribe {
-        id: jsonrpcmsg::Id,
+        id: RequestId,
 
         /// id of the peer this request was sent to
         role_id: RoleId,
@@ -1784,7 +1960,7 @@ enum OutgoingMessage {
     /// Send a request to the server.
     Request {
         /// id assigned to this request (generated by sender)
-        id: jsonrpcmsg::Id,
+        id: RequestId,
 
         /// the original method
         method: String,
@@ -1812,7 +1988,7 @@ enum OutgoingMessage {
 
     /// Send a response to a message from the server
     Response {
-        id: jsonrpcmsg::Id,
+        id: RequestId,
 
         /// Method of the incoming request this response completes.
         method: String,
@@ -2134,7 +2310,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         let method = request.method().to_string();
-        let id = jsonrpcmsg::Id::String(uuid::Uuid::new_v4().to_string());
+        let id = RequestId::Str(uuid::Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
@@ -2406,7 +2582,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     method: String,
 
     /// The `id` of the message we are replying to.
-    id: jsonrpcmsg::Id,
+    id: RequestId,
 
     /// Request-local cancellation state.
     cancellation: ResponderCancellation,
@@ -2435,7 +2611,7 @@ impl Responder<serde_json::Value> {
     fn new(
         message_tx: OutgoingMessageTx,
         method: String,
-        id: jsonrpcmsg::Id,
+        id: RequestId,
         cancellation_registry: &RequestCancellationRegistry,
     ) -> Self {
         let id_clone = id.clone();
@@ -2573,7 +2749,7 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     method: String,
 
     /// The `id` of the original request.
-    id: jsonrpcmsg::Id,
+    id: RequestId,
 
     /// The RoleId to which the original request was sent
     /// (and hence from which the reply is expected).
@@ -2601,7 +2777,7 @@ impl ResponseRouter<serde_json::Value> {
     /// dropped, the response is discarded because there is no local awaiter left.
     pub(crate) fn new(
         method: String,
-        id: jsonrpcmsg::Id,
+        id: RequestId,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
         #[cfg(feature = "unstable_cancel_request")]
@@ -3197,13 +3373,16 @@ impl UntypedMessage {
         (self.method, self.params)
     }
 
-    /// Convert `self` to a JSON-RPC message.
-    pub(crate) fn into_jsonrpc_msg(
+    /// Convert `self` to a raw JSON-RPC message.
+    pub(crate) fn into_raw_jsonrpc_message(
         self,
-        id: Option<jsonrpcmsg::Id>,
-    ) -> Result<jsonrpcmsg::Request, crate::Error> {
+        id: Option<RequestId>,
+    ) -> Result<RawJsonRpcMessage, crate::Error> {
         let Self { method, params } = self;
-        Ok(jsonrpcmsg::Request::new_v2(method, json_cast(params)?, id))
+        match id {
+            Some(id) => RawJsonRpcMessage::request(method, params, id),
+            None => RawJsonRpcMessage::notification(method, params),
+        }
     }
 }
 
@@ -3326,28 +3505,13 @@ impl JsonRpcNotification for UntypedMessage {}
               request); consume it with `block_task`, `on_receiving_result`, \
               or `forward_response_to`"]
 pub struct SentRequest<T> {
-    id: jsonrpcmsg::Id,
+    id: RequestId,
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
     to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
     #[cfg(feature = "unstable_cancel_request")]
     cancellation: SentRequestCancellation,
-}
-
-#[cfg(feature = "unstable_cancel_request")]
-fn jsonrpc_id_to_request_id(id: &jsonrpcmsg::Id) -> Result<crate::schema::RequestId, crate::Error> {
-    match id {
-        jsonrpcmsg::Id::String(value) => Ok(crate::schema::RequestId::Str(value.clone())),
-        jsonrpcmsg::Id::Number(value) => Ok(crate::schema::RequestId::Number(
-            i64::try_from(*value).map_err(|_| {
-                crate::util::internal_error(format!(
-                    "request ID `{value}` cannot be represented as an ACP request ID"
-                ))
-            })?,
-        )),
-        jsonrpcmsg::Id::Null => Ok(crate::schema::RequestId::Null),
-    }
 }
 
 #[cfg(feature = "unstable_cancel_request")]
@@ -3373,7 +3537,7 @@ impl SentRequestCancellationDisarm {
 struct SentRequestCancellation {
     message_tx: OutgoingMessageTx,
     remote_style: crate::role::RemoteStyle,
-    request_id: jsonrpcmsg::Id,
+    request_id: RequestId,
     disarm: SentRequestCancellationDisarm,
 }
 
@@ -3382,7 +3546,7 @@ impl SentRequestCancellation {
     fn new(
         message_tx: OutgoingMessageTx,
         remote_style: crate::role::RemoteStyle,
-        request_id: jsonrpcmsg::Id,
+        request_id: RequestId,
     ) -> Self {
         Self {
             message_tx,
@@ -3407,9 +3571,8 @@ impl SentRequestCancellation {
 
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
-        let request_id = jsonrpc_id_to_request_id(&self.request_id)?;
         let untyped = self.remote_style.transform_outgoing_message(
-            crate::schema::CancelRequestNotification::new(request_id),
+            crate::schema::CancelRequestNotification::new(self.request_id.clone()),
         )?;
 
         send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
@@ -3452,7 +3615,7 @@ impl<T: Debug> Debug for SentRequest<T> {
 
 impl SentRequest<serde_json::Value> {
     fn new(
-        id: jsonrpcmsg::Id,
+        id: RequestId,
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
@@ -4156,9 +4319,9 @@ where
 #[derive(Debug)]
 pub struct Channel {
     /// Receives messages (or errors) from the counterpart.
-    pub rx: mpsc::UnboundedReceiver<Result<jsonrpcmsg::Message, crate::Error>>,
+    pub rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
     /// Sends messages (or errors) to the counterpart.
-    pub tx: mpsc::UnboundedSender<Result<jsonrpcmsg::Message, crate::Error>>,
+    pub tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
 }
 
 impl Channel {

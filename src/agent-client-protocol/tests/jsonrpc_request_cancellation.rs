@@ -310,10 +310,10 @@ async fn unhandled_protocol_level_notifications_are_ignored() {
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 2,
                   "result": {
                     "result": "echo: after cancel"
-                  },
-                  "id": 2
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })
@@ -390,10 +390,10 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 2,
                   "result": {
                     "result": "echo: after wrapped cancel"
-                  },
-                  "id": 2
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })
@@ -523,11 +523,11 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 7,
                   "error": {
                     "code": -32800,
                     "message": "Request cancelled"
-                  },
-                  "id": 7
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })

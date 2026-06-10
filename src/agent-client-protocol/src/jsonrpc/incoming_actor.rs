@@ -14,6 +14,8 @@ use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
 use crate::jsonrpc::HandleDispatchFrom;
 use crate::jsonrpc::OutgoingMessage;
+use crate::jsonrpc::RawJsonRpcMessage;
+use crate::jsonrpc::RawJsonRpcParams;
 use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseRouter;
@@ -39,7 +41,7 @@ struct PendingReply {
 /// This actor handles JSON-RPC protocol semantics:
 /// - Routes responses to pending request awaiters
 /// - Routes requests/notifications to registered handlers
-/// - Converts jsonrpcmsg::Request to UntypedMessage for handlers
+/// - Converts RawJsonRpcMessage requests/notifications to UntypedMessage for handlers
 /// - Manages reply subscriptions from outgoing requests
 ///
 /// This is the protocol layer - it has no knowledge of how messages arrived.
@@ -49,7 +51,7 @@ struct PendingReply {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<Result<jsonrpcmsg::Message, crate::Error>>,
+    transport_rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     reply_rx: mpsc::UnboundedReceiver<ReplyMessage>,
     mut handler: impl HandleDispatchFrom<Counterpart>,
@@ -67,9 +69,9 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let request_cancellations = super::RequestCancellationRegistry::new();
 
     // Map from request ID to (method, sender) for response dispatch.
-    // Keys are JSON values because jsonrpcmsg::Id doesn't implement Eq.
     // The method is stored to allow routing responses through typed handlers.
-    let mut pending_replies: HashMap<serde_json::Value, PendingReply> = HashMap::new();
+    let mut pending_replies: HashMap<agent_client_protocol_schema::RequestId, PendingReply> =
+        HashMap::new();
 
     while let Some(message_result) = my_rx.next().await {
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
@@ -84,7 +86,6 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     cancellation_disarm,
                 } => {
                     tracing::trace!(?id, %method, "incoming_actor: subscribing to response");
-                    let id = serde_json::to_value(&id).unwrap();
                     pending_replies.insert(
                         id,
                         PendingReply {
@@ -139,13 +140,15 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
             IncomingProtocolMsg::Transport(message) => match message {
                 Ok(message) => match message {
-                    jsonrpcmsg::Message::Request(request) => {
+                    RawJsonRpcMessage::Request(request) => {
                         tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
-                        let request_method = request.method.clone();
+                        let request_method = request.method.to_string();
                         let request_id = request.id.clone();
-                        match dispatch_from_request(
+                        match dispatch_from_message(
                             connection,
-                            request,
+                            request.method,
+                            request.params,
+                            Some(request.id),
                             &protocol_compat,
                             &request_cancellations,
                         ) {
@@ -164,32 +167,28 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             Err(error) => {
                                 report_handler_error(
                                     connection,
-                                    request_id.map(|id| serde_json::to_value(&id).unwrap()),
+                                    Some(
+                                        serde_json::to_value(request_id)
+                                            .expect("RequestId serializes infallibly"),
+                                    ),
                                     request_method,
                                     error,
                                 )?;
                             }
                         }
                     }
-                    jsonrpcmsg::Message::Response(response) => {
-                        tracing::trace!(id = ?response.id, has_result = response.result.is_some(), has_error = response.error.is_some(), "Handling response");
-                        if let Some(id) = response.id {
-                            let result = if let Some(value) = response.result {
-                                Ok(value)
-                            } else if let Some(error) = response.error {
-                                // Convert jsonrpcmsg::Error to crate::Error
-                                Err(crate::Error::new(error.code, error.message).data(error.data))
-                            } else {
-                                // Response with neither result nor error - treat as null result
-                                Ok(serde_json::Value::Null)
-                            };
-
-                            let id_json = serde_json::to_value(&id).unwrap();
-                            if let Some(pending_reply) = pending_replies.remove(&id_json) {
-                                let result = protocol_compat
-                                    .incoming_response(&pending_reply.method, result);
-                                // Route the response through the handler chain
-                                let dispatch = dispatch_from_response(id, pending_reply, result);
+                    RawJsonRpcMessage::Notification(notification) => {
+                        tracing::trace!(method = %notification.method, "Handling notification");
+                        let request_method = notification.method.to_string();
+                        match dispatch_from_message(
+                            connection,
+                            notification.method,
+                            notification.params,
+                            None,
+                            &protocol_compat,
+                            &request_cancellations,
+                        ) {
+                            Ok(dispatch) => {
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -200,12 +199,43 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &request_cancellations,
                                 )
                                 .await?;
-                            } else {
-                                tracing::warn!(
-                                    ?id,
-                                    "incoming_actor: received response for unknown id, no subscriber found"
-                                );
                             }
+                            Err(error) => {
+                                report_handler_error(connection, None, request_method, error)?;
+                            }
+                        }
+                    }
+                    RawJsonRpcMessage::Response(response) => {
+                        let (id, result) = match response {
+                            agent_client_protocol_schema::Response::Result { id, result } => {
+                                (id, Ok(result))
+                            }
+                            agent_client_protocol_schema::Response::Error { id, error } => {
+                                (id, Err(error))
+                            }
+                        };
+
+                        tracing::trace!(?id, "Handling response");
+                        if let Some(pending_reply) = pending_replies.remove(&id) {
+                            let result =
+                                protocol_compat.incoming_response(&pending_reply.method, result);
+                            // Route the response through the handler chain
+                            let dispatch = dispatch_from_response(id, pending_reply, result);
+                            dispatch_dispatch(
+                                counterpart.clone(),
+                                connection,
+                                dispatch,
+                                &mut dynamic_handlers,
+                                &mut handler,
+                                &mut pending_messages,
+                                &request_cancellations,
+                            )
+                            .await?;
+                        } else {
+                            tracing::warn!(
+                                ?id,
+                                "incoming_actor: received response for unknown id, no subscriber found"
+                            );
                         }
                     }
                 },
@@ -222,29 +252,32 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
-    Transport(Result<jsonrpcmsg::Message, crate::Error>),
+    Transport(Result<RawJsonRpcMessage, crate::Error>),
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
     Reply(ReplyMessage),
 }
 
 /// Dispatches a JSON-RPC request to the handler.
 /// Report an error back to the server if it does not get handled.
-fn dispatch_from_request<Counterpart: Role>(
+fn dispatch_from_message<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
-    request: jsonrpcmsg::Request,
+    method: std::sync::Arc<str>,
+    params: Option<RawJsonRpcParams>,
+    id: Option<agent_client_protocol_schema::RequestId>,
     protocol_compat: &ProtocolCompat,
     request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<Dispatch, crate::Error> {
-    let message = UntypedMessage::new(&request.method, &request.params).expect("well-formed JSON");
+    let message = UntypedMessage::new(&method, crate::jsonrpc::params_from_transport(params))
+        .expect("well-formed JSON");
     let message = protocol_compat.incoming_message(message)?;
 
-    match &request.id {
+    match id {
         Some(id) => Ok(Dispatch::Request(
             message,
             Responder::new(
                 connection.message_tx.clone(),
-                request.method.clone(),
-                id.clone(),
+                method.to_string(),
+                id,
                 request_cancellations,
             ),
         )),
@@ -258,7 +291,7 @@ fn dispatch_from_request<Counterpart: Role>(
 /// the awaiting code. The default behavior is to forward the response to the
 /// local awaiter via the oneshot channel.
 fn dispatch_from_response(
-    id: jsonrpcmsg::Id,
+    id: agent_client_protocol_schema::RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
 ) -> Dispatch {
@@ -445,7 +478,8 @@ fn report_handler_error<Counterpart: Role>(
     match id {
         Some(id) => {
             // Request: send error response with the original request id
-            let jsonrpc_id = serde_json::from_value(id).unwrap_or(jsonrpcmsg::Id::Null);
+            let jsonrpc_id =
+                serde_json::from_value(id).unwrap_or(agent_client_protocol_schema::RequestId::Null);
             send_raw_message(
                 &connection.message_tx,
                 OutgoingMessage::Response {

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use agent_client_protocol::schema::{self, ProtocolVersion, v2};
 use agent_client_protocol::{
     Agent, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
-    NullHandler, Role, UntypedRole, jsonrpcmsg,
+    NullHandler, RawJsonRpcMessage, Role, UntypedRole,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
@@ -66,22 +66,22 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
 
     channel
         .tx
-        .unbounded_send(Ok(jsonrpcmsg::Message::Request(
-            jsonrpcmsg::Request::new_v2(
-                "initialize".into(),
-                Some(jsonrpcmsg::Params::Object(params)),
-                Some(jsonrpcmsg::Id::Number(1)),
-            ),
-        )))
+        .unbounded_send(Ok(RawJsonRpcMessage::request(
+            "initialize".into(),
+            Value::Object(params),
+            schema::RequestId::Number(1),
+        )?))
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
         let message = message?;
-        let jsonrpcmsg::Message::Response(response) = message else {
+        let RawJsonRpcMessage::Response(response) = message else {
             continue;
         };
-        let error = response.error.expect("malformed initialize should fail");
-        assert_eq!(error.code, -32602);
+        let schema::Response::Error { error, .. } = response else {
+            panic!("malformed initialize should fail");
+        };
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
         let data = error
             .data
             .as_ref()
