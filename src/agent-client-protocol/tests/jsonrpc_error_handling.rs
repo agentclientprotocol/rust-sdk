@@ -185,6 +185,7 @@ async fn test_invalid_json() {
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": null,
                   "error": {
                     "code": -32700,
                     "message": "Parse error",
@@ -635,6 +636,7 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 3,
                   "error": {
                     "code": -32602,
                     "message": "Invalid params",
@@ -645,8 +647,7 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
                       },
                       "phase": "deserialization"
                     }
-                  },
-                  "id": 3
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&invalid_response).unwrap());
 
@@ -663,10 +664,10 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 4,
                   "result": {
                     "result": "echo: hello"
-                  },
-                  "id": 4
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
         })
@@ -741,6 +742,7 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": null,
                   "error": {
                     "code": -32602,
                     "message": "Invalid params",
@@ -769,10 +771,10 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
             expect![[r#"
                 {
                   "jsonrpc": "2.0",
+                  "id": 10,
                   "result": {
                     "result": "echo: after bad notification"
-                  },
-                  "id": 10
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
         })

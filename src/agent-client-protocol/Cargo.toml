@@ -41,7 +41,6 @@ agent-client-protocol-derive.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true
-jsonrpcmsg.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

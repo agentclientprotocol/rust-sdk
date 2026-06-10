@@ -9,8 +9,12 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
-use agent_client_protocol::{DynConnectTo, JsonRpcMessage, Role, UntypedMessage, jsonrpcmsg};
+use agent_client_protocol::schema::{
+    McpOverAcpMessage, RequestId, Response as RpcResponse, SuccessorMessage,
+};
+use agent_client_protocol::{
+    DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams, Role, UntypedMessage,
+};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
@@ -309,73 +313,114 @@ impl TraceWriter {
         // * Incoming requests/notifications targeting the AGENT.
 
         match message {
-            jsonrpcmsg::Message::Request(req) => {
+            RawJsonRpcMessage::Request(req) => {
                 let MessageInfo {
                     successor,
                     id,
                     protocol,
                     method,
                     params,
-                } = MessageInfo::from_req(req);
+                } = MessageInfo::from_request(req);
 
-                let (from, to) = match (successor, incoming, component_index, successor_index) {
-                    // An incoming request/notification to a proxy from its predecessor.
-                    (Successor(false), Incoming(true), ComponentIndex::Proxy(proxy_index), _) => (
-                        ComponentIndex::predecessor_of(proxy_index),
-                        ComponentIndex::Proxy(proxy_index),
-                    ),
-
-                    // An incoming request/notification to any component from its successor.
-                    //
-                    // This includes incoming messages to the client in the case where we have no proxies.
-                    (Successor(true), Incoming(true), component_index, successor_index) => {
-                        (successor_index, component_index)
-                    }
-
-                    // An outgoing request/notification from a component to its successor
-                    // *and* its successor is not a proxy.
-                    //
-                    // (If its successor is a proxy, we ignore it, because we'll also see the
-                    // message in "incoming" form).
-                    (Successor(true), Incoming(false), component_index, ComponentIndex::Agent) => {
-                        (component_index, ComponentIndex::Agent)
-                    }
-
-                    _ => return,
-                };
-
-                match id {
-                    Some(id) => {
-                        self.request(protocol, from, to, id_to_json(&id), method, None, params);
-                    }
-                    None => {
-                        self.notification(protocol, from, to, method, None, params);
-                    }
-                }
+                self.trace_request_or_notification(
+                    incoming,
+                    component_index,
+                    successor_index,
+                    successor,
+                    id,
+                    protocol,
+                    method,
+                    params,
+                );
             }
-            jsonrpcmsg::Message::Response(resp) => {
+            RawJsonRpcMessage::Notification(notification) => {
+                let MessageInfo {
+                    successor,
+                    id,
+                    protocol,
+                    method,
+                    params,
+                } = MessageInfo::from_notification(notification);
+
+                self.trace_request_or_notification(
+                    incoming,
+                    component_index,
+                    successor_index,
+                    successor,
+                    id,
+                    protocol,
+                    method,
+                    params,
+                );
+            }
+            RawJsonRpcMessage::Response(resp) => {
                 // Lookup the response by its id.
                 // All of the messages we are intercepting go to our proxies,
-                // and we always assign them globally unique
-                if let Some(id) = resp.id {
-                    let id = id_to_json(&id);
-                    if let Some(RequestDetails {
-                        protocol: _,
-                        method: _,
-                        request_from,
-                        request_to,
-                    }) = self.request_details.remove(&id)
-                    {
-                        let (is_error, payload) = match (&resp.result, &resp.error) {
-                            (Some(result), _) => (false, result.clone()),
-                            (_, Some(error)) => {
-                                (true, serde_json::to_value(error).unwrap_or_default())
-                            }
-                            (None, None) => (false, serde_json::Value::Null),
-                        };
-                        self.response(request_to, request_from, id, is_error, payload);
+                // and we always assign them globally unique ids.
+                let (id, is_error, payload) = match resp {
+                    RpcResponse::Result { id, result } => (id, false, result),
+                    RpcResponse::Error { id, error } => {
+                        (id, true, serde_json::to_value(error).unwrap_or_default())
                     }
+                };
+                let id = id_to_json(&id);
+                if let Some(RequestDetails {
+                    protocol: _,
+                    method: _,
+                    request_from,
+                    request_to,
+                }) = self.request_details.remove(&id)
+                {
+                    self.response(request_to, request_from, id, is_error, payload);
                 }
+            }
+        }
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    fn trace_request_or_notification(
+        &mut self,
+        incoming: Incoming,
+        component_index: ComponentIndex,
+        successor_index: ComponentIndex,
+        successor: Successor,
+        id: Option<RequestId>,
+        protocol: Protocol,
+        method: String,
+        params: serde_json::Value,
+    ) {
+        let (from, to) = match (successor, incoming, component_index, successor_index) {
+            // An incoming request/notification to a proxy from its predecessor.
+            (Successor(false), Incoming(true), ComponentIndex::Proxy(proxy_index), _) => (
+                ComponentIndex::predecessor_of(proxy_index),
+                ComponentIndex::Proxy(proxy_index),
+            ),
+
+            // An incoming request/notification to any component from its successor.
+            //
+            // This includes incoming messages to the client in the case where we have no proxies.
+            (Successor(true), Incoming(true), component_index, successor_index) => {
+                (successor_index, component_index)
+            }
+
+            // An outgoing request/notification from a component to its successor
+            // *and* its successor is not a proxy.
+            //
+            // (If its successor is a proxy, we ignore it, because we'll also see the
+            // message in "incoming" form).
+            (Successor(true), Incoming(false), component_index, ComponentIndex::Agent) => {
+                (component_index, ComponentIndex::Agent)
+            }
+
+            _ => return,
+        };
+
+        match id {
+            Some(id) => {
+                self.request(protocol, from, to, id_to_json(&id), method, None, params);
+            }
+            None => {
+                self.notification(protocol, from, to, method, None, params);
             }
         }
     }
@@ -420,7 +465,7 @@ impl TraceHandle {
         component_index: ComponentIndex,
         successor_index: ComponentIndex,
         incoming: Incoming,
-        message: &jsonrpcmsg::Message,
+        message: &RawJsonRpcMessage,
     ) -> Result<(), agent_client_protocol::Error> {
         self.tx
             .unbounded_send(TracedMessage {
@@ -470,13 +515,13 @@ impl TraceHandle {
     }
 }
 
-/// Convert a jsonrpcmsg::Id to serde_json::Value.
-fn id_to_json(id: &jsonrpcmsg::Id) -> serde_json::Value {
-    match id {
-        jsonrpcmsg::Id::String(s) => serde_json::Value::String(s.clone()),
-        jsonrpcmsg::Id::Number(n) => serde_json::Value::Number((*n).into()),
-        jsonrpcmsg::Id::Null => serde_json::Value::Null,
-    }
+/// Convert a JSON-RPC id to serde_json::Value.
+fn id_to_json(id: &RequestId) -> serde_json::Value {
+    serde_json::to_value(id).expect("RequestId serializes infallibly")
+}
+
+fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value {
+    params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)
 }
 
 /// A message observed going over a channel connected to `left` and `right`.
@@ -486,14 +531,14 @@ struct TracedMessage {
     component_index: ComponentIndex,
     successor_index: ComponentIndex,
     incoming: Incoming,
-    message: jsonrpcmsg::Message,
+    message: RawJsonRpcMessage,
 }
 
 /// Fully interpreted message info.
 #[derive(Debug)]
 struct MessageInfo {
     successor: Successor,
-    id: Option<jsonrpcmsg::Id>,
+    id: Option<RequestId>,
     protocol: Protocol,
     method: String,
     params: serde_json::Value,
@@ -514,15 +559,27 @@ impl MessageInfo {
     /// - `_mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).
-    fn from_req(req: jsonrpcmsg::Request) -> Self {
-        let untyped = UntypedMessage::parse_message(&req.method, &req.params)
-            .expect("untyped message is infallible");
-        Self::from_untyped(Successor(false), req.id, Protocol::Acp, untyped)
+    fn from_request(req: agent_client_protocol::schema::Request<RawJsonRpcParams>) -> Self {
+        let untyped =
+            UntypedMessage::parse_message(&req.method, &params_from_transport(req.params))
+                .expect("untyped message is infallible");
+        Self::from_untyped(Successor(false), Some(req.id), Protocol::Acp, untyped)
+    }
+
+    fn from_notification(
+        notification: agent_client_protocol::schema::Notification<RawJsonRpcParams>,
+    ) -> Self {
+        let untyped = UntypedMessage::parse_message(
+            &notification.method,
+            &params_from_transport(notification.params),
+        )
+        .expect("untyped message is infallible");
+        Self::from_untyped(Successor(false), None, Protocol::Acp, untyped)
     }
 
     fn from_untyped(
         successor: Successor,
-        id: Option<jsonrpcmsg::Id>,
+        id: Option<RequestId>,
         protocol: Protocol,
         untyped: UntypedMessage,
     ) -> Self {
