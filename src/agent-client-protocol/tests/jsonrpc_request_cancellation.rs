@@ -401,6 +401,140 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn malformed_successor_envelope_still_reaches_handlers() {
+    use tokio::io::AsyncWriteExt;
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (notification_tx, mut notification_rx) = mpsc::unbounded();
+
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, _client_reader) = tokio::io::duplex(4096);
+
+            let server_transport = agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            );
+            // A catch-all notification handler: a successor envelope whose
+            // params cannot be peeled (no inner `method`) must not be
+            // mistaken for a cancellation and short-circuited; it must flow
+            // through the handler chain like any other notification.
+            let server = UntypedRole.builder().on_receive_notification(
+                async move |notification: agent_client_protocol::UntypedMessage,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    notification_tx
+                        .unbounded_send((notification.method, notification.params))
+                        .unwrap();
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_notification!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"bogus":true}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let (method, params) = next_with_timeout(&mut notification_rx).await;
+            assert_eq!(method, "_proxy/successor");
+            assert_eq!(params, serde_json::json!({ "bogus": true }));
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn wrapped_cancel_request_cancels_wrapped_request() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, client_reader) = tokio::io::duplex(4096);
+
+            let server_transport = agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            );
+            let server = WrappedHost.builder().on_receive_request_from(
+                WrappedSuccessor,
+                async |_request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       cx: ConnectionTo<WrappedCounterpart>| {
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let response = cancellation
+                            .run_until_cancelled(futures::future::pending::<
+                                Result<SimpleResponse, agent_client_protocol::Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(response)
+                    })?;
+                    Ok(())
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            // A request wrapped in a successor envelope is registered under
+            // its outer JSON-RPC id, so a wrapped `$/cancel_request` for that
+            // outer id must cancel it.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":7,"method":"_proxy/successor","params":{"method":"simple_method","params":{"message":"wrapped"}}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":7}}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "jsonrpc": "2.0",
+                  "error": {
+                    "code": -32800,
+                    "message": "Request cancelled"
+                  },
+                  "id": 7
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cancel_request_notification_can_be_sent_and_handled() {
     use tokio::task::LocalSet;
 

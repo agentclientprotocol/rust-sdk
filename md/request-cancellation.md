@@ -1,124 +1,78 @@
 # Request Cancellation
 
-The SDK exposes the ACP `$/cancel_request` notification behind the
-`unstable_cancel_request` feature. The notification is protocol-level: either
-side may send it to ask the peer to cancel one outstanding JSON-RPC request by
-ID.
+This chapter documents the `$/cancel_request` protocol-level notification and
+how the SDK implements it.
 
-Enable the feature when depending on the crate:
+For API usage (cancelling a `SentRequest`, observing cancellation from a
+`Responder`), see the `concepts::cancellation` chapter in the
+[agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol). The
+SDK support is gated behind the `unstable_cancel_request` feature:
 
 ```toml
 agent-client-protocol = { version = "...", features = ["unstable_cancel_request"] }
 ```
 
-Cancellation is cooperative. A peer may ignore `$/cancel_request`, may finish
-with normal data, or may respond to the original request with
-`Error::request_cancelled()` (`-32800`). The requesting side always receives a
-response to the original request; cancellation only changes _which_ response
-that is. The SDK ignores unhandled `$/...` notifications (even when the
-feature is disabled) so unsupported protocol-level notifications do not
-produce method-not-found errors.
+## The `$/cancel_request` Notification
 
-## Cancelling outgoing requests
+Either side of a connection may send `$/cancel_request` to ask the peer to
+cancel one outstanding JSON-RPC request, identified by its ID:
 
-To cancel a request sent through `ConnectionTo::send_request`, keep the
-returned `SentRequest` and call `cancel` on it:
-
-```rust
-# use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
-# use agent_client_protocol_test::MyRequest;
-# async fn example(cx: ConnectionTo<UntypedRole>) -> Result<(), Error> {
-let request = cx.send_request(MyRequest {});
-request.cancel()?;
-
-// The peer still responds to the request: with normal data if it raced
-// ahead, or with the standard cancellation error.
-let result = request.block_task().await;
-# let _ = result;
-# Ok(())
-# }
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "$/cancel_request",
+  "params": {
+    "requestId": "70b9f1c9-c2a3-4bd2-b6b9-65a06d96b675"
+  }
+}
 ```
 
-The `SentRequest` remembers the peer and any proxy wrapping used for the
-original request, so this also works for requests sent through
-`ConnectionTo::send_request_to`.
+`requestId` is the JSON-RPC `id` of the request to cancel, as allocated by the
+sender of that request (a string, number, or null).
 
-Dropping a `SentRequest` before the SDK receives a response also sends
-`$/cancel_request`. This covers abandoned request handles and futures. Once the
-SDK routes a response to the waiting request handle, automatic cancellation is
-disarmed, even if caller code has not yet consumed it with `block_task`,
-`on_receiving_result`, or `forward_response_to`.
+## Semantics
 
-If you already have the JSON-RPC request ID, send the notification directly:
+Cancellation is **cooperative**. After receiving `$/cancel_request`, the peer
+may:
 
-```rust
-# use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
-# async fn example(cx: ConnectionTo<UntypedRole>) -> Result<(), Error> {
-cx.send_cancel_request("request-id".to_string())?;
-# Ok(())
-# }
-```
+- ignore it and respond to the request normally,
+- finish early with whatever data it has, or
+- respond to the original request with the standard cancellation error,
+  code `-32800` ("Request cancelled").
 
-## Handling cancellation of incoming requests
+The requesting side always receives a response to the original request;
+cancellation only changes _which_ response that is. A `$/cancel_request` for
+an unknown or already-completed request ID is silently ignored.
 
-For incoming requests, get the request-local cancellation marker from the
-`Responder`. This keeps cancellation handling next to the request work it
-controls:
+## Interoperability
 
-```rust
-# use agent_client_protocol::{ConnectionTo, Error, Responder, UntypedRole};
-# use agent_client_protocol_test::{MyRequest, MyResponse};
-# async fn example(request: MyRequest, responder: Responder<MyResponse>, cx: ConnectionTo<UntypedRole>) -> Result<(), Error> {
-# async fn run_request(_request: MyRequest) -> Result<MyResponse, Error> { todo!() }
-let cancellation = responder.cancellation();
+Protocol-level (`$/`-prefixed) notifications are optional by design. The SDK
+ignores unhandled `$/` notifications instead of rejecting them with a
+method-not-found error, and does so even when the `unstable_cancel_request`
+feature is disabled. A peer that sends `$/cancel_request` to a component built
+without cancellation support therefore loses nothing: the request simply runs
+to completion.
 
-cx.spawn(async move {
-    let response = cancellation.run_until_cancelled(run_request(request)).await;
-    responder.respond_with_result(response)
-})?;
-# Ok(())
-# }
-```
+## Proxy Chains
 
-`run_until_cancelled` is the simple path for handlers that should stop work and
-reply with the standard cancellation error as soon as cancellation is
-requested; it drops the work future when cancellation wins, so cleanup must
-happen in `Drop` implementations and partial results are lost. If the handler
-needs cleanup, partial results, or custom cancellation behavior, use
-`cancellation.cancelled()` or `cancellation.is_cancelled()` directly inside
-the request work instead.
+Cancellation propagates **hop by hop** rather than end to end. Request IDs are
+allocated per connection, so a `$/cancel_request` only ever refers to a
+request on the connection it is sent over:
 
-Cancellation markers are only updated when the connection can process the
-incoming `$/cancel_request` notification. Long-running handlers should return
-quickly and move work into `ConnectionTo::spawn`, `SentRequest` callbacks, or
-another task.
+1. The client sends `$/cancel_request` for a request it made to its direct
+   peer (for example, a proxy).
+2. A proxy that forwarded the request downstream (the SDK does this with
+   `forward_response_to`) reacts by sending its own `$/cancel_request` for the
+   downstream request, using the downstream connection's request ID.
+3. The downstream response — normal data or the cancellation error — flows
+   back up the chain as the response to each hop's request.
 
-## Proxies
+When the notification targets a request that was wrapped in a
+`_proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
+`$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
+the JSON-RPC `id` of the wrapped request on that connection.
 
-When proxying with `SentRequest::forward_response_to`, the SDK observes the
-upstream `Responder` cancellation marker and forwards cancellation to the
-downstream request automatically. The downstream response (normal data or a
-cancellation error) is still forwarded back upstream.
+## Related Documentation
 
-## Low-level access
-
-Register `CancelRequestNotification` or `ProtocolLevelNotification` directly
-only when you need low-level access to cancellation notifications, such as
-custom routing or protocol tracing:
-
-```rust
-# use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
-use agent_client_protocol::schema::CancelRequestNotification;
-
-# fn example() {
-let builder = UntypedRole.builder().on_receive_notification(
-    async |cancel: CancelRequestNotification, _cx: ConnectionTo<UntypedRole>| {
-        // Mark the matching in-flight operation cancelled.
-        let _request_id = cancel.request_id;
-        Ok(())
-    },
-    agent_client_protocol::on_receive_notification!(),
-);
-# let _ = builder;
-# }
-```
+- [Protocol Reference](./protocol.md) - The `_proxy/successor/*` envelope protocol
+- [agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol) - SDK API for sending, observing, and forwarding cancellations (see `concepts::cancellation`)

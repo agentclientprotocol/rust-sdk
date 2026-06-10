@@ -118,6 +118,11 @@
 //! # }
 //! ```
 //!
+//! Such a handler observes cancellation notifications but does not replace
+//! the built-in handling: the SDK updates the [`Responder`] cancellation
+//! markers for every incoming `$/cancel_request` before the handler chain
+//! runs, even when a handler claims the notification.
+//!
 //! [`block_task`]: crate::SentRequest::block_task
 //! [`on_receiving_result`]: crate::SentRequest::on_receiving_result
 //! [`forward_response_to`]: crate::SentRequest::forward_response_to
