@@ -1476,10 +1476,27 @@ impl Debug for RequestCancellation {
     }
 }
 
+/// Per-request cancellation state tracked by [`RequestCancellationRegistry`].
+///
+/// The full [`RequestCancellation`] marker (with its wakeup machinery) is only
+/// allocated once a handler asks for it via [`Responder::cancellation`]; until
+/// then an incoming `$/cancel_request` just flips the entry to `Cancelled`.
+/// This keeps the per-request cost of the registry to a single map entry.
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug)]
+enum RequestCancellationEntry {
+    /// The request is in flight; no marker handed out, no cancellation yet.
+    Armed,
+    /// `$/cancel_request` arrived before a marker was handed out.
+    Cancelled,
+    /// A marker was handed out via [`Responder::cancellation`].
+    Marker(RequestCancellation),
+}
+
 #[cfg(feature = "unstable_cancel_request")]
 #[derive(Clone, Debug, Default)]
 struct RequestCancellationRegistry {
-    inner: Arc<Mutex<HashMap<serde_json::Value, RequestCancellation>>>,
+    inner: Arc<Mutex<HashMap<serde_json::Value, RequestCancellationEntry>>>,
 }
 
 #[cfg(not(feature = "unstable_cancel_request"))]
@@ -1491,7 +1508,6 @@ struct RequestCancellationRegistry;
 struct ResponderCancellation {
     id: serde_json::Value,
     registry: RequestCancellationRegistry,
-    cancellation: RequestCancellation,
 }
 
 #[cfg(not(feature = "unstable_cancel_request"))]
@@ -1505,15 +1521,45 @@ impl RequestCancellationRegistry {
     }
 
     fn register(&self, id: serde_json::Value) -> ResponderCancellation {
-        let cancellation = RequestCancellation::new();
         self.inner
             .lock()
             .expect("request cancellation registry mutex poisoned")
-            .insert(id.clone(), cancellation.clone());
+            .insert(id.clone(), RequestCancellationEntry::Armed);
         ResponderCancellation {
             id,
             registry: self.clone(),
-            cancellation,
+        }
+    }
+
+    /// Get the cancellation marker for a registered request, creating it on
+    /// first use. Repeated calls return markers that share the same state.
+    fn marker(&self, id: &serde_json::Value) -> RequestCancellation {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("request cancellation registry mutex poisoned");
+        let Some(entry) = inner.get_mut(id) else {
+            // The entry lives as long as the responder that owns it, so this
+            // is only reachable if the peer reused a request ID and the
+            // earlier request's responder already removed the shared entry.
+            // Hand out a detached marker rather than panicking.
+            return RequestCancellation::new();
+        };
+        match entry {
+            RequestCancellationEntry::Marker(marker) => marker.clone(),
+            RequestCancellationEntry::Armed => {
+                let marker = RequestCancellation::new();
+                *entry = RequestCancellationEntry::Marker(marker.clone());
+                marker
+            }
+            RequestCancellationEntry::Cancelled => {
+                // No one can be waiting on a marker that did not exist yet,
+                // so firing it while holding the registry lock is fine.
+                let marker = RequestCancellation::new();
+                marker.cancel();
+                *entry = RequestCancellationEntry::Marker(marker.clone());
+                marker
+            }
         }
     }
 
@@ -1525,18 +1571,28 @@ impl RequestCancellationRegistry {
     }
 
     fn cancel(&self, request_id: &serde_json::Value) -> bool {
-        let cancellation = self
-            .inner
-            .lock()
-            .expect("request cancellation registry mutex poisoned")
-            .get(request_id)
-            .cloned();
-        if let Some(cancellation) = cancellation {
-            cancellation.cancel();
-            true
-        } else {
-            false
-        }
+        let marker = {
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("request cancellation registry mutex poisoned");
+            let Some(entry) = inner.get_mut(request_id) else {
+                return false;
+            };
+            match entry {
+                RequestCancellationEntry::Marker(marker) => marker.clone(),
+                RequestCancellationEntry::Cancelled => return true,
+                RequestCancellationEntry::Armed => {
+                    *entry = RequestCancellationEntry::Cancelled;
+                    return true;
+                }
+            }
+        };
+
+        // Fire the marker outside the registry lock: waking waiters runs
+        // arbitrary waker code that must not observe the lock held.
+        marker.cancel();
+        true
     }
 
     fn remove(&self, request_id: &serde_json::Value) {
@@ -1574,7 +1630,7 @@ impl RequestCancellationRegistry {
 #[cfg(feature = "unstable_cancel_request")]
 impl ResponderCancellation {
     fn cancellation(&self) -> RequestCancellation {
-        self.cancellation.clone()
+        self.registry.marker(&self.id)
     }
 }
 
@@ -1626,6 +1682,10 @@ fn cancellation_request_id_from_message(
 /// protocol-level notifications are optional by design, so a peer that sends
 /// `$/cancel_request` must be able to interoperate with an SDK built without
 /// `unstable_cancel_request` (which simply won't act on it).
+///
+/// A handler that explicitly declines with `retry: true` takes precedence
+/// over this fallback: the notification is queued for newly registered
+/// dynamic handlers like any other retried message.
 ///
 /// [`SuccessorMessage`]: crate::schema::SuccessorMessage
 fn is_protocol_level_notification(dispatch: &Dispatch) -> bool {

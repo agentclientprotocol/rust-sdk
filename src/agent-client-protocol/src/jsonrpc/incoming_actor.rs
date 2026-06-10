@@ -394,19 +394,23 @@ async fn dispatch_dispatch<Counterpart: Role>(
         }
     }
 
-    if super::is_protocol_level_notification(&dispatch) {
-        tracing::debug!(?method, "Ignoring unhandled protocol-level notification");
-        return Ok(());
-    }
-
     // If the message was never handled, check whether the retry flag was set.
     // If so, enqueue it for later processing. Else, reject it.
+    //
+    // An explicit retry request takes precedence over the protocol-level
+    // fallback below, so that handlers may defer `$/` notifications to a
+    // dynamic handler that has not been registered yet.
     if retry_any {
         tracing::debug!(
             ?method,
             "Retrying message as new dynamic handlers are added"
         );
         pending_messages.push(dispatch);
+        Ok(())
+    } else if super::is_protocol_level_notification(&dispatch) {
+        // Unsupported protocol-level notifications are ignored rather than
+        // rejected; see `is_protocol_level_notification` for the rationale.
+        tracing::debug!(?method, "Ignoring unhandled protocol-level notification");
         Ok(())
     } else {
         match dispatch {

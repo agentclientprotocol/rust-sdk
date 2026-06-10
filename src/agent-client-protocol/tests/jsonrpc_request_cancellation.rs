@@ -15,8 +15,8 @@
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::{
-    Channel, ConnectionTo, Dispatch, Handled, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
-    Responder, Role, RoleId, SentRequest,
+    Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcRequest,
+    JsonRpcResponse, Responder, Role, RoleId, SentRequest,
     role::UntypedRole,
     schema::{CancelRequestNotification, ProtocolLevelNotification, RequestId},
 };
@@ -909,6 +909,222 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                 .unwrap();
 
             assert_no_event(&mut backend_cancel_rx);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_marker_requested_after_cancel_is_already_cancelled() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            // The responder is parked here by the request handler *without*
+            // requesting a cancellation marker; the marker is only created
+            // after the cancellation has already been recorded.
+            let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
+                Arc::new(Mutex::new(None));
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |_request: SimpleRequest,
+                                    responder: Responder<SimpleResponse>,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            *pending_responder.lock().unwrap() = Some(responder);
+                            Ok(())
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |_cancel: CancelRequestNotification,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            // The registry recorded the cancellation before
+                            // this handler ran, so markers created only now
+                            // must already report it.
+                            let responder = pending_responder
+                                .lock()
+                                .unwrap()
+                                .take()
+                                .expect("request should have arrived before its cancellation");
+                            let marker = responder.cancellation();
+                            let second_marker = responder.cancellation();
+                            if marker.is_cancelled() && second_marker.is_cancelled() {
+                                responder.respond_with_result(Err(
+                                    agent_client_protocol::Error::request_cancelled(),
+                                ))
+                            } else {
+                                responder.respond(SimpleResponse {
+                                    result: "marker not cancelled".into(),
+                                })
+                            }
+                        }
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let error = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "cancel before marker".into(),
+                    });
+                    request.cancel()?;
+                    Ok(request
+                        .block_task()
+                        .await
+                        .expect_err("request should be cancelled"))
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(i32::from(error.code), -32800);
+            assert_eq!(error.message, "Request cancelled");
+        })
+        .await;
+}
+
+/// A dynamic handler that claims `$/cancel_request` notifications and reports
+/// them on a channel.
+struct CancelCollector {
+    tx: mpsc::UnboundedSender<RequestId>,
+}
+
+impl HandleDispatchFrom<UntypedRole> for CancelCollector {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<UntypedRole>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        if let Dispatch::Notification(notification) = &message
+            && CancelRequestNotification::matches_method(&notification.method)
+        {
+            let cancel = CancelRequestNotification::parse_message(
+                &notification.method,
+                &notification.params,
+            )?;
+            self.tx.unbounded_send(cancel.request_id).unwrap();
+            return Ok(Handled::Yes);
+        }
+
+        Ok(Handled::No {
+            message,
+            retry: false,
+        })
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "CancelCollector"
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retried_protocol_level_notification_reaches_later_dynamic_handler() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (collector_tx, mut collector_rx) = mpsc::unbounded();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_notification(
+                    // Decline the notification but ask for a retry: this must
+                    // take precedence over the "ignore unhandled `$/`
+                    // notifications" fallback.
+                    async |cancel: CancelRequestNotification, cx: ConnectionTo<UntypedRole>| {
+                        Ok::<_, agent_client_protocol::Error>(Handled::No {
+                            message: (cancel, cx),
+                            retry: true,
+                        })
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                .on_receive_request(
+                    {
+                        let collector_tx = collector_tx.clone();
+                        async move |request: SimpleRequest,
+                                    responder: Responder<SimpleResponse>,
+                                    connection: ConnectionTo<UntypedRole>| {
+                            if request.message == "register" {
+                                connection
+                                    .add_dynamic_handler(CancelCollector {
+                                        tx: collector_tx.clone(),
+                                    })?
+                                    .run_indefinitely();
+                            }
+                            responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            })
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let received = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    cx.send_cancel_request("req-1".to_string())?;
+
+                    // Barrier: the notification has now been declined and
+                    // queued for retry, and no dynamic handler has seen it.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    assert_no_event(&mut collector_rx);
+
+                    // Registering the dynamic handler replays the queued
+                    // notification to it.
+                    let register = cx
+                        .send_request(SimpleRequest {
+                            message: "register".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(register.result, "echo: register");
+
+                    Ok(next_with_timeout(&mut collector_rx).await)
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(received, RequestId::Str("req-1".into()));
+            assert_no_event(&mut collector_rx);
         })
         .await;
 }
