@@ -7,11 +7,11 @@
 ### Added
 
 - Stabilize session/delete, message ids, and context usage ([#199](https://github.com/agentclientprotocol/rust-sdk/pull/199))
-- _(acp)_ add unstable elicitation support ([#197](https://github.com/agentclientprotocol/rust-sdk/pull/197))
+- *(acp)* add unstable elicitation support ([#197](https://github.com/agentclientprotocol/rust-sdk/pull/197))
 
 ### Fixed
 
-- _(acp)_ Serialize proxy metadata as \_meta ([#198](https://github.com/agentclientprotocol/rust-sdk/pull/198))
+- *(acp)* Serialize proxy metadata as _meta ([#198](https://github.com/agentclientprotocol/rust-sdk/pull/198))
 
 ### Other
 
@@ -19,21 +19,21 @@
 
 ### Added
 
-- _(unstable)_ Add JSON-RPC support for elicitation requests and notifications.
+- *(unstable)* Add JSON-RPC support for elicitation requests and notifications.
 
 ## [0.13.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.0...v0.13.1) - 2026-06-01
 
 ### Added
 
-- _(deps)_ bump schema to 0.13.5 ([#188](https://github.com/agentclientprotocol/rust-sdk/pull/188))
+- *(deps)* bump schema to 0.13.5 ([#188](https://github.com/agentclientprotocol/rust-sdk/pull/188))
 
 ## [0.13.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.12.1...v0.13.0) - 2026-06-01
 
 ### Added
 
-- _(acp)_ stabilize logout support ([#185](https://github.com/agentclientprotocol/rust-sdk/pull/185))
-- _(acp)_ Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
-- _(acp)_ Add unstable (very experimental!) protocol v2 support ([#170](https://github.com/agentclientprotocol/rust-sdk/pull/170))
+- *(acp)* stabilize logout support ([#185](https://github.com/agentclientprotocol/rust-sdk/pull/185))
+- *(acp)* Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
+- *(acp)* Add unstable (very experimental!) protocol v2 support ([#170](https://github.com/agentclientprotocol/rust-sdk/pull/170))
 
 ### Changed
 
@@ -49,10 +49,10 @@
 
 ### Added
 
-- _(acp)_ add unstable session delete support ([#165](https://github.com/agentclientprotocol/rust-sdk/pull/165))
+- *(acp)* add unstable session delete support ([#165](https://github.com/agentclientprotocol/rust-sdk/pull/165))
 - extract mcp-over-acp proxy ([#146](https://github.com/agentclientprotocol/rust-sdk/pull/146))
 - Stabilize session/close and session/resume ([#147](https://github.com/agentclientprotocol/rust-sdk/pull/147))
-- remove direct dependency on tokio ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
+- remove direct dependency on tokio  ([#145](https://github.com/agentclientprotocol/rust-sdk/pull/145))
 
 ### Fixed
 
@@ -70,7 +70,7 @@
 
 ### Added
 
-- _(unstable)_ Add support for `session/delete` method.
+- *(unstable)* Add support for `session/delete` method.
 - `McpConnectionTo::acp_id()` method.
 
 ### Deprecated
@@ -81,7 +81,7 @@
 
 ### Fixed
 
-- _(acp)_ remove `boxfnonce` dependency in favor of `Box<dyn FnOnce>` ([#137](https://github.com/agentclientprotocol/rust-sdk/pull/137))
+- *(acp)* remove `boxfnonce` dependency in favor of `Box<dyn FnOnce>` ([#137](https://github.com/agentclientprotocol/rust-sdk/pull/137))
 
 ## [0.11.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.4...v0.11.0) - 2026-04-20
 
@@ -92,9 +92,9 @@
 
 ### Fixed
 
-- _(rpc)_ log errors when sending response to peer fails ([#101](https://github.com/agentclientprotocol/rust-sdk/pull/101))
-- _(rpc)_ handle write failures in handle_io loop ([#99](https://github.com/agentclientprotocol/rust-sdk/pull/99))
-- _(rpc)_ use RawValue::NULL constant instead of from_string().unwrap() ([#96](https://github.com/agentclientprotocol/rust-sdk/pull/96))
+- *(rpc)* log errors when sending response to peer fails ([#101](https://github.com/agentclientprotocol/rust-sdk/pull/101))
+- *(rpc)* handle write failures in handle_io loop ([#99](https://github.com/agentclientprotocol/rust-sdk/pull/99))
+- *(rpc)* use RawValue::NULL constant instead of from_string().unwrap() ([#96](https://github.com/agentclientprotocol/rust-sdk/pull/96))
 
 ### Other
 
@@ -102,13 +102,13 @@
 - Add mdbook build ([#120](https://github.com/agentclientprotocol/rust-sdk/pull/120))
 - Add migration guide for next release ([#111](https://github.com/agentclientprotocol/rust-sdk/pull/111))
 - remove debug code from rpc_tests ([#100](https://github.com/agentclientprotocol/rust-sdk/pull/100))
-- _(test)_ add conditional compilation ([#98](https://github.com/agentclientprotocol/rust-sdk/pull/98))
+- *(test)* add conditional compilation ([#98](https://github.com/agentclientprotocol/rust-sdk/pull/98))
 
 ## [0.10.4](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.3...v0.10.4) - 2026-03-31
 
 ### Added
 
-- _(schema)_ Update schema to 0.11.4 ([#95](https://github.com/agentclientprotocol/rust-sdk/pull/95))
+- *(schema)* Update schema to 0.11.4 ([#95](https://github.com/agentclientprotocol/rust-sdk/pull/95))
 
 ### Fixed
 
@@ -123,14 +123,14 @@
 
 ### Added
 
-- _(unstable)_ Add logout support ([#84](https://github.com/agentclientprotocol/rust-sdk/pull/84))
-- _(schema)_ Update schema to 0.11.3 ([#82](https://github.com/agentclientprotocol/rust-sdk/pull/82))
+- *(unstable)* Add logout support ([#84](https://github.com/agentclientprotocol/rust-sdk/pull/84))
+- *(schema)* Update schema to 0.11.3 ([#82](https://github.com/agentclientprotocol/rust-sdk/pull/82))
 
 ## [0.10.2](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.1...v0.10.2) - 2026-03-11
 
 ### Added
 
-- _(unstable)_ Add support for session/close methods ([#77](https://github.com/agentclientprotocol/rust-sdk/pull/77))
+- *(unstable)* Add support for session/close methods ([#77](https://github.com/agentclientprotocol/rust-sdk/pull/77))
 
 ## [0.10.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.10.0...v0.10.1) - 2026-03-10
 
@@ -171,15 +171,15 @@
 
 ### Added
 
-- _(unstable)_ Add initial support for session config options ([#36](https://github.com/agentclientprotocol/rust-sdk/pull/36))
+- *(unstable)* Add initial support for session config options ([#36](https://github.com/agentclientprotocol/rust-sdk/pull/36))
 
 ## [0.9.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.9.0...v0.9.1) - 2025-12-17
 
 ### Added
 
-- _(unstable)_ Add initial support for resuming sessions ([#34](https://github.com/agentclientprotocol/rust-sdk/pull/34))
-- _(unstable)_ Add initial support for forking sessions ([#33](https://github.com/agentclientprotocol/rust-sdk/pull/33))
-- _(unstable)_ Add initial support for listing sessions ([#31](https://github.com/agentclientprotocol/rust-sdk/pull/31))
+- *(unstable)* Add initial support for resuming sessions ([#34](https://github.com/agentclientprotocol/rust-sdk/pull/34))
+- *(unstable)* Add initial support for forking sessions ([#33](https://github.com/agentclientprotocol/rust-sdk/pull/33))
+- *(unstable)* Add initial support for listing sessions ([#31](https://github.com/agentclientprotocol/rust-sdk/pull/31))
 
 ### Other
 
