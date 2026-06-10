@@ -221,10 +221,12 @@ macro_rules! impl_jsonrpc_notification_enum {
 /// notification enum (`$/`-prefixed methods), shared between the v1 and v2
 /// schema namespaces.
 ///
-/// The schema enums are `#[non_exhaustive]`, so the matches need wildcard
-/// arms: when the schema crate adds a protocol-level notification, list it
-/// here as well. Unknown variants fail to serialize rather than producing a
-/// bogus method name on the wire.
+/// The incoming side (`matches_method`, `parse_message`) only recognizes the
+/// methods listed in the macro invocation: when the schema crate adds a
+/// protocol-level notification, list it here to parse it. The outgoing side
+/// (`method`, `to_untyped_message`) instead delegates to the schema enum's
+/// inherent `method()` and untagged serialization, which cover every variant,
+/// so unlisted variants still serialize with the correct method name.
 ///
 /// ```ignore
 /// impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification {
@@ -242,21 +244,17 @@ macro_rules! impl_jsonrpc_protocol_level_notification_enum {
             }
 
             fn method(&self) -> &str {
-                match self {
-                    $( Self::$variant(_) => $method, )*
-                    _ => "_unknown",
-                }
+                // Resolves to the schema enum's *inherent* `method()` (path
+                // syntax prefers inherent items over trait items), which
+                // matches its variants exhaustively: the enum is only
+                // non-exhaustive downstream.
+                <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
-                match self {
-                    $( Self::$variant(notification) => {
-                        $crate::UntypedMessage::new($method, notification)
-                    } )*
-                    _ => Err($crate::util::internal_error(
-                        "protocol-level notification variant is not supported by this SDK version",
-                    )),
-                }
+                // The schema enum is `#[serde(untagged)]`, so serializing the
+                // enum serializes the inner notification.
+                $crate::UntypedMessage::new(<$enum>::method(self), self)
             }
 
             fn parse_message(

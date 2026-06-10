@@ -1454,13 +1454,16 @@ impl RequestCancellation {
             return;
         }
 
-        if let Some(signal_tx) = self
+        let signal_tx = self
             .state
             .signal_tx
             .lock()
             .expect("request cancellation signal mutex poisoned")
-            .take()
-        {
+            .take();
+
+        // Complete the oneshot outside the lock: it wakes waiters, and
+        // arbitrary waker code must not observe the lock held.
+        if let Some(signal_tx) = signal_tx {
             let _ = signal_tx.send(());
         }
     }
@@ -3404,17 +3407,10 @@ impl SentRequestCancellation {
 
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
-        let untyped = jsonrpc_id_to_request_id(&self.request_id)
-            .and_then(|request_id| {
-                self.remote_style.transform_outgoing_message(
-                    crate::schema::CancelRequestNotification::new(request_id),
-                )
-            })
-            .map_err(|error| {
-                crate::util::internal_error(format!(
-                    "failed to create cancel request notification: {error}"
-                ))
-            })?;
+        let request_id = jsonrpc_id_to_request_id(&self.request_id)?;
+        let untyped = self.remote_style.transform_outgoing_message(
+            crate::schema::CancelRequestNotification::new(request_id),
+        )?;
 
         send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
     }

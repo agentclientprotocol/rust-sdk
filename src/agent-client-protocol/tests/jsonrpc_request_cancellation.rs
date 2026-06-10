@@ -953,6 +953,10 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
     local
         .run_until(async {
             let (backend_cancel_tx, mut backend_cancel_rx) = mpsc::unbounded();
+            // The responder for the cancelled request, parked by the backend
+            // until the forwarded cancellation arrives.
+            let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
+                Arc::new(Mutex::new(None));
 
             let (backend_for_proxy, backend_for_server) = Channel::duplex();
             let (backend_connection_tx, backend_connection_rx) =
@@ -974,18 +978,40 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
             let backend_server = UntypedRole
                 .builder()
                 .on_receive_request(
-                    async |_request: SimpleRequest,
-                           _responder: Responder<SimpleResponse>,
-                           _connection: ConnectionTo<UntypedRole>| { Ok(()) },
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |request: SimpleRequest,
+                                    responder: Responder<SimpleResponse>,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            if request.message == "cancel downstream" {
+                                *pending_responder.lock().unwrap() = Some(responder);
+                                return Ok(());
+                            }
+
+                            responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            })
+                        }
+                    },
                     agent_client_protocol::on_receive_request!(),
                 )
                 .on_receive_notification(
-                    async move |notification: CancelRequestNotification,
-                                _connection: ConnectionTo<UntypedRole>| {
-                        backend_cancel_tx
-                            .unbounded_send(notification.request_id)
-                            .unwrap();
-                        Ok(())
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |notification: CancelRequestNotification,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            // Honor the forwarded cancellation: answer the
+                            // parked request with the cancellation error.
+                            if let Some(responder) = pending_responder.lock().unwrap().take() {
+                                responder.respond_with_result(Err(
+                                    agent_client_protocol::Error::request_cancelled(),
+                                ))?;
+                            }
+                            backend_cancel_tx
+                                .unbounded_send(notification.request_id)
+                                .unwrap();
+                            Ok(())
+                        }
                     },
                     agent_client_protocol::on_receive_notification!(),
                 );
@@ -1034,9 +1060,28 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                             message: "cancel downstream".into(),
                         });
                     request.cancel()?;
-                    // Wait until the proxy has forwarded the cancellation all
-                    // the way to the backend.
+
+                    // The backend answers the parked request only once the
+                    // proxy has forwarded the cancellation to it, and the
+                    // proxy forwards the backend's cancellation error back
+                    // upstream as the response.
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("request should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
                     next_with_timeout(&mut backend_cancel_rx).await;
+
+                    // Barrier: this round trip traverses both hops after the
+                    // cancellation, so a duplicate `$/cancel_request` would
+                    // already have been recorded by the backend.
+                    let barrier = connection
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
                     Ok(())
                 })
                 .await

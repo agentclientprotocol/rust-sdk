@@ -14,6 +14,13 @@ categories = ["development-tools"]
 name = "agent-client-protocol-conductor"
 path = "src/main.rs"
 
+[features]
+default = []
+
+# Forwarded from agent-client-protocol. Enable to let the conductor forward
+# `$/cancel_request` hop by hop through the proxy chain.
+unstable_cancel_request = ["agent-client-protocol/unstable_cancel_request"]
+
 [dependencies]
 agent-client-protocol = { workspace = true }
 agent-client-protocol-trace-viewer.workspace = true

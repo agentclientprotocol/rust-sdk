@@ -42,7 +42,10 @@ may:
 
 The requesting side always receives a response to the original request;
 cancellation only changes _which_ response that is. A `$/cancel_request` for
-an unknown or already-completed request ID is silently ignored.
+an unknown or already-completed request ID is silently ignored. A
+`$/cancel_request` with malformed params (for example, a `requestId` that is
+not a string, number, or null) is different: like any other malformed
+notification, it is reported back with an out-of-band error notification.
 
 ## Interoperability
 
@@ -71,6 +74,11 @@ When the notification targets a request that was wrapped in a
 `_proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
 `$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
 the JSON-RPC `id` of the wrapped request on that connection.
+
+The conductor forwards cancellations between hops when it is built with its
+`unstable_cancel_request` feature, which forwards the feature of the same name
+to the SDK. Without it, the conductor ignores `$/cancel_request` as described
+in [Interoperability](#interoperability).
 
 ## Related Documentation
 
