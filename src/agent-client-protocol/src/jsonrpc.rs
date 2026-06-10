@@ -1422,6 +1422,12 @@ impl RequestCancellation {
     /// that want to respond with the normal result or the standard
     /// cancellation error.
     ///
+    /// When cancellation wins, `future` is dropped: work stops at its next
+    /// await point, partial results are lost, and any cleanup must happen in
+    /// `Drop` implementations. Handlers that need to flush partial results or
+    /// run async cleanup should instead watch [`cancelled`](Self::cancelled)
+    /// or poll [`is_cancelled`](Self::is_cancelled) from inside the work.
+    ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
     pub async fn run_until_cancelled<T>(
         &self,
@@ -1612,6 +1618,16 @@ fn cancellation_request_id_from_message(
     Ok(None)
 }
 
+/// Whether the dispatch is a protocol-level (`$/`-prefixed) notification,
+/// possibly wrapped in a [`SuccessorMessage`] envelope.
+///
+/// Unhandled protocol-level notifications are ignored rather than rejected
+/// with a method-not-found error. This is deliberately *not* feature-gated:
+/// protocol-level notifications are optional by design, so a peer that sends
+/// `$/cancel_request` must be able to interoperate with an SDK built without
+/// `unstable_cancel_request` (which simply won't act on it).
+///
+/// [`SuccessorMessage`]: crate::schema::SuccessorMessage
 fn is_protocol_level_notification(dispatch: &Dispatch) -> bool {
     let Dispatch::Notification(message) = dispatch else {
         return false;
@@ -3171,6 +3187,15 @@ impl JsonRpcNotification for UntypedMessage {}
 /// If you block the event loop while waiting for a response, the connection cannot process
 /// the incoming response message, creating a deadlock. This API design prevents that footgun
 /// by making blocking explicit and encouraging non-blocking patterns.
+///
+/// # Drop Behavior
+///
+/// By default, dropping a `SentRequest` without consuming it discards the
+/// response when it arrives. When the `unstable_cancel_request` feature is
+/// enabled, dropping a `SentRequest` before the SDK has received the response
+/// additionally sends a `$/cancel_request` notification asking the peer to
+/// cancel the request; fire-and-forget requests should consume their handle
+/// (for example with [`on_receiving_result`](Self::on_receiving_result)).
 pub struct SentRequest<T> {
     id: jsonrpcmsg::Id,
     method: String,
@@ -3451,27 +3476,17 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// - The response types match between the outgoing request and incoming request
     ///
     /// This is equivalent to calling `on_receiving_result` and manually forwarding
-    /// the result, but more concise.
-    pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
-    where
-        T: Send,
-    {
-        #[cfg(feature = "unstable_cancel_request")]
-        {
-            self.forward_response_to_observing_cancellation(responder)
-        }
-        #[cfg(not(feature = "unstable_cancel_request"))]
-        {
-            self.on_receiving_result(async move |result| responder.respond_with_result(result))
-        }
-    }
-
-    #[cfg(feature = "unstable_cancel_request")]
+    /// the result, with two proxy-specific additions:
+    ///
+    /// - If the pending response is dropped without ever being delivered (for
+    ///   example, the downstream connection closed), the incoming request is
+    ///   answered with an internal error instead of being left unanswered.
+    /// - When the `unstable_cancel_request` feature is enabled and the peer
+    ///   cancels the incoming request, the cancellation is forwarded to the
+    ///   outgoing request, and the downstream response (normal data or a
+    ///   cancellation error) is still forwarded back.
     #[track_caller]
-    fn forward_response_to_observing_cancellation(
-        self,
-        responder: Responder<T>,
-    ) -> Result<(), crate::Error>
+    pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
         T: Send,
     {
@@ -3479,30 +3494,60 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         let method = self.method;
         let response_rx = self.response_rx;
         let to_result = self.to_result;
+        #[cfg(feature = "unstable_cancel_request")]
         let downstream_cancellation = self.cancellation;
+        #[cfg(feature = "unstable_cancel_request")]
         let upstream_cancellation = responder.cancellation();
         let location = Location::caller();
 
         Task::new(location, async move {
-            let response = if upstream_cancellation.is_cancelled() {
-                downstream_cancellation.send()?;
-                response_rx.await
-            } else {
-                match future::select(Box::pin(upstream_cancellation.cancelled()), response_rx).await
-                {
-                    Either::Left(((), response_rx)) => {
-                        downstream_cancellation.send()?;
-                        response_rx.await
+            #[cfg(feature = "unstable_cancel_request")]
+            let response = {
+                // Failing to forward the cancellation must not abort this
+                // task: the downstream response (normal data or a
+                // cancellation error) may still arrive and must still be
+                // forwarded upstream.
+                let forward_cancellation = |cancellation: &SentRequestCancellation| {
+                    if let Err(error) = cancellation.send() {
+                        tracing::debug!(
+                            ?error,
+                            "failed to forward cancellation to downstream request"
+                        );
                     }
-                    Either::Right((response, _)) => response,
+                };
+
+                let response = if upstream_cancellation.is_cancelled() {
+                    forward_cancellation(&downstream_cancellation);
+                    response_rx.await
+                } else {
+                    match future::select(Box::pin(upstream_cancellation.cancelled()), response_rx)
+                        .await
+                    {
+                        Either::Left(((), response_rx)) => {
+                            forward_cancellation(&downstream_cancellation);
+                            response_rx.await
+                        }
+                        Either::Right((response, _)) => response,
+                    }
+                };
+
+                downstream_cancellation.disarm();
+                response
+            };
+            #[cfg(not(feature = "unstable_cancel_request"))]
+            let response = response_rx.await;
+
+            let ResponsePayload { result, ack_tx } = match response {
+                Ok(payload) => payload,
+                Err(err) => {
+                    // The pending response was dropped (e.g. the downstream
+                    // connection closed). Answer the incoming request instead
+                    // of leaving the peer waiting forever.
+                    return responder.respond_with_result(Err(crate::util::internal_error(
+                        format!("response to `{method}` never received: {err}"),
+                    )));
                 }
             };
-
-            downstream_cancellation.disarm();
-
-            let ResponsePayload { result, ack_tx } = response.map_err(|err| {
-                crate::util::internal_error(format!("response to `{method}` never received: {err}"))
-            })?;
 
             let typed_result = match result {
                 Ok(json_value) => to_result(json_value),

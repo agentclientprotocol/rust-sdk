@@ -1,5 +1,17 @@
 #![cfg(feature = "unstable_cancel_request")]
 
+//! Integration tests for `$/cancel_request` support.
+//!
+//! These tests avoid sleeps by relying on two ordering guarantees:
+//!
+//! - Messages are delivered in the order they were sent, and each side's
+//!   dispatch loop processes incoming messages sequentially. A request/response
+//!   round trip therefore acts as a barrier: by the time the response arrives,
+//!   every message sent before the request (including any `$/cancel_request`)
+//!   has been fully processed by the peer.
+//! - Test handlers report observed cancellations through in-process channels,
+//!   which the test awaits (with a timeout) instead of sleeping.
+
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::{
@@ -9,7 +21,8 @@ use agent_client_protocol::{
     schema::{CancelRequestNotification, ProtocolLevelNotification, RequestId},
 };
 use expect_test::expect;
-use futures::{AsyncRead, AsyncWrite};
+use futures::channel::mpsc;
+use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -30,6 +43,26 @@ fn setup_test_streams() -> (
     (server_reader, server_writer, client_reader, client_writer)
 }
 
+/// Await the next item on `rx`, panicking instead of hanging if it never
+/// arrives.
+async fn next_with_timeout<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
+    tokio::time::timeout(tokio::time::Duration::from_secs(10), rx.next())
+        .await
+        .expect("timed out waiting for channel event")
+        .expect("channel closed before expected event")
+}
+
+/// Assert that no item is currently buffered on `rx`.
+///
+/// Callers must first establish an ordering barrier (such as a
+/// request/response round trip) that guarantees any erroneously sent
+/// notification would already have been observed.
+fn assert_no_event<T: std::fmt::Debug>(rx: &mut mpsc::UnboundedReceiver<T>) {
+    if let Ok(event) = rx.try_recv() {
+        panic!("unexpected event: {event:?}");
+    }
+}
+
 async fn read_jsonrpc_response_line(
     reader: &mut tokio::io::BufReader<tokio::io::DuplexStream>,
 ) -> serde_json::Value {
@@ -37,7 +70,7 @@ async fn read_jsonrpc_response_line(
 
     let mut line = String::new();
     match tokio::time::timeout(
-        tokio::time::Duration::from_secs(1),
+        tokio::time::Duration::from_secs(10),
         reader.read_line(&mut line),
     )
     .await
@@ -261,6 +294,9 @@ async fn unhandled_protocol_level_notifications_are_ignored() {
                 .unwrap();
             client_writer.flush().await.unwrap();
 
+            // The server processes messages in order: a response to this
+            // request proves the unknown `$/` notification before it was
+            // ignored without erroring or closing the connection.
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","id":2,"method":"simple_method","params":{"message":"after cancel"}}
@@ -372,8 +408,7 @@ async fn cancel_request_notification_can_be_sent_and_handled() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -381,10 +416,7 @@ async fn cancel_request_notification_can_be_sent_and_handled() {
             let server = UntypedRole.builder().on_receive_notification(
                 async move |notification: CancelRequestNotification,
                             _connection: ConnectionTo<UntypedRole>| {
-                    received_for_handler
-                        .lock()
-                        .unwrap()
-                        .push(notification.request_id);
+                    cancel_tx.unbounded_send(notification.request_id).unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -398,20 +430,16 @@ async fn cancel_request_notification_can_be_sent_and_handled() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            UntypedRole
+            let received = UntypedRole
                 .builder()
                 .connect_with(client_transport, async |cx| {
                     cx.send_cancel_request("request-42".to_string())?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    Ok(())
+                    Ok(next_with_timeout(&mut cancel_rx).await)
                 })
                 .await
                 .unwrap();
 
-            assert_eq!(
-                *received.lock().unwrap(),
-                vec![RequestId::Str("request-42".into())]
-            );
+            assert_eq!(received, RequestId::Str("request-42".into()));
         })
         .await;
 }
@@ -424,8 +452,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -441,10 +468,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        received_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -458,7 +482,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            let expected_id = UntypedRole
+            let (expected_id, received) = UntypedRole
                 .builder()
                 .connect_with(client_transport, async |cx| {
                     let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
@@ -466,15 +490,14 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                     });
                     let expected_id = request.id();
                     request.cancel()?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    Ok(expected_id)
+                    let received = next_with_timeout(&mut cancel_rx).await;
+                    Ok((expected_id, received))
                 })
                 .await
                 .unwrap();
 
-            let received = received.lock().unwrap();
-            assert_eq!(received.len(), 1);
-            assert_eq!(serde_json::to_value(&received[0]).unwrap(), expected_id);
+            assert_eq!(serde_json::to_value(received).unwrap(), expected_id);
+            assert_no_event(&mut cancel_rx);
         })
         .await;
 }
@@ -487,8 +510,7 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -504,10 +526,7 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        received_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -521,7 +540,7 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            let expected_id = UntypedRole
+            let (expected_id, received) = UntypedRole
                 .builder()
                 .connect_with(client_transport, async |cx| {
                     let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
@@ -529,15 +548,14 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
                     });
                     let expected_id = request.id();
                     drop(request);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    Ok(expected_id)
+                    let received = next_with_timeout(&mut cancel_rx).await;
+                    Ok((expected_id, received))
                 })
                 .await
                 .unwrap();
 
-            let received = received.lock().unwrap();
-            assert_eq!(received.len(), 1);
-            assert_eq!(serde_json::to_value(&received[0]).unwrap(), expected_id);
+            assert_eq!(serde_json::to_value(received).unwrap(), expected_id);
+            assert_no_event(&mut cancel_rx);
         })
         .await;
 }
@@ -550,8 +568,11 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+            // The responder for the abandoned request, held by the server
+            // until the cancellation notification arrives.
+            let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
+                Arc::new(Mutex::new(None));
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -559,33 +580,38 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
             let server = UntypedRole
                 .builder()
                 .on_receive_request(
-                    async |request: SimpleRequest,
-                           responder: Responder<SimpleResponse>,
-                           connection: ConnectionTo<UntypedRole>| {
-                        if request.message == "late" {
-                            connection.spawn(async move {
-                                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                                responder.respond(SimpleResponse {
-                                    result: "late response".into(),
-                                })
-                            })?;
-                            return Ok(());
-                        }
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |request: SimpleRequest,
+                                    responder: Responder<SimpleResponse>,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            if request.message == "late" {
+                                *pending_responder.lock().unwrap() = Some(responder);
+                                return Ok(());
+                            }
 
-                        responder.respond(SimpleResponse {
-                            result: format!("echo: {}", request.message),
-                        })
+                            responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            })
+                        }
                     },
                     agent_client_protocol::on_receive_request!(),
                 )
                 .on_receive_notification(
-                    async move |notification: CancelRequestNotification,
-                                _connection: ConnectionTo<UntypedRole>| {
-                        received_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
-                        Ok(())
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |notification: CancelRequestNotification,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            // Ignore the cancellation and answer the abandoned
+                            // request anyway: the client must tolerate this.
+                            if let Some(responder) = pending_responder.lock().unwrap().take() {
+                                responder.respond(SimpleResponse {
+                                    result: "late response".into(),
+                                })?;
+                            }
+                            cancel_tx.unbounded_send(notification.request_id).unwrap();
+                            Ok(())
+                        }
                     },
                     agent_client_protocol::on_receive_notification!(),
                 );
@@ -598,7 +624,7 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            let (expected_id, response) = UntypedRole
+            let (expected_id, received, response) = UntypedRole
                 .builder()
                 .connect_with(client_transport, async |cx| {
                     let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
@@ -607,23 +633,25 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
                     let expected_id = request.id();
                     drop(request);
 
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    let received = next_with_timeout(&mut cancel_rx).await;
 
+                    // The server sent the late response before answering this
+                    // follow-up, so a successful round trip proves the late
+                    // response for the dropped request was routed without
+                    // closing the connection.
                     let response = cx
                         .send_request(SimpleRequest {
                             message: "after late".into(),
                         })
                         .block_task()
                         .await?;
-                    Ok((expected_id, response))
+                    Ok((expected_id, received, response))
                 })
                 .await
                 .unwrap();
 
             assert_eq!(response.result, "echo: after late");
-            let received = received.lock().unwrap();
-            assert_eq!(received.len(), 1);
-            assert_eq!(serde_json::to_value(&received[0]).unwrap(), expected_id);
+            assert_eq!(serde_json::to_value(received).unwrap(), expected_id);
         })
         .await;
 }
@@ -636,8 +664,7 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -657,10 +684,7 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        received_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -681,10 +705,22 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
                         message: "buffered".into(),
                     });
 
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                    drop(request);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    // The server answers requests in order, so once this round
+                    // trip completes, the response to `buffered` has already
+                    // been routed into the unconsumed request handle above,
+                    // disarming its auto-cancellation.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
 
+                    drop(request);
+
+                    // Another round trip: any cancellation sent by the drop
+                    // above would reach the server before this request.
                     cx.send_request(SimpleRequest {
                         message: "after buffered".into(),
                     })
@@ -695,7 +731,7 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
                 .unwrap();
 
             assert_eq!(response.result, "echo: after buffered");
-            assert!(received.lock().unwrap().is_empty());
+            assert_no_event(&mut cancel_rx);
         })
         .await;
 }
@@ -708,8 +744,7 @@ async fn completed_sent_request_does_not_send_cancellation_on_drop() {
 
     local
         .run_until(async {
-            let received = Arc::new(Mutex::new(Vec::new()));
-            let received_for_handler = received.clone();
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -729,10 +764,7 @@ async fn completed_sent_request_does_not_send_cancellation_on_drop() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        received_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -755,14 +787,25 @@ async fn completed_sent_request_does_not_send_cancellation_on_drop() {
                         })
                         .block_task()
                         .await?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+                    // Barrier round trip: any cancellation erroneously sent
+                    // when the completed request handle was dropped would
+                    // reach the server before this request.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+
                     Ok(response)
                 })
                 .await
                 .unwrap();
 
             assert_eq!(response.result, "echo: complete");
-            assert!(received.lock().unwrap().is_empty());
+            assert_no_event(&mut cancel_rx);
         })
         .await;
 }
@@ -775,8 +818,7 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
 
     local
         .run_until(async {
-            let backend_cancellations = Arc::new(Mutex::new(Vec::new()));
-            let backend_cancellations_for_handler = backend_cancellations.clone();
+            let (backend_cancel_tx, mut backend_cancel_rx) = mpsc::unbounded();
 
             let (backend_for_proxy, backend_for_server) = Channel::duplex();
             let (backend_connection_tx, backend_connection_rx) =
@@ -806,10 +848,9 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        backend_cancellations_for_handler
-                            .lock()
-                            .unwrap()
-                            .push(notification.request_id);
+                        backend_cancel_tx
+                            .unbounded_send(notification.request_id)
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -859,14 +900,15 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                             message: "cancel downstream".into(),
                         });
                     request.cancel()?;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    // Wait until the proxy has forwarded the cancellation all
+                    // the way to the backend.
+                    next_with_timeout(&mut backend_cancel_rx).await;
                     Ok(())
                 })
                 .await
                 .unwrap();
 
-            let backend_cancellations = backend_cancellations.lock().unwrap();
-            assert_eq!(backend_cancellations.len(), 1);
+            assert_no_event(&mut backend_cancel_rx);
         })
         .await;
 }

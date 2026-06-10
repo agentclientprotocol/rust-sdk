@@ -217,6 +217,63 @@ macro_rules! impl_jsonrpc_notification_enum {
     };
 }
 
+/// Implement `JsonRpcMessage` and `JsonRpcNotification` for a protocol-level
+/// notification enum (`$/`-prefixed methods), shared between the v1 and v2
+/// schema namespaces.
+///
+/// The schema enums are `#[non_exhaustive]`, so the matches need wildcard
+/// arms: when the schema crate adds a protocol-level notification, list it
+/// here as well. Unknown variants fail to serialize rather than producing a
+/// bogus method name on the wire.
+///
+/// ```ignore
+/// impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification {
+///     CancelRequestNotification => "$/cancel_request",
+/// });
+/// ```
+#[cfg(feature = "unstable_cancel_request")]
+macro_rules! impl_jsonrpc_protocol_level_notification_enum {
+    ($enum:ty {
+        $( $variant:ident => $method:literal, )*
+    }) => {
+        impl $crate::JsonRpcMessage for $enum {
+            fn matches_method(method: &str) -> bool {
+                matches!(method, $( $method )|*)
+            }
+
+            fn method(&self) -> &str {
+                match self {
+                    $( Self::$variant(_) => $method, )*
+                    _ => "_unknown",
+                }
+            }
+
+            fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
+                match self {
+                    $( Self::$variant(notification) => {
+                        $crate::UntypedMessage::new($method, notification)
+                    } )*
+                    _ => Err($crate::util::internal_error(
+                        "protocol-level notification variant is not supported by this SDK version",
+                    )),
+                }
+            }
+
+            fn parse_message(
+                method: &str,
+                params: &impl serde::Serialize,
+            ) -> Result<Self, $crate::Error> {
+                match method {
+                    $( $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
+                    _ => Err($crate::Error::method_not_found()),
+                }
+            }
+        }
+
+        impl $crate::JsonRpcNotification for $enum {}
+    };
+}
+
 /// Implement `JsonRpcResponse` for an enum that dispatches across multiple
 /// response types, with an extension method fallback.
 macro_rules! impl_jsonrpc_response_enum {

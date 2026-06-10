@@ -108,6 +108,16 @@
 //!
 //! See [Ordering](super::ordering) for important details about how these differ.
 //!
+//! ## Dropping a `SentRequest`
+//!
+//! By default, dropping a [`SentRequest`] without consuming it simply discards
+//! the response when it arrives. When the `unstable_cancel_request` feature is
+//! enabled, dropping an unconsumed [`SentRequest`] additionally sends a
+//! `$/cancel_request` notification asking the peer to cancel the request, so
+//! fire-and-forget requests should consume their handle (for example with
+//! `on_receiving_result`). See the request cancellation chapter
+//! (`concepts::cancellation`, feature-gated) for details.
+//!
 //! # Next Steps
 //!
 //! - [Sessions](super::sessions) - Create multi-turn conversations

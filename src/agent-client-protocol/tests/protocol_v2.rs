@@ -547,3 +547,81 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         })
         .await
 }
+
+/// A v2 agent whose `session/new` handler only responds once the peer cancels
+/// the request via `$/cancel_request`.
+#[cfg(feature = "unstable_cancel_request")]
+fn v2_agent_with_cancellable_new_session()
+-> Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>> {
+    Agent
+        .v2()
+        .on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v2::NewSessionRequest, responder, cx| {
+                let cancellation = responder.cancellation();
+                cx.spawn(async move {
+                    let response = cancellation
+                        .run_until_cancelled(std::future::pending::<
+                            Result<v2::NewSessionResponse, Error>,
+                        >())
+                        .await;
+                    responder.respond_with_result(response)
+                })?;
+                Ok(())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+#[tokio::test(flavor = "current_thread")]
+async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
+            let initialize = cx
+                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+
+            let request = cx.send_request(v2::NewSessionRequest::new(cwd()?));
+            request.cancel()?;
+            let error = request
+                .block_task()
+                .await
+                .expect_err("request should be cancelled");
+            assert_eq!(i32::from(error.code), -32800);
+            Ok(())
+        })
+        .await
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+#[tokio::test(flavor = "current_thread")]
+async fn v1_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
+    Client
+        .builder()
+        .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
+            let initialize = cx
+                .send_request(schema::InitializeRequest::new(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+            let request = cx.send_request(schema::NewSessionRequest::new(cwd()?));
+            request.cancel()?;
+            let error = request
+                .block_task()
+                .await
+                .expect_err("request should be cancelled");
+            assert_eq!(i32::from(error.code), -32800);
+            Ok(())
+        })
+        .await
+}
