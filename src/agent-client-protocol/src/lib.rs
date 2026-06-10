@@ -94,21 +94,11 @@ pub mod util;
 
 pub use capabilities::*;
 
-/// JSON-RPC message types.
-///
-/// This module re-exports types from the `jsonrpcmsg` crate that are transitively
-/// reachable through the public API (e.g., via [`Channel`]).
-///
-/// Users of the `agent-client-protocol` crate can use these types without adding a direct dependency
-/// on `jsonrpcmsg`.
-pub mod jsonrpcmsg {
-    pub use jsonrpcmsg::{Error, Id, Message, Params, Request, Response};
-}
-
 pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullHandler, Responder, ResponseRouter, SentRequest, UntypedMessage,
+    NullHandler, RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter, SentRequest,
+    UntypedMessage,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 

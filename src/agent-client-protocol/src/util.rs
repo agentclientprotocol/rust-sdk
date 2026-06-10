@@ -68,12 +68,8 @@ pub fn parse_error(message: impl ToString) -> crate::Error {
 }
 
 /// Convert a JSON-RPC id to a serde_json::Value.
-pub(crate) fn id_to_json(id: &jsonrpcmsg::Id) -> serde_json::Value {
-    match id {
-        jsonrpcmsg::Id::Number(n) => serde_json::Value::Number((*n).into()),
-        jsonrpcmsg::Id::String(s) => serde_json::Value::String(s.clone()),
-        jsonrpcmsg::Id::Null => serde_json::Value::Null,
-    }
+pub(crate) fn id_to_json(id: &agent_client_protocol_schema::RequestId) -> serde_json::Value {
+    serde_json::to_value(id).expect("RequestId serializes infallibly")
 }
 
 pub(crate) fn instrumented_with_connection_name<F>(
@@ -93,16 +89,6 @@ pub(crate) async fn instrument_with_connection_name<R>(
         instrumented_with_connection_name(name.clone(), task).await
     } else {
         task.await
-    }
-}
-
-/// Convert a `crate::Error` into a `crate::jsonrpcmsg::Error`
-#[must_use]
-pub fn into_jsonrpc_error(err: crate::Error) -> crate::jsonrpcmsg::Error {
-    crate::jsonrpcmsg::Error {
-        code: err.code.into(),
-        message: err.message,
-        data: err.data,
     }
 }
 

@@ -15,7 +15,6 @@ dependencies = [
  "expect-test",
  "futures",
  "futures-concurrency",
- "jsonrpcmsg",
  "rustc-hash",
  "schemars 1.2.1",
  "serde",
@@ -1215,16 +1214,6 @@ dependencies = [
  "futures-util",
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "jsonrpcmsg"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d833a15225c779251e13929203518c2ff26e2fe0f322d584b213f4f4dad37bd"
-dependencies = [
- "serde",
- "serde_json",
 ]
 
 [[package]]
