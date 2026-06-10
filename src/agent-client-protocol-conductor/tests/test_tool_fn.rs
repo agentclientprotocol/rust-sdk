@@ -7,6 +7,7 @@ use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithConnectionTo};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
+use agent_client_protocol_rmcp::McpServerExt as _;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

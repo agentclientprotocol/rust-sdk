@@ -15,6 +15,7 @@ use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
+use agent_client_protocol_rmcp::McpServerExt as _;
 use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use expect_test::expect;
 use futures::StreamExt;
@@ -315,17 +316,17 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     method: "_proxy/initialize",
                     session: None,
                     params: Object {
+                        "protocolVersion": Number(1),
                         "clientCapabilities": Object {
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                             "fs": Object {
                                 "readTextFile": Bool(false),
                                 "writeTextFile": Bool(false),
                             },
                             "terminal": Bool(false),
+                            "auth": Object {
+                                "terminal": Bool(false),
+                            },
                         },
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -337,23 +338,23 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     id: String("id:0"),
                     is_error: false,
                     payload: Object {
+                        "protocolVersion": Number(1),
                         "agentCapabilities": Object {
-                            "auth": Object {},
                             "loadSession": Bool(false),
-                            "mcpCapabilities": Object {
-                                "acp": Bool(true),
-                                "http": Bool(false),
-                                "sse": Bool(false),
-                            },
                             "promptCapabilities": Object {
+                                "image": Bool(false),
                                 "audio": Bool(false),
                                 "embeddedContext": Bool(false),
-                                "image": Bool(false),
+                            },
+                            "mcpCapabilities": Object {
+                                "http": Bool(false),
+                                "sse": Bool(false),
+                                "acp": Bool(true),
                             },
                             "sessionCapabilities": Object {},
+                            "auth": Object {},
                         },
                         "authMethods": Array [],
-                        "protocolVersion": Number(1),
                     },
                 },
             ),
@@ -370,10 +371,10 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                         "cwd": String("."),
                         "mcpServers": Array [
                             Object {
-                                "headers": Array [],
-                                "name": String("echo-server"),
                                 "type": String("http"),
+                                "name": String("echo-server"),
                                 "url": String("acp:url:0"),
+                                "headers": Array [],
                             },
                         ],
                     },
@@ -401,13 +402,13 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     method: "session/prompt",
                     session: None,
                     params: Object {
+                        "sessionId": String("session:0"),
                         "prompt": Array [
                             Object {
-                                "text": String("{\"command\":\"call_tool\",\"server\":\"echo-server\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from client test!\"}}"),
                                 "type": String("text"),
+                                "text": String("{\"command\":\"call_tool\",\"server\":\"echo-server\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from client test!\"}}"),
                             },
                         ],
-                        "sessionId": String("session:0"),
                     },
                 },
             ),
@@ -422,11 +423,11 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     params: Object {
                         "sessionId": String("session:0"),
                         "update": Object {
-                            "content": Object {
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"call_number\\\":1,\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"call_number\": Number(1), \"echoed\": String(\"Client echoes: Hello from client test!\")}), is_error: Some(false), meta: None }"),
-                                "type": String("text"),
-                            },
                             "sessionUpdate": String("agent_message_chunk"),
+                            "content": Object {
+                                "type": String("text"),
+                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None }), annotations: None }], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
+                            },
                         },
                     },
                 },

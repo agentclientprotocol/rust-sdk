@@ -14,3 +14,38 @@ pr_labels = ["release"]
 [[package]]
 name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-derive"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-polyfill"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-rmcp"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-conductor"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-test"
+version_group = "acp"
+publish = false
+
+[[package]]
+name = "agent-client-protocol-trace-viewer"
+version_group = "acp"
+
+[[package]]
+name = "agent-client-protocol-yopo"
+version_group = "acp"
+publish = false
+
+[[package]]
+name = "agent-client-protocol-cookbook"
+version_group = "acp"

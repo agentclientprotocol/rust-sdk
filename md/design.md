@@ -14,7 +14,7 @@ The core SDK. Provides:
 - **Connection builders** (`builder()`, `connect_to()`, `connect_with()`)
 - **Message handling** (`on_receive_request`, `on_receive_notification`, `on_receive_dispatch`)
 - **Protocol types** (`agent_client_protocol::schema::*`) - all ACP message types
-- **MCP server builder** - for adding tools to proxies
+- **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions
 
 ### agent-client-protocol-tokio
 
@@ -27,6 +27,7 @@ Tokio-specific utilities:
 
 Integration with the [rmcp](https://docs.rs/rmcp) crate:
 
+- **`McpServer::builder()`** - define MCP tools in Rust code
 - **`McpServer::from_rmcp()`** - wrap an rmcp server as an ACP MCP server
 
 ## Role System
@@ -156,7 +157,7 @@ stateDiagram-v2
 | `src/agent-client-protocol/src/component.rs` | ConnectTo and Builder traits          |
 | `src/agent-client-protocol/src/handler.rs`   | Connection builder implementation     |
 | `src/agent-client-protocol/src/typed.rs`     | Dispatch type and handler matching    |
-| `src/agent-client-protocol/src/mcp_server/`  | MCP server builder                    |
+| `src/agent-client-protocol/src/mcp_server/`  | Runtime-agnostic MCP server attachment |
 | `src/agent-client-protocol/src/concepts/`    | Rustdoc concept explanations          |
 
 ## Design Decisions

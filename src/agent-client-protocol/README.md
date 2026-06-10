@@ -46,6 +46,7 @@ See the [crate documentation](https://docs.rs/agent-client-protocol) for:
 ## Related Crates
 
 - **[agent-client-protocol-tokio](../agent-client-protocol-tokio/)** — Tokio utilities for spawning agent processes
+- **[agent-client-protocol-rmcp](../agent-client-protocol-rmcp/)** — MCP tool builders and `rmcp` integration
 - **[agent-client-protocol-derive](../agent-client-protocol-derive/)** — Derive macros for JSON-RPC traits
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.13.1...agent-client-protocol-conductor-v0.14.0) - 2026-06-05
+
+### Fixed
+
+- *(acp)* Serialize proxy metadata as _meta ([#198](https://github.com/agentclientprotocol/rust-sdk/pull/198))
+
+### Other
+
+- Add features to docs.rs ([#190](https://github.com/agentclientprotocol/rust-sdk/pull/190))
+
+## [0.13.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.12.2...agent-client-protocol-conductor-v0.13.1) - 2026-06-01
+
+### Other
+
+- update Cargo.lock dependencies
+
+## [0.12.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.12.1...agent-client-protocol-conductor-v0.12.2) - 2026-06-01
+
+### Added
+
+- *(acp)* Extract all rmcp logic to the rmcp crate ([#180](https://github.com/agentclientprotocol/rust-sdk/pull/180))
+
 ## [0.12.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.12.0...agent-client-protocol-conductor-v0.12.1) - 2026-05-17
 
 ### Fixed

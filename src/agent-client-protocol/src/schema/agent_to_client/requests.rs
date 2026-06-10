@@ -1,3 +1,5 @@
+#[cfg(feature = "unstable_elicitation")]
+use crate::schema::{CreateElicitationRequest, CreateElicitationResponse};
 use crate::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse,
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
@@ -42,3 +44,9 @@ impl_jsonrpc_request!(
     "terminal/wait_for_exit"
 );
 impl_jsonrpc_request!(KillTerminalRequest, KillTerminalResponse, "terminal/kill");
+#[cfg(feature = "unstable_elicitation")]
+impl_jsonrpc_request!(
+    CreateElicitationRequest,
+    CreateElicitationResponse,
+    "elicitation/create"
+);

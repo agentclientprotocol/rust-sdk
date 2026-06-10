@@ -20,10 +20,10 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6
@@ -35,7 +35,7 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Check for typos
-        uses: crate-ci/typos@aca895bf05aec0cb7dffa6f94495e923224d9f17
+        uses: crate-ci/typos@37bb98842b0d8c4ffebdb75301a13db0267cef89
         with:
           config: ./typos.toml
 
@@ -47,8 +47,13 @@ jobs:
       - name: Build
         run: cargo build --all-targets --all-features
 
+      - name: Check docs.rs build
+        env:
+          RUSTDOCFLAGS: --cfg docsrs
+        run: cargo +nightly doc -p agent-client-protocol --all-features --no-deps
+
       - name: Install just
-        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154
         with:
           tool: just
 
@@ -63,25 +68,17 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          - "1/16"
-          - "2/16"
-          - "3/16"
-          - "4/16"
-          - "5/16"
-          - "6/16"
-          - "7/16"
-          - "8/16"
-          - "9/16"
-          - "10/16"
-          - "11/16"
-          - "12/16"
-          - "13/16"
-          - "14/16"
-          - "15/16"
-          - "16/16"
+          - "1/8"
+          - "2/8"
+          - "3/8"
+          - "4/8"
+          - "5/8"
+          - "6/8"
+          - "7/8"
+          - "8/8"
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           persist-credentials: false
 
@@ -91,7 +88,7 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@b550161ef8a7bc4f2a671c0b03a18ac9ccedea1e
+        uses: taiki-e/install-action@0631aa6515c7d545823c67cfae7ef4fc7f490154
         with:
           tool: cargo-hack
 

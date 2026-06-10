@@ -4,11 +4,20 @@
 
 ## Overview
 
-This crate bridges [rmcp](https://docs.rs/rmcp)-based MCP server implementations with the ACP MCP server framework from `agent-client-protocol`. It lets you use any rmcp service as an MCP server in an ACP proxy.
+This crate bridges [rmcp](https://docs.rs/rmcp)-based MCP server implementations with the ACP MCP server framework from `agent-client-protocol`. It lets you define MCP tools in Rust or use any rmcp service as an MCP server in an ACP proxy.
 
 ## Usage
 
-Use the `McpServerExt` trait to create an MCP server from an rmcp service:
+Use the `McpServerExt` trait to build an MCP server with tools:
+
+```rust
+use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol_rmcp::McpServerExt;
+
+let server = McpServer::builder("my-tools").build();
+```
+
+Or create an MCP server from an rmcp service:
 
 ```rust
 use agent_client_protocol::mcp_server::McpServer;
