@@ -273,11 +273,11 @@ async fn unhandled_protocol_level_notifications_are_ignored() {
             let response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
-                  "id": 2,
                   "jsonrpc": "2.0",
                   "result": {
                     "result": "echo: after cancel"
-                  }
+                  },
+                  "id": 2
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })
@@ -353,11 +353,11 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
             let response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
-                  "id": 2,
                   "jsonrpc": "2.0",
                   "result": {
                     "result": "echo: after wrapped cancel"
-                  }
+                  },
+                  "id": 2
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })

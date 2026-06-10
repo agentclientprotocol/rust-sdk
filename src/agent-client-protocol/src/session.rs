@@ -514,6 +514,10 @@ where
 /// Incoming message from the agent
 #[non_exhaustive]
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
+)]
 pub enum SessionMessage {
     /// Periodic updates with new content, tool requests, etc.
     /// Use [`MatchDispatch`] to match on the message type.
