@@ -470,9 +470,7 @@ where
                 // `forward_response_to` calls above, so drop the raw
                 // notification instead of tunneling a meaningless ID.
                 #[cfg(feature = "unstable_cancel_request")]
-                if agent_client_protocol::schema::CancelRequestNotification::matches_method(
-                    notification.method(),
-                ) {
+                if agent_client_protocol::is_cancel_request_notification(&notification) {
                     tracing::debug!(
                         "not forwarding hop-scoped `$/cancel_request` notification to predecessor"
                     );

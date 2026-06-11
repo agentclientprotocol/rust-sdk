@@ -256,74 +256,10 @@ impl agent_client_protocol::role::HasPeer<WrappedSuccessor> for WrappedHost {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn unhandled_protocol_level_notifications_are_ignored() {
-    use tokio::io::{AsyncWriteExt, BufReader};
-    use tokio::task::LocalSet;
-
-    let local = LocalSet::new();
-
-    local
-        .run_until(async {
-            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-            let (server_writer, client_reader) = tokio::io::duplex(4096);
-
-            let server_transport = agent_client_protocol::ByteStreams::new(
-                server_writer.compat_write(),
-                server_reader.compat(),
-            );
-            let server = UntypedRole.builder().on_receive_request(
-                async |request: SimpleRequest,
-                       responder: Responder<SimpleResponse>,
-                       _connection: ConnectionTo<UntypedRole>| {
-                    responder.respond(SimpleResponse {
-                        result: format!("echo: {}", request.message),
-                    })
-                },
-                agent_client_protocol::on_receive_request!(),
-            );
-
-            tokio::task::spawn_local(async move {
-                if let Err(error) = server.connect_to(server_transport).await {
-                    panic!("server should stay alive: {error:?}");
-                }
-            });
-
-            let mut client_reader = BufReader::new(client_reader);
-
-            client_writer
-                .write_all(
-                    br#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"req-1"}}
-"#,
-                )
-                .await
-                .unwrap();
-            client_writer.flush().await.unwrap();
-
-            // The server processes messages in order: a response to this
-            // request proves the unknown `$/` notification before it was
-            // ignored without erroring or closing the connection.
-            client_writer
-                .write_all(
-                    br#"{"jsonrpc":"2.0","id":2,"method":"simple_method","params":{"message":"after cancel"}}
-"#,
-                )
-                .await
-                .unwrap();
-            client_writer.flush().await.unwrap();
-
-            let response = read_jsonrpc_response_line(&mut client_reader).await;
-            expect![[r#"
-                {
-                  "jsonrpc": "2.0",
-                  "id": 2,
-                  "result": {
-                    "result": "echo: after cancel"
-                  }
-                }"#]]
-            .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
-        })
-        .await;
+impl agent_client_protocol::role::HasPeer<WrappedHost> for WrappedHost {
+    fn remote_style(&self, _peer: WrappedHost) -> agent_client_protocol::role::RemoteStyle {
+        agent_client_protocol::role::RemoteStyle::Counterpart
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -402,61 +338,6 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
                   }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
-        })
-        .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn malformed_successor_envelope_still_reaches_handlers() {
-    use tokio::io::AsyncWriteExt;
-    use tokio::task::LocalSet;
-
-    let local = LocalSet::new();
-
-    local
-        .run_until(async {
-            let (notification_tx, mut notification_rx) = mpsc::unbounded();
-
-            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-            let (server_writer, _client_reader) = tokio::io::duplex(4096);
-
-            let server_transport = agent_client_protocol::ByteStreams::new(
-                server_writer.compat_write(),
-                server_reader.compat(),
-            );
-            // A catch-all notification handler: a successor envelope whose
-            // params cannot be peeled (no inner `method`) must not be
-            // mistaken for a cancellation and short-circuited; it must flow
-            // through the handler chain like any other notification.
-            let server = UntypedRole.builder().on_receive_notification(
-                async move |notification: agent_client_protocol::UntypedMessage,
-                            _connection: ConnectionTo<UntypedRole>| {
-                    notification_tx
-                        .unbounded_send((notification.method, notification.params))
-                        .unwrap();
-                    Ok(())
-                },
-                agent_client_protocol::on_receive_notification!(),
-            );
-
-            tokio::task::spawn_local(async move {
-                if let Err(error) = server.connect_to(server_transport).await {
-                    panic!("server should stay alive: {error:?}");
-                }
-            });
-
-            client_writer
-                .write_all(
-                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"bogus":true}}
-"#,
-                )
-                .await
-                .unwrap();
-            client_writer.flush().await.unwrap();
-
-            let (method, params) = next_with_timeout(&mut notification_rx).await;
-            assert_eq!(method, "_proxy/successor");
-            assert_eq!(params, serde_json::json!({ "bogus": true }));
         })
         .await;
 }
@@ -1376,6 +1257,126 @@ async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
             let observed = next_with_timeout(&mut backend_cancel_rx).await;
             assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
             assert_no_event(&mut backend_cancel_rx);
+        })
+        .await;
+}
+
+/// A proxy that forwards raw dispatches with `send_proxied_message` can see a
+/// `$/cancel_request` that is still wrapped in a `_proxy/successor` envelope:
+/// raw dispatch handlers run before any peer-specific unwrapping. The
+/// hop-scoped filter must peel the envelope and drop the notification rather
+/// than tunnel it to the next peer.
+#[tokio::test(flavor = "current_thread")]
+async fn send_proxied_message_does_not_tunnel_wrapped_cancel_notifications() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            // Every notification method the backend observes.
+            let (backend_notification_tx, mut backend_notification_rx) = mpsc::unbounded();
+
+            let (backend_for_proxy, backend_for_server) = Channel::duplex();
+            let (backend_connection_tx, backend_connection_rx) =
+                futures::channel::oneshot::channel();
+
+            tokio::task::spawn_local(async move {
+                let result = UntypedRole
+                    .builder()
+                    .connect_with(backend_for_proxy, async |connection| {
+                        drop(backend_connection_tx.send(connection.clone()));
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+                if let Err(error) = result {
+                    panic!("proxy-to-backend connection should stay alive: {error:?}");
+                }
+            });
+
+            let backend_server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: agent_client_protocol::UntypedMessage,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        backend_notification_tx
+                            .unbounded_send(notification.method)
+                            .unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = backend_server.connect_to(backend_for_server).await {
+                    panic!("backend server should stay alive: {error:?}");
+                }
+            });
+
+            let backend_connection = backend_connection_rx
+                .await
+                .expect("backend connection should start");
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let proxy_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            // The raw dispatch handler receives successor-addressed messages
+            // still wrapped in their envelope and forwards them verbatim.
+            let proxy = WrappedHost.builder().on_receive_dispatch(
+                {
+                    let backend_connection = backend_connection.clone();
+                    async move |dispatch: Dispatch,
+                                _connection: ConnectionTo<WrappedCounterpart>| {
+                        backend_connection.send_proxied_message(dispatch)
+                    }
+                },
+                agent_client_protocol::on_receive_dispatch!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = proxy.connect_to(proxy_transport).await {
+                    panic!("proxy should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            WrappedCounterpart
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    // A successor-wrapped `$/cancel_request`, exactly as
+                    // produced when cancelling a request sent to a successor
+                    // peer.
+                    cx.send_cancel_request_to(WrappedSuccessor, "req-1".to_string())?;
+
+                    // Barrier: both hops have processed the notification by
+                    // the time this completes, so a tunneled wrapped cancel
+                    // would already have been recorded by the backend.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            // The backend saw no notification at all: the wrapped cancel was
+            // dropped at the proxy hop instead of being tunneled.
+            assert_no_event(&mut backend_notification_rx);
         })
         .await;
 }

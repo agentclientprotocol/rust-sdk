@@ -36,7 +36,6 @@
 pub mod acp_basics;
 pub mod callbacks;
 #[cfg(feature = "unstable_cancel_request")]
-#[cfg_attr(docsrs, doc(cfg(feature = "unstable_cancel_request")))]
 pub mod cancellation;
 pub mod connections;
 pub mod error_handling;

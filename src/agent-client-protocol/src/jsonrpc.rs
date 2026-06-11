@@ -1689,7 +1689,7 @@ struct RequestCancellationSlot {
 #[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug, Default)]
 struct RequestCancellationRegistryInner {
-    slots: HashMap<serde_json::Value, RequestCancellationSlot>,
+    slots: HashMap<RequestId, RequestCancellationSlot>,
     next_generation: u64,
 }
 
@@ -1706,7 +1706,7 @@ struct RequestCancellationRegistry;
 #[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug)]
 struct ResponderCancellation {
-    id: serde_json::Value,
+    id: RequestId,
     generation: u64,
     registry: RequestCancellationRegistry,
 }
@@ -1721,7 +1721,7 @@ impl RequestCancellationRegistry {
         Self::default()
     }
 
-    fn register(&self, id: serde_json::Value) -> ResponderCancellation {
+    fn register(&self, id: &RequestId) -> ResponderCancellation {
         let generation = {
             let mut inner = self
                 .inner
@@ -1748,7 +1748,7 @@ impl RequestCancellationRegistry {
             generation
         };
         ResponderCancellation {
-            id,
+            id: id.clone(),
             generation,
             registry: self.clone(),
         }
@@ -1762,7 +1762,7 @@ impl RequestCancellationRegistry {
     /// was already removed by it), every call returns a fresh *detached*
     /// marker. Detached markers can never fire, and detached markers from
     /// repeated calls do not share state with each other.
-    fn marker(&self, id: &serde_json::Value, generation: u64) -> RequestCancellation {
+    fn marker(&self, id: &RequestId, generation: u64) -> RequestCancellation {
         let mut inner = self
             .inner
             .lock()
@@ -1808,7 +1808,7 @@ impl RequestCancellationRegistry {
     }
 
     /// Mark whichever request currently owns `request_id` as cancelled.
-    fn cancel(&self, request_id: &serde_json::Value) -> bool {
+    fn cancel(&self, request_id: &RequestId) -> bool {
         let marker = {
             let mut inner = self
                 .inner
@@ -1836,7 +1836,7 @@ impl RequestCancellationRegistry {
 
     /// Remove the slot for `request_id`, but only if it still belongs to the
     /// registration identified by `generation`.
-    fn remove(&self, request_id: &serde_json::Value, generation: u64) {
+    fn remove(&self, request_id: &RequestId, generation: u64) {
         let mut inner = self
             .inner
             .lock()
@@ -1861,7 +1861,7 @@ impl RequestCancellationRegistry {
         clippy::unused_self,
         reason = "feature-disabled stub mirrors the real registry API"
     )]
-    fn register(&self, _id: serde_json::Value) -> ResponderCancellation {
+    fn register(&self, _id: &RequestId) -> ResponderCancellation {
         ResponderCancellation
     }
 
@@ -1890,7 +1890,7 @@ impl Drop for ResponderCancellation {
 }
 
 #[cfg(feature = "unstable_cancel_request")]
-fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<serde_json::Value>, crate::Error> {
+fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, crate::Error> {
     let Dispatch::Notification(message) = dispatch else {
         return Ok(None);
     };
@@ -1900,16 +1900,14 @@ fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<serde_json::Val
 #[cfg(feature = "unstable_cancel_request")]
 fn cancellation_request_id_from_message(
     message: &UntypedMessage,
-) -> Result<Option<serde_json::Value>, crate::Error> {
+) -> Result<Option<RequestId>, crate::Error> {
     let (method, params) = peel_successor_envelopes(&message.method, &message.params);
     if !crate::schema::CancelRequestNotification::matches_method(method) {
         return Ok(None);
     }
 
     let notification = crate::schema::CancelRequestNotification::parse_message(method, params)?;
-    serde_json::to_value(notification.request_id)
-        .map(Some)
-        .map_err(crate::Error::into_internal_error)
+    Ok(Some(notification.request_id))
 }
 
 /// Peel any [`SuccessorMessage`] envelopes off a notification by reference,
@@ -1936,6 +1934,46 @@ fn peel_successor_envelopes<'message>(
         params = params.get("params").unwrap_or(&serde_json::Value::Null);
     }
     (method, params)
+}
+
+/// Whether a notification is a `$/cancel_request`, even when it is still
+/// wrapped in `_proxy/successor` envelopes.
+///
+/// `$/cancel_request` is connection-scoped: its `requestId` was allocated on
+/// the connection the notification arrived over and means nothing on any
+/// other connection. Generic forwarding code (such as
+/// [`ConnectionTo::send_proxied_message_to`]) uses this check to drop the raw
+/// notification instead of tunneling it across a hop; the cancellation still
+/// propagates because [`forward_response_to`](SentRequest::forward_response_to)
+/// re-issues it with the forwarded request's own ID.
+///
+/// Checking a notification whose method is not the successor envelope is a
+/// plain method-name comparison. Only successor-wrapped notifications pay for
+/// a serialization to peel the envelope.
+#[cfg(feature = "unstable_cancel_request")]
+#[must_use]
+pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) -> bool {
+    let method = notification.method();
+    if crate::schema::CancelRequestNotification::matches_method(method) {
+        return true;
+    }
+    if !crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(method) {
+        return false;
+    }
+
+    match notification.to_untyped_message() {
+        Ok(untyped) => {
+            let (method, _params) = peel_successor_envelopes(&untyped.method, &untyped.params);
+            crate::schema::CancelRequestNotification::matches_method(method)
+        }
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                "failed to inspect successor-wrapped notification for cancellation"
+            );
+            false
+        }
+    }
 }
 
 /// Whether the dispatch is a protocol-level (`$/`-prefixed) notification,
@@ -2253,7 +2291,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 // with the correct per-hop ID, so drop the raw notification
                 // instead of tunneling a meaningless ID across the hop.
                 #[cfg(feature = "unstable_cancel_request")]
-                if crate::schema::CancelRequestNotification::matches_method(notification.method()) {
+                if is_cancel_request_notification(&notification) {
                     tracing::debug!(
                         "not forwarding hop-scoped `$/cancel_request` notification across proxy hop"
                     );
@@ -2646,7 +2684,7 @@ impl Responder<serde_json::Value> {
     ) -> Self {
         let id_clone = id.clone();
         let method_clone = method.clone();
-        let cancellation = cancellation_registry.register(crate::util::id_to_json(&id));
+        let cancellation = cancellation_registry.register(&id);
         Self {
             method,
             id,
@@ -4560,7 +4598,7 @@ mod tests {
             );
             let request_id = cancellation_request_id_from_message(&message)
                 .expect("wrapped cancel should parse");
-            assert_eq!(request_id, Some(serde_json::json!("req-1")));
+            assert_eq!(request_id, Some(RequestId::Str("req-1".into())));
         }
 
         #[test]
@@ -4571,6 +4609,34 @@ mod tests {
             let request_id = cancellation_request_id_from_message(&message)
                 .expect("malformed envelope should be left to the handler chain");
             assert_eq!(request_id, None);
+        }
+
+        #[test]
+        fn cancel_request_notifications_are_detected_even_when_wrapped() {
+            let plain = notification("$/cancel_request", serde_json::json!({ "requestId": 1 }));
+            assert!(is_cancel_request_notification(&plain));
+
+            let wrapped = notification(
+                "_proxy/successor",
+                serde_json::json!({
+                    "method": "$/cancel_request",
+                    "params": { "requestId": 1 }
+                }),
+            );
+            assert!(is_cancel_request_notification(&wrapped));
+
+            let other_wrapped = notification(
+                "_proxy/successor",
+                serde_json::json!({
+                    "method": "session/update",
+                    "params": {}
+                }),
+            );
+            assert!(!is_cancel_request_notification(&other_wrapped));
+
+            let malformed_envelope =
+                notification("_proxy/successor", serde_json::json!({ "bogus": true }));
+            assert!(!is_cancel_request_notification(&malformed_envelope));
         }
 
         #[test]
@@ -4586,9 +4652,9 @@ mod tests {
         #[test]
         fn registry_marks_and_removes_requests() {
             let registry = RequestCancellationRegistry::new();
-            let id = serde_json::json!("req-1");
+            let id = RequestId::Str("req-1".into());
 
-            let responder_cancellation = registry.register(id.clone());
+            let responder_cancellation = registry.register(&id);
             let marker = responder_cancellation.cancellation();
             assert!(!marker.is_cancelled());
 
@@ -4603,12 +4669,12 @@ mod tests {
         #[test]
         fn reused_request_id_does_not_cross_wire_cancellation_state() {
             let registry = RequestCancellationRegistry::new();
-            let id = serde_json::json!("dup");
+            let id = RequestId::Str("dup".into());
 
             // A protocol-violating peer reuses an in-flight request ID.
-            let first = registry.register(id.clone());
+            let first = registry.register(&id);
             let first_marker = first.cancellation();
-            let second = registry.register(id.clone());
+            let second = registry.register(&id);
             let second_marker = second.cancellation();
 
             // A cancellation targets whichever request currently owns the ID.

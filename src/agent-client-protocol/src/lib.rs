@@ -94,8 +94,6 @@ pub mod util;
 
 pub use capabilities::*;
 
-#[cfg(feature = "unstable_cancel_request")]
-pub use jsonrpc::RequestCancellation;
 pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
@@ -103,6 +101,8 @@ pub use jsonrpc::{
     UntypedMessage,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
+#[cfg(feature = "unstable_cancel_request")]
+pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
 
 pub use role::{
     Role, RoleId, UntypedRole,
