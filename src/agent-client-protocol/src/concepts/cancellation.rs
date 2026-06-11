@@ -39,9 +39,11 @@
 //!
 //! Dropping a [`SentRequest`] before the SDK receives a response also sends
 //! `$/cancel_request`. This covers abandoned request handles and futures. Once
-//! the SDK routes a response to the waiting request handle, automatic
-//! cancellation is disarmed, even if caller code has not yet consumed it with
-//! [`block_task`], [`on_receiving_result`], or [`forward_response_to`].
+//! the SDK routes a response for the request, automatic cancellation is
+//! disarmed: the peer has already answered, even if caller code has not yet
+//! consumed the handle with [`block_task`], [`on_receiving_result`], or
+//! [`forward_response_to`], and even if a dispatch handler claimed the
+//! response.
 //!
 //! If you already have the JSON-RPC request ID, send the notification
 //! directly:

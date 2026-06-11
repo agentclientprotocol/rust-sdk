@@ -2811,6 +2811,16 @@ impl<T: JsonRpcResponse> Responder<T> {
 ///
 /// Both are fundamentally "sinks" that push the message through a `send_fn`, but they
 /// represent different points in the message lifecycle and carry different metadata.
+///
+/// # Drop Behavior
+///
+/// Dropping a `ResponseRouter` without responding (for example, from a
+/// dispatch handler that claims a [`Dispatch::Response`]) discards the
+/// response: the local awaiter observes the response as never received. The
+/// request still counts as settled — when the `unstable_cancel_request`
+/// feature is enabled, routing a response this far disarms the originating
+/// [`SentRequest`]'s drop-time auto-cancellation even if the router is never
+/// invoked, since the peer has already answered.
 #[must_use]
 pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the original request.
@@ -2853,11 +2863,21 @@ impl ResponseRouter<serde_json::Value> {
     ) -> Self {
         let response_method = method.clone();
         let response_id = id.clone();
+        // A response for the request reached this router, so the request is
+        // settled from the peer's perspective and a `$/cancel_request` could
+        // only ever be redundant. The guard disarms the drop-time
+        // auto-cancellation when the router responds *or* when it is dropped
+        // without ever being invoked (a dispatch handler claimed the
+        // response).
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation_disarm = DisarmOnDrop(cancellation_disarm);
         Self {
             method,
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                #[cfg(feature = "unstable_cancel_request")]
+                let _cancellation_disarm: DisarmOnDrop = cancellation_disarm;
                 if sender
                     .send(ResponsePayload {
                         result: response,
@@ -2870,9 +2890,6 @@ impl ResponseRouter<serde_json::Value> {
                         id = ?response_id,
                         "dropped response because local receiver was gone"
                     );
-                } else {
-                    #[cfg(feature = "unstable_cancel_request")]
-                    cancellation_disarm.disarm();
                 }
                 Ok(())
             }),
@@ -3606,6 +3623,24 @@ impl SentRequestCancellationDisarm {
     }
 }
 
+/// Disarms a [`SentRequest`]'s drop-time auto-cancellation when dropped.
+///
+/// A [`ResponseRouter`]'s send function holds this guard so that *routing* a
+/// response settles the request: whether the response is delivered to the
+/// local awaiter, discarded because the awaiter is gone, or claimed by a
+/// dispatch handler that drops the router without invoking it, a later
+/// `$/cancel_request` for the request could only ever be redundant.
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug)]
+struct DisarmOnDrop(SentRequestCancellationDisarm);
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Drop for DisarmOnDrop {
+    fn drop(&mut self) {
+        self.0.disarm();
+    }
+}
+
 #[cfg(feature = "unstable_cancel_request")]
 struct SentRequestCancellation {
     message_tx: OutgoingMessageTx,
@@ -3921,55 +3956,88 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     where
         T: Send,
     {
+        #[cfg(feature = "unstable_cancel_request")]
+        let this = self.forward_cancellation_from(responder.cancellation());
+        #[cfg(not(feature = "unstable_cancel_request"))]
+        let this = self;
+
+        this.consume_with(async move |response| {
+            // A response that was never delivered (outer `Err`, e.g. the
+            // downstream connection closed) is forwarded as an error: the
+            // incoming request must not be left unanswered.
+            responder.respond_with_result(response.unwrap_or_else(Err))
+        })
+    }
+
+    /// Spawn the response-consumption task shared by
+    /// [`on_receiving_result`](Self::on_receiving_result) and
+    /// [`forward_response_to`](Self::forward_response_to).
+    ///
+    /// The task awaits the response (forwarding cancellation from registered
+    /// sources while waiting, when the `unstable_cancel_request` feature is
+    /// enabled), converts the payload, and invokes `handle` with the typed
+    /// result (`Ok(Result<T, _>)`). The dispatch loop's ack, if any, is sent
+    /// after `handle` completes.
+    ///
+    /// If the pending response is dropped without ever being delivered (for
+    /// example, the connection closed), `handle` receives the outer `Err`
+    /// describing the loss; there is no ack in that case.
+    #[track_caller]
+    fn consume_with<F>(
+        self,
+        handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
+    ) -> Result<(), crate::Error>
+    where
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+        T: Send,
+    {
         let task_tx = self.task_tx.clone();
         let method = self.method;
         let response_rx = self.response_rx;
         let to_result = self.to_result;
         #[cfg(feature = "unstable_cancel_request")]
-        let downstream_cancellation = self.cancellation;
+        let cancellation = self.cancellation;
         #[cfg(feature = "unstable_cancel_request")]
-        let cancellation_sources = {
-            let mut sources = self.cancellation_sources;
-            sources.push(responder.cancellation());
-            sources
-        };
+        let cancellation_sources = self.cancellation_sources;
         let location = Location::caller();
 
         Task::new(location, async move {
             #[cfg(feature = "unstable_cancel_request")]
             let response = await_response_forwarding_cancellation(
                 response_rx,
-                &downstream_cancellation,
+                &cancellation,
                 &cancellation_sources,
             )
             .await;
             #[cfg(not(feature = "unstable_cancel_request"))]
             let response = response_rx.await;
 
-            let ResponsePayload { result, ack_tx } = match response {
-                Ok(payload) => payload,
-                Err(err) => {
-                    // The pending response was dropped (e.g. the downstream
-                    // connection closed). Answer the incoming request instead
-                    // of leaving the peer waiting forever.
-                    return responder.respond_with_result(Err(crate::util::internal_error(
-                        format!("response to `{method}` never received: {err}"),
-                    )));
+            match response {
+                Ok(ResponsePayload { result, ack_tx }) => {
+                    // Convert the result using to_result for Ok values
+                    let typed_result = match result {
+                        Ok(json_value) => to_result(json_value),
+                        Err(err) => Err(err),
+                    };
+
+                    let outcome = handle(Ok(typed_result)).await;
+
+                    // Ack AFTER the handler completes - this is the key
+                    // difference from block_task. The dispatch loop waits for
+                    // this ack.
+                    if let Some(tx) = ack_tx {
+                        let _ = tx.send(());
+                    }
+
+                    outcome
                 }
-            };
-
-            let typed_result = match result {
-                Ok(json_value) => to_result(json_value),
-                Err(err) => Err(err),
-            };
-
-            let outcome = responder.respond_with_result(typed_result);
-
-            if let Some(tx) = ack_tx {
-                let _ = tx.send(());
+                Err(err) => {
+                    handle(Err(crate::util::internal_error(format!(
+                        "response to `{method}` never received: {err}"
+                    ))))
+                    .await
+                }
             }
-
-            outcome
         })
         .spawn(&task_tx)
     }
@@ -4223,52 +4291,15 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
         T: Send,
     {
-        let task_tx = self.task_tx.clone();
-        let method = self.method;
-        let response_rx = self.response_rx;
-        let to_result = self.to_result;
-        #[cfg(feature = "unstable_cancel_request")]
-        let cancellation = self.cancellation;
-        #[cfg(feature = "unstable_cancel_request")]
-        let cancellation_sources = self.cancellation_sources;
-        let location = Location::caller();
-
-        Task::new(location, async move {
-            #[cfg(feature = "unstable_cancel_request")]
-            let response = await_response_forwarding_cancellation(
-                response_rx,
-                &cancellation,
-                &cancellation_sources,
-            )
-            .await;
-            #[cfg(not(feature = "unstable_cancel_request"))]
-            let response = response_rx.await;
-
+        self.consume_with(async move |response| {
             match response {
-                Ok(ResponsePayload { result, ack_tx }) => {
-                    // Convert the result using to_result for Ok values
-                    let typed_result = match result {
-                        Ok(json_value) => to_result(json_value),
-                        Err(err) => Err(err),
-                    };
-
-                    // Run the user's callback
-                    let outcome = task(typed_result).await;
-
-                    // Ack AFTER the callback completes - this is the key difference
-                    // from block_task. The dispatch loop waits for this ack.
-                    if let Some(tx) = ack_tx {
-                        let _ = tx.send(());
-                    }
-
-                    outcome
-                }
-                Err(err) => Err(crate::util::internal_error(format!(
-                    "response to `{method}` never received: {err}"
-                ))),
+                // Run the user's callback on the peer's result.
+                Ok(result) => task(result).await,
+                // A response that was never delivered fails the consuming
+                // task instead of invoking the callback.
+                Err(err) => Err(err),
             }
         })
-        .spawn(&task_tx)
     }
 }
 

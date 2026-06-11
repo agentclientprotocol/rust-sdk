@@ -880,6 +880,115 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
         .await;
 }
 
+/// A dispatch handler may claim a `Dispatch::Response` and drop the router
+/// without invoking it. Routing the response settles the request all the
+/// same, so dropping the (never-delivered-to) request handle afterwards must
+/// not ask the peer to cancel a request it has already answered.
+#[tokio::test(flavor = "current_thread")]
+async fn response_claimed_by_dispatch_handler_disarms_auto_cancellation() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            // The JSON-RPC id whose response the dispatch handler below
+            // claims (and discards) without ever invoking the router.
+            let claimed_id: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            UntypedRole
+                .builder()
+                .on_receive_dispatch(
+                    {
+                        let claimed_id = claimed_id.clone();
+                        async move |dispatch: Dispatch, _connection: ConnectionTo<UntypedRole>| {
+                            if let Dispatch::Response(_, router) = &dispatch
+                                && claimed_id.lock().unwrap().as_ref() == Some(&router.id())
+                            {
+                                // Claim the response; the router is dropped
+                                // without responding.
+                                return Ok(Handled::Yes);
+                            }
+                            Ok(Handled::No {
+                                message: dispatch,
+                                retry: false,
+                            })
+                        }
+                    },
+                    agent_client_protocol::on_receive_dispatch!(),
+                )
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "claimed".into(),
+                    });
+                    *claimed_id.lock().unwrap() = Some(request.id());
+
+                    // The server answers requests in order, so once this
+                    // round trip completes, the response to `claimed` has
+                    // been routed and discarded by the dispatch handler.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+
+                    drop(request);
+
+                    // Another round trip: any cancellation sent by the drop
+                    // above would reach the server before this request.
+                    let after = cx
+                        .send_request(SimpleRequest {
+                            message: "after claimed".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(after.result, "echo: after claimed");
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            assert_no_event(&mut cancel_rx);
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn completed_sent_request_does_not_send_cancellation_on_drop() {
     use tokio::task::LocalSet;
