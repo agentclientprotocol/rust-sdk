@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.14.0...v0.15.0) - 2026-06-10
+
+### Other
+
+- *(acp)* Remove unused module files ([#204](https://github.com/agentclientprotocol/rust-sdk/pull/204))
+- *(deps)* Preserve serde_json object order ([#202](https://github.com/agentclientprotocol/rust-sdk/pull/202))
+
 ## [0.14.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.1...v0.14.0) - 2026-06-05
 
 ### Added
