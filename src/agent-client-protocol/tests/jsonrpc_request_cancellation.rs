@@ -1380,6 +1380,274 @@ async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
         .await;
 }
 
+/// Spawn a backend whose `park` requests wait until the cancel observer
+/// releases them, reporting parked request ids and observed cancellations.
+///
+/// Returns the proxy-side connection to the backend.
+async fn spawn_parking_backend(
+    honor_cancellations: bool,
+    parked_id_tx: mpsc::UnboundedSender<serde_json::Value>,
+    backend_cancel_tx: mpsc::UnboundedSender<RequestId>,
+) -> ConnectionTo<UntypedRole> {
+    let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
+        Arc::new(Mutex::new(None));
+
+    let (backend_for_proxy, backend_for_server) = Channel::duplex();
+    let (backend_connection_tx, backend_connection_rx) = futures::channel::oneshot::channel();
+
+    tokio::task::spawn_local(async move {
+        let result = UntypedRole
+            .builder()
+            .connect_with(backend_for_proxy, async |connection| {
+                drop(backend_connection_tx.send(connection.clone()));
+                std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+            })
+            .await;
+        if let Err(error) = result {
+            panic!("proxy-to-backend connection should stay alive: {error:?}");
+        }
+    });
+
+    let backend_server = UntypedRole
+        .builder()
+        .on_receive_request(
+            {
+                let pending_responder = pending_responder.clone();
+                async move |request: SimpleRequest,
+                            responder: Responder<SimpleResponse>,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    match request.message.as_str() {
+                        "park" => {
+                            parked_id_tx.unbounded_send(responder.id()).unwrap();
+                            *pending_responder.lock().unwrap() = Some(responder);
+                            Ok(())
+                        }
+                        "release" => {
+                            if let Some(parked) = pending_responder.lock().unwrap().take() {
+                                parked.respond(SimpleResponse {
+                                    result: "released".into(),
+                                })?;
+                            }
+                            responder.respond(SimpleResponse {
+                                result: "echo: release".into(),
+                            })
+                        }
+                        other => responder.respond(SimpleResponse {
+                            result: format!("echo: {other}"),
+                        }),
+                    }
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let pending_responder = pending_responder.clone();
+                async move |notification: CancelRequestNotification,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    if honor_cancellations
+                        && let Some(responder) = pending_responder.lock().unwrap().take()
+                    {
+                        responder.respond_with_result(Err(
+                            agent_client_protocol::Error::request_cancelled(),
+                        ))?;
+                    }
+                    backend_cancel_tx
+                        .unbounded_send(notification.request_id)
+                        .unwrap();
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+
+    tokio::task::spawn_local(async move {
+        if let Err(error) = backend_server.connect_to(backend_for_server).await {
+            panic!("backend server should stay alive: {error:?}");
+        }
+    });
+
+    backend_connection_rx
+        .await
+        .expect("backend connection should start")
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn custom_forwarding_propagates_cancellation_when_opted_in() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (backend_cancel_tx, mut backend_cancel_rx) = mpsc::unbounded();
+            let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+
+            let backend_connection =
+                spawn_parking_backend(true, parked_id_tx, backend_cancel_tx).await;
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let proxy_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            // A proxy with a *custom* method handler: it forwards with
+            // `on_receiving_result` (so it could post-process the result) and
+            // opts into cancellation propagation explicitly.
+            let proxy = UntypedRole.builder().on_receive_request(
+                {
+                    let backend_connection = backend_connection.clone();
+                    async move |request: SimpleRequest,
+                                responder: Responder<SimpleResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        backend_connection
+                            .send_request(request)
+                            .forward_cancellation_from(responder.cancellation())
+                            .on_receiving_result(async move |result| {
+                                responder.respond_with_result(result)
+                            })
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = proxy.connect_to(proxy_transport).await {
+                    panic!("proxy should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let client_request_id = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |connection| {
+                    let request: SentRequest<SimpleResponse> =
+                        connection.send_request(SimpleRequest {
+                            message: "park".into(),
+                        });
+                    let client_request_id = request.id();
+                    request.cancel()?;
+
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("request should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
+
+                    let barrier = connection
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    Ok(client_request_id)
+                })
+                .await
+                .unwrap();
+
+            // Exactly one cancellation reached the backend, re-issued under
+            // the proxy's downstream request ID.
+            let parked_id = next_with_timeout(&mut parked_id_rx).await;
+            assert_ne!(parked_id, client_request_id);
+            let observed = next_with_timeout(&mut backend_cancel_rx).await;
+            assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
+            assert_no_event(&mut backend_cancel_rx);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn custom_forwarding_absorbs_cancellation_by_default() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (backend_cancel_tx, mut backend_cancel_rx) = mpsc::unbounded();
+            let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+
+            let backend_connection =
+                spawn_parking_backend(false, parked_id_tx, backend_cancel_tx).await;
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let proxy_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            // The same custom forwarding *without* opting into propagation:
+            // the implementor decided cancellation stops at this hop.
+            let proxy = UntypedRole.builder().on_receive_request(
+                {
+                    let backend_connection = backend_connection.clone();
+                    async move |request: SimpleRequest,
+                                responder: Responder<SimpleResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        backend_connection
+                            .send_request(request)
+                            .on_receiving_result(async move |result| {
+                                responder.respond_with_result(result)
+                            })
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = proxy.connect_to(proxy_transport).await {
+                    panic!("proxy should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            UntypedRole
+                .builder()
+                .connect_with(client_transport, async |connection| {
+                    let request: SentRequest<SimpleResponse> =
+                        connection.send_request(SimpleRequest {
+                            message: "park".into(),
+                        });
+                    request.cancel()?;
+
+                    // Barrier: the cancellation has now been processed by the
+                    // proxy (and would have been processed by the backend if
+                    // it had been forwarded).
+                    let barrier = connection
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    assert_no_event(&mut backend_cancel_rx);
+
+                    // Release the parked request: the cancelled request still
+                    // completes with normal data, because the proxy absorbed
+                    // the cancellation.
+                    let release = connection
+                        .send_request(SimpleRequest {
+                            message: "release".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(release.result, "echo: release");
+
+                    let response = request
+                        .block_task()
+                        .await
+                        .expect("absorbed cancellation must not fail the request");
+                    assert_eq!(response.result, "released");
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            // The backend never saw any `$/cancel_request`.
+            let _parked_id = next_with_timeout(&mut parked_id_rx).await;
+            assert_no_event(&mut backend_cancel_rx);
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn cancellation_marker_requested_after_cancel_is_already_cancelled() {
     use tokio::task::LocalSet;

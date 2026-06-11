@@ -81,6 +81,16 @@ drop a raw `$/cancel_request` instead of forwarding a request ID that means
 nothing on the next connection. The cancellation still reaches the next hop,
 re-issued by `forward_response_to` with that hop's own request ID.
 
+Proxies that intercept methods with custom handlers stay in control: the
+request's cancellation marker is their decision point, and handlers see the
+raw notification before any generic forwarding fallback. A custom handler can
+handle the cancellation locally, propagate it to a forwarded request
+(`forward_response_to`, or `forward_cancellation_from` when the forwarding
+needs custom logic), absorb it, or claim the notification and route it itself.
+See the `concepts::cancellation` chapter in the
+[agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol) for
+the full decision matrix.
+
 When the notification targets a request that was wrapped in a
 `_proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
 `$/cancel_request` is wrapped in the same envelope, and `requestId` refers to

@@ -16,6 +16,8 @@
 //!   response arrives, any erroneously tunneled notification would already
 //!   have been observed.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agent_client_protocol::schema::{
@@ -600,6 +602,237 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
     // The barrier prompt's session update was transformed by the arrow proxy.
     let update = next_with_timeout(&mut session_update_rx).await;
     assert_eq!(update, ">barrier");
+
+    conductor_handle.abort();
+    Ok(())
+}
+
+/// `session/new` is forwarded by proxies with a result hook (to register the
+/// session's dynamic handler), not with `forward_response_to` — cancellation
+/// must still propagate hop by hop, exactly like every other request.
+#[tokio::test]
+async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error> {
+    let (agent_cancel_tx, mut agent_cancel_rx) = mpsc::unbounded();
+    let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+
+    let agent = Agent
+        .builder()
+        .on_receive_request(
+            async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
+                responder.respond(InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: NewSessionRequest,
+                        responder: Responder<NewSessionResponse>,
+                        cx: ConnectionTo<Client>| {
+                if request.cwd.ends_with("park-session") {
+                    parked_id_tx.unbounded_send(responder.id()).unwrap();
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let response = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<NewSessionResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(response)
+                    })?;
+                    return Ok(());
+                }
+
+                responder.respond(NewSessionResponse::new(SessionId::new("normal-session")))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
+                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+
+    let (editor_write, conductor_read) = duplex(8192);
+    let (conductor_write, editor_read) = duplex(8192);
+
+    // The passthrough proxy is what exercises the proxy-side `session/new`
+    // forwarding hook.
+    let conductor_handle = tokio::spawn(async move {
+        ConductorImpl::new_agent(
+            "cancellation-conductor".to_string(),
+            ProxiesAndAgent::new(agent).proxy(Proxy.builder()),
+        )
+        .run(ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
+        .await
+    });
+
+    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+        Client
+            .builder()
+            .connect_with(
+                ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+                async |cx| {
+                    let initialize = cx
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+                    let request: SentRequest<NewSessionResponse> =
+                        cx.send_request(NewSessionRequest::new("/park-session"));
+                    let client_request_id = request.id();
+                    request.cancel()?;
+
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("session/new should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
+
+                    // Barrier through the whole chain: a fresh session still
+                    // works after the cancelled one.
+                    let session = cx
+                        .send_request(NewSessionRequest::new(
+                            std::env::current_dir().map_err(Error::into_internal_error)?,
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(session.session_id, SessionId::new("normal-session"));
+
+                    Ok(client_request_id)
+                },
+            )
+            .await
+    })
+    .await
+    .expect("test timed out")
+    .expect("client failed");
+
+    // The agent saw exactly one `$/cancel_request`, for the `session/new` ID
+    // on its own connection.
+    let parked_id = next_with_timeout(&mut parked_id_rx).await;
+    assert_ne!(
+        parked_id, client_request_id,
+        "each hop must re-issue the request under its own ID"
+    );
+    let observed = next_with_timeout(&mut agent_cancel_rx).await;
+    assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
+    assert_no_event(&mut agent_cancel_rx);
+
+    conductor_handle.abort();
+    Ok(())
+}
+
+/// `initialize` is rewritten to `_proxy/initialize` at the conductor-to-proxy
+/// hop and forwarded with a result hook — cancellation must still propagate
+/// hop by hop, exactly like every other request.
+#[tokio::test]
+async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error> {
+    let (agent_cancel_tx, mut agent_cancel_rx) = mpsc::unbounded();
+    let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+    let parked_first = Arc::new(AtomicBool::new(false));
+
+    let agent = Agent.builder().on_receive_request(
+        {
+            let parked_first = parked_first.clone();
+            async move |initialize: InitializeRequest,
+                        responder: Responder<InitializeResponse>,
+                        cx: ConnectionTo<Client>| {
+                if !parked_first.swap(true, Ordering::SeqCst) {
+                    parked_id_tx.unbounded_send(responder.id()).unwrap();
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let response = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<InitializeResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(response)
+                    })?;
+                    return Ok(());
+                }
+
+                responder.respond(InitializeResponse::new(initialize.protocol_version))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    // The cancel observer must be registered on the same builder; do it
+    // separately so the request handler above can keep its captures.
+    let agent = agent.on_receive_notification(
+        async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
+            agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+            Ok(())
+        },
+        agent_client_protocol::on_receive_notification!(),
+    );
+
+    let (editor_write, conductor_read) = duplex(8192);
+    let (conductor_write, editor_read) = duplex(8192);
+
+    // The passthrough proxy is what exercises the conductor's
+    // `initialize` -> `_proxy/initialize` rewriting hop.
+    let conductor_handle = tokio::spawn(async move {
+        ConductorImpl::new_agent(
+            "cancellation-conductor".to_string(),
+            ProxiesAndAgent::new(agent).proxy(Proxy.builder()),
+        )
+        .run(ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
+        .await
+    });
+
+    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+        Client
+            .builder()
+            .connect_with(
+                ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+                async |cx| {
+                    let request: SentRequest<InitializeResponse> =
+                        cx.send_request(InitializeRequest::new(ProtocolVersion::V1));
+                    let client_request_id = request.id();
+                    request.cancel()?;
+
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("initialize should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
+
+                    // Barrier through the whole chain: initializing again
+                    // still works after the cancelled attempt.
+                    let initialize = cx
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+                    Ok(client_request_id)
+                },
+            )
+            .await
+    })
+    .await
+    .expect("test timed out")
+    .expect("client failed");
+
+    // The agent saw exactly one `$/cancel_request`, for the `initialize` ID
+    // on its own connection.
+    let parked_id = next_with_timeout(&mut parked_id_rx).await;
+    assert_ne!(
+        parked_id, client_request_id,
+        "each hop must re-issue the request under its own ID"
+    );
+    let observed = next_with_timeout(&mut agent_cancel_rx).await;
+    assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
+    assert_no_event(&mut agent_cancel_rx);
 
     conductor_handle.abort();
     Ok(())

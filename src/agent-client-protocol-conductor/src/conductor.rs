@@ -780,12 +780,18 @@ where
                 //
                 // The proxy will then initialize itself and forward an `Initialize`
                 // request to its successor.
-                self.proxies[target_component_index]
-                    .send_request(InitializeProxyRequest::from(request))
-                    .on_receiving_result(async move |result| {
-                        tracing::debug!(?result, "got initialize_proxy response from proxy");
-                        responder.respond_with_result(result)
-                    })
+                let sent = self.proxies[target_component_index]
+                    .send_request(InitializeProxyRequest::from(request));
+                // The request is rewritten, so `forward_response_to` cannot be
+                // used here; wire up cancellation forwarding explicitly to
+                // keep `initialize` cancellable like every other forwarded
+                // request.
+                #[cfg(feature = "unstable_cancel_request")]
+                let sent = sent.forward_cancellation_from(responder.cancellation());
+                sent.on_receiving_result(async move |result| {
+                    tracing::debug!(?result, "got initialize_proxy response from proxy");
+                    responder.respond_with_result(result)
+                })
             })
             .await
             .otherwise(async |message| {

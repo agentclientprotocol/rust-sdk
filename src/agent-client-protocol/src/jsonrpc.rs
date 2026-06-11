@@ -3542,6 +3542,11 @@ pub struct SentRequest<T> {
     to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
     #[cfg(feature = "unstable_cancel_request")]
     cancellation: SentRequestCancellation,
+    /// Cancellation markers of other (incoming) requests whose cancellation
+    /// should be forwarded to this request. See
+    /// [`forward_cancellation_from`](Self::forward_cancellation_from).
+    #[cfg(feature = "unstable_cancel_request")]
+    cancellation_sources: Vec<RequestCancellation>,
 }
 
 #[cfg(feature = "unstable_cancel_request")]
@@ -3629,6 +3634,54 @@ impl Debug for SentRequestCancellation {
     }
 }
 
+/// Await the response payload for an outgoing request, watching `sources` for
+/// cancellation of the upstream requests it was registered with.
+///
+/// When any source reports cancellation, a `$/cancel_request` is forwarded to
+/// the outgoing request (at most once, shared with [`SentRequest::cancel`] and
+/// drop-time auto-cancellation), and the response is *still* awaited: the peer
+/// always answers, with normal data or a cancellation error.
+///
+/// Watching is deliberately bounded by response arrival so that completed
+/// requests do not leak waiters on markers that will never fire.
+#[cfg(feature = "unstable_cancel_request")]
+async fn await_response_forwarding_cancellation(
+    response_rx: oneshot::Receiver<ResponsePayload>,
+    cancellation: &SentRequestCancellation,
+    sources: &[RequestCancellation],
+) -> Result<ResponsePayload, oneshot::Canceled> {
+    // Failing to forward the cancellation must not abort the wait: the
+    // response (normal data or a cancellation error) may still arrive and
+    // must still be processed.
+    let forward_cancellation = || {
+        if let Err(error) = cancellation.send() {
+            tracing::debug!(
+                ?error,
+                "failed to forward cancellation to downstream request"
+            );
+        }
+    };
+
+    let response = if sources.is_empty() {
+        response_rx.await
+    } else if sources.iter().any(RequestCancellation::is_cancelled) {
+        forward_cancellation();
+        response_rx.await
+    } else {
+        let cancelled = sources.iter().map(|source| source.state.signal_rx.clone());
+        match future::select(future::select_all(cancelled), response_rx).await {
+            Either::Left((_, response_rx)) => {
+                forward_cancellation();
+                response_rx.await
+            }
+            Either::Right((response, _)) => response,
+        }
+    };
+
+    cancellation.disarm();
+    response
+}
+
 impl<T: Debug> Debug for SentRequest<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("SentRequest");
@@ -3638,7 +3691,9 @@ impl<T: Debug> Debug for SentRequest<T> {
             .field("task_tx", &self.task_tx)
             .field("response_rx", &self.response_rx);
         #[cfg(feature = "unstable_cancel_request")]
-        debug.field("cancellation", &self.cancellation);
+        debug
+            .field("cancellation", &self.cancellation)
+            .field("cancellation_sources", &self.cancellation_sources);
         debug.finish_non_exhaustive()
     }
 }
@@ -3659,6 +3714,8 @@ impl SentRequest<serde_json::Value> {
             to_result: Box::new(Ok),
             #[cfg(feature = "unstable_cancel_request")]
             cancellation,
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation_sources: Vec::new(),
         }
     }
 }
@@ -3682,6 +3739,50 @@ impl<T> SentRequest<T> {
     #[cfg(feature = "unstable_cancel_request")]
     pub fn cancel(&self) -> Result<(), crate::Error> {
         self.cancellation.send()
+    }
+
+    /// Forward cancellation of another request to this one.
+    ///
+    /// When the request that `source` belongs to is cancelled by its peer,
+    /// a `$/cancel_request` for *this* request is sent to its peer, using the
+    /// same wrapping as the original request. The response is still awaited
+    /// and delivered as usual (normal data or a cancellation error), so this
+    /// composes with [`block_task`](Self::block_task) and
+    /// [`on_receiving_result`](Self::on_receiving_result).
+    ///
+    /// This is the building block for proxies that forward a request with
+    /// custom logic instead of [`forward_response_to`](Self::forward_response_to)
+    /// (which wires this up automatically from its responder). Without it,
+    /// custom forwarding *absorbs* cancellation: the upstream marker is still
+    /// set, but nothing is sent downstream.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{ConnectionTo, Error, Responder, UntypedRole};
+    /// # use agent_client_protocol_test::{MyRequest, MyResponse};
+    /// # async fn example(request: MyRequest, responder: Responder<MyResponse>, backend: ConnectionTo<UntypedRole>) -> Result<(), Error> {
+    /// backend
+    ///     .send_request(request)
+    ///     .forward_cancellation_from(responder.cancellation())
+    ///     .on_receiving_result(async move |result| {
+    ///         // Custom result handling, e.g. bookkeeping or rewriting.
+    ///         responder.respond_with_result(result)
+    ///     })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// May be called multiple times; cancellation of any registered source
+    /// triggers the forwarding (at most one `$/cancel_request` is ever sent
+    /// per request). Sources are observed while the response is being
+    /// awaited — that is, once the handle is consumed with
+    /// [`block_task`](Self::block_task),
+    /// [`on_receiving_result`](Self::on_receiving_result), or
+    /// [`forward_response_to`](Self::forward_response_to); a source that was
+    /// already cancelled by then is honored immediately.
+    #[cfg(feature = "unstable_cancel_request")]
+    pub fn forward_cancellation_from(mut self, source: RequestCancellation) -> Self {
+        self.cancellation_sources.push(source);
+        self
     }
 }
 
@@ -3711,6 +3812,8 @@ impl<T: JsonRpcResponse> SentRequest<T> {
             to_result: Box::new(move |value| map_fn((self.to_result)(value)?)),
             #[cfg(feature = "unstable_cancel_request")]
             cancellation: self.cancellation,
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation_sources: self.cancellation_sources,
         }
     }
 
@@ -3772,7 +3875,9 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// - When the `unstable_cancel_request` feature is enabled and the peer
     ///   cancels the incoming request, the cancellation is forwarded to the
     ///   outgoing request, and the downstream response (normal data or a
-    ///   cancellation error) is still forwarded back.
+    ///   cancellation error) is still forwarded back. This is equivalent to
+    ///   registering the responder's marker with
+    ///   [`forward_cancellation_from`](Self::forward_cancellation_from).
     #[track_caller]
     pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
@@ -3785,42 +3890,21 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         #[cfg(feature = "unstable_cancel_request")]
         let downstream_cancellation = self.cancellation;
         #[cfg(feature = "unstable_cancel_request")]
-        let upstream_cancellation = responder.cancellation();
+        let cancellation_sources = {
+            let mut sources = self.cancellation_sources;
+            sources.push(responder.cancellation());
+            sources
+        };
         let location = Location::caller();
 
         Task::new(location, async move {
             #[cfg(feature = "unstable_cancel_request")]
-            let response = {
-                // Failing to forward the cancellation must not abort this
-                // task: the downstream response (normal data or a
-                // cancellation error) may still arrive and must still be
-                // forwarded upstream.
-                let forward_cancellation = |cancellation: &SentRequestCancellation| {
-                    if let Err(error) = cancellation.send() {
-                        tracing::debug!(
-                            ?error,
-                            "failed to forward cancellation to downstream request"
-                        );
-                    }
-                };
-
-                let response = if upstream_cancellation.is_cancelled() {
-                    forward_cancellation(&downstream_cancellation);
-                    response_rx.await
-                } else {
-                    match future::select(pin!(upstream_cancellation.cancelled()), response_rx).await
-                    {
-                        Either::Left(((), response_rx)) => {
-                            forward_cancellation(&downstream_cancellation);
-                            response_rx.await
-                        }
-                        Either::Right((response, _)) => response,
-                    }
-                };
-
-                downstream_cancellation.disarm();
-                response
-            };
+            let response = await_response_forwarding_cancellation(
+                response_rx,
+                &downstream_cancellation,
+                &cancellation_sources,
+            )
+            .await;
             #[cfg(not(feature = "unstable_cancel_request"))]
             let response = response_rx.await;
 
@@ -3918,14 +4002,21 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     where
         T: Send,
     {
-        match self.response_rx.await {
+        #[cfg(feature = "unstable_cancel_request")]
+        let response = await_response_forwarding_cancellation(
+            self.response_rx,
+            &self.cancellation,
+            &self.cancellation_sources,
+        )
+        .await;
+        #[cfg(not(feature = "unstable_cancel_request"))]
+        let response = self.response_rx.await;
+
+        match response {
             Ok(ResponsePayload {
                 result: Ok(json_value),
                 ack_tx,
             }) => {
-                #[cfg(feature = "unstable_cancel_request")]
-                self.cancellation.disarm();
-
                 // Ack immediately - we're in a spawned task, so the dispatch loop
                 // can continue while we process the value.
                 if let Some(tx) = ack_tx {
@@ -3940,23 +4031,15 @@ impl<T: JsonRpcResponse> SentRequest<T> {
                 result: Err(err),
                 ack_tx,
             }) => {
-                #[cfg(feature = "unstable_cancel_request")]
-                self.cancellation.disarm();
-
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
                 }
                 Err(err)
             }
-            Err(err) => {
-                #[cfg(feature = "unstable_cancel_request")]
-                self.cancellation.disarm();
-
-                Err(crate::util::internal_error(format!(
-                    "response to `{}` never received: {}",
-                    self.method, err
-                )))
-            }
+            Err(err) => Err(crate::util::internal_error(format!(
+                "response to `{}` never received: {}",
+                self.method, err
+            ))),
         }
     }
 
@@ -4108,14 +4191,23 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         let to_result = self.to_result;
         #[cfg(feature = "unstable_cancel_request")]
         let cancellation = self.cancellation;
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation_sources = self.cancellation_sources;
         let location = Location::caller();
 
         Task::new(location, async move {
-            match response_rx.await {
-                Ok(ResponsePayload { result, ack_tx }) => {
-                    #[cfg(feature = "unstable_cancel_request")]
-                    cancellation.disarm();
+            #[cfg(feature = "unstable_cancel_request")]
+            let response = await_response_forwarding_cancellation(
+                response_rx,
+                &cancellation,
+                &cancellation_sources,
+            )
+            .await;
+            #[cfg(not(feature = "unstable_cancel_request"))]
+            let response = response_rx.await;
 
+            match response {
+                Ok(ResponsePayload { result, ack_tx }) => {
                     // Convert the result using to_result for Ok values
                     let typed_result = match result {
                         Ok(json_value) => to_result(json_value),
@@ -4133,14 +4225,9 @@ impl<T: JsonRpcResponse> SentRequest<T> {
 
                     outcome
                 }
-                Err(err) => {
-                    #[cfg(feature = "unstable_cancel_request")]
-                    cancellation.disarm();
-
-                    Err(crate::util::internal_error(format!(
-                        "response to `{method}` never received: {err}"
-                    )))
-                }
+                Err(err) => Err(crate::util::internal_error(format!(
+                    "response to `{method}` never received: {err}"
+                ))),
             }
         })
         .spawn(&task_tx)

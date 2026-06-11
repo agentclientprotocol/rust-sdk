@@ -101,6 +101,45 @@
 //! was allocated on a different connection and would be meaningless to the
 //! next peer.
 //!
+//! ## Custom methods on proxies
+//!
+//! A proxy that intercepts a method with its own handler decides what
+//! cancellation means for it. The SDK always records the cancellation on the
+//! request's [`Responder`] marker before the handler chain runs; what happens
+//! next is up to the handler that owns the request:
+//!
+//! - **Handle locally**: react to [`Responder::cancellation`] like any
+//!   request handler (ignore it, finish early, or respond with
+//!   [`Error::request_cancelled`]).
+//! - **Forward and propagate**: use [`forward_response_to`], or, when the
+//!   forwarding needs custom logic (rewriting the request, post-processing
+//!   the result), register the upstream marker explicitly with
+//!   [`forward_cancellation_from`] before consuming the handle:
+//!
+//! ```
+//! # use agent_client_protocol::{ConnectionTo, Error, Responder, UntypedRole};
+//! # use agent_client_protocol_test::{MyRequest, MyResponse};
+//! # async fn example(request: MyRequest, responder: Responder<MyResponse>, backend: ConnectionTo<UntypedRole>) -> Result<(), Error> {
+//! backend
+//!     .send_request(request)
+//!     .forward_cancellation_from(responder.cancellation())
+//!     .on_receiving_result(async move |result| {
+//!         // Custom result handling before responding upstream.
+//!         responder.respond_with_result(result)
+//!     })?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! - **Absorb**: consume the handle without registering the marker
+//!   ([`on_receiving_result`] or [`block_task`] alone); the upstream marker is
+//!   still set, but nothing is sent downstream and the request runs to
+//!   completion there.
+//! - **Custom routing**: claim the `$/cancel_request` notification itself in a
+//!   handler (user handlers run before the generic forwarding fallbacks) and
+//!   translate it manually, for example with
+//!   [`ConnectionTo::send_cancel_request_to`].
+//!
 //! # Low-level access
 //!
 //! Register [`CancelRequestNotification`] (or [`ProtocolLevelNotification`])
@@ -142,6 +181,9 @@
 //! [`ConnectionTo::spawn`]: crate::ConnectionTo::spawn
 //! [`SentRequest`]: crate::SentRequest
 //! [`SentRequest::cancel`]: crate::SentRequest::cancel
+//! [`forward_cancellation_from`]: crate::SentRequest::forward_cancellation_from
+//! [`ConnectionTo::send_cancel_request_to`]: crate::ConnectionTo::send_cancel_request_to
+//! [`Responder::cancellation`]: crate::Responder::cancellation
 //! [`Responder`]: crate::Responder
 //! [`Error::request_cancelled`]: crate::Error::request_cancelled
 //! [`CancelRequestNotification`]: crate::schema::CancelRequestNotification
