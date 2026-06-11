@@ -49,6 +49,13 @@ fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(Error::into_internal_error)
 }
 
+fn v2_initialize_response_with_session(
+    protocol_version: ProtocolVersion,
+) -> v2::InitializeResponse {
+    v2::InitializeResponse::new(protocol_version)
+        .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+}
+
 #[cfg(feature = "unstable_mcp_over_acp")]
 fn json_value(value: impl Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(Error::into_internal_error)
@@ -215,7 +222,9 @@ async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(
     let agent = Agent.v2().on_receive_request(
         async |initialize: v2::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-            responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
         },
         agent_client_protocol::on_receive_request!(),
     );
@@ -451,7 +460,7 @@ async fn v2_agent_serves_v1_client_with_v2_handlers() -> Result<(), Error> {
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
                 // The compatibility layer should force this back to the negotiated v1 wire version.
-                responder.respond(v2::InitializeResponse::new(ProtocolVersion::V2))
+                responder.respond(v2_initialize_response_with_session(ProtocolVersion::V2))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -515,7 +524,9 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         .on_receive_request(
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )

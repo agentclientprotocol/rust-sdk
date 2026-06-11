@@ -196,7 +196,11 @@ async fn v2_agent_can_elicit_from_v1_client() -> Result<(), Error> {
         .on_receive_request(
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2::InitializeResponse::new(ProtocolVersion::V2))
+                responder.respond(
+                    v2::InitializeResponse::new(ProtocolVersion::V2).capabilities(
+                        v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()),
+                    ),
+                )
             },
             agent_client_protocol::on_receive_request!(),
         )
