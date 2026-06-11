@@ -250,6 +250,12 @@ impl agent_client_protocol::role::HasPeer<WrappedSuccessor> for WrappedCounterpa
     }
 }
 
+impl agent_client_protocol::role::HasPeer<WrappedSuccessor> for WrappedHost {
+    fn remote_style(&self, _peer: WrappedSuccessor) -> agent_client_protocol::role::RemoteStyle {
+        agent_client_protocol::role::RemoteStyle::Successor
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn unhandled_protocol_level_notifications_are_ignored() {
     use tokio::io::{AsyncWriteExt, BufReader};
@@ -535,6 +541,104 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (wrapped_cancel_tx, mut wrapped_cancel_rx) = mpsc::unbounded();
+            let (plain_cancel_tx, mut plain_cancel_rx) = mpsc::unbounded();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = WrappedHost
+                .builder()
+                .on_receive_request_from(
+                    WrappedSuccessor,
+                    async |_request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           cx: ConnectionTo<WrappedCounterpart>| {
+                        let cancellation = responder.cancellation();
+                        cx.spawn(async move {
+                            let response = cancellation
+                                .run_until_cancelled(futures::future::pending::<
+                                    Result<SimpleResponse, agent_client_protocol::Error>,
+                                >())
+                                .await;
+                            responder.respond_with_result(response)
+                        })?;
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                // Matches only a `$/cancel_request` wrapped in a
+                // `_proxy/successor` envelope: observing it here proves the
+                // client wrapped the outgoing cancellation the same way as
+                // the request it refers to.
+                .on_receive_notification_from(
+                    WrappedSuccessor,
+                    async move |cancel: CancelRequestNotification,
+                                _cx: ConnectionTo<WrappedCounterpart>| {
+                        wrapped_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                )
+                // Matches only an *unwrapped* `$/cancel_request`; the client
+                // must never send one for a successor-wrapped request.
+                .on_receive_notification(
+                    async move |cancel: CancelRequestNotification,
+                                _cx: ConnectionTo<WrappedCounterpart>| {
+                        plain_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let (expected_id, error) = WrappedCounterpart
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request_to(
+                        WrappedSuccessor,
+                        SimpleRequest {
+                            message: "wrapped cancel".into(),
+                        },
+                    );
+                    let expected_id = request.id();
+                    request.cancel()?;
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("request should be cancelled");
+                    Ok((expected_id, error))
+                })
+                .await
+                .unwrap();
+
+            assert_eq!(i32::from(error.code), -32800);
+
+            // The cancellation arrived wrapped, for the wrapped request's
+            // outer JSON-RPC id, and never in unwrapped form.
+            let received = next_with_timeout(&mut wrapped_cancel_rx).await;
+            assert_eq!(serde_json::to_value(received).unwrap(), expected_id);
+            assert_no_event(&mut wrapped_cancel_rx);
+            assert_no_event(&mut plain_cancel_rx);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn cancel_request_notification_can_be_sent_and_handled() {
     use tokio::task::LocalSet;
 
@@ -594,9 +698,19 @@ async fn sent_request_can_send_cancellation_for_its_id() {
             let server = UntypedRole
                 .builder()
                 .on_receive_request(
-                    async |_request: SimpleRequest,
-                           _responder: Responder<SimpleResponse>,
-                           _connection: ConnectionTo<UntypedRole>| { Ok(()) },
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        if request.message == "barrier" {
+                            return responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            });
+                        }
+                        // Park other requests (by dropping the responder) so
+                        // the cancelled request is never answered and the
+                        // client handle stays unconsumed.
+                        Ok(())
+                    },
                     agent_client_protocol::on_receive_request!(),
                 )
                 .on_receive_notification(
@@ -625,6 +739,21 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                     let expected_id = request.id();
                     request.cancel()?;
                     let received = next_with_timeout(&mut cancel_rx).await;
+
+                    // Dropping the handle after an explicit cancel must not
+                    // send a second `$/cancel_request`.
+                    drop(request);
+
+                    // Barrier round trip: a duplicate cancel sent by the drop
+                    // above would reach the server before this request.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+
                     Ok((expected_id, received))
                 })
                 .await
@@ -1087,6 +1216,165 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                 .await
                 .unwrap();
 
+            assert_no_event(&mut backend_cancel_rx);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (backend_cancel_tx, mut backend_cancel_rx) = mpsc::unbounded();
+            // The downstream JSON-RPC id of the parked request, as seen by
+            // the backend.
+            let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+            // The responder for the cancelled request, parked by the backend
+            // until the forwarded cancellation arrives.
+            let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
+                Arc::new(Mutex::new(None));
+
+            let (backend_for_proxy, backend_for_server) = Channel::duplex();
+            let (backend_connection_tx, backend_connection_rx) =
+                futures::channel::oneshot::channel();
+
+            tokio::task::spawn_local(async move {
+                let result = UntypedRole
+                    .builder()
+                    .connect_with(backend_for_proxy, async |connection| {
+                        drop(backend_connection_tx.send(connection.clone()));
+                        std::future::pending::<Result<(), agent_client_protocol::Error>>().await
+                    })
+                    .await;
+                if let Err(error) = result {
+                    panic!("proxy-to-backend connection should stay alive: {error:?}");
+                }
+            });
+
+            let backend_server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |request: SimpleRequest,
+                                    responder: Responder<SimpleResponse>,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            if request.message == "park" {
+                                parked_id_tx.unbounded_send(responder.id()).unwrap();
+                                *pending_responder.lock().unwrap() = Some(responder);
+                                return Ok(());
+                            }
+
+                            responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            })
+                        }
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    {
+                        let pending_responder = pending_responder.clone();
+                        async move |notification: CancelRequestNotification,
+                                    _connection: ConnectionTo<UntypedRole>| {
+                            // Honor the cancellation: answer the parked
+                            // request with the cancellation error.
+                            if let Some(responder) = pending_responder.lock().unwrap().take() {
+                                responder.respond_with_result(Err(
+                                    agent_client_protocol::Error::request_cancelled(),
+                                ))?;
+                            }
+                            backend_cancel_tx
+                                .unbounded_send(notification.request_id)
+                                .unwrap();
+                            Ok(())
+                        }
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = backend_server.connect_to(backend_for_server).await {
+                    panic!("backend server should stay alive: {error:?}");
+                }
+            });
+
+            let backend_connection = backend_connection_rx
+                .await
+                .expect("backend connection should start");
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let proxy_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            // The proxy forwards *every* incoming dispatch with
+            // `send_proxied_message`. Without the hop-scoped filter, the
+            // client's raw `$/cancel_request` (whose request ID only means
+            // something on the client-to-proxy connection) would be tunneled
+            // to the backend verbatim, alongside the cancellation that
+            // `forward_response_to` re-issues with the downstream ID.
+            let proxy = UntypedRole.builder().on_receive_dispatch(
+                {
+                    let backend_connection = backend_connection.clone();
+                    async move |dispatch: Dispatch, _connection: ConnectionTo<UntypedRole>| {
+                        backend_connection.send_proxied_message(dispatch)
+                    }
+                },
+                agent_client_protocol::on_receive_dispatch!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = proxy.connect_to(proxy_transport).await {
+                    panic!("proxy should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let client_request_id = UntypedRole
+                .builder()
+                .connect_with(client_transport, async |connection| {
+                    let request: SentRequest<SimpleResponse> =
+                        connection.send_request(SimpleRequest {
+                            message: "park".into(),
+                        });
+                    let client_request_id = request.id();
+                    request.cancel()?;
+
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("request should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
+
+                    // Barrier: this round trip traverses both hops after the
+                    // cancellation, so a tunneled raw `$/cancel_request`
+                    // would already have been recorded by the backend.
+                    let barrier = connection
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    Ok(client_request_id)
+                })
+                .await
+                .unwrap();
+
+            // The backend saw exactly one `$/cancel_request`: the one
+            // re-issued for the downstream request, not the client's raw
+            // notification with its hop-local request ID.
+            let parked_id = next_with_timeout(&mut parked_id_rx).await;
+            assert_ne!(
+                parked_id, client_request_id,
+                "the proxy must re-issue the request under its own ID"
+            );
+            let observed = next_with_timeout(&mut backend_cancel_rx).await;
+            assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
             assert_no_event(&mut backend_cancel_rx);
         })
         .await;

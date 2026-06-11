@@ -95,6 +95,12 @@
 //! downstream request automatically. The downstream response (normal data or a
 //! cancellation error) is still forwarded back upstream.
 //!
+//! Because cancellation propagates per hop this way, the raw notification is
+//! never tunneled across hops: [`ConnectionTo::send_proxied_message_to`] drops
+//! `$/cancel_request` notifications rather than forwarding a `requestId` that
+//! was allocated on a different connection and would be meaningless to the
+//! next peer.
+//!
 //! # Low-level access
 //!
 //! Register [`CancelRequestNotification`] (or [`ProtocolLevelNotification`])
@@ -132,6 +138,7 @@
 //! [`RequestCancellation::is_cancelled`]: crate::RequestCancellation::is_cancelled
 //! [`ConnectionTo::send_request`]: crate::ConnectionTo::send_request
 //! [`ConnectionTo::send_request_to`]: crate::ConnectionTo::send_request_to
+//! [`ConnectionTo::send_proxied_message_to`]: crate::ConnectionTo::send_proxied_message_to
 //! [`ConnectionTo::spawn`]: crate::ConnectionTo::spawn
 //! [`SentRequest`]: crate::SentRequest
 //! [`SentRequest::cancel`]: crate::SentRequest::cancel

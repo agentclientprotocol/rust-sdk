@@ -44,8 +44,12 @@ The requesting side always receives a response to the original request;
 cancellation only changes _which_ response that is. A `$/cancel_request` for
 an unknown or already-completed request ID is silently ignored. A
 `$/cancel_request` with malformed params (for example, a `requestId` that is
-not a string, number, or null) is different: like any other malformed
-notification, it is reported back with an out-of-band error notification.
+not a string, number, or null) is different: when the receiver is built with
+the `unstable_cancel_request` feature, it is reported back with an
+out-of-band error notification, like any other malformed notification. A
+receiver built without the feature never parses the params and ignores the
+notification like any other unhandled `$/` notification (see
+[Interoperability](#interoperability)).
 
 ## Interoperability
 
@@ -70,15 +74,24 @@ request on the connection it is sent over:
 3. The downstream response — normal data or the cancellation error — flows
    back up the chain as the response to each hop's request.
 
+Because the notification is hop-scoped, it is never tunneled across hops:
+when the feature is enabled, generic forwarding helpers
+(`send_proxied_message_to` in the SDK, and the conductor's internal routing)
+drop a raw `$/cancel_request` instead of forwarding a request ID that means
+nothing on the next connection. The cancellation still reaches the next hop,
+re-issued by `forward_response_to` with that hop's own request ID.
+
 When the notification targets a request that was wrapped in a
 `_proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
 `$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
 the JSON-RPC `id` of the wrapped request on that connection.
 
-The conductor forwards cancellations between hops when it is built with its
+The conductor translates cancellations between hops when it is built with its
 `unstable_cancel_request` feature, which forwards the feature of the same name
-to the SDK. Without it, the conductor ignores `$/cancel_request` as described
-in [Interoperability](#interoperability).
+to the SDK. Without it, no per-hop cancellation is issued; since request IDs
+are reallocated at every hop, a `$/cancel_request` cannot match anything
+beyond the hop it was sent over, and the affected request simply runs to
+completion as described in [Interoperability](#interoperability).
 
 ## Related Documentation
 

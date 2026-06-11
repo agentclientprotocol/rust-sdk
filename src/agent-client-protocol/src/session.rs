@@ -516,7 +516,7 @@ where
 #[derive(Debug)]
 #[cfg_attr(
     feature = "unstable_cancel_request",
-    expect(
+    allow(
         clippy::large_enum_variant,
         reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
     )

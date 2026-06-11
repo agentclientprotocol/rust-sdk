@@ -1756,6 +1756,12 @@ impl RequestCancellationRegistry {
 
     /// Get the cancellation marker for a registered request, creating it on
     /// first use. Repeated calls return markers that share the same state.
+    ///
+    /// Exception: when the registration is stale (a protocol-violating peer
+    /// reused this request ID and the slot now belongs to a newer request, or
+    /// was already removed by it), every call returns a fresh *detached*
+    /// marker. Detached markers can never fire, and detached markers from
+    /// repeated calls do not share state with each other.
     fn marker(&self, id: &serde_json::Value, generation: u64) -> RequestCancellation {
         let mut inner = self
             .inner
@@ -2214,6 +2220,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// The request context's response type matches the request's response type,
     /// enabling type-safe message forwarding.
+    ///
+    /// When the `unstable_cancel_request` feature is enabled, `$/cancel_request`
+    /// notifications are *not* forwarded: their `requestId` refers to a request
+    /// on the connection they arrived over and would be meaningless to `peer`.
+    /// Cancellation instead propagates hop by hop, because the responders
+    /// passed to [`forward_response_to`](SentRequest::forward_response_to)
+    /// observe it and re-issue the cancellation with the forwarded request's
+    /// own ID.
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -2230,7 +2244,23 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             Dispatch::Request(request, responder) => self
                 .send_request_to(peer, request)
                 .forward_response_to(responder),
-            Dispatch::Notification(notification) => self.send_notification_to(peer, notification),
+            Dispatch::Notification(notification) => {
+                // `$/cancel_request` is connection-scoped: its `requestId` was
+                // allocated on the connection the notification arrived over
+                // and means nothing to `peer`. The cancellation has already
+                // been recorded on this connection's responder markers, and
+                // `forward_response_to` re-issues it for the forwarded request
+                // with the correct per-hop ID, so drop the raw notification
+                // instead of tunneling a meaningless ID across the hop.
+                #[cfg(feature = "unstable_cancel_request")]
+                if crate::schema::CancelRequestNotification::matches_method(notification.method()) {
+                    tracing::debug!(
+                        "not forwarding hop-scoped `$/cancel_request` notification across proxy hop"
+                    );
+                    return Ok(());
+                }
+                self.send_notification_to(peer, notification)
+            }
             Dispatch::Response(result, router) => {
                 // Responses are forwarded directly to their destination
                 router.respond_with_result(result)

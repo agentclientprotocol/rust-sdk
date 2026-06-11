@@ -462,11 +462,28 @@ where
             Dispatch::Request(request, responder) => self
                 .send_request_to_predecessor_of(client, source_component_index, request)
                 .forward_response_to(responder),
-            Dispatch::Notification(notification) => self.send_notification_to_predecessor_of(
-                client,
-                source_component_index,
-                notification,
-            ),
+            Dispatch::Notification(notification) => {
+                // `$/cancel_request` is connection-scoped: its `requestId` was
+                // allocated on the connection the notification arrived over
+                // and means nothing on the predecessor's connection. The SDK
+                // already propagates the cancellation hop by hop through the
+                // `forward_response_to` calls above, so drop the raw
+                // notification instead of tunneling a meaningless ID.
+                #[cfg(feature = "unstable_cancel_request")]
+                if agent_client_protocol::schema::CancelRequestNotification::matches_method(
+                    notification.method(),
+                ) {
+                    tracing::debug!(
+                        "not forwarding hop-scoped `$/cancel_request` notification to predecessor"
+                    );
+                    return Ok(());
+                }
+                self.send_notification_to_predecessor_of(
+                    client,
+                    source_component_index,
+                    notification,
+                )
+            }
             Dispatch::Response(result, router) => router.respond_with_result(result),
         }
     }
