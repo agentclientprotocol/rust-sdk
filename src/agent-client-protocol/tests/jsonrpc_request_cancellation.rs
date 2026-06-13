@@ -989,6 +989,119 @@ async fn response_claimed_by_dispatch_handler_disarms_auto_cancellation() {
         .await;
 }
 
+/// A dispatch handler may keep the `ResponseRouter` alive after the peer has
+/// answered. The original `SentRequest` is settled as soon as the response is
+/// routed into the handler, so dropping it must not ask the peer to cancel.
+#[tokio::test(flavor = "current_thread")]
+async fn response_retained_by_dispatch_handler_disarms_auto_cancellation() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let claimed_id: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+            let retained_response: Arc<Mutex<Option<Dispatch>>> = Arc::new(Mutex::new(None));
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            UntypedRole
+                .builder()
+                .on_receive_dispatch(
+                    {
+                        let claimed_id = claimed_id.clone();
+                        let retained_response = retained_response.clone();
+                        async move |dispatch: Dispatch, _connection: ConnectionTo<UntypedRole>| {
+                            let should_claim = match &dispatch {
+                                Dispatch::Response(_, router) => {
+                                    claimed_id.lock().unwrap().as_ref() == Some(&router.id())
+                                }
+                                Dispatch::Request(_, _) | Dispatch::Notification(_) => false,
+                            };
+
+                            if should_claim {
+                                *retained_response.lock().unwrap() = Some(dispatch);
+                                return Ok(Handled::Yes);
+                            }
+
+                            Ok(Handled::No {
+                                message: dispatch,
+                                retry: false,
+                            })
+                        }
+                    },
+                    agent_client_protocol::on_receive_dispatch!(),
+                )
+                .connect_with(client_transport, async |cx| {
+                    let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
+                        message: "retained".into(),
+                    });
+                    *claimed_id.lock().unwrap() = Some(request.id());
+
+                    // This proves the earlier response was routed into the
+                    // handler and is still retained rather than dropped.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+                    assert!(retained_response.lock().unwrap().is_some());
+
+                    drop(request);
+
+                    // Any auto-cancel from dropping the request would be
+                    // delivered before this follow-up request.
+                    let after = cx
+                        .send_request(SimpleRequest {
+                            message: "after retained".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(after.result, "echo: after retained");
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            assert_no_event(&mut cancel_rx);
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn completed_sent_request_does_not_send_cancellation_on_drop() {
     use tokio::task::LocalSet;

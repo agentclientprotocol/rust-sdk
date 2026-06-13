@@ -2865,19 +2865,15 @@ impl ResponseRouter<serde_json::Value> {
         let response_id = id.clone();
         // A response for the request reached this router, so the request is
         // settled from the peer's perspective and a `$/cancel_request` could
-        // only ever be redundant. The guard disarms the drop-time
-        // auto-cancellation when the router responds *or* when it is dropped
-        // without ever being invoked (a dispatch handler claimed the
-        // response).
+        // only ever be redundant. Disarm immediately so handlers may retain
+        // the router without leaving auto-cancellation armed.
         #[cfg(feature = "unstable_cancel_request")]
-        let cancellation_disarm = DisarmOnDrop(cancellation_disarm);
+        cancellation_disarm.disarm();
         Self {
             method,
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                #[cfg(feature = "unstable_cancel_request")]
-                let _cancellation_disarm: DisarmOnDrop = cancellation_disarm;
                 if sender
                     .send(ResponsePayload {
                         result: response,
@@ -3620,24 +3616,6 @@ impl SentRequestCancellationDisarm {
 
     fn disarm(&self) {
         self.armed.store(false, Ordering::Release);
-    }
-}
-
-/// Disarms a [`SentRequest`]'s drop-time auto-cancellation when dropped.
-///
-/// A [`ResponseRouter`]'s send function holds this guard so that *routing* a
-/// response settles the request: whether the response is delivered to the
-/// local awaiter, discarded because the awaiter is gone, or claimed by a
-/// dispatch handler that drops the router without invoking it, a later
-/// `$/cancel_request` for the request could only ever be redundant.
-#[cfg(feature = "unstable_cancel_request")]
-#[derive(Debug)]
-struct DisarmOnDrop(SentRequestCancellationDisarm);
-
-#[cfg(feature = "unstable_cancel_request")]
-impl Drop for DisarmOnDrop {
-    fn drop(&mut self) {
-        self.0.disarm();
     }
 }
 
