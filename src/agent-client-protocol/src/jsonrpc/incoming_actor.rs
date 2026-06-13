@@ -32,6 +32,8 @@ struct PendingReply {
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<crate::jsonrpc::ResponsePayload>,
+    #[cfg(feature = "unstable_cancel_request")]
+    cancellation_disarm: super::SentRequestCancellationDisarm,
 }
 
 /// Incoming protocol actor: The central dispatch loop for a connection.
@@ -64,6 +66,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         FxHashMap::default();
     let mut pending_messages: Vec<Dispatch> = vec![];
 
+    let request_cancellations = super::RequestCancellationRegistry::new();
+
     // Map from request ID to (method, sender) for response dispatch.
     // The method is stored to allow routing responses through typed handlers.
     let mut pending_replies: HashMap<agent_client_protocol_schema::RequestId, PendingReply> =
@@ -78,6 +82,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     role_id,
                     method,
                     sender,
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation_disarm,
                 } => {
                     tracing::trace!(?id, %method, "incoming_actor: subscribing to response");
                     pending_replies.insert(
@@ -86,6 +92,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             method,
                             role_id,
                             sender,
+                            #[cfg(feature = "unstable_cancel_request")]
+                            cancellation_disarm,
                         },
                     );
                 }
@@ -142,6 +150,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             request.params,
                             Some(request.id),
                             &protocol_compat,
+                            &request_cancellations,
                         ) {
                             Ok(dispatch) => {
                                 dispatch_dispatch(
@@ -151,6 +160,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &mut dynamic_handlers,
                                     &mut handler,
                                     &mut pending_messages,
+                                    &request_cancellations,
                                 )
                                 .await?;
                             }
@@ -176,6 +186,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             notification.params,
                             None,
                             &protocol_compat,
+                            &request_cancellations,
                         ) {
                             Ok(dispatch) => {
                                 dispatch_dispatch(
@@ -185,6 +196,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &mut dynamic_handlers,
                                     &mut handler,
                                     &mut pending_messages,
+                                    &request_cancellations,
                                 )
                                 .await?;
                             }
@@ -216,6 +228,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 &mut dynamic_handlers,
                                 &mut handler,
                                 &mut pending_messages,
+                                &request_cancellations,
                             )
                             .await?;
                         } else {
@@ -252,6 +265,7 @@ fn dispatch_from_message<Counterpart: Role>(
     params: Option<RawJsonRpcParams>,
     id: Option<agent_client_protocol_schema::RequestId>,
     protocol_compat: &ProtocolCompat,
+    request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<Dispatch, crate::Error> {
     let message = UntypedMessage::new(&method, crate::jsonrpc::params_from_transport(params))
         .expect("well-formed JSON");
@@ -260,7 +274,12 @@ fn dispatch_from_message<Counterpart: Role>(
     match id {
         Some(id) => Ok(Dispatch::Request(
             message,
-            Responder::new(connection.message_tx.clone(), method.to_string(), id),
+            Responder::new(
+                connection.message_tx.clone(),
+                method.to_string(),
+                id,
+                request_cancellations,
+            ),
         )),
         None => Ok(Dispatch::Notification(message)),
     }
@@ -280,10 +299,19 @@ fn dispatch_from_response(
         method,
         role_id,
         sender,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm,
     } = pending_reply;
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
-    let router = ResponseRouter::new(method.clone(), id.clone(), role_id, sender);
+    let router = ResponseRouter::new(
+        method.clone(),
+        id.clone(),
+        role_id,
+        sender,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm,
+    );
     Dispatch::Response(result, router)
 }
 
@@ -299,6 +327,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
     dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
     handler: &mut impl HandleDispatchFrom<Counterpart>,
     pending_messages: &mut Vec<Dispatch>,
+    request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<(), crate::Error> {
     tracing::trace!(?dispatch, "dispatch_dispatch");
 
@@ -306,6 +335,22 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let id = dispatch.id();
     let method = dispatch.method().to_string();
+
+    match request_cancellations.cancel_if_requested(&dispatch) {
+        Ok(true) => {
+            tracing::debug!(?method, "Marked request as cancelled");
+        }
+        Ok(false) => {}
+        Err(err) => {
+            tracing::warn!(
+                ?method,
+                ?id,
+                ?err,
+                "Request cancellation notification errored"
+            );
+            return report_handler_error(connection, id, method, err);
+        }
+    }
 
     // First, apply the handlers given by the user.
     tracing::trace!(handler = ?handler.describe_chain(), "Attempting handler chain");
@@ -384,12 +429,21 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     // If the message was never handled, check whether the retry flag was set.
     // If so, enqueue it for later processing. Else, reject it.
+    //
+    // An explicit retry request takes precedence over the protocol-level
+    // fallback below, so that handlers may defer `$/` notifications to a
+    // dynamic handler that has not been registered yet.
     if retry_any {
         tracing::debug!(
             ?method,
             "Retrying message as new dynamic handlers are added"
         );
         pending_messages.push(dispatch);
+        Ok(())
+    } else if super::is_protocol_level_notification(&dispatch) {
+        // Unsupported protocol-level notifications are ignored rather than
+        // rejected; see `is_protocol_level_notification` for the rationale.
+        tracing::debug!(?method, "Ignoring unhandled protocol-level notification");
         Ok(())
     } else {
         match dispatch {

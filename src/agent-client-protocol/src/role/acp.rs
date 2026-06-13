@@ -239,7 +239,14 @@ impl Role for Conductor {
             // New session coming from the client -- proxy to the agent
             // and add a dynamic handler for that session-id.
             .if_request_from(Client, async |request: NewSessionRequest, responder| {
-                cx.send_request_to(Agent, request).on_receiving_result({
+                let sent = cx.send_request_to(Agent, request);
+                // The dynamic-handler hook below means we cannot use
+                // `forward_response_to`, so wire up cancellation forwarding
+                // explicitly to keep `session/new` cancellable like every
+                // other proxied request.
+                #[cfg(feature = "unstable_cancel_request")]
+                let sent = sent.forward_cancellation_from(responder.cancellation());
+                sent.on_receiving_result({
                     let cx = cx.clone();
                     async move |result| {
                         if let Ok(NewSessionResponse { session_id, .. }) = &result {
