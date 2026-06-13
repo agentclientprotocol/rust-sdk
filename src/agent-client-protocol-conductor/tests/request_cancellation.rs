@@ -727,6 +727,130 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
     Ok(())
 }
 
+/// The SDK's documented proxy session helper also forwards `session/new` with
+/// a result hook, so it must opt into cancellation propagation explicitly.
+#[tokio::test]
+async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), Error> {
+    let (agent_cancel_tx, mut agent_cancel_rx) = mpsc::unbounded();
+    let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+
+    let agent = Agent
+        .builder()
+        .on_receive_request(
+            async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
+                responder.respond(InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: NewSessionRequest,
+                        responder: Responder<NewSessionResponse>,
+                        cx: ConnectionTo<Client>| {
+                if request.cwd.ends_with("park-session") {
+                    parked_id_tx.unbounded_send(responder.id()).unwrap();
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let response = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<NewSessionResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(response)
+                    })?;
+                    return Ok(());
+                }
+
+                responder.respond(NewSessionResponse::new(SessionId::new("normal-session")))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
+                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+
+    let proxy = Proxy.builder().on_receive_request_from(
+        Client,
+        async |request: NewSessionRequest,
+               responder: Responder<NewSessionResponse>,
+               cx: ConnectionTo<Conductor>| {
+            cx.build_session_from(request)
+                .on_proxy_session_start(responder, async |_session_id| Ok::<(), Error>(()))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let (editor_write, conductor_read) = duplex(8192);
+    let (conductor_write, editor_read) = duplex(8192);
+
+    let conductor_handle = tokio::spawn(async move {
+        ConductorImpl::new_agent(
+            "helper-cancellation-conductor".to_string(),
+            ProxiesAndAgent::new(agent).proxy(proxy),
+        )
+        .run(ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
+        .await
+    });
+
+    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+        Client
+            .builder()
+            .connect_with(
+                ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+                async |cx| {
+                    let initialize = cx
+                        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+                    let request: SentRequest<NewSessionResponse> =
+                        cx.send_request(NewSessionRequest::new("/park-session"));
+                    let client_request_id = request.id();
+                    request.cancel()?;
+
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("session/new should be cancelled");
+                    assert_eq!(i32::from(error.code), -32800);
+
+                    let session = cx
+                        .send_request(NewSessionRequest::new(
+                            std::env::current_dir().map_err(Error::into_internal_error)?,
+                        ))
+                        .block_task()
+                        .await?;
+                    assert_eq!(session.session_id, SessionId::new("normal-session"));
+
+                    Ok(client_request_id)
+                },
+            )
+            .await
+    })
+    .await
+    .expect("test timed out")
+    .expect("client failed");
+
+    let parked_id = next_with_timeout(&mut parked_id_rx).await;
+    assert_ne!(
+        parked_id, client_request_id,
+        "each hop must re-issue the request under its own ID"
+    );
+    let observed = next_with_timeout(&mut agent_cancel_rx).await;
+    assert_eq!(serde_json::to_value(observed).unwrap(), parked_id);
+    assert_no_event(&mut agent_cancel_rx);
+
+    conductor_handle.abort();
+    Ok(())
+}
+
 /// `initialize` is rewritten to `_proxy/initialize` at the conductor-to-proxy
 /// hop and forwarded with a result hook — cancellation must still propagate
 /// hop by hop, exactly like every other request.
