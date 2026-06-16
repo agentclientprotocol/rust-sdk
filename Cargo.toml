@@ -64,7 +64,7 @@ clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 eventsource-stream = "0.2"
 url = "2.5"
 async-process = "2"
