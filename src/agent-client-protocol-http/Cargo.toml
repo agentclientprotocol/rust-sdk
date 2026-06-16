@@ -14,10 +14,8 @@ categories = ["development-tools", "web-programming::http-server"]
 agent-client-protocol.workspace = true
 
 futures.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
-tokio-util.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 
