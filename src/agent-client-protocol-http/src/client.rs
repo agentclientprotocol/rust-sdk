@@ -103,15 +103,15 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     });
     let mut sse_tasks = Vec::new();
 
-    loop {
+    let result = loop {
         let msg = tokio::select! {
             msg = outgoing.next() => match msg {
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
                     error!("upstream channel produced error: {e}");
-                    return Err(e);
+                    break Err(e);
                 }
-                None => break,
+                None => break Ok(()),
             },
             Some(session_id) = open_session_rx.next() => {
                 spawn_sse(state.clone(), Some(session_id), &mut sse_tasks);
@@ -121,12 +121,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
         if state.connection_id.lock().await.is_none() {
             if !is_initialize_request(&msg) {
-                return Err(AcpError::invalid_request()
+                break Err(AcpError::invalid_request()
                     .data("ACP HTTP transport: first message must be `initialize`"));
             }
             if let Err(e) = state.initialize(msg).await {
                 error!("initialize failed: {e}");
-                return Err(AcpError::internal_error().data(format!("initialize: {e}")));
+                break Err(AcpError::internal_error().data(format!("initialize: {e}")));
             }
             spawn_sse(state.clone(), None, &mut sse_tasks);
             continue;
@@ -144,15 +144,15 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
         if let Err(e) = state.post(msg).await {
             error!("POST failed: {e}");
-            return Err(AcpError::internal_error().data(format!("POST: {e}")));
+            break Err(AcpError::internal_error().data(format!("POST: {e}")));
         }
-    }
+    };
 
     state.delete().await;
     for task in sse_tasks {
         task.abort();
     }
-    Ok(())
+    result
 }
 
 fn spawn_sse(
@@ -394,4 +394,100 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
     drop(ws_tx.send(WsMessage::Close(None)).await);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use agent_client_protocol::schema::RequestId;
+    use axum::{
+        Json, Router,
+        http::{HeaderMap, HeaderValue, StatusCode},
+        response::IntoResponse,
+        routing::post,
+    };
+    use serde_json::json;
+    use tokio::{net::TcpListener, time::timeout};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn post_error_deletes_initialized_connection() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response).delete(move || {
+                let delete_count = delete_count_for_handler.clone();
+                async move {
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "session/prompt".to_string(),
+                json!({}),
+                RequestId::Number(2),
+            )
+            .unwrap()))
+            .unwrap();
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("POST"));
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    async fn initialize_response() -> impl IntoResponse {
+        let mut headers = HeaderMap::new();
+        headers.insert(HEADER_CONNECTION_ID, HeaderValue::from_static("conn-1"));
+        (
+            StatusCode::OK,
+            headers,
+            Json(RawJsonRpcMessage::response(
+                RequestId::Number(1),
+                Ok(json!({})),
+            )),
+        )
+    }
 }
