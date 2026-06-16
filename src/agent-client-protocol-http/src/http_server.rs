@@ -14,8 +14,8 @@ use crate::{
     connection::{ConnectionRegistry, ResponseRoute},
     protocol::{
         EVENT_STREAM_MIME_TYPE, HEADER_CONNECTION_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
-        is_initialize_request, method_for_message, method_requires_session_header,
-        session_id_from_message,
+        apply_session_header_to_message, is_initialize_request, method_for_message,
+        method_requires_session_header, session_id_from_message,
     },
 };
 
@@ -50,7 +50,7 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_IMPLEMENTED.into_response();
     }
 
-    let message = match serde_json::from_slice::<RawJsonRpcMessage>(&body) {
+    let mut message = match serde_json::from_slice::<RawJsonRpcMessage>(&body) {
         Ok(message) => message,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("Invalid JSON-RPC: {e}")).into_response();
@@ -95,8 +95,15 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    if let Some(session_id) = &session_id
+        && method_for_message(&message).is_some()
+        && let Err(error) = apply_session_header_to_message(&mut message, session_id)
+    {
+        return (StatusCode::BAD_REQUEST, error).into_response();
+    }
+
     let route = match method_for_message(&message) {
-        Some(method) => match session_id.or_else(|| session_id_from_message(&message)) {
+        Some(method) => match session_id_from_message(&message) {
             Some(session_id) => Some(ResponseRoute::Session(session_id)),
             None if method_requires_session_header(method) => {
                 return (StatusCode::BAD_REQUEST, "Acp-Session-Id header required").into_response();
@@ -213,4 +220,87 @@ fn with_connection_header(mut response: Response, connection_id: &str) -> Respon
         response.headers_mut().insert(HEADER_CONNECTION_ID, value);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use agent_client_protocol::{Channel, RawJsonRpcMessage};
+    use futures::{StreamExt, future::BoxFuture};
+    use serde_json::json;
+    use tokio::{
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
+
+    use super::*;
+    use crate::connection::AgentFactory;
+
+    struct CapturingAgentFactory {
+        forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
+    }
+
+    impl AgentFactory for CapturingAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let forwarded = self.forwarded.clone();
+            let future = Box::pin(async move {
+                let Channel {
+                    rx: mut incoming,
+                    tx: _,
+                } = agent;
+                while let Some(message) = incoming.next().await {
+                    if forwarded.send(message?).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    #[tokio::test]
+    async fn post_forwards_header_session_id_to_agent_params() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "session/prompt",
+            "params": { "prompt": [] }
+        })
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .header(HEADER_SESSION_ID, "session-1")
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry), request).await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let forwarded = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            session_id_from_message(&forwarded).as_deref(),
+            Some("session-1")
+        );
+        connection.shutdown().await;
+    }
 }
