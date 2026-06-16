@@ -4,7 +4,11 @@ use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
     schema::Response as RpcResponse,
 };
-use futures::{SinkExt, StreamExt, future::BoxFuture};
+use futures::{
+    SinkExt, StreamExt,
+    channel::mpsc::{self, UnboundedSender},
+    future::BoxFuture,
+};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -92,7 +96,8 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         rx: mut outgoing,
         tx: incoming,
     } = channel;
-    let (open_session_tx, mut open_session_rx) = futures::channel::mpsc::unbounded();
+    let (open_session_tx, mut open_session_rx) = mpsc::unbounded();
+    let (sse_failure_tx, mut sse_failure_rx) = mpsc::unbounded();
     let state = Arc::new(ClientState {
         endpoint,
         http,
@@ -114,8 +119,19 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 None => break Ok(()),
             },
             Some(session_id) = open_session_rx.next() => {
-                spawn_sse(state.clone(), Some(session_id), &mut sse_tasks);
+                spawn_sse(
+                    state.clone(),
+                    Some(session_id),
+                    sse_failure_tx.clone(),
+                    &mut sse_tasks,
+                );
                 continue;
+            }
+            Some(failure) = sse_failure_rx.next() => {
+                let scope = failure.session_id.as_deref().unwrap_or("connection");
+                error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
+                break Err(AcpError::internal_error()
+                    .data(format!("{scope} SSE stream ended: {}", failure.error)));
             }
         };
 
@@ -128,7 +144,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 error!("initialize failed: {e}");
                 break Err(AcpError::internal_error().data(format!("initialize: {e}")));
             }
-            spawn_sse(state.clone(), None, &mut sse_tasks);
+            spawn_sse(state.clone(), None, sse_failure_tx.clone(), &mut sse_tasks);
             continue;
         }
 
@@ -139,7 +155,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 .await
                 .insert(session_id.clone())
         {
-            spawn_sse(state.clone(), Some(session_id), &mut sse_tasks);
+            spawn_sse(
+                state.clone(),
+                Some(session_id),
+                sse_failure_tx.clone(),
+                &mut sse_tasks,
+            );
         }
 
         if let Err(e) = state.post(msg).await {
@@ -155,16 +176,29 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     result
 }
 
+#[derive(Debug)]
+struct SseFailure {
+    session_id: Option<String>,
+    error: String,
+}
+
 fn spawn_sse(
     state: Arc<ClientState>,
     session_id: Option<String>,
+    failure_tx: UnboundedSender<SseFailure>,
     tasks: &mut Vec<tokio::task::JoinHandle<()>>,
 ) {
     tasks.push(tokio::spawn(async move {
         let label = session_id.clone();
-        if let Err(e) = state.sse(session_id).await {
-            warn!(session_id = ?label, "SSE stream ended: {e}");
-        }
+        let error = match state.sse(session_id).await {
+            Ok(()) => "SSE stream closed".to_string(),
+            Err(e) => e,
+        };
+        warn!(session_id = ?label, "SSE stream ended: {error}");
+        drop(failure_tx.unbounded_send(SseFailure {
+            session_id: label,
+            error,
+        }));
     }));
 }
 
@@ -174,7 +208,7 @@ struct ClientState {
     connection_id: Mutex<Option<String>>,
     open_session_streams: Mutex<HashSet<String>>,
     incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
-    open_session_tx: futures::channel::mpsc::UnboundedSender<String>,
+    open_session_tx: mpsc::UnboundedSender<String>,
 }
 
 impl ClientState {
@@ -399,6 +433,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 #[cfg(test)]
 mod tests {
     use std::{
+        convert::Infallible,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -410,7 +445,7 @@ mod tests {
     use axum::{
         Json, Router,
         http::{HeaderMap, HeaderValue, StatusCode},
-        response::IntoResponse,
+        response::{IntoResponse, Sse, sse::Event},
         routing::post,
     };
     use serde_json::json;
@@ -424,7 +459,7 @@ mod tests {
         let delete_count_for_handler = delete_count.clone();
         let app = Router::new().route(
             "/acp",
-            post(initialize_response).delete(move || {
+            post(initialize_response).get(pending_sse).delete(move || {
                 let delete_count = delete_count_for_handler.clone();
                 async move {
                     delete_count.fetch_add(1, Ordering::SeqCst);
@@ -478,6 +513,57 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn connection_sse_disconnect_fails_transport() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response).get(closed_sse).delete(move || {
+                let delete_count = delete_count_for_handler.clone();
+                async move {
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("SSE"));
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
     async fn initialize_response() -> impl IntoResponse {
         let mut headers = HeaderMap::new();
         headers.insert(HEADER_CONNECTION_ID, HeaderValue::from_static("conn-1"));
@@ -489,5 +575,13 @@ mod tests {
                 Ok(json!({})),
             )),
         )
+    }
+
+    async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        Sse::new(futures::stream::pending())
+    }
+
+    async fn closed_sse() -> StatusCode {
+        StatusCode::OK
     }
 }
