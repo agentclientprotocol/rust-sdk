@@ -1,4 +1,7 @@
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
@@ -98,15 +101,14 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     } = channel;
     let (open_session_tx, mut open_session_rx) = mpsc::unbounded();
     let (sse_failure_tx, mut sse_failure_rx) = mpsc::unbounded();
+    let connection = HttpConnection::new(endpoint, http);
     let state = Arc::new(ClientState {
-        endpoint,
-        http,
-        connection_id: Mutex::new(None),
+        connection: connection.clone(),
         open_session_streams: Mutex::new(HashSet::new()),
         incoming,
         open_session_tx,
     });
-    let mut sse_tasks = Vec::new();
+    let mut lifecycle = HttpTransportLifecycle::new(connection);
 
     let result = loop {
         let msg = tokio::select! {
@@ -119,11 +121,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 None => break Ok(()),
             },
             Some(session_id) = open_session_rx.next() => {
-                spawn_sse(
+                lifecycle.spawn_sse(
                     state.clone(),
                     Some(session_id),
                     sse_failure_tx.clone(),
-                    &mut sse_tasks,
                 );
                 continue;
             }
@@ -135,7 +136,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
         };
 
-        if state.connection_id.lock().await.is_none() {
+        if state.connection.connection_id().is_none() {
             if !is_initialize_request(&msg) {
                 break Err(AcpError::invalid_request()
                     .data("ACP HTTP transport: first message must be `initialize`"));
@@ -144,7 +145,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 error!("initialize failed: {e}");
                 break Err(AcpError::internal_error().data(format!("initialize: {e}")));
             }
-            spawn_sse(state.clone(), None, sse_failure_tx.clone(), &mut sse_tasks);
+            lifecycle.spawn_sse(state.clone(), None, sse_failure_tx.clone());
             continue;
         }
 
@@ -155,12 +156,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 .await
                 .insert(session_id.clone())
         {
-            spawn_sse(
-                state.clone(),
-                Some(session_id),
-                sse_failure_tx.clone(),
-                &mut sse_tasks,
-            );
+            lifecycle.spawn_sse(state.clone(), Some(session_id), sse_failure_tx.clone());
         }
 
         if let Err(e) = state.post(msg).await {
@@ -169,10 +165,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         }
     };
 
-    state.delete().await;
-    for task in sse_tasks {
-        task.abort();
-    }
+    lifecycle.close().await;
     result
 }
 
@@ -182,13 +175,125 @@ struct SseFailure {
     error: String,
 }
 
+#[derive(Clone, Debug)]
+struct HttpConnection {
+    endpoint: url::Url,
+    http: reqwest::Client,
+    connection_id: Arc<StdMutex<Option<String>>>,
+}
+
+impl HttpConnection {
+    fn new(endpoint: url::Url, http: reqwest::Client) -> Self {
+        Self {
+            endpoint,
+            http,
+            connection_id: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    fn post(&self) -> reqwest::RequestBuilder {
+        self.http.post(self.endpoint.clone())
+    }
+
+    fn get(&self) -> reqwest::RequestBuilder {
+        self.http.get(self.endpoint.clone())
+    }
+
+    fn set_connection_id(&self, connection_id: String) {
+        *self.connection_id.lock().expect("mutex poisoned") = Some(connection_id);
+    }
+
+    fn connection_id(&self) -> Option<String> {
+        self.connection_id.lock().expect("mutex poisoned").clone()
+    }
+
+    fn take_connection_id(&self) -> Option<String> {
+        self.connection_id.lock().expect("mutex poisoned").take()
+    }
+
+    async fn close(&self) {
+        let Some(task) = self.spawn_close_task() else {
+            return;
+        };
+        if let Err(e) = task.await {
+            debug!("DELETE task failed (ignored): {e}");
+        }
+    }
+
+    fn spawn_close(&self) {
+        drop(self.spawn_close_task());
+    }
+
+    fn spawn_close_task(&self) -> Option<tokio::task::JoinHandle<()>> {
+        let Some(connection_id) = self.take_connection_id() else {
+            return None;
+        };
+        let http = self.http.clone();
+        let endpoint = self.endpoint.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => Some(handle.spawn(Self::send_close(http, endpoint, connection_id))),
+            Err(e) => {
+                debug!("failed to spawn HTTP DELETE: {e}");
+                None
+            }
+        }
+    }
+
+    async fn send_close(http: reqwest::Client, endpoint: url::Url, connection_id: String) {
+        if let Err(e) = http
+            .delete(endpoint)
+            .header(HEADER_CONNECTION_ID, connection_id)
+            .send()
+            .await
+        {
+            debug!("DELETE failed (ignored): {e}");
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HttpTransportLifecycle {
+    connection: HttpConnection,
+    sse_tasks: SseTasks,
+}
+
+impl HttpTransportLifecycle {
+    fn new(connection: HttpConnection) -> Self {
+        Self {
+            connection,
+            sse_tasks: SseTasks::default(),
+        }
+    }
+
+    fn spawn_sse(
+        &mut self,
+        state: Arc<ClientState>,
+        session_id: Option<String>,
+        failure_tx: UnboundedSender<SseFailure>,
+    ) {
+        self.sse_tasks
+            .push(spawn_sse(state, session_id, failure_tx));
+    }
+
+    async fn close(&mut self) {
+        self.connection.close().await;
+        self.sse_tasks.abort_all();
+    }
+}
+
+impl Drop for HttpTransportLifecycle {
+    fn drop(&mut self) {
+        self.sse_tasks.abort_all();
+        self.connection.spawn_close();
+    }
+}
+
 fn spawn_sse(
     state: Arc<ClientState>,
     session_id: Option<String>,
     failure_tx: UnboundedSender<SseFailure>,
-    tasks: &mut Vec<tokio::task::JoinHandle<()>>,
-) {
-    tasks.push(tokio::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         let label = session_id.clone();
         let error = match state.sse(session_id).await {
             Ok(()) => "SSE stream closed".to_string(),
@@ -199,13 +304,28 @@ fn spawn_sse(
             session_id: label,
             error,
         }));
-    }));
+    })
+}
+
+#[derive(Debug, Default)]
+struct SseTasks {
+    handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl SseTasks {
+    fn push(&mut self, handle: tokio::task::JoinHandle<()>) {
+        self.handles.push(handle);
+    }
+
+    fn abort_all(&mut self) {
+        for handle in self.handles.drain(..) {
+            handle.abort();
+        }
+    }
 }
 
 struct ClientState {
-    endpoint: url::Url,
-    http: reqwest::Client,
-    connection_id: Mutex<Option<String>>,
+    connection: HttpConnection,
     open_session_streams: Mutex<HashSet<String>>,
     incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
     open_session_tx: mpsc::UnboundedSender<String>,
@@ -214,8 +334,8 @@ struct ClientState {
 impl ClientState {
     async fn initialize(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
         let response = self
-            .http
-            .post(self.endpoint.clone())
+            .connection
+            .post()
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .json(&msg)
@@ -240,7 +360,7 @@ impl ClientState {
             .await
             .map_err(|e| e.to_string())?;
 
-        *self.connection_id.lock().await = Some(connection_id);
+        self.connection.set_connection_id(connection_id);
         self.deliver(message);
         Ok(())
     }
@@ -257,14 +377,12 @@ impl ClientState {
             None => None,
         };
         let connection_id = self
-            .connection_id
-            .lock()
-            .await
-            .clone()
+            .connection
+            .connection_id()
             .ok_or_else(|| "POST attempted before initialize".to_string())?;
         let mut request = self
-            .http
-            .post(self.endpoint.clone())
+            .connection
+            .post()
             .header("Accept", "application/json")
             .header(HEADER_CONNECTION_ID, connection_id)
             .json(&msg);
@@ -281,31 +399,14 @@ impl ClientState {
         Ok(())
     }
 
-    async fn delete(&self) {
-        let Some(connection_id) = self.connection_id.lock().await.clone() else {
-            return;
-        };
-        if let Err(e) = self
-            .http
-            .delete(self.endpoint.clone())
-            .header(HEADER_CONNECTION_ID, connection_id)
-            .send()
-            .await
-        {
-            debug!("DELETE failed (ignored): {e}");
-        }
-    }
-
     async fn sse(&self, session_id: Option<String>) -> Result<(), String> {
         let connection_id = self
-            .connection_id
-            .lock()
-            .await
-            .clone()
+            .connection
+            .connection_id()
             .ok_or_else(|| "SSE attempted before initialize".to_string())?;
         let mut request = self
-            .http
-            .get(self.endpoint.clone())
+            .connection
+            .get()
             .header("Accept", "text/event-stream")
             .header(HEADER_CONNECTION_ID, connection_id);
         if let Some(session_id) = &session_id {
@@ -449,7 +550,10 @@ mod tests {
         routing::post,
     };
     use serde_json::json;
-    use tokio::{net::TcpListener, time::timeout};
+    use tokio::{
+        net::TcpListener,
+        time::{sleep, timeout},
+    };
 
     use super::*;
 
@@ -562,6 +666,74 @@ mod tests {
         assert_eq!(delete_count.load(Ordering::SeqCst), 1);
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn dropped_transport_future_deletes_initialized_connection() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response).get(pending_sse).delete(move || {
+                let delete_count = delete_count_for_handler.clone();
+                async move {
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let mut transport = Box::pin(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), async {
+            loop {
+                tokio::select! {
+                    result = &mut transport => {
+                        panic!("transport ended before initialize response: {result:?}");
+                    }
+                    msg = caller.rx.next() => {
+                        break msg.unwrap().unwrap();
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        drop(transport);
+        wait_for_delete(&delete_count).await;
+
+        server.abort();
+    }
+
+    async fn wait_for_delete(delete_count: &AtomicUsize) {
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if delete_count.load(Ordering::SeqCst) > 0 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
     }
 
     async fn initialize_response() -> impl IntoResponse {
