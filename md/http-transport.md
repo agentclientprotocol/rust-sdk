@@ -8,6 +8,8 @@
 - `GET /acp` with a WebSocket upgrade uses text frames for JSON-RPC messages.
 - `DELETE /acp` tears down the connection.
 
+`POST /acp` request bodies are limited to 16 MiB.
+
 ## Server
 
 ```rust

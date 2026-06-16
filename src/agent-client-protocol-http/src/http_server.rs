@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
 use agent_client_protocol::RawJsonRpcMessage;
 use axum::{
@@ -19,6 +19,8 @@ use crate::{
     },
 };
 
+const MAX_POST_BODY_BYTES: usize = 16 * 1024 * 1024;
+
 pub(crate) async fn handle_post(
     State(registry): State<Arc<ConnectionRegistry>>,
     request: Request<Body>,
@@ -38,10 +40,17 @@ pub(crate) async fn handle_post(
 
     let connection_id = header_value(request.headers(), HEADER_CONNECTION_ID);
     let session_id = header_value(request.headers(), HEADER_SESSION_ID);
-    let body = match axum::body::to_bytes(request.into_body(), usize::MAX).await {
+    if content_length_exceeds_limit(request.headers()) {
+        return post_body_too_large_response();
+    }
+
+    let body = match axum::body::to_bytes(request.into_body(), MAX_POST_BODY_BYTES).await {
         Ok(body) => body,
         Err(e) => {
             error!("Failed to read request body: {e}");
+            if is_body_limit_error(&e) {
+                return post_body_too_large_response();
+            }
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
@@ -222,6 +231,29 @@ fn with_connection_header(mut response: Response, connection_id: &str) -> Respon
     response
 }
 
+fn content_length_exceeds_limit(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_some_and(|length| length > MAX_POST_BODY_BYTES)
+}
+
+fn is_body_limit_error(error: &axum::Error) -> bool {
+    let mut source = error.source();
+    while let Some(error) = source {
+        if error.to_string() == "length limit exceeded" {
+            return true;
+        }
+        source = error.source();
+    }
+    false
+}
+
+fn post_body_too_large_response() -> Response {
+    (StatusCode::PAYLOAD_TOO_LARGE, "POST body too large").into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -265,6 +297,28 @@ mod tests {
 
             (transport, future)
         }
+    }
+
+    #[tokio::test]
+    async fn post_rejects_declared_body_larger_than_limit() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(
+                header::CONTENT_LENGTH,
+                (MAX_POST_BODY_BYTES + 1).to_string(),
+            )
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = handle_post(State(registry), request).await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
