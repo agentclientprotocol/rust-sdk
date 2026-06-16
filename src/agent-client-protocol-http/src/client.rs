@@ -1,16 +1,18 @@
 use std::{collections::HashSet, sync::Arc};
 
-use agent_client_protocol::{Agent, Channel, Client, ConnectTo, Error as AcpError, jsonrpcmsg};
+use agent_client_protocol::{
+    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
+    schema::Response as RpcResponse,
+};
 use futures::{SinkExt, StreamExt, future::BoxFuture};
-use jsonrpcmsg::Message;
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, trace, warn};
 
 use crate::protocol::{
-    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_initialize_request, method_requires_session_header,
-    session_id_from_params,
+    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_initialize_request, method_for_message,
+    method_requires_session_header, session_id_from_message,
 };
 
 #[derive(Debug, Error)]
@@ -130,17 +132,14 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             continue;
         }
 
-        if let Message::Request(req) = &msg {
-            if let Some(session_id) = req.params.as_ref().and_then(session_id_from_params) {
-                if state
-                    .open_session_streams
-                    .lock()
-                    .await
-                    .insert(session_id.clone())
-                {
-                    spawn_sse(state.clone(), Some(session_id), &mut sse_tasks);
-                }
-            }
+        if let Some(session_id) = session_id_from_message(&msg)
+            && state
+                .open_session_streams
+                .lock()
+                .await
+                .insert(session_id.clone())
+        {
+            spawn_sse(state.clone(), Some(session_id), &mut sse_tasks);
         }
 
         if let Err(e) = state.post(msg).await {
@@ -174,12 +173,12 @@ struct ClientState {
     http: reqwest::Client,
     connection_id: Mutex<Option<String>>,
     open_session_streams: Mutex<HashSet<String>>,
-    incoming: futures::channel::mpsc::UnboundedSender<Result<Message, AcpError>>,
+    incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
     open_session_tx: futures::channel::mpsc::UnboundedSender<String>,
 }
 
 impl ClientState {
-    async fn initialize(&self, msg: Message) -> Result<(), String> {
+    async fn initialize(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
         let response = self
             .http
             .post(self.endpoint.clone())
@@ -203,7 +202,7 @@ impl ClientState {
             .map(String::from)
             .ok_or_else(|| format!("server did not return {HEADER_CONNECTION_ID} header"))?;
         let message = response
-            .json::<Message>()
+            .json::<RawJsonRpcMessage>()
             .await
             .map_err(|e| e.to_string())?;
 
@@ -212,19 +211,16 @@ impl ClientState {
         Ok(())
     }
 
-    async fn post(&self, msg: Message) -> Result<(), String> {
-        let session_id = match &msg {
-            Message::Request(req) => {
-                let session_id = req.params.as_ref().and_then(session_id_from_params);
-                if method_requires_session_header(&req.method) && session_id.is_none() {
-                    return Err(format!(
-                        "method `{}` requires sessionId in params",
-                        req.method
-                    ));
+    async fn post(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
+        let session_id = match method_for_message(&msg) {
+            Some(method) => {
+                let session_id = session_id_from_message(&msg);
+                if method_requires_session_header(method) && session_id.is_none() {
+                    return Err(format!("method `{method}` requires sessionId in params"));
                 }
                 session_id
             }
-            Message::Response(_) => None,
+            None => None,
         };
         let connection_id = self
             .connection_id
@@ -294,25 +290,20 @@ impl ClientState {
             if payload.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Message>(&payload) {
+            match serde_json::from_str::<RawJsonRpcMessage>(&payload) {
                 Ok(msg) => {
-                    if let Message::Response(response) = &msg {
-                        if let Some(session_id) = response
-                            .result
-                            .as_ref()
-                            .and_then(|r| r.get("sessionId"))
+                    if let RawJsonRpcMessage::Response(RpcResponse::Result { result, .. }) = &msg
+                        && let Some(session_id) = result
+                            .get("sessionId")
                             .and_then(|v| v.as_str())
                             .map(String::from)
-                        {
-                            if self
-                                .open_session_streams
-                                .lock()
-                                .await
-                                .insert(session_id.clone())
-                            {
-                                drop(self.open_session_tx.unbounded_send(session_id));
-                            }
-                        }
+                        && self
+                            .open_session_streams
+                            .lock()
+                            .await
+                            .insert(session_id.clone())
+                    {
+                        drop(self.open_session_tx.unbounded_send(session_id));
                     }
                     self.deliver(msg);
                 }
@@ -322,7 +313,7 @@ impl ClientState {
         Ok(())
     }
 
-    fn deliver(&self, msg: Message) {
+    fn deliver(&self, msg: RawJsonRpcMessage) {
         if self.incoming.unbounded_send(Ok(msg)).is_err() {
             debug!("upstream channel closed; dropping inbound message");
         }
@@ -338,9 +329,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
     let (ws_stream, response) = tokio_tungstenite::connect_async(endpoint.as_str())
         .await
-        .map_err(|e| {
-            AcpError::internal_error().data(format!("WebSocket connect failed: {e}"))
-        })?;
+        .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
     trace!(
         status = %response.status(),
         "WebSocket connection established"
@@ -373,7 +362,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             },
             frame = ws_rx.next() => match frame {
                 Some(Ok(WsMessage::Text(text))) => {
-                    match serde_json::from_str::<Message>(text.as_str()) {
+                    match serde_json::from_str::<RawJsonRpcMessage>(text.as_str()) {
                         Ok(parsed) => {
                             if incoming.unbounded_send(Ok(parsed)).is_err() {
                                 debug!("upstream channel closed; stopping WS reader");

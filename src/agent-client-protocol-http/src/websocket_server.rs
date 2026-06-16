@@ -1,17 +1,17 @@
 use std::sync::Arc;
 
+use agent_client_protocol::RawJsonRpcMessage;
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     http::HeaderValue,
     response::Response,
 };
 use futures::{SinkExt, StreamExt};
-use jsonrpcmsg::Message;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     connection::{ConnectionRegistry, ResponseRoute},
-    protocol::{HEADER_CONNECTION_ID, session_id_from_params},
+    protocol::{HEADER_CONNECTION_ID, session_id_from_message},
 };
 
 pub(crate) async fn handle_ws_upgrade(
@@ -70,16 +70,17 @@ async fn run_ws(
                     Some(Ok(WsMessage::Text(text))) => {
                         let text_str = text.to_string();
                         trace!(connection_id = %connection_id, payload = %text_str, "Client → Agent: {} bytes", text_str.len());
-                        match serde_json::from_str::<Message>(&text_str) {
+                        match serde_json::from_str::<RawJsonRpcMessage>(&text_str) {
                             Ok(parsed) => {
-                                if let Message::Request(req) = &parsed {
-                                    if let (Some(id), Some(params)) = (req.id.clone(), req.params.as_ref()) {
-                                        if let Some(sid) = session_id_from_params(params) {
-                                            connection.ensure_session(&sid).await;
-                                            connection
-                                                .record_pending_route(id, ResponseRoute::Session(sid))
-                                                .await;
-                                        }
+                                if let Some(sid) = session_id_from_message(&parsed) {
+                                    connection.ensure_session(&sid).await;
+                                    if let RawJsonRpcMessage::Request(req) = &parsed {
+                                        connection
+                                            .record_pending_route(
+                                                req.id.clone(),
+                                                ResponseRoute::Session(sid),
+                                            )
+                                            .await;
                                     }
                                 }
                                 if connection.send_to_agent(parsed).is_err() {

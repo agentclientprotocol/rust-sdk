@@ -1,25 +1,25 @@
-use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, Role, jsonrpcmsg};
+use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, RawJsonRpcMessage, Role};
 use futures::StreamExt;
 use futures_concurrency::future::TryJoin;
 
 pub struct SnooperComponent<R: Role> {
     base_component: DynConnectTo<R>,
     incoming_message: Box<
-        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error> + Send + Sync,
+        dyn FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error> + Send + Sync,
     >,
     outgoing_message: Box<
-        dyn FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error> + Send + Sync,
+        dyn FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error> + Send + Sync,
     >,
 }
 
 impl<R: Role> SnooperComponent<R> {
     pub fn new(
         base_component: impl ConnectTo<R>,
-        incoming_message: impl FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error>
+        incoming_message: impl FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error>
         + Send
         + Sync
         + 'static,
-        outgoing_message: impl FnMut(&jsonrpcmsg::Message) -> Result<(), agent_client_protocol::Error>
+        outgoing_message: impl FnMut(&RawJsonRpcMessage) -> Result<(), agent_client_protocol::Error>
         + Send
         + Sync
         + 'static,

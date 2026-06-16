@@ -26,18 +26,17 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "0.13.1" }
-agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.13.1" }
-agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.13.1" }
-agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "0.13.1" }
-agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.13.1" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.13.1" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "0.14.0" }
+agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.14.0" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.14.0" }
+agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.14.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.14.0" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.13.1" }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "0.14.0" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=0.13.5", features = ["tracing"] }
+agent-client-protocol-schema = { version = "=0.13.6", features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", features = ["full"] }
@@ -45,7 +44,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
-serde_json = { version = "1", features = ["raw_value"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 schemars = { version = "1.0", features = ["derive"] }
 
 # UUID generation
@@ -74,7 +73,6 @@ blocking = "1"
 chrono = "0.4"
 futures = "0.3.32"
 futures-concurrency = "7.6.3"
-jsonrpcmsg = "0.1.2"
 open = "5"
 rustc-hash = "2.1.1"
 shell-words = "1.1"

@@ -1,12 +1,12 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+use agent_client_protocol::RawJsonRpcMessage;
 use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
 };
-use jsonrpcmsg::Message;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, trace};
 
@@ -14,7 +14,8 @@ use crate::{
     connection::{ConnectionRegistry, ResponseRoute},
     protocol::{
         EVENT_STREAM_MIME_TYPE, HEADER_CONNECTION_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
-        is_initialize_request, method_requires_session_header, session_id_from_params,
+        is_initialize_request, method_for_message, method_requires_session_header,
+        session_id_from_message,
     },
 };
 
@@ -49,7 +50,7 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_IMPLEMENTED.into_response();
     }
 
-    let message = match serde_json::from_slice::<Message>(&body) {
+    let message = match serde_json::from_slice::<RawJsonRpcMessage>(&body) {
         Ok(message) => message,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!("Invalid JSON-RPC: {e}")).into_response();
@@ -94,25 +95,22 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let route = match &message {
-        Message::Request(req) => match session_id
-            .or_else(|| req.params.as_ref().and_then(session_id_from_params))
-        {
+    let route = match method_for_message(&message) {
+        Some(method) => match session_id.or_else(|| session_id_from_message(&message)) {
             Some(session_id) => Some(ResponseRoute::Session(session_id)),
-            None if method_requires_session_header(&req.method) => {
+            None if method_requires_session_header(method) => {
                 return (StatusCode::BAD_REQUEST, "Acp-Session-Id header required").into_response();
             }
             None => Some(ResponseRoute::Connection),
         },
-        Message::Response(_) => None,
+        None => None,
     };
 
     if let Some(ResponseRoute::Session(session_id)) = &route {
         connection.ensure_session(session_id).await;
     }
-    if let (Message::Request(req), Some(route), Some(id)) = (&message, route, message_id(&message))
-    {
-        connection.record_pending_route(id, route).await;
+    if let (RawJsonRpcMessage::Request(req), Some(route)) = (&message, route) {
+        connection.record_pending_route(req.id.clone(), route).await;
         trace!(connection_id = %connection_id, method = %req.method, "POST → agent");
     } else {
         trace!(connection_id = %connection_id, ?message, "POST → agent");
@@ -180,10 +178,10 @@ pub(crate) async fn handle_get(
             .into_response(),
         &connection_id,
     );
-    if let Some(session_id) = session_id {
-        if let Ok(value) = HeaderValue::from_str(&session_id) {
-            response.headers_mut().insert(HEADER_SESSION_ID, value);
-        }
+    if let Some(session_id) = session_id
+        && let Ok(value) = HeaderValue::from_str(&session_id)
+    {
+        response.headers_mut().insert(HEADER_SESSION_ID, value);
     }
     response
 }
@@ -208,13 +206,6 @@ fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(String::from)
-}
-
-fn message_id(message: &Message) -> Option<jsonrpcmsg::Id> {
-    match message {
-        Message::Request(req) => req.id.clone(),
-        Message::Response(_) => None,
-    }
 }
 
 fn with_connection_header(mut response: Response, connection_id: &str) -> Response {

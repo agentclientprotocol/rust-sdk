@@ -16,14 +16,10 @@
 //!
 //! [`HandleDispatchFrom`]: crate::HandleDispatchFrom
 
-// Types re-exported from crate root
-use jsonrpcmsg::Params;
-
 use crate::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification, JsonRpcRequest,
     JsonRpcResponse, Responder, ResponseRouter, UntypedMessage,
     role::{HasPeer, Role, handle_incoming_dispatch},
-    util::json_cast,
 };
 
 /// Role-agnostic helper for pattern-matching on untyped JSON-RPC messages.
@@ -854,7 +850,7 @@ pub struct TypeNotification<R: Role> {
 
 #[derive(Debug)]
 enum TypeNotificationState {
-    Unhandled(String, Option<Params>),
+    Unhandled(String, serde_json::Value),
     Handled(Result<(), crate::Error>),
 }
 
@@ -862,7 +858,6 @@ impl<R: Role> TypeNotification<R> {
     /// Create a new pattern matcher for the given untyped notification message.
     pub fn new(request: UntypedMessage, cx: &ConnectionTo<R>) -> Self {
         let UntypedMessage { method, params } = request;
-        let params: Option<Params> = json_cast(params).expect("valid params");
         Self {
             cx: cx.clone(),
             state: Some(TypeNotificationState::Unhandled(method, params)),

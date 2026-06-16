@@ -184,14 +184,15 @@ async fn test_invalid_json() {
             // Use expect_test to verify the exact structure
             expect![[r#"
                 {
+                  "jsonrpc": "2.0",
+                  "id": null,
                   "error": {
                     "code": -32700,
+                    "message": "Parse error",
                     "data": {
                       "line": "{\"method\": \"test\", \"id\": 1, INVALID}"
-                    },
-                    "message": "Parse error"
-                  },
-                  "jsonrpc": "2.0"
+                    }
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
         })
@@ -634,19 +635,19 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
             let invalid_response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
+                  "jsonrpc": "2.0",
+                  "id": 3,
                   "error": {
                     "code": -32602,
+                    "message": "Invalid params",
                     "data": {
                       "error": "missing field `message`",
                       "json": {
                         "content": "hello"
                       },
                       "phase": "deserialization"
-                    },
-                    "message": "Invalid params"
-                  },
-                  "id": 3,
-                  "jsonrpc": "2.0"
+                    }
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&invalid_response).unwrap());
 
@@ -662,8 +663,8 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
             let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
-                  "id": 4,
                   "jsonrpc": "2.0",
+                  "id": 4,
                   "result": {
                     "result": "echo: hello"
                   }
@@ -740,18 +741,19 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
             let error_notification = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
+                  "jsonrpc": "2.0",
+                  "id": null,
                   "error": {
                     "code": -32602,
+                    "message": "Invalid params",
                     "data": {
                       "error": "missing field `message`",
                       "json": {
                         "wrong_field": "hello"
                       },
                       "phase": "deserialization"
-                    },
-                    "message": "Invalid params"
-                  },
-                  "jsonrpc": "2.0"
+                    }
+                  }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&error_notification).unwrap());
 
@@ -768,8 +770,8 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
             let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
-                  "id": 10,
                   "jsonrpc": "2.0",
+                  "id": 10,
                   "result": {
                     "result": "echo: after bad notification"
                   }

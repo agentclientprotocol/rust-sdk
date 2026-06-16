@@ -1,4 +1,4 @@
-use jsonrpcmsg::{Message, Params};
+use agent_client_protocol::{RawJsonRpcMessage, RawJsonRpcParams};
 
 pub(crate) const HEADER_CONNECTION_ID: &str = "Acp-Connection-Id";
 pub(crate) const HEADER_SESSION_ID: &str = "Acp-Session-Id";
@@ -16,16 +16,35 @@ pub(crate) fn method_requires_session_header(method: &str) -> bool {
     )
 }
 
-pub(crate) fn is_initialize_request(msg: &Message) -> bool {
-    matches!(msg, Message::Request(req) if req.method == "initialize" && req.id.is_some())
+pub(crate) fn is_initialize_request(msg: &RawJsonRpcMessage) -> bool {
+    matches!(msg, RawJsonRpcMessage::Request(req) if req.method.as_ref() == "initialize")
 }
 
-pub(crate) fn session_id_from_params(params: &Params) -> Option<String> {
+pub(crate) fn method_for_message(msg: &RawJsonRpcMessage) -> Option<&str> {
+    match msg {
+        RawJsonRpcMessage::Request(req) => Some(req.method.as_ref()),
+        RawJsonRpcMessage::Notification(notification) => Some(notification.method.as_ref()),
+        RawJsonRpcMessage::Response(_) => None,
+    }
+}
+
+pub(crate) fn session_id_from_params(params: &RawJsonRpcParams) -> Option<String> {
     match params {
-        Params::Object(map) => map
+        RawJsonRpcParams::Object(map) => map
             .get("sessionId")
             .and_then(|v| v.as_str())
             .map(String::from),
-        Params::Array(_) => None,
+        RawJsonRpcParams::Array(_) => None,
+    }
+}
+
+pub(crate) fn session_id_from_message(msg: &RawJsonRpcMessage) -> Option<String> {
+    match msg {
+        RawJsonRpcMessage::Request(req) => req.params.as_ref().and_then(session_id_from_params),
+        RawJsonRpcMessage::Notification(notification) => notification
+            .params
+            .as_ref()
+            .and_then(session_id_from_params),
+        RawJsonRpcMessage::Response(_) => None,
     }
 }

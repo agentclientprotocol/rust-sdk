@@ -3,29 +3,12 @@ use std::{
     sync::Arc,
 };
 
-use agent_client_protocol::{Channel, jsonrpcmsg};
+use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
 use futures::{SinkExt, StreamExt};
-use jsonrpcmsg::{Id, Message};
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 use tracing::{error, trace};
 
-use crate::protocol::session_id_from_params;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum IdKey {
-    String(String),
-    Number(u64),
-}
-
-impl IdKey {
-    fn new(id: &Id) -> Option<Self> {
-        match id {
-            Id::String(s) => Some(Self::String(s.clone())),
-            Id::Number(n) => Some(Self::Number(*n)),
-            Id::Null => None,
-        }
-    }
-}
+use crate::protocol::session_id_from_message;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ResponseRoute {
@@ -68,25 +51,25 @@ impl OutboundStream {
 }
 
 pub(crate) struct Connection {
-    inbound_tx: mpsc::UnboundedSender<Result<Message, agent_client_protocol::Error>>,
-    outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<Message>>>,
+    inbound_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, agent_client_protocol::Error>>,
+    outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<RawJsonRpcMessage>>>,
     agent_handle: tokio::task::JoinHandle<()>,
     router_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     connection_stream: Arc<OutboundStream>,
     session_streams: RwLock<HashMap<String, Arc<OutboundStream>>>,
     all_outbound: Arc<OutboundStream>,
-    pending_routes: Mutex<HashMap<IdKey, ResponseRoute>>,
+    pending_routes: Mutex<HashMap<RequestId, ResponseRoute>>,
 }
 
 impl Connection {
-    pub(crate) fn send_to_agent(&self, msg: Message) -> Result<(), &'static str> {
+    pub(crate) fn send_to_agent(&self, msg: RawJsonRpcMessage) -> Result<(), &'static str> {
         self.inbound_tx
             .send(Ok(msg))
             .map_err(|_| "agent channel closed")
     }
 
-    pub(crate) async fn record_pending_route(&self, id: Id, route: ResponseRoute) {
-        if let Some(key) = IdKey::new(&id) {
+    pub(crate) async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+        if let Some(key) = pending_route_key(&id) {
             self.pending_routes.lock().await.insert(key, route);
         }
     }
@@ -140,7 +123,7 @@ impl Connection {
         }));
     }
 
-    async fn route_outbound(&self, msg: Message) {
+    async fn route_outbound(&self, msg: RawJsonRpcMessage) {
         let serialized = match serde_json::to_string(&msg) {
             Ok(s) => s,
             Err(e) => {
@@ -152,13 +135,12 @@ impl Connection {
         self.all_outbound.push(serialized.clone()).await;
 
         let route = match &msg {
-            Message::Request(req) => req
-                .params
-                .as_ref()
-                .and_then(session_id_from_params)
-                .map_or(ResponseRoute::Connection, ResponseRoute::Session),
-            Message::Response(resp) => {
-                let route = match resp.id.as_ref().and_then(IdKey::new) {
+            RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_) => {
+                session_id_from_message(&msg)
+                    .map_or(ResponseRoute::Connection, ResponseRoute::Session)
+            }
+            RawJsonRpcMessage::Response(_) => {
+                let route = match msg.response_id().and_then(pending_route_key) {
                     Some(key) => self.pending_routes.lock().await.remove(&key),
                     None => None,
                 };
@@ -232,8 +214,8 @@ impl ConnectionRegistry {
     pub(crate) async fn create_connection(&self) -> (String, Arc<Connection>) {
         let (mut channel, agent_future) = self.factory.spawn_agent();
         let (inbound_tx, mut inbound_rx) =
-            mpsc::unbounded_channel::<Result<Message, agent_client_protocol::Error>>();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<Message>();
+            mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<RawJsonRpcMessage>();
 
         let pump = async move {
             let inbound = async {
@@ -300,5 +282,12 @@ impl ConnectionRegistry {
 
     pub(crate) async fn remove(&self, connection_id: &str) -> Option<Arc<Connection>> {
         self.connections.write().await.remove(connection_id)
+    }
+}
+
+fn pending_route_key(id: &RequestId) -> Option<RequestId> {
+    match id {
+        RequestId::Null => None,
+        RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
     }
 }

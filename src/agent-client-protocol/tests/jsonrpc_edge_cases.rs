@@ -7,12 +7,60 @@
 //! - Client disconnect handling
 
 use agent_client_protocol::{
-    ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder, SentRequest,
-    role::UntypedRole,
+    ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder,
+    SentRequest, role::UntypedRole,
 };
 use futures::{AsyncRead, AsyncWrite};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+#[test]
+fn raw_jsonrpc_message_rejects_scalar_params() {
+    assert!(
+        RawJsonRpcMessage::request(
+            "scalar_params".into(),
+            serde_json::json!(1),
+            agent_client_protocol::schema::RequestId::Number(1),
+        )
+        .is_err()
+    );
+
+    assert!(
+        RawJsonRpcMessage::notification("scalar_params".into(), serde_json::json!("bad")).is_err()
+    );
+
+    assert!(
+        serde_json::from_value::<RawJsonRpcMessage>(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "scalar_params",
+            "params": 1
+        }))
+        .is_err()
+    );
+
+    assert!(
+        serde_json::from_value::<RawJsonRpcMessage>(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "scalar_params",
+            "params": true
+        }))
+        .is_err()
+    );
+
+    let response = RawJsonRpcMessage::response(
+        agent_client_protocol::schema::RequestId::Number(1),
+        Ok(serde_json::json!(1)),
+    );
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": 1
+        })
+    );
+}
 
 /// Test helper to block and wait for a JSON-RPC response.
 async fn recv<T: JsonRpcResponse + Send>(
