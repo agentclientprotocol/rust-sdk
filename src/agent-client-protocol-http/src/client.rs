@@ -225,9 +225,7 @@ impl HttpConnection {
     }
 
     fn spawn_close_task(&self) -> Option<tokio::task::JoinHandle<()>> {
-        let Some(connection_id) = self.take_connection_id() else {
-            return None;
-        };
+        let connection_id = self.take_connection_id()?;
         let http = self.http.clone();
         let endpoint = self.endpoint.clone();
         match tokio::runtime::Handle::try_current() {
@@ -701,14 +699,12 @@ mod tests {
             .unwrap()))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), async {
-            loop {
-                tokio::select! {
-                    result = &mut transport => {
-                        panic!("transport ended before initialize response: {result:?}");
-                    }
-                    msg = caller.rx.next() => {
-                        break msg.unwrap().unwrap();
-                    }
+            tokio::select! {
+                result = &mut transport => {
+                    panic!("transport ended before initialize response: {result:?}");
+                }
+                msg = caller.rx.next() => {
+                    msg.unwrap().unwrap()
                 }
             }
         })

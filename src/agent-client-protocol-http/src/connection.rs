@@ -165,10 +165,10 @@ impl Connection {
         }
     }
 
-    pub(crate) async fn recv_initial(&self) -> Option<String> {
+    pub(crate) async fn recv_initial(&self) -> Option<RawJsonRpcMessage> {
         let mut guard = self.outbound_rx.lock().await;
         let rx = guard.as_mut()?;
-        serde_json::to_string(&rx.recv().await?).ok()
+        rx.recv().await
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -304,6 +304,11 @@ impl ConnectionRegistry {
 
     pub(crate) async fn remove(&self, connection_id: &str) -> Option<Arc<Connection>> {
         self.connections.write().await.remove(connection_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn len(&self) -> usize {
+        self.connections.read().await.len()
     }
 }
 

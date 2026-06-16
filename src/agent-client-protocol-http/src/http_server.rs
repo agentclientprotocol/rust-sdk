@@ -1,6 +1,6 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
-use agent_client_protocol::RawJsonRpcMessage;
+use agent_client_protocol::{RawJsonRpcMessage, schema::Response as RpcResponse};
 use axum::{
     body::Body,
     extract::State,
@@ -83,18 +83,29 @@ pub(crate) async fn handle_post(
             )
                 .into_response();
         };
+        let initialize_failed = matches!(
+            init_response,
+            RawJsonRpcMessage::Response(RpcResponse::Error { .. })
+        );
+        let init_response = match serde_json::to_string(&init_response) {
+            Ok(response) => response,
+            Err(e) => {
+                registry.remove(&connection_id).await;
+                connection.shutdown().await;
+                error!("failed to serialize initialize response: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+        if initialize_failed {
+            registry.remove(&connection_id).await;
+            connection.shutdown().await;
+            info!(connection_id = %connection_id, "Initialize rejected");
+            return json_response(init_response);
+        }
 
         connection.start_router().await;
         info!(connection_id = %connection_id, "Initialize complete");
-        return with_connection_header(
-            (
-                StatusCode::OK,
-                [(header::CONTENT_TYPE, JSON_MIME_TYPE)],
-                init_response,
-            )
-                .into_response(),
-            &connection_id,
-        );
+        return with_connection_header(json_response(init_response), &connection_id);
     }
 
     let Some(connection_id) = connection_id else {
@@ -242,6 +253,15 @@ fn with_connection_header(mut response: Response, connection_id: &str) -> Respon
     response
 }
 
+fn json_response(body: String) -> Response {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, JSON_MIME_TYPE)],
+        body,
+    )
+        .into_response()
+}
+
 fn content_length_exceeds_limit(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_LENGTH)
@@ -269,7 +289,7 @@ fn post_body_too_large_response() -> Response {
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol::{Channel, RawJsonRpcMessage};
+    use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
     use futures::{StreamExt, future::BoxFuture};
     use serde_json::json;
     use tokio::{
@@ -310,6 +330,34 @@ mod tests {
         }
     }
 
+    struct RejectingInitializeAgentFactory;
+
+    impl AgentFactory for RejectingInitializeAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (mut agent, transport) = Channel::duplex();
+            let future = Box::pin(async move {
+                if let Some(Ok(RawJsonRpcMessage::Request(request))) = agent.rx.next().await {
+                    agent
+                        .tx
+                        .unbounded_send(Ok(RawJsonRpcMessage::response(
+                            request.id,
+                            Err(agent_client_protocol::Error::invalid_request()
+                                .data("initialize rejected")),
+                        )))
+                        .unwrap();
+                }
+                std::future::pending::<agent_client_protocol::Result<()>>().await
+            });
+
+            (transport, future)
+        }
+    }
+
     #[tokio::test]
     async fn post_rejects_declared_body_larger_than_limit() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
@@ -330,6 +378,43 @@ mod tests {
         let response = handle_post(State(registry), request).await;
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn initialize_error_response_rejects_connection() {
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(
+            RejectingInitializeAgentFactory,
+        )));
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        })
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry.clone()), request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(HEADER_CONNECTION_ID).is_none());
+        assert_eq!(registry.len().await, 0);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let message = serde_json::from_slice::<RawJsonRpcMessage>(&body).unwrap();
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Response(RpcResponse::Error {
+                id: RequestId::Number(1),
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
