@@ -41,6 +41,7 @@ agent-client-protocol-schema = { version = "=0.13.6", features = ["tracing"] }
 # Core async runtime
 tokio = { version = "1.52", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+tokio-tungstenite = "0.29"
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -77,6 +78,7 @@ open = "5"
 rustc-hash = "2.1.1"
 shell-words = "1.1"
 strip-ansi-escapes = "0.2"
+tower-http = "0.6"
 
 
 # Proc macros
