@@ -1,12 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
-use tracing::{error, trace};
+use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
+use tracing::{debug, error, trace};
 
 use crate::protocol::session_id_from_message;
 
@@ -53,8 +53,9 @@ impl OutboundStream {
 pub(crate) struct Connection {
     inbound_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, agent_client_protocol::Error>>,
     outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<RawJsonRpcMessage>>>,
-    agent_handle: tokio::task::JoinHandle<()>,
+    agent_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     router_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    closed_tx: watch::Sender<bool>,
     connection_stream: Arc<OutboundStream>,
     session_streams: RwLock<HashMap<String, Arc<OutboundStream>>>,
     all_outbound: Arc<OutboundStream>,
@@ -95,6 +96,10 @@ impl Connection {
         &self,
     ) -> (Vec<String>, broadcast::Receiver<String>) {
         self.all_outbound.subscribe().await
+    }
+
+    pub(crate) fn subscribe_closed(&self) -> watch::Receiver<bool> {
+        self.closed_tx.subscribe()
     }
 
     async fn session_stream(&self, session_id: &str) -> Arc<OutboundStream> {
@@ -167,16 +172,23 @@ impl Connection {
     }
 
     pub(crate) async fn shutdown(&self) {
-        self.agent_handle.abort();
+        self.close_streams();
+        if let Some(h) = self.agent_handle.lock().await.take() {
+            h.abort();
+        }
         if let Some(h) = self.router_handle.lock().await.take() {
             h.abort();
         }
+    }
+
+    fn close_streams(&self) {
+        self.closed_tx.send_replace(true);
     }
 }
 
 pub(crate) struct ConnectionRegistry {
     factory: Arc<dyn AgentFactory>,
-    connections: RwLock<HashMap<String, Arc<Connection>>>,
+    connections: Arc<RwLock<HashMap<String, Arc<Connection>>>>,
 }
 
 pub(crate) trait AgentFactory: Send + Sync + 'static {
@@ -207,7 +219,7 @@ impl ConnectionRegistry {
     pub(crate) fn new(factory: Arc<dyn AgentFactory>) -> Self {
         Self {
             factory,
-            connections: RwLock::new(HashMap::new()),
+            connections: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -216,6 +228,7 @@ impl ConnectionRegistry {
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<RawJsonRpcMessage>();
+        let (closed_tx, _) = watch::channel(false);
 
         let pump = async move {
             let inbound = async {
@@ -245,23 +258,12 @@ impl ConnectionRegistry {
         };
 
         let connection_id = uuid::Uuid::new_v4().to_string();
-        let conn_id_for_task = connection_id.clone();
-        let agent_handle = tokio::spawn(async move {
-            let agent = async move {
-                if let Err(e) = agent_future.await {
-                    error!(connection_id = %conn_id_for_task, "ACP agent task error: {e}");
-                }
-            };
-            futures::pin_mut!(agent);
-            futures::pin_mut!(pump);
-            futures::future::select(agent, pump).await;
-        });
-
         let connection = Arc::new(Connection {
             inbound_tx,
             outbound_rx: Mutex::new(Some(outbound_rx)),
-            agent_handle,
+            agent_handle: Mutex::new(None),
             router_handle: Mutex::new(None),
+            closed_tx,
             connection_stream: Arc::new(OutboundStream::new()),
             session_streams: RwLock::new(HashMap::new()),
             all_outbound: Arc::new(OutboundStream::new()),
@@ -272,6 +274,26 @@ impl ConnectionRegistry {
             .write()
             .await
             .insert(connection_id.clone(), connection.clone());
+
+        let conn_id_for_task = connection_id.clone();
+        let connections = self.connections.clone();
+        let connection_for_task = Arc::downgrade(&connection);
+        let agent_handle = tokio::spawn(async move {
+            let conn_id_for_agent = conn_id_for_task.clone();
+            let agent = async move {
+                if let Err(e) = agent_future.await {
+                    error!(connection_id = %conn_id_for_agent, "ACP agent task error: {e}");
+                }
+            };
+            futures::pin_mut!(agent);
+            futures::pin_mut!(pump);
+            futures::future::select(agent, pump).await;
+            debug!(connection_id = %conn_id_for_task, "HTTP ACP connection task ended");
+            connections.write().await.remove(&conn_id_for_task);
+            close_connection_task(connection_for_task).await;
+        });
+
+        *connection.agent_handle.lock().await = Some(agent_handle);
 
         (connection_id, connection)
     }
@@ -285,9 +307,79 @@ impl ConnectionRegistry {
     }
 }
 
+async fn close_connection_task(connection: Weak<Connection>) {
+    let Some(connection) = connection.upgrade() else {
+        return;
+    };
+    connection.close_streams();
+    if let Some(h) = connection.router_handle.lock().await.take() {
+        h.abort();
+    }
+}
+
 fn pending_route_key(id: &RequestId) -> Option<RequestId> {
     match id {
         RequestId::Null => None,
         RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use futures::future::BoxFuture;
+    use tokio::{
+        sync::Notify,
+        time::{Duration, sleep, timeout},
+    };
+
+    use super::*;
+
+    struct ExitingAgentFactory {
+        exit: Arc<Notify>,
+    }
+
+    impl AgentFactory for ExitingAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let exit = self.exit.clone();
+            let future = Box::pin(async move {
+                exit.notified().await;
+                drop(agent);
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_exit_removes_connection_and_closes_streams() {
+        let exit = Arc::new(Notify::new());
+        let registry =
+            ConnectionRegistry::new(Arc::new(ExitingAgentFactory { exit: exit.clone() }));
+        let (connection_id, connection) = registry.create_connection().await;
+
+        assert!(registry.get(&connection_id).await.is_some());
+
+        exit.notify_one();
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.get(&connection_id).await.is_none() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(*connection.subscribe_closed().borrow());
     }
 }

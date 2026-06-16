@@ -49,6 +49,7 @@ async fn run_ws(
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let (replay, mut outbound_rx) = connection.subscribe_all_outbound().await;
+    let mut closed = connection.subscribe_closed();
 
     debug!(connection_id = %connection_id, "Starting WebSocket message loop");
 
@@ -64,6 +65,9 @@ async fn run_ws(
     }
 
     loop {
+        if *closed.borrow() {
+            break;
+        }
         tokio::select! {
             msg_result = ws_rx.next() => {
                 match msg_result {
@@ -122,6 +126,12 @@ async fn run_ws(
                         warn!(connection_id = %connection_id, "WebSocket lagged {n} messages");
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            changed = closed.changed() => {
+                if changed.is_err() || *closed.borrow() {
+                    break;
                 }
             }
         }

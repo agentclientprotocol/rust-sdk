@@ -167,19 +167,30 @@ pub(crate) async fn handle_get(
         Some(session_id) => connection.subscribe_session_stream(session_id).await,
         None => connection.subscribe_connection_stream().await,
     };
+    let mut closed = connection.subscribe_closed();
     let stream = async_stream::stream! {
         for msg in replay {
             trace!(payload = %msg, "SSE → client (replay)");
             yield Ok::<_, Infallible>(Event::default().data(msg));
         }
         loop {
-            match receiver.recv().await {
-                Ok(msg) => {
-                    trace!(payload = %msg, "SSE → client");
-                    yield Ok(Event::default().data(msg));
+            if *closed.borrow() {
+                break;
+            }
+            tokio::select! {
+                recv = receiver.recv() => match recv {
+                    Ok(msg) => {
+                        trace!(payload = %msg, "SSE → client");
+                        yield Ok(Event::default().data(msg));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => debug!("SSE subscriber lagged {n} messages"),
+                    Err(broadcast::error::RecvError::Closed) => break,
+                },
+                changed = closed.changed() => {
+                    if changed.is_err() || *closed.borrow() {
+                        break;
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => debug!("SSE subscriber lagged {n} messages"),
-                Err(broadcast::error::RecvError::Closed) => break,
             }
         }
     };
