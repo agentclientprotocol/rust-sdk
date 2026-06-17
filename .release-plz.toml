@@ -16,6 +16,7 @@ name = "agent-client-protocol"
 git_tag_name = "v{{ version }}"
 version_group = "acp"
 
+# Experimental HTTP/WebSocket transport; keep independent versioning for now.
 [[package]]
 name = "agent-client-protocol-http"
 

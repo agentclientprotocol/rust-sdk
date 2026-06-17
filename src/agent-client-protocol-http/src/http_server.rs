@@ -10,7 +10,7 @@ use axum::{
 use tracing::{error, info, trace};
 
 use crate::{
-    connection::{ConnectionRegistry, ResponseRoute},
+    connection::{Connection, ConnectionRegistry, ResponseRoute},
     protocol::{
         EVENT_STREAM_MIME_TYPE, HEADER_CONNECTION_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
         apply_session_header_to_message, is_initialize_request, method_for_message,
@@ -67,15 +67,15 @@ pub(crate) async fn handle_post(
 
     if is_initialize_request(&message) {
         let (connection_id, connection) = registry.create_connection().await;
+        let initialize_cleanup =
+            InitializeCleanup::new(registry.clone(), connection_id.clone(), connection.clone());
         if connection.send_to_agent(message).is_err() {
-            registry.remove(&connection_id).await;
-            connection.shutdown().await;
+            initialize_cleanup.cleanup().await;
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
         let Some(init_response) = connection.recv_initial().await else {
-            registry.remove(&connection_id).await;
-            connection.shutdown().await;
+            initialize_cleanup.cleanup().await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent closed before initialize response",
@@ -89,20 +89,19 @@ pub(crate) async fn handle_post(
         let init_response = match serde_json::to_string(&init_response) {
             Ok(response) => response,
             Err(e) => {
-                registry.remove(&connection_id).await;
-                connection.shutdown().await;
+                initialize_cleanup.cleanup().await;
                 error!("failed to serialize initialize response: {e}");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
         if initialize_failed {
-            registry.remove(&connection_id).await;
-            connection.shutdown().await;
+            initialize_cleanup.cleanup().await;
             info!(connection_id = %connection_id, "Initialize rejected");
             return json_response(init_response);
         }
 
         connection.start_router().await;
+        initialize_cleanup.disarm();
         info!(connection_id = %connection_id, "Initialize complete");
         return with_connection_header(json_response(init_response), &connection_id);
     }
@@ -146,6 +145,56 @@ pub(crate) async fn handle_post(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     StatusCode::ACCEPTED.into_response()
+}
+
+struct InitializeCleanup {
+    registry: Option<Arc<ConnectionRegistry>>,
+    connection_id: String,
+    connection: Arc<Connection>,
+}
+
+impl InitializeCleanup {
+    fn new(
+        registry: Arc<ConnectionRegistry>,
+        connection_id: String,
+        connection: Arc<Connection>,
+    ) -> Self {
+        Self {
+            registry: Some(registry),
+            connection_id,
+            connection,
+        }
+    }
+
+    async fn cleanup(mut self) {
+        self.cleanup_inner().await;
+    }
+
+    fn disarm(mut self) {
+        self.registry.take();
+    }
+
+    async fn cleanup_inner(&mut self) {
+        let Some(registry) = self.registry.take() else {
+            return;
+        };
+        registry.remove(&self.connection_id).await;
+        self.connection.shutdown().await;
+    }
+}
+
+impl Drop for InitializeCleanup {
+    fn drop(&mut self) {
+        let Some(registry) = self.registry.take() else {
+            return;
+        };
+        let connection_id = self.connection_id.clone();
+        let connection = self.connection.clone();
+        tokio::spawn(async move {
+            registry.remove(&connection_id).await;
+            connection.shutdown().await;
+        });
+    }
 }
 
 pub(crate) async fn handle_get(
@@ -292,7 +341,7 @@ mod tests {
     use serde_json::json;
     use tokio::{
         sync::mpsc,
-        time::{Duration, timeout},
+        time::{Duration, sleep, timeout},
     };
 
     use super::*;
@@ -349,6 +398,29 @@ mod tests {
                         )))
                         .unwrap();
                 }
+                std::future::pending::<agent_client_protocol::Result<()>>().await
+            });
+
+            (transport, future)
+        }
+    }
+
+    struct PendingInitializeAgentFactory;
+
+    impl AgentFactory for PendingInitializeAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let future = Box::pin(async move {
+                let Channel {
+                    rx: mut incoming,
+                    tx: _outgoing,
+                } = agent;
+                drop(incoming.next().await);
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
@@ -413,6 +485,61 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_initialize_cleans_up_connection() {
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(
+            PendingInitializeAgentFactory,
+        )));
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        })
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .body(Body::from(body))
+            .unwrap();
+
+        {
+            let initialize = handle_post(State(registry.clone()), request);
+            tokio::pin!(initialize);
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    tokio::select! {
+                        response = &mut initialize => {
+                            panic!(
+                                "initialize completed unexpectedly with {}",
+                                response.status()
+                            );
+                        }
+                        _ = sleep(Duration::from_millis(10)) => {
+                            if registry.len().await == 1 {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap();
+        }
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.len().await == 0 {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
