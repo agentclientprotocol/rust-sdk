@@ -489,7 +489,7 @@ impl ClientState {
                     }
                     self.deliver(msg);
                 }
-                Err(e) => warn!("SSE: malformed JSON-RPC payload: {e}"),
+                Err(e) => return Err(format!("malformed JSON-RPC payload: {e}")),
             }
         }
         Ok(())
@@ -762,6 +762,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_sse_json_fails_transport() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response)
+                .get(malformed_sse)
+                .delete(move || {
+                    let delete_count = delete_count_for_handler.clone();
+                    async move {
+                        delete_count.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::ACCEPTED
+                    }
+                }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("malformed JSON-RPC payload"));
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn dropped_transport_future_deletes_initialized_connection() {
         let delete_count = Arc::new(AtomicUsize::new(0));
         let delete_count_for_handler = delete_count.clone();
@@ -906,6 +959,13 @@ mod tests {
 
     async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
         Sse::new(futures::stream::pending())
+    }
+
+    async fn malformed_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+        let invalid = futures::stream::once(async {
+            Ok::<_, Infallible>(Event::default().data("{not json"))
+        });
+        Sse::new(invalid.chain(futures::stream::pending()))
     }
 
     async fn closed_sse() -> StatusCode {
