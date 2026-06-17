@@ -20,6 +20,20 @@ let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
 axum::serve(listener, app).await?;
 ```
 
+Cross-origin browser access is disabled by default. Enable it by allowlisting
+the browser origins that should be able to access the ACP endpoint:
+
+```rust
+use agent_client_protocol_http::{AcpHttpServer, CorsOptions, ServerOptions};
+
+let app = AcpHttpServer::new(|| my_agent())
+    .with_options(ServerOptions {
+        cors: CorsOptions::allow_origins(["http://localhost:5173"])?,
+        ..ServerOptions::default()
+    })
+    .into_router();
+```
+
 ## Client
 
 ```rust

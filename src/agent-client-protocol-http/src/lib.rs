@@ -6,4 +6,4 @@ mod server;
 mod websocket_server;
 
 pub use client::{HttpClient, HttpClientError};
-pub use server::{AcpHttpServer, ServerOptions};
+pub use server::{AcpHttpServer, CorsOptions, ServerOptions};
