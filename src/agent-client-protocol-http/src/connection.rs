@@ -410,6 +410,7 @@ impl ConnectionRegistry {
         };
         let (inbound_abort, inbound_abort_registration) = futures::future::AbortHandle::new_pair();
         let inbound = futures::future::Abortable::new(inbound, inbound_abort_registration);
+        let inbound_abort_for_outbound = inbound_abort.clone();
         let outbound = async move {
             while let Some(msg) = agent_rx.next().await {
                 match msg {
@@ -420,6 +421,7 @@ impl ConnectionRegistry {
                     }
                     Err(e) => {
                         error!("agent emitted error: {e}");
+                        inbound_abort_for_outbound.abort();
                         break;
                     }
                 }
@@ -563,6 +565,34 @@ mod tests {
         }
     }
 
+    struct ErrorThenWaitAgentFactory {
+        emit: Arc<Notify>,
+    }
+
+    impl AgentFactory for ErrorThenWaitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let emit = self.emit.clone();
+            let future = Box::pin(async move {
+                emit.notified().await;
+                agent
+                    .tx
+                    .unbounded_send(Err(
+                        agent_client_protocol::Error::parse_error().data("transport parse error")
+                    ))
+                    .unwrap();
+                std::future::pending::<agent_client_protocol::Result<()>>().await
+            });
+
+            (transport, future)
+        }
+    }
+
     struct SendThenWaitAgentFactory {
         message: RawJsonRpcMessage,
         exit: Arc<Notify>,
@@ -610,6 +640,33 @@ mod tests {
         .unwrap();
 
         assert!(*connection.subscribe_closed().borrow());
+    }
+
+    #[tokio::test]
+    async fn agent_error_removes_connection_and_closes_streams() {
+        let emit = Arc::new(Notify::new());
+        let registry =
+            ConnectionRegistry::new(Arc::new(ErrorThenWaitAgentFactory { emit: emit.clone() }));
+        let (connection_id, connection) = registry.create_connection().await;
+        let mut closed = connection.subscribe_closed();
+
+        assert!(registry.get(&connection_id).await.is_some());
+
+        connection.start_router().await;
+        emit.notify_one();
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if *closed.borrow() {
+                    break;
+                }
+                closed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(registry.get(&connection_id).await.is_none());
     }
 
     #[tokio::test]
