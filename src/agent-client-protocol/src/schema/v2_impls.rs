@@ -257,6 +257,8 @@ impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt"
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
+#[cfg(feature = "unstable_cancel_request")]
+impl_v2_jsonrpc_notification!(v2::CancelRequestNotification, "$/cancel_request");
 impl_v2_jsonrpc_notification!(v2::CancelNotification, "session/cancel");
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_notification!(v2::MessageMcpNotification, "mcp/message");
@@ -284,6 +286,11 @@ impl_v2_jsonrpc_request!(
 impl_v2_jsonrpc_notification!(v2::SessionNotification, "session/update");
 #[cfg(feature = "unstable_elicitation")]
 impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
+
+#[cfg(feature = "unstable_cancel_request")]
+impl_jsonrpc_protocol_level_notification_enum!(v2::ProtocolLevelNotification {
+    CancelRequestNotification => "$/cancel_request",
+});
 
 impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",

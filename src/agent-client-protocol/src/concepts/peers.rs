@@ -51,8 +51,9 @@
 //! # Client.builder().connect_with(transport, async |cx| {
 //! # let req = MyRequest {};
 //! // These are equivalent for Client:
-//! cx.send_request(req.clone());
-//! cx.send_request_to(Agent, req);
+//! let request = cx.send_request(req.clone());
+//! let same = cx.send_request_to(Agent, req);
+//! # let _ = (request, same);
 //! # Ok(())
 //! # }).await?;
 //! # Ok(())

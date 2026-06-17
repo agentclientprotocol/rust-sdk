@@ -101,6 +101,8 @@ pub use jsonrpc::{
     UntypedMessage,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
+#[cfg(feature = "unstable_cancel_request")]
+pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
 
 pub use role::{
     Role, RoleId, UntypedRole,

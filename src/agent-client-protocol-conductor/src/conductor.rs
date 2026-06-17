@@ -462,11 +462,26 @@ where
             Dispatch::Request(request, responder) => self
                 .send_request_to_predecessor_of(client, source_component_index, request)
                 .forward_response_to(responder),
-            Dispatch::Notification(notification) => self.send_notification_to_predecessor_of(
-                client,
-                source_component_index,
-                notification,
-            ),
+            Dispatch::Notification(notification) => {
+                // `$/cancel_request` is connection-scoped: its `requestId` was
+                // allocated on the connection the notification arrived over
+                // and means nothing on the predecessor's connection. The SDK
+                // already propagates the cancellation hop by hop through the
+                // `forward_response_to` calls above, so drop the raw
+                // notification instead of tunneling a meaningless ID.
+                #[cfg(feature = "unstable_cancel_request")]
+                if agent_client_protocol::is_cancel_request_notification(&notification) {
+                    tracing::debug!(
+                        "not forwarding hop-scoped `$/cancel_request` notification to predecessor"
+                    );
+                    return Ok(());
+                }
+                self.send_notification_to_predecessor_of(
+                    client,
+                    source_component_index,
+                    notification,
+                )
+            }
             Dispatch::Response(result, router) => router.respond_with_result(result),
         }
     }
@@ -763,12 +778,18 @@ where
                 //
                 // The proxy will then initialize itself and forward an `Initialize`
                 // request to its successor.
-                self.proxies[target_component_index]
-                    .send_request(InitializeProxyRequest::from(request))
-                    .on_receiving_result(async move |result| {
-                        tracing::debug!(?result, "got initialize_proxy response from proxy");
-                        responder.respond_with_result(result)
-                    })
+                let sent = self.proxies[target_component_index]
+                    .send_request(InitializeProxyRequest::from(request));
+                // The request is rewritten, so `forward_response_to` cannot be
+                // used here; wire up cancellation forwarding explicitly to
+                // keep `initialize` cancellable like every other forwarded
+                // request.
+                #[cfg(feature = "unstable_cancel_request")]
+                let sent = sent.forward_cancellation_from(responder.cancellation());
+                sent.on_receiving_result(async move |result| {
+                    tracing::debug!(?result, "got initialize_proxy response from proxy");
+                    responder.respond_with_result(result)
+                })
             })
             .await
             .otherwise(async |message| {
