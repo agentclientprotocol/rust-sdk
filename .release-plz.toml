@@ -18,8 +18,6 @@ version_group = "acp"
 
 [[package]]
 name = "agent-client-protocol-http"
-publish = false
-release = false
 
 [[package]]
 name = "agent-client-protocol-derive"
