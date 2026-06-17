@@ -141,11 +141,16 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 break Err(AcpError::invalid_request()
                     .data("ACP HTTP transport: first message must be `initialize`"));
             }
-            if let Err(e) = state.initialize(msg).await {
-                error!("initialize failed: {e}");
-                break Err(AcpError::internal_error().data(format!("initialize: {e}")));
+            match state.initialize(msg).await {
+                Ok(InitializeOutcome::Connected) => {
+                    lifecycle.spawn_sse(state.clone(), None, sse_failure_tx.clone());
+                }
+                Ok(InitializeOutcome::Rejected) => {}
+                Err(e) => {
+                    error!("initialize failed: {e}");
+                    break Err(AcpError::internal_error().data(format!("initialize: {e}")));
+                }
             }
-            lifecycle.spawn_sse(state.clone(), None, sse_failure_tx.clone());
             continue;
         }
 
@@ -329,8 +334,14 @@ struct ClientState {
     open_session_tx: mpsc::UnboundedSender<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InitializeOutcome {
+    Connected,
+    Rejected,
+}
+
 impl ClientState {
-    async fn initialize(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
+    async fn initialize(&self, msg: RawJsonRpcMessage) -> Result<InitializeOutcome, String> {
         let response = self
             .connection
             .post()
@@ -351,16 +362,26 @@ impl ClientState {
             .headers()
             .get(HEADER_CONNECTION_ID)
             .and_then(|v| v.to_str().ok())
-            .map(String::from)
-            .ok_or_else(|| format!("server did not return {HEADER_CONNECTION_ID} header"))?;
+            .map(String::from);
         let message = response
             .json::<RawJsonRpcMessage>()
             .await
             .map_err(|e| e.to_string())?;
 
+        if matches!(
+            message,
+            RawJsonRpcMessage::Response(RpcResponse::Error { .. })
+        ) {
+            self.deliver(message);
+            return Ok(InitializeOutcome::Rejected);
+        }
+
+        let connection_id = connection_id
+            .ok_or_else(|| format!("server did not return {HEADER_CONNECTION_ID} header"))?;
+
         self.connection.set_connection_id(connection_id);
         self.deliver(message);
-        Ok(())
+        Ok(InitializeOutcome::Connected)
     }
 
     async fn post(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
@@ -718,6 +739,63 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn initialize_error_without_connection_id_is_delivered_without_sse() {
+        let get_count = Arc::new(AtomicUsize::new(0));
+        let get_count_for_handler = get_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_error_response).get(move || {
+                let get_count = get_count_for_handler.clone();
+                async move {
+                    get_count.fetch_add(1, Ordering::SeqCst);
+                    pending_sse().await
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            init_response,
+            RawJsonRpcMessage::Response(RpcResponse::Error {
+                id: RequestId::Number(1),
+                ..
+            })
+        ));
+        assert_eq!(get_count.load(Ordering::SeqCst), 0);
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
     async fn wait_for_delete(delete_count: &AtomicUsize) {
         timeout(Duration::from_secs(1), async {
             loop {
@@ -743,6 +821,13 @@ mod tests {
                 Ok(json!({})),
             )),
         )
+    }
+
+    async fn initialize_error_response() -> Json<RawJsonRpcMessage> {
+        Json(RawJsonRpcMessage::response(
+            RequestId::Number(1),
+            Err(AcpError::invalid_request().data("initialize rejected")),
+        ))
     }
 
     async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
