@@ -14,17 +14,19 @@ use crate::{
     protocol::{HEADER_CONNECTION_ID, session_id_from_message},
 };
 
-pub(crate) async fn handle_ws_upgrade(
+pub(crate) fn handle_ws_upgrade(
     registry: Arc<ConnectionRegistry>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let (connection_id, connection) = registry.create_connection().await;
-
-    connection.start_router().await;
-
+    let connection_id = ConnectionRegistry::next_connection_id();
     let conn_id_for_handler = connection_id.clone();
     let registry_for_handler = registry.clone();
     let mut response = ws.on_upgrade(move |socket| async move {
+        let connection = registry_for_handler
+            .create_connection_with_id(conn_id_for_handler.clone())
+            .await;
+        connection.start_router().await;
+        info!(connection_id = %conn_id_for_handler, "WebSocket connection created");
         run_ws(
             socket,
             registry_for_handler,
@@ -37,7 +39,6 @@ pub(crate) async fn handle_ws_upgrade(
     if let Ok(v) = HeaderValue::from_str(&connection_id) {
         response.headers_mut().insert(HEADER_CONNECTION_ID, v);
     }
-    info!(connection_id = %connection_id, "WebSocket connection created");
     response
 }
 

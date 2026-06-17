@@ -187,7 +187,7 @@ async fn handle_get(
             {
                 return (StatusCode::FORBIDDEN, "WebSocket origin not allowed").into_response();
             }
-            crate::websocket_server::handle_ws_upgrade(state.registry, ws).await
+            crate::websocket_server::handle_ws_upgrade(state.registry, ws)
         }
         Err(_) => crate::http_server::handle_get(state.registry, request).await,
     }

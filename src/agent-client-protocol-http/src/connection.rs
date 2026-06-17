@@ -245,7 +245,17 @@ impl ConnectionRegistry {
         }
     }
 
+    pub(crate) fn next_connection_id() -> String {
+        uuid::Uuid::new_v4().to_string()
+    }
+
     pub(crate) async fn create_connection(&self) -> (String, Arc<Connection>) {
+        let connection_id = Self::next_connection_id();
+        let connection = self.create_connection_with_id(connection_id.clone()).await;
+        (connection_id, connection)
+    }
+
+    pub(crate) async fn create_connection_with_id(&self, connection_id: String) -> Arc<Connection> {
         let (mut channel, agent_future) = self.factory.spawn_agent();
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
@@ -279,7 +289,6 @@ impl ConnectionRegistry {
             futures::join!(inbound, outbound);
         };
 
-        let connection_id = uuid::Uuid::new_v4().to_string();
         let connection = Arc::new(Connection {
             inbound_tx,
             outbound_rx: Mutex::new(Some(outbound_rx)),
@@ -317,7 +326,7 @@ impl ConnectionRegistry {
 
         *connection.agent_handle.lock().await = Some(agent_handle);
 
-        (connection_id, connection)
+        connection
     }
 
     pub(crate) async fn get(&self, connection_id: &str) -> Option<Arc<Connection>> {
