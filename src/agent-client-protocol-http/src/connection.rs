@@ -16,6 +16,21 @@ pub(crate) enum ResponseRoute {
     Session(String),
 }
 
+enum OutboundTransport {
+    Http(HttpOutbound),
+    WebSocket(WebSocketOutbound),
+}
+
+struct HttpOutbound {
+    connection_stream: Arc<OutboundStream>,
+    session_streams: RwLock<HashMap<String, Arc<OutboundStream>>>,
+    pending_routes: Mutex<HashMap<RequestId, ResponseRoute>>,
+}
+
+struct WebSocketOutbound {
+    all_outbound: Arc<OutboundStream>,
+}
+
 struct OutboundStream {
     state: Mutex<OutboundStreamState>,
 }
@@ -75,10 +90,7 @@ pub(crate) struct Connection {
     agent_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     router_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     closed_tx: watch::Sender<bool>,
-    connection_stream: Arc<OutboundStream>,
-    session_streams: RwLock<HashMap<String, Arc<OutboundStream>>>,
-    all_outbound: Arc<OutboundStream>,
-    pending_routes: Mutex<HashMap<RequestId, ResponseRoute>>,
+    outbound_transport: OutboundTransport,
 }
 
 impl Connection {
@@ -89,30 +101,32 @@ impl Connection {
     }
 
     pub(crate) async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
-        if let Some(key) = pending_route_key(&id) {
-            self.pending_routes.lock().await.insert(key, route);
-        }
+        self.outbound_transport
+            .record_pending_route(id, route)
+            .await;
     }
 
     pub(crate) async fn ensure_session(&self, session_id: &str) {
-        self.session_stream(session_id).await;
+        self.outbound_transport.ensure_session(session_id).await;
     }
 
     pub(crate) async fn subscribe_connection_stream(
         &self,
     ) -> (Vec<String>, mpsc::Receiver<String>) {
-        self.connection_stream.subscribe().await
+        self.outbound_transport.subscribe_connection_stream().await
     }
 
     pub(crate) async fn subscribe_session_stream(
         &self,
         session_id: &str,
     ) -> (Vec<String>, mpsc::Receiver<String>) {
-        self.session_stream(session_id).await.subscribe().await
+        self.outbound_transport
+            .subscribe_session_stream(session_id)
+            .await
     }
 
     pub(crate) async fn subscribe_all_outbound(&self) -> (Vec<String>, mpsc::Receiver<String>) {
-        self.all_outbound.subscribe().await
+        self.outbound_transport.subscribe_all_outbound().await
     }
 
     pub(crate) fn subscribe_closed(&self) -> watch::Receiver<bool> {
@@ -121,20 +135,9 @@ impl Connection {
 
     #[cfg(test)]
     pub(crate) async fn push_connection_stream_for_test(&self, msg: String) {
-        self.connection_stream.push(msg).await;
-    }
-
-    async fn session_stream(&self, session_id: &str) -> Arc<OutboundStream> {
-        if let Some(stream) = self.session_streams.read().await.get(session_id) {
-            return stream.clone();
-        }
-
-        self.session_streams
-            .write()
-            .await
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(OutboundStream::new()))
-            .clone()
+        self.outbound_transport
+            .push_connection_stream_for_test(msg)
+            .await;
     }
 
     pub(crate) async fn start_router(self: &Arc<Self>) {
@@ -151,6 +154,89 @@ impl Connection {
     }
 
     async fn route_outbound(&self, msg: RawJsonRpcMessage) {
+        self.outbound_transport.route_outbound(msg).await;
+    }
+
+    pub(crate) async fn recv_initial(&self) -> Option<RawJsonRpcMessage> {
+        let mut guard = self.outbound_rx.lock().await;
+        let rx = guard.as_mut()?;
+        rx.recv().await
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.close_streams();
+        if let Some(h) = self.agent_handle.lock().await.take() {
+            h.abort();
+        }
+        if let Some(h) = self.router_handle.lock().await.take() {
+            h.abort();
+        }
+    }
+
+    fn close_streams(&self) {
+        self.closed_tx.send_replace(true);
+    }
+}
+
+impl OutboundTransport {
+    fn http() -> Self {
+        Self::Http(HttpOutbound::new())
+    }
+
+    fn websocket() -> Self {
+        Self::WebSocket(WebSocketOutbound::new())
+    }
+
+    async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+        let Self::Http(http) = self else {
+            return;
+        };
+
+        http.record_pending_route(id, route).await;
+    }
+
+    async fn ensure_session(&self, session_id: &str) {
+        let Self::Http(http) = self else {
+            return;
+        };
+
+        http.ensure_session(session_id).await;
+    }
+
+    async fn subscribe_connection_stream(&self) -> (Vec<String>, mpsc::Receiver<String>) {
+        match self {
+            Self::Http(http) => http.connection_stream.subscribe().await,
+            Self::WebSocket(_) => empty_subscription(),
+        }
+    }
+
+    async fn subscribe_session_stream(
+        &self,
+        session_id: &str,
+    ) -> (Vec<String>, mpsc::Receiver<String>) {
+        match self {
+            Self::Http(http) => http.session_stream(session_id).await.subscribe().await,
+            Self::WebSocket(_) => empty_subscription(),
+        }
+    }
+
+    async fn subscribe_all_outbound(&self) -> (Vec<String>, mpsc::Receiver<String>) {
+        match self {
+            Self::Http(_) => empty_subscription(),
+            Self::WebSocket(websocket) => websocket.all_outbound.subscribe().await,
+        }
+    }
+
+    #[cfg(test)]
+    async fn push_connection_stream_for_test(&self, msg: String) {
+        let Self::Http(http) = self else {
+            return;
+        };
+
+        http.connection_stream.push(msg).await;
+    }
+
+    async fn route_outbound(&self, msg: RawJsonRpcMessage) {
         let serialized = match serde_json::to_string(&msg) {
             Ok(s) => s,
             Err(e) => {
@@ -159,11 +245,49 @@ impl Connection {
             }
         };
 
-        self.all_outbound.push(serialized.clone()).await;
+        match self {
+            Self::Http(http) => http.route_outbound(&msg, serialized).await,
+            Self::WebSocket(websocket) => websocket.all_outbound.push(serialized).await,
+        }
+    }
+}
 
-        let route = match &msg {
+impl HttpOutbound {
+    fn new() -> Self {
+        Self {
+            connection_stream: Arc::new(OutboundStream::new()),
+            session_streams: RwLock::new(HashMap::new()),
+            pending_routes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+        if let Some(key) = pending_route_key(&id) {
+            self.pending_routes.lock().await.insert(key, route);
+        }
+    }
+
+    async fn ensure_session(&self, session_id: &str) {
+        self.session_stream(session_id).await;
+    }
+
+    async fn session_stream(&self, session_id: &str) -> Arc<OutboundStream> {
+        if let Some(stream) = self.session_streams.read().await.get(session_id) {
+            return stream.clone();
+        }
+
+        self.session_streams
+            .write()
+            .await
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(OutboundStream::new()))
+            .clone()
+    }
+
+    async fn route_outbound(&self, msg: &RawJsonRpcMessage, serialized: String) {
+        let route = match msg {
             RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_) => {
-                session_id_from_message(&msg)
+                session_id_from_message(msg)
                     .map_or(ResponseRoute::Connection, ResponseRoute::Session)
             }
             RawJsonRpcMessage::Response(_) => {
@@ -186,26 +310,19 @@ impl Connection {
             }
         }
     }
+}
 
-    pub(crate) async fn recv_initial(&self) -> Option<RawJsonRpcMessage> {
-        let mut guard = self.outbound_rx.lock().await;
-        let rx = guard.as_mut()?;
-        rx.recv().await
-    }
-
-    pub(crate) async fn shutdown(&self) {
-        self.close_streams();
-        if let Some(h) = self.agent_handle.lock().await.take() {
-            h.abort();
-        }
-        if let Some(h) = self.router_handle.lock().await.take() {
-            h.abort();
+impl WebSocketOutbound {
+    fn new() -> Self {
+        Self {
+            all_outbound: Arc::new(OutboundStream::new()),
         }
     }
+}
 
-    fn close_streams(&self) {
-        self.closed_tx.send_replace(true);
-    }
+fn empty_subscription() -> (Vec<String>, mpsc::Receiver<String>) {
+    let (_tx, rx) = mpsc::channel(1);
+    (Vec::new(), rx)
 }
 
 pub(crate) struct ConnectionRegistry {
@@ -256,6 +373,23 @@ impl ConnectionRegistry {
     }
 
     pub(crate) async fn create_connection_with_id(&self, connection_id: String) -> Arc<Connection> {
+        self.create_connection_with_transport(connection_id, OutboundTransport::http())
+            .await
+    }
+
+    pub(crate) async fn create_websocket_connection_with_id(
+        &self,
+        connection_id: String,
+    ) -> Arc<Connection> {
+        self.create_connection_with_transport(connection_id, OutboundTransport::websocket())
+            .await
+    }
+
+    async fn create_connection_with_transport(
+        &self,
+        connection_id: String,
+        outbound_transport: OutboundTransport,
+    ) -> Arc<Connection> {
         let (channel, agent_future) = self.factory.spawn_agent();
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
@@ -301,10 +435,7 @@ impl ConnectionRegistry {
             agent_handle: Mutex::new(None),
             router_handle: Mutex::new(None),
             closed_tx,
-            connection_stream: Arc::new(OutboundStream::new()),
-            session_streams: RwLock::new(HashMap::new()),
-            all_outbound: Arc::new(OutboundStream::new()),
-            pending_routes: Mutex::new(HashMap::new()),
+            outbound_transport,
         });
 
         self.connections
@@ -544,6 +675,73 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "$/cancel_request"
         ));
+        assert!(session_rx.try_recv().is_err());
+
+        exit.notify_one();
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn http_connection_does_not_retain_all_outbound_replay() {
+        let exit = Arc::new(Notify::new());
+        let message =
+            RawJsonRpcMessage::notification("test/method".to_string(), serde_json::json!({}))
+                .unwrap();
+        let registry = ConnectionRegistry::new(Arc::new(SendThenWaitAgentFactory {
+            message,
+            exit: exit.clone(),
+        }));
+        let (_connection_id, connection) = registry.create_connection().await;
+        let (_connection_replay, mut connection_rx) =
+            connection.subscribe_connection_stream().await;
+
+        connection.start_router().await;
+
+        let text = timeout(Duration::from_secs(1), connection_rx.recv())
+            .await
+            .unwrap()
+            .expect("message should reach HTTP connection stream");
+        assert!(serde_json::from_str::<RawJsonRpcMessage>(&text).is_ok());
+
+        let (all_replay, mut all_rx) = connection.subscribe_all_outbound().await;
+        assert!(all_replay.is_empty());
+        assert!(all_rx.try_recv().is_err());
+
+        exit.notify_one();
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn websocket_connection_does_not_retain_http_stream_replay() {
+        let exit = Arc::new(Notify::new());
+        let message = RawJsonRpcMessage::notification(
+            "test/method".to_string(),
+            serde_json::json!({ "sessionId": "session-1" }),
+        )
+        .unwrap();
+        let registry = ConnectionRegistry::new(Arc::new(SendThenWaitAgentFactory {
+            message,
+            exit: exit.clone(),
+        }));
+        let connection = registry
+            .create_websocket_connection_with_id("conn-1".to_string())
+            .await;
+        let (_all_replay, mut all_rx) = connection.subscribe_all_outbound().await;
+
+        connection.start_router().await;
+
+        let text = timeout(Duration::from_secs(1), all_rx.recv())
+            .await
+            .unwrap()
+            .expect("message should reach WebSocket all-outbound stream");
+        assert!(serde_json::from_str::<RawJsonRpcMessage>(&text).is_ok());
+
+        let (connection_replay, mut connection_rx) = connection.subscribe_connection_stream().await;
+        let (session_replay, mut session_rx) =
+            connection.subscribe_session_stream("session-1").await;
+        assert!(connection_replay.is_empty());
+        assert!(session_replay.is_empty());
+        assert!(connection_rx.try_recv().is_err());
         assert!(session_rx.try_recv().is_err());
 
         exit.notify_one();

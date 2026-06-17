@@ -10,7 +10,7 @@ use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    connection::{ConnectionRegistry, ResponseRoute},
+    connection::ConnectionRegistry,
     protocol::{HEADER_CONNECTION_ID, session_id_from_message},
 };
 
@@ -23,7 +23,7 @@ pub(crate) fn handle_ws_upgrade(
     let registry_for_handler = registry.clone();
     let mut response = ws.on_upgrade(move |socket| async move {
         let connection = registry_for_handler
-            .create_connection_with_id(conn_id_for_handler.clone())
+            .create_websocket_connection_with_id(conn_id_for_handler.clone())
             .await;
         connection.start_router().await;
         info!(connection_id = %conn_id_for_handler, "WebSocket connection created");
@@ -78,14 +78,8 @@ async fn run_ws(
                         match serde_json::from_str::<RawJsonRpcMessage>(&text_str) {
                             Ok(parsed) => {
                                 if let Some(sid) = session_id_from_message(&parsed) {
-                                    connection.ensure_session(&sid).await;
                                     if let RawJsonRpcMessage::Request(req) = &parsed {
-                                        connection
-                                            .record_pending_route(
-                                                req.id.clone(),
-                                                ResponseRoute::Session(sid),
-                                            )
-                                            .await;
+                                        trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
                                     }
                                 }
                                 if connection.send_to_agent(parsed).is_err() {
