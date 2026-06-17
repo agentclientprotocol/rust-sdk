@@ -256,37 +256,43 @@ impl ConnectionRegistry {
     }
 
     pub(crate) async fn create_connection_with_id(&self, connection_id: String) -> Arc<Connection> {
-        let (mut channel, agent_future) = self.factory.spawn_agent();
+        let (channel, agent_future) = self.factory.spawn_agent();
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
         let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<RawJsonRpcMessage>();
         let (closed_tx, _) = watch::channel(false);
 
-        let pump = async move {
-            let inbound = async {
-                while let Some(msg) = inbound_rx.recv().await {
-                    if channel.tx.send(msg).await.is_err() {
-                        break;
-                    }
+        let Channel {
+            rx: mut agent_rx,
+            tx: mut agent_tx,
+        } = channel;
+        let inbound = async move {
+            while let Some(msg) = inbound_rx.recv().await {
+                if agent_tx.send(msg).await.is_err() {
+                    break;
                 }
-                drop(channel.tx.close().await);
-            };
-            let outbound = async {
-                while let Some(msg) = channel.rx.next().await {
-                    match msg {
-                        Ok(m) => {
-                            if outbound_tx.send(m).is_err() {
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("agent emitted error: {e}");
+            }
+            drop(agent_tx.close().await);
+        };
+        let (inbound_abort, inbound_abort_registration) = futures::future::AbortHandle::new_pair();
+        let inbound = futures::future::Abortable::new(inbound, inbound_abort_registration);
+        let outbound = async move {
+            while let Some(msg) = agent_rx.next().await {
+                match msg {
+                    Ok(m) => {
+                        if outbound_tx.send(m).is_err() {
                             break;
                         }
                     }
+                    Err(e) => {
+                        error!("agent emitted error: {e}");
+                        break;
+                    }
                 }
-            };
-            futures::join!(inbound, outbound);
+            }
+        };
+        let pump = async move {
+            let (_inbound_result, ()) = futures::join!(inbound, outbound);
         };
 
         let connection = Arc::new(Connection {
@@ -318,7 +324,13 @@ impl ConnectionRegistry {
             };
             futures::pin_mut!(agent);
             futures::pin_mut!(pump);
-            futures::future::select(agent, pump).await;
+            match futures::future::select(agent, pump).await {
+                futures::future::Either::Left(((), pump)) => {
+                    inbound_abort.abort();
+                    pump.await;
+                }
+                futures::future::Either::Right(((), _agent)) => {}
+            }
             debug!(connection_id = %conn_id_for_task, "HTTP ACP connection task ended");
             connections.write().await.remove(&conn_id_for_task);
             close_connection_task(connection_for_task).await;
@@ -395,6 +407,31 @@ mod tests {
         }
     }
 
+    struct RespondThenExitAgentFactory;
+
+    impl AgentFactory for RespondThenExitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let future = Box::pin(async move {
+                agent
+                    .tx
+                    .unbounded_send(Ok(RawJsonRpcMessage::response(
+                        RequestId::Number(1),
+                        Ok(serde_json::json!({ "done": true })),
+                    )))
+                    .unwrap();
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
     #[tokio::test]
     async fn agent_exit_removes_connection_and_closes_streams() {
         let exit = Arc::new(Notify::new());
@@ -416,6 +453,36 @@ mod tests {
         .await
         .unwrap();
 
+        assert!(*connection.subscribe_closed().borrow());
+    }
+
+    #[tokio::test]
+    async fn agent_exit_drains_buffered_outbound_messages() {
+        let registry = ConnectionRegistry::new(Arc::new(RespondThenExitAgentFactory));
+        let (connection_id, connection) = registry.create_connection().await;
+
+        let message = timeout(Duration::from_secs(1), connection.recv_initial())
+            .await
+            .unwrap()
+            .expect("buffered response should be forwarded before teardown");
+
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Response(agent_client_protocol::schema::Response::Result {
+                id: RequestId::Number(1),
+                ..
+            })
+        ));
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.get(&connection_id).await.is_none() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(*connection.subscribe_closed().borrow());
     }
 }
