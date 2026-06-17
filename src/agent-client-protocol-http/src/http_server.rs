@@ -491,6 +491,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_does_not_apply_session_header_to_cancel_request() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let body = json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancel_request",
+            "params": { "requestId": 1 }
+        })
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .header(HEADER_SESSION_ID, "session-1")
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry), request).await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let forwarded = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session_id_from_message(&forwarded), None);
+        let value = serde_json::to_value(forwarded).unwrap();
+        assert_eq!(value["params"], json!({ "requestId": 1 }));
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn post_rejects_session_scoped_method_without_session_id() {
         let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {

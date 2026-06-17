@@ -432,6 +432,31 @@ mod tests {
         }
     }
 
+    struct SendThenWaitAgentFactory {
+        message: RawJsonRpcMessage,
+        exit: Arc<Notify>,
+    }
+
+    impl AgentFactory for SendThenWaitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let message = self.message.clone();
+            let exit = self.exit.clone();
+            let future = Box::pin(async move {
+                agent.tx.unbounded_send(Ok(message)).unwrap();
+                exit.notified().await;
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
     #[tokio::test]
     async fn agent_exit_removes_connection_and_closes_streams() {
         let exit = Arc::new(Notify::new());
@@ -484,5 +509,44 @@ mod tests {
         .await
         .unwrap();
         assert!(*connection.subscribe_closed().borrow());
+    }
+
+    #[tokio::test]
+    async fn protocol_level_notification_routes_to_connection_stream() {
+        let exit = Arc::new(Notify::new());
+        let message = RawJsonRpcMessage::notification(
+            "$/cancel_request".to_string(),
+            serde_json::json!({
+                "requestId": 1,
+                "sessionId": "session-1"
+            }),
+        )
+        .unwrap();
+        let registry = ConnectionRegistry::new(Arc::new(SendThenWaitAgentFactory {
+            message,
+            exit: exit.clone(),
+        }));
+        let (_connection_id, connection) = registry.create_connection().await;
+        let (_connection_replay, mut connection_rx) =
+            connection.subscribe_connection_stream().await;
+        let (_session_replay, mut session_rx) =
+            connection.subscribe_session_stream("session-1").await;
+
+        connection.start_router().await;
+
+        let text = timeout(Duration::from_secs(1), connection_rx.recv())
+            .await
+            .unwrap()
+            .expect("protocol-level notification should reach connection stream");
+        let routed = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+        assert!(matches!(
+            routed,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "$/cancel_request"
+        ));
+        assert!(session_rx.try_recv().is_err());
+
+        exit.notify_one();
+        connection.shutdown().await;
     }
 }

@@ -10,6 +10,10 @@ description = "HTTP and WebSocket transport for the Agent Client Protocol (ACP)"
 keywords = ["acp", "agent", "protocol", "http", "websocket"]
 categories = ["development-tools", "web-programming::http-server"]
 
+[features]
+default = []
+unstable_cancel_request = ["agent-client-protocol/unstable_cancel_request"]
+
 [dependencies]
 agent-client-protocol.workspace = true
 

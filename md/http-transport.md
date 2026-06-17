@@ -10,6 +10,25 @@
 
 `POST /acp` request bodies are limited to 16 MiB.
 
+## Request Cancellation
+
+Request cancellation is available when the transport crate forwards the core SDK
+feature:
+
+```toml
+agent-client-protocol-http = { version = "...", features = ["unstable_cancel_request"] }
+```
+
+`$/cancel_request` is connection-scoped. The HTTP transport does not apply
+`Acp-Session-Id` to cancellation notifications, and routes outgoing
+cancellation notifications over the connection stream rather than a session
+stream.
+
+WebSocket connections can carry cancellation at any point after the socket is
+open. With HTTP + SSE, cancellation can be sent after `initialize` completes and
+the client has received `Acp-Connection-Id`; an in-flight `initialize` request
+cannot be cancelled with a hop-local `$/cancel_request` on this transport shape.
+
 ## Server
 
 ```rust

@@ -651,6 +651,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn post_sends_cancel_request_without_session_header() {
+        let (capture_tx, mut capture_rx) = tokio::sync::mpsc::unbounded_channel();
+        let post_count = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let capture_tx = capture_tx.clone();
+                let post_count = post_count.clone();
+                move |headers: HeaderMap, Json(message): Json<RawJsonRpcMessage>| {
+                    let capture_tx = capture_tx.clone();
+                    let post_count = post_count.clone();
+                    async move {
+                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return initialize_response().await.into_response();
+                        }
+
+                        capture_tx
+                            .send((headers.get(HEADER_SESSION_ID).cloned(), message))
+                            .unwrap();
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get(pending_sse)
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                "$/cancel_request".to_string(),
+                json!({
+                    "requestId": 2,
+                    "sessionId": "session-1"
+                }),
+            )
+            .unwrap()))
+            .unwrap();
+
+        let (session_header, message) = timeout(Duration::from_secs(1), capture_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(session_header.is_none());
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "$/cancel_request"
+        ));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn post_error_deletes_initialized_connection() {
         let delete_count = Arc::new(AtomicUsize::new(0));
         let delete_count_for_handler = delete_count.clone();

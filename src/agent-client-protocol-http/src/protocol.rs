@@ -32,6 +32,33 @@ pub(crate) fn method_for_message(msg: &RawJsonRpcMessage) -> Option<&str> {
     }
 }
 
+pub(crate) fn is_connection_scoped_protocol_message(msg: &RawJsonRpcMessage) -> bool {
+    method_for_message(msg).is_some_and(|method| method.starts_with("$/"))
+        || is_cancel_request_message(msg)
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+fn is_cancel_request_message(msg: &RawJsonRpcMessage) -> bool {
+    let RawJsonRpcMessage::Notification(notification) = msg else {
+        return false;
+    };
+    let params = notification
+        .params
+        .clone()
+        .map_or(serde_json::Value::Null, RawJsonRpcParams::into_value);
+    let Ok(notification) =
+        agent_client_protocol::UntypedMessage::new(notification.method.as_ref(), params)
+    else {
+        return false;
+    };
+    agent_client_protocol::is_cancel_request_notification(&notification)
+}
+
+#[cfg(not(feature = "unstable_cancel_request"))]
+fn is_cancel_request_message(_msg: &RawJsonRpcMessage) -> bool {
+    false
+}
+
 pub(crate) fn session_id_from_params(params: &RawJsonRpcParams) -> Option<String> {
     match params {
         RawJsonRpcParams::Object(map) => map
@@ -43,6 +70,10 @@ pub(crate) fn session_id_from_params(params: &RawJsonRpcParams) -> Option<String
 }
 
 pub(crate) fn session_id_from_message(msg: &RawJsonRpcMessage) -> Option<String> {
+    if is_connection_scoped_protocol_message(msg) {
+        return None;
+    }
+
     match msg {
         RawJsonRpcMessage::Request(req) => req.params.as_ref().and_then(session_id_from_params),
         RawJsonRpcMessage::Notification(notification) => notification
@@ -57,6 +88,10 @@ pub(crate) fn apply_session_header_to_message(
     msg: &mut RawJsonRpcMessage,
     session_id: &str,
 ) -> Result<(), &'static str> {
+    if is_connection_scoped_protocol_message(msg) {
+        return Ok(());
+    }
+
     match msg {
         RawJsonRpcMessage::Request(req) => {
             apply_session_header_to_params(&mut req.params, session_id)
@@ -153,6 +188,40 @@ mod tests {
             error,
             "Acp-Session-Id header does not match params.sessionId"
         );
+    }
+
+    #[test]
+    fn protocol_level_message_ignores_session_header() {
+        let mut message = RawJsonRpcMessage::notification(
+            "$/cancel_request".to_string(),
+            json!({ "requestId": 1 }),
+        )
+        .unwrap();
+
+        apply_session_header_to_message(&mut message, "session-1").unwrap();
+
+        assert_eq!(session_id_from_message(&message), None);
+        let value = serde_json::to_value(message).unwrap();
+        assert!(value["params"].get("sessionId").is_none());
+    }
+
+    #[cfg(feature = "unstable_cancel_request")]
+    #[test]
+    fn successor_wrapped_cancel_request_ignores_session_header() {
+        let mut message = RawJsonRpcMessage::notification(
+            "_proxy/successor".to_string(),
+            json!({
+                "method": "$/cancel_request",
+                "params": { "requestId": 1 }
+            }),
+        )
+        .unwrap();
+
+        apply_session_header_to_message(&mut message, "session-1").unwrap();
+
+        assert_eq!(session_id_from_message(&message), None);
+        let value = serde_json::to_value(message).unwrap();
+        assert!(value["params"].get("sessionId").is_none());
     }
 
     #[test]
