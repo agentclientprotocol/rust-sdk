@@ -301,12 +301,6 @@ where
             block_state: _,
         } = self;
 
-        // Spawn off the run and dynamic handlers to run indefinitely
-        connection.spawn(run.run_with_connection_to(connection.clone()))?;
-        dynamic_handler_registrations
-            .into_iter()
-            .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
-
         // Send the "new session" request to the agent.
         let sent = connection.send_request_to(Agent, request);
         #[cfg(feature = "unstable_cancel_request")]
@@ -324,6 +318,12 @@ where
                 connection
                     .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
                     .run_indefinitely();
+
+                // Spawn off the run and dynamic handlers to run indefinitely
+                connection.spawn(run.run_with_connection_to(connection.clone()))?;
+                dynamic_handler_registrations
+                    .into_iter()
+                    .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
 
                 op(session_id).await
             }
