@@ -113,9 +113,10 @@
 //! By default, dropping a [`SentRequest`] without consuming it simply discards
 //! the response when it arrives. When the `unstable_cancel_request` feature is
 //! enabled, dropping an unconsumed [`SentRequest`] additionally sends a
-//! `$/cancel_request` notification asking the peer to cancel the request. For
-//! fire-and-forget requests that should keep running on the peer, call
-//! [`SentRequest::detach`] instead. See the request cancellation chapter
+//! `$/cancel_request` notification asking the peer to cancel the request. For a
+//! request whose eventual response should be ignored, but which should keep
+//! running on the peer, call [`SentRequest::detach`] instead. If no response is
+//! expected at all, use a notification. See the request cancellation chapter
 //! (`concepts::cancellation`, feature-gated) for details.
 //!
 //! # Next Steps

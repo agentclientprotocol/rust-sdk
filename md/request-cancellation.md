@@ -61,9 +61,10 @@ without cancellation support therefore loses nothing: the request simply runs
 to completion.
 
 When cancellation support is enabled, dropping an unconsumed `SentRequest`
-asks the peer to cancel it. Use `SentRequest::detach()` for fire-and-forget
-requests that should continue running on the peer while the local side ignores
-the eventual response.
+asks the peer to cancel it. Use `SentRequest::detach()` for requests whose
+eventual response should be ignored, but which should continue running on the
+peer. The peer is still expected to answer the JSON-RPC request eventually; use
+a notification instead when no response is expected at all.
 
 ## Proxy Chains
 
