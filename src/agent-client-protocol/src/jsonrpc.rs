@@ -3579,12 +3579,12 @@ impl JsonRpcNotification for UntypedMessage {}
 /// response when it arrives. When the `unstable_cancel_request` feature is
 /// enabled, dropping a `SentRequest` before the SDK has received the response
 /// additionally sends a `$/cancel_request` notification asking the peer to
-/// cancel the request; fire-and-forget requests should consume their handle
-/// (for example with [`on_receiving_result`](Self::on_receiving_result)).
+/// cancel the request; fire-and-forget requests that should keep running on the
+/// peer should use [`detach`](Self::detach) instead.
 #[must_use = "dropping a SentRequest discards the response (and, with the \
               `unstable_cancel_request` feature, asks the peer to cancel the \
               request); consume it with `block_task`, `on_receiving_result`, \
-              or `forward_response_to`"]
+              `forward_response_to`, or `detach`"]
 pub struct SentRequest<T> {
     id: RequestId,
     method: String,
@@ -3772,6 +3772,22 @@ impl SentRequest<serde_json::Value> {
 }
 
 impl<T> SentRequest<T> {
+    /// Detach this request handle without waiting for its response.
+    ///
+    /// The response will be discarded when it arrives. When the
+    /// `unstable_cancel_request` feature is enabled, this also disarms the
+    /// drop-time automatic cancellation described in
+    /// [Drop Behavior](Self#drop-behavior), so use it for fire-and-forget
+    /// requests that should keep running on the peer.
+    ///
+    /// To ask the peer to stop the request, enable `unstable_cancel_request`
+    /// and call `cancel` instead, or drop the handle while automatic
+    /// cancellation is enabled.
+    pub fn detach(self) {
+        #[cfg(feature = "unstable_cancel_request")]
+        self.cancellation.disarm();
+    }
+
     /// Send a `$/cancel_request` notification for this outgoing request.
     ///
     /// This uses the same peer and message wrapping that were used to send the

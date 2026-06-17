@@ -705,6 +705,81 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn detached_sent_request_does_not_send_cancellation() {
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        if request.message == "barrier" {
+                            return responder.respond(SimpleResponse {
+                                result: format!("echo: {}", request.message),
+                            });
+                        }
+
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_notification(
+                    async move |notification: CancelRequestNotification,
+                                _connection: ConnectionTo<UntypedRole>| {
+                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        Ok(())
+                    },
+                    agent_client_protocol::on_receive_notification!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            UntypedRole
+                .builder()
+                .connect_with(client_transport, async |cx| {
+                    cx.send_request(SimpleRequest {
+                        message: "detached".into(),
+                    })
+                    .detach();
+
+                    // Barrier round trip: a cancellation sent by dropping the
+                    // detached handle would reach the server before this
+                    // request.
+                    let barrier = cx
+                        .send_request(SimpleRequest {
+                            message: "barrier".into(),
+                        })
+                        .block_task()
+                        .await?;
+                    assert_eq!(barrier.result, "echo: barrier");
+
+                    Ok(())
+                })
+                .await
+                .unwrap();
+
+            assert_no_event(&mut cancel_rx);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn late_response_after_dropped_sent_request_does_not_close_connection() {
     use tokio::task::LocalSet;
 

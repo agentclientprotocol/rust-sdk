@@ -60,6 +60,11 @@ feature is disabled. A peer that sends `$/cancel_request` to a component built
 without cancellation support therefore loses nothing: the request simply runs
 to completion.
 
+When cancellation support is enabled, dropping an unconsumed `SentRequest`
+asks the peer to cancel it. Use `SentRequest::detach()` for fire-and-forget
+requests that should continue running on the peer while the local side ignores
+the eventual response.
+
 ## Proxy Chains
 
 Cancellation propagates **hop by hop** rather than end to end. Request IDs are

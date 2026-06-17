@@ -38,12 +38,14 @@
 //! [`ConnectionTo::send_request_to`].
 //!
 //! Dropping a [`SentRequest`] before the SDK receives a response also sends
-//! `$/cancel_request`. This covers abandoned request handles and futures. Once
-//! the SDK routes a response for the request, automatic cancellation is
-//! disarmed: the peer has already answered, even if caller code has not yet
-//! consumed the handle with [`block_task`], [`on_receiving_result`], or
-//! [`forward_response_to`], and even if a dispatch handler claimed the
-//! response.
+//! `$/cancel_request`. This covers abandoned request handles and futures. For a
+//! fire-and-forget request that should continue running on the peer, call
+//! [`detach`][`SentRequest::detach`] instead; the eventual response is
+//! discarded, but no cancellation is sent. Once the SDK routes a response for
+//! the request, automatic cancellation is disarmed: the peer has already
+//! answered, even if caller code has not yet consumed the handle with
+//! [`block_task`], [`on_receiving_result`], or [`forward_response_to`], and even
+//! if a dispatch handler claimed the response.
 //!
 //! If you already have the JSON-RPC request ID, send the notification
 //! directly:
@@ -183,6 +185,7 @@
 //! [`ConnectionTo::spawn`]: crate::ConnectionTo::spawn
 //! [`SentRequest`]: crate::SentRequest
 //! [`SentRequest::cancel`]: crate::SentRequest::cancel
+//! [`SentRequest::detach`]: crate::SentRequest::detach
 //! [`forward_cancellation_from`]: crate::SentRequest::forward_cancellation_from
 //! [`ConnectionTo::send_cancel_request_to`]: crate::ConnectionTo::send_cancel_request_to
 //! [`Responder::cancellation`]: crate::Responder::cancellation

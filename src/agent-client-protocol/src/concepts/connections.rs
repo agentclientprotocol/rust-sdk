@@ -113,9 +113,9 @@
 //! By default, dropping a [`SentRequest`] without consuming it simply discards
 //! the response when it arrives. When the `unstable_cancel_request` feature is
 //! enabled, dropping an unconsumed [`SentRequest`] additionally sends a
-//! `$/cancel_request` notification asking the peer to cancel the request, so
-//! fire-and-forget requests should consume their handle (for example with
-//! `on_receiving_result`). See the request cancellation chapter
+//! `$/cancel_request` notification asking the peer to cancel the request. For
+//! fire-and-forget requests that should keep running on the peer, call
+//! [`SentRequest::detach`] instead. See the request cancellation chapter
 //! (`concepts::cancellation`, feature-gated) for details.
 //!
 //! # Next Steps
@@ -128,3 +128,4 @@
 //! [`Proxy`]: crate::Proxy
 //! [`ConnectionTo`]: crate::ConnectionTo
 //! [`SentRequest`]: crate::SentRequest
+//! [`SentRequest::detach`]: crate::SentRequest::detach
