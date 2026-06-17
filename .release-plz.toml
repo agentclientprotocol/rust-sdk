@@ -17,6 +17,11 @@ git_tag_name = "v{{ version }}"
 version_group = "acp"
 
 [[package]]
+name = "agent-client-protocol-http"
+publish = false
+release = false
+
+[[package]]
 name = "agent-client-protocol-derive"
 version_group = "acp"
 
