@@ -301,33 +301,33 @@ where
             block_state: _,
         } = self;
 
-        // Spawn off the run and dynamic handlers to run indefinitely
-        connection.spawn(run.run_with_connection_to(connection.clone()))?;
-        dynamic_handler_registrations
-            .into_iter()
-            .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
+        // Send the "new session" request to the agent.
+        let sent = connection.send_request_to(Agent, request);
+        #[cfg(feature = "unstable_cancel_request")]
+        let sent = sent.forward_cancellation_from(responder.cancellation());
 
-        // Send the "new session" request to the agent
-        connection
-            .send_request_to(Agent, request)
-            .on_receiving_result({
-                let connection = connection.clone();
-                async move |result| {
-                    let response = result?;
+        sent.on_receiving_ok_result(responder, {
+            let connection = connection.clone();
+            async move |response, responder| {
+                // Extract the session-id from the response and forward
+                // the response back to the client
+                let session_id = response.session_id.clone();
+                responder.respond(response)?;
 
-                    // Extract the session-id from the response and forward
-                    // the response back to the client
-                    let session_id = response.session_id.clone();
-                    responder.respond(response)?;
+                // Install a dynamic handler to proxy messages from this session
+                connection
+                    .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
+                    .run_indefinitely();
 
-                    // Install a dynamic handler to proxy messages from this session
-                    connection
-                        .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                        .run_indefinitely();
+                // Spawn off the run and dynamic handlers to run indefinitely
+                connection.spawn(run.run_with_connection_to(connection.clone()))?;
+                dynamic_handler_registrations
+                    .into_iter()
+                    .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
 
-                    op(session_id).await
-                }
-            })
+                op(session_id).await
+            }
+        })
     }
 }
 
@@ -514,6 +514,13 @@ where
 /// Incoming message from the agent
 #[non_exhaustive]
 #[derive(Debug)]
+#[cfg_attr(
+    feature = "unstable_cancel_request",
+    allow(
+        clippy::large_enum_variant,
+        reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
+    )
+)]
 pub enum SessionMessage {
     /// Periodic updates with new content, tool requests, etc.
     /// Use [`MatchDispatch`] to match on the message type.

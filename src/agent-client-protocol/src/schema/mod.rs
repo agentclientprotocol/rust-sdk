@@ -217,6 +217,61 @@ macro_rules! impl_jsonrpc_notification_enum {
     };
 }
 
+/// Implement `JsonRpcMessage` and `JsonRpcNotification` for a protocol-level
+/// notification enum (`$/`-prefixed methods), shared between the v1 and v2
+/// schema namespaces.
+///
+/// The incoming side (`matches_method`, `parse_message`) only recognizes the
+/// methods listed in the macro invocation: when the schema crate adds a
+/// protocol-level notification, list it here to parse it. The outgoing side
+/// (`method`, `to_untyped_message`) instead delegates to the schema enum's
+/// inherent `method()` and untagged serialization, which cover every variant,
+/// so unlisted variants still serialize with the correct method name.
+///
+/// ```ignore
+/// impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification {
+///     CancelRequestNotification => "$/cancel_request",
+/// });
+/// ```
+#[cfg(feature = "unstable_cancel_request")]
+macro_rules! impl_jsonrpc_protocol_level_notification_enum {
+    ($enum:ty {
+        $( $variant:ident => $method:literal, )*
+    }) => {
+        impl $crate::JsonRpcMessage for $enum {
+            fn matches_method(method: &str) -> bool {
+                matches!(method, $( $method )|*)
+            }
+
+            fn method(&self) -> &str {
+                // Resolves to the schema enum's *inherent* `method()` (path
+                // syntax prefers inherent items over trait items), which
+                // matches its variants exhaustively: the enum is only
+                // non-exhaustive downstream.
+                <$enum>::method(self)
+            }
+
+            fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
+                // The schema enum is `#[serde(untagged)]`, so serializing the
+                // enum serializes the inner notification.
+                $crate::UntypedMessage::new(<$enum>::method(self), self)
+            }
+
+            fn parse_message(
+                method: &str,
+                params: &impl serde::Serialize,
+            ) -> Result<Self, $crate::Error> {
+                match method {
+                    $( $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
+                    _ => Err($crate::Error::method_not_found()),
+                }
+            }
+        }
+
+        impl $crate::JsonRpcNotification for $enum {}
+    };
+}
+
 /// Implement `JsonRpcResponse` for an enum that dispatches across multiple
 /// response types, with an extension method fallback.
 macro_rules! impl_jsonrpc_response_enum {
@@ -255,6 +310,7 @@ macro_rules! impl_jsonrpc_response_enum {
 mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
+mod protocol_level;
 mod proxy_protocol;
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_impls;

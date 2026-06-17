@@ -81,7 +81,7 @@ pub trait HasPeer<Peer: Role>: Role {
 }
 
 /// Describes how messages are transformed when sent to a remote peer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RemoteStyle {
     /// Pass each message through exactly as it is.
@@ -96,7 +96,7 @@ pub enum RemoteStyle {
 
 impl RemoteStyle {
     pub(crate) fn transform_outgoing_message<M: JsonRpcMessage>(
-        &self,
+        self,
         msg: M,
     ) -> Result<UntypedMessage, crate::Error> {
         match self {

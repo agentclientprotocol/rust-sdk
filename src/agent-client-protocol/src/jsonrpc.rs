@@ -8,12 +8,21 @@ use agent_client_protocol_schema::{
 // Types re-exported from crate root
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
+#[cfg(feature = "unstable_cancel_request")]
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
 use std::sync::Arc;
+#[cfg(feature = "unstable_cancel_request")]
+use std::sync::{
+    Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use uuid::Uuid;
 
+#[cfg(feature = "unstable_cancel_request")]
+use futures::FutureExt;
 use futures::channel::{mpsc, oneshot};
 use futures::future::{self, BoxFuture, Either};
 use futures::{AsyncRead, AsyncWrite, StreamExt};
@@ -1525,6 +1534,9 @@ enum ReplyMessage {
         method: String,
 
         sender: oneshot::Sender<ResponsePayload>,
+
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     },
 }
 
@@ -1538,6 +1550,452 @@ impl std::fmt::Debug for ReplyMessage {
                 .finish(),
         }
     }
+}
+
+/// A request-local marker that is set when the peer asks to cancel the request.
+///
+/// Request handlers can get this handle from [`Responder::cancellation`] and
+/// use it from spawned work to stop long-running request processing
+/// cooperatively.
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Clone)]
+pub struct RequestCancellation {
+    state: Arc<RequestCancellationState>,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+struct RequestCancellationState {
+    cancelled: AtomicBool,
+    signal_tx: Mutex<Option<oneshot::Sender<()>>>,
+    signal_rx: future::Shared<BoxFuture<'static, ()>>,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl RequestCancellation {
+    fn new() -> Self {
+        let (signal_tx, signal_rx) = oneshot::channel();
+        let signal_rx = signal_rx.map(|_| ()).boxed().shared();
+        Self {
+            state: Arc::new(RequestCancellationState {
+                cancelled: AtomicBool::new(false),
+                signal_tx: Mutex::new(Some(signal_tx)),
+                signal_rx,
+            }),
+        }
+    }
+
+    /// Wait until the peer sends `$/cancel_request` for this request.
+    ///
+    /// If cancellation was already requested, this returns immediately.
+    pub async fn cancelled(&self) {
+        self.state.signal_rx.clone().await;
+    }
+
+    /// Run request work until it completes or the peer asks to cancel it.
+    ///
+    /// If cancellation is requested first, this returns
+    /// [`Error::request_cancelled`]. This is a convenience for request handlers
+    /// that want to respond with the normal result or the standard
+    /// cancellation error.
+    ///
+    /// When cancellation wins, `future` is dropped: work stops at its next
+    /// await point, partial results are lost, and any cleanup must happen in
+    /// `Drop` implementations. Handlers that need to flush partial results or
+    /// run async cleanup should instead watch [`cancelled`](Self::cancelled)
+    /// or poll [`is_cancelled`](Self::is_cancelled) from inside the work.
+    ///
+    /// [`Error::request_cancelled`]: crate::Error::request_cancelled
+    pub async fn run_until_cancelled<T>(
+        &self,
+        future: impl std::future::Future<Output = Result<T, crate::Error>>,
+    ) -> Result<T, crate::Error> {
+        if self.is_cancelled() {
+            return Err(crate::Error::request_cancelled());
+        }
+
+        match future::select(pin!(future), pin!(self.cancelled())).await {
+            Either::Left((result, _)) => result,
+            Either::Right(((), _)) => Err(crate::Error::request_cancelled()),
+        }
+    }
+
+    /// Returns whether the peer has already requested cancellation.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.state.cancelled.load(Ordering::Acquire)
+    }
+
+    fn cancel(&self) {
+        if self.state.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        let signal_tx = self
+            .state
+            .signal_tx
+            .lock()
+            .expect("request cancellation signal mutex poisoned")
+            .take();
+
+        // Complete the oneshot outside the lock: it wakes waiters, and
+        // arbitrary waker code must not observe the lock held.
+        if let Some(signal_tx) = signal_tx {
+            let _ = signal_tx.send(());
+        }
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Debug for RequestCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RequestCancellation")
+            .field("is_cancelled", &self.is_cancelled())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Per-request cancellation state tracked by [`RequestCancellationRegistry`].
+///
+/// The full [`RequestCancellation`] marker (with its wakeup machinery) is only
+/// allocated once a handler asks for it via [`Responder::cancellation`]; until
+/// then an incoming `$/cancel_request` just flips the entry to `Cancelled`.
+/// This keeps the per-request cost of the registry to a single map entry.
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug)]
+enum RequestCancellationEntry {
+    /// The request is in flight; no marker handed out, no cancellation yet.
+    Armed,
+    /// `$/cancel_request` arrived before a marker was handed out.
+    Cancelled,
+    /// A marker was handed out via [`Responder::cancellation`].
+    Marker(RequestCancellation),
+}
+
+/// A registered request's cancellation state, tagged with the generation of
+/// its registration.
+///
+/// The generation distinguishes a registration from earlier ones that used
+/// the same request ID, so that when a (protocol-violating) peer reuses the
+/// ID of a request that is still in flight, the stale request's responder can
+/// neither remove nor observe the cancellation state of the newer request.
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug)]
+struct RequestCancellationSlot {
+    generation: u64,
+    entry: RequestCancellationEntry,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug, Default)]
+struct RequestCancellationRegistryInner {
+    slots: HashMap<RequestId, RequestCancellationSlot>,
+    next_generation: u64,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Clone, Debug, Default)]
+struct RequestCancellationRegistry {
+    inner: Arc<Mutex<RequestCancellationRegistryInner>>,
+}
+
+#[cfg(not(feature = "unstable_cancel_request"))]
+#[derive(Clone, Debug, Default)]
+struct RequestCancellationRegistry;
+
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Debug)]
+struct ResponderCancellation {
+    id: RequestId,
+    generation: u64,
+    registry: RequestCancellationRegistry,
+}
+
+#[cfg(not(feature = "unstable_cancel_request"))]
+#[derive(Debug)]
+struct ResponderCancellation;
+
+#[cfg(feature = "unstable_cancel_request")]
+impl RequestCancellationRegistry {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn register(&self, id: &RequestId) -> ResponderCancellation {
+        let generation = {
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("request cancellation registry mutex poisoned");
+            let generation = inner.next_generation;
+            inner.next_generation += 1;
+            if inner
+                .slots
+                .insert(
+                    id.clone(),
+                    RequestCancellationSlot {
+                        generation,
+                        entry: RequestCancellationEntry::Armed,
+                    },
+                )
+                .is_some()
+            {
+                tracing::debug!(
+                    ?id,
+                    "peer reused the ID of a request that is still in flight"
+                );
+            }
+            generation
+        };
+        ResponderCancellation {
+            id: id.clone(),
+            generation,
+            registry: self.clone(),
+        }
+    }
+
+    /// Get the cancellation marker for a registered request, creating it on
+    /// first use. Repeated calls return markers that share the same state.
+    ///
+    /// Exception: when the registration is stale (a protocol-violating peer
+    /// reused this request ID and the slot now belongs to a newer request, or
+    /// was already removed by it), every call returns a fresh *detached*
+    /// marker. Detached markers can never fire, and detached markers from
+    /// repeated calls do not share state with each other.
+    fn marker(&self, id: &RequestId, generation: u64) -> RequestCancellation {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("request cancellation registry mutex poisoned");
+        let Some(slot) = inner.slots.get_mut(id) else {
+            // The slot lives as long as the responder that owns it, so this
+            // is only reachable if the peer reused this request ID and the
+            // newer request's responder already removed the replacement slot.
+            // Hand out a detached marker rather than panicking.
+            return RequestCancellation::new();
+        };
+        if slot.generation != generation {
+            // The peer reused this request ID while the request was still in
+            // flight, and the slot now belongs to the newer request. Hand the
+            // stale responder a detached marker instead of cross-wiring the
+            // two requests' cancellation states.
+            return RequestCancellation::new();
+        }
+        let entry = &mut slot.entry;
+        match entry {
+            RequestCancellationEntry::Marker(marker) => marker.clone(),
+            RequestCancellationEntry::Armed => {
+                let marker = RequestCancellation::new();
+                *entry = RequestCancellationEntry::Marker(marker.clone());
+                marker
+            }
+            RequestCancellationEntry::Cancelled => {
+                // No one can be waiting on a marker that did not exist yet,
+                // so firing it while holding the registry lock is fine.
+                let marker = RequestCancellation::new();
+                marker.cancel();
+                *entry = RequestCancellationEntry::Marker(marker.clone());
+                marker
+            }
+        }
+    }
+
+    fn cancel_if_requested(&self, dispatch: &Dispatch) -> Result<bool, crate::Error> {
+        let Some(request_id) = cancellation_request_id(dispatch)? else {
+            return Ok(false);
+        };
+        Ok(self.cancel(&request_id))
+    }
+
+    /// Mark whichever request currently owns `request_id` as cancelled.
+    fn cancel(&self, request_id: &RequestId) -> bool {
+        let marker = {
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("request cancellation registry mutex poisoned");
+            let Some(slot) = inner.slots.get_mut(request_id) else {
+                return false;
+            };
+            let entry = &mut slot.entry;
+            match entry {
+                RequestCancellationEntry::Marker(marker) => marker.clone(),
+                RequestCancellationEntry::Cancelled => return true,
+                RequestCancellationEntry::Armed => {
+                    *entry = RequestCancellationEntry::Cancelled;
+                    return true;
+                }
+            }
+        };
+
+        // Fire the marker outside the registry lock: waking waiters runs
+        // arbitrary waker code that must not observe the lock held.
+        marker.cancel();
+        true
+    }
+
+    /// Remove the slot for `request_id`, but only if it still belongs to the
+    /// registration identified by `generation`.
+    fn remove(&self, request_id: &RequestId, generation: u64) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("request cancellation registry mutex poisoned");
+        if inner
+            .slots
+            .get(request_id)
+            .is_some_and(|slot| slot.generation == generation)
+        {
+            inner.slots.remove(request_id);
+        }
+    }
+}
+
+#[cfg(not(feature = "unstable_cancel_request"))]
+impl RequestCancellationRegistry {
+    fn new() -> Self {
+        Self
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "feature-disabled stub mirrors the real registry API"
+    )]
+    fn register(&self, _id: &RequestId) -> ResponderCancellation {
+        ResponderCancellation
+    }
+
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "feature-disabled stub mirrors the real registry API"
+    )]
+    fn cancel_if_requested(&self, _dispatch: &Dispatch) -> Result<bool, crate::Error> {
+        Ok(false)
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl ResponderCancellation {
+    fn cancellation(&self) -> RequestCancellation {
+        self.registry.marker(&self.id, self.generation)
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Drop for ResponderCancellation {
+    fn drop(&mut self) {
+        self.registry.remove(&self.id, self.generation);
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, crate::Error> {
+    let Dispatch::Notification(message) = dispatch else {
+        return Ok(None);
+    };
+    cancellation_request_id_from_message(message)
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+fn cancellation_request_id_from_message(
+    message: &UntypedMessage,
+) -> Result<Option<RequestId>, crate::Error> {
+    let (method, params) = peel_successor_envelopes(&message.method, &message.params);
+    if !crate::schema::CancelRequestNotification::matches_method(method) {
+        return Ok(None);
+    }
+
+    let notification = crate::schema::CancelRequestNotification::parse_message(method, params)?;
+    Ok(Some(notification.request_id))
+}
+
+/// Peel any [`SuccessorMessage`] envelopes off a notification by reference,
+/// returning the innermost method and params.
+///
+/// This only peeks at the envelope's `method`/`params` fields instead of
+/// deserializing the envelope, for two reasons:
+///
+/// - It avoids deep-cloning the params of every wrapped notification on the
+///   hot dispatch path just to inspect the inner method name.
+/// - It is deliberately lenient: a malformed envelope is left as-is here and
+///   flows on to the handler chain, which is responsible for reporting it.
+///
+/// [`SuccessorMessage`]: crate::schema::SuccessorMessage
+fn peel_successor_envelopes<'message>(
+    mut method: &'message str,
+    mut params: &'message serde_json::Value,
+) -> (&'message str, &'message serde_json::Value) {
+    while crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(method) {
+        let Some(inner_method) = params.get("method").and_then(serde_json::Value::as_str) else {
+            break;
+        };
+        method = inner_method;
+        params = params.get("params").unwrap_or(&serde_json::Value::Null);
+    }
+    (method, params)
+}
+
+/// Whether a notification is a `$/cancel_request`, even when it is still
+/// wrapped in `_proxy/successor` envelopes.
+///
+/// `$/cancel_request` is connection-scoped: its `requestId` was allocated on
+/// the connection the notification arrived over and means nothing on any
+/// other connection. Generic forwarding code (such as
+/// [`ConnectionTo::send_proxied_message_to`]) uses this check to drop the raw
+/// notification instead of tunneling it across a hop; the cancellation still
+/// propagates because [`forward_response_to`](SentRequest::forward_response_to)
+/// re-issues it with the forwarded request's own ID.
+///
+/// Checking a notification whose method is not the successor envelope is a
+/// plain method-name comparison. Only successor-wrapped notifications pay for
+/// a serialization to peel the envelope.
+#[cfg(feature = "unstable_cancel_request")]
+#[must_use]
+pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) -> bool {
+    let method = notification.method();
+    if crate::schema::CancelRequestNotification::matches_method(method) {
+        return true;
+    }
+    if !crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(method) {
+        return false;
+    }
+
+    match notification.to_untyped_message() {
+        Ok(untyped) => {
+            let (method, _params) = peel_successor_envelopes(&untyped.method, &untyped.params);
+            crate::schema::CancelRequestNotification::matches_method(method)
+        }
+        Err(error) => {
+            tracing::debug!(
+                ?error,
+                "failed to inspect successor-wrapped notification for cancellation"
+            );
+            false
+        }
+    }
+}
+
+/// Whether the dispatch is a protocol-level (`$/`-prefixed) notification,
+/// possibly wrapped in a [`SuccessorMessage`] envelope.
+///
+/// Unhandled protocol-level notifications are ignored rather than rejected
+/// with a method-not-found error. This is deliberately *not* feature-gated:
+/// protocol-level notifications are optional by design, so a peer that sends
+/// `$/cancel_request` must be able to interoperate with an SDK built without
+/// `unstable_cancel_request` (which simply won't act on it).
+///
+/// A handler that explicitly declines with `retry: true` takes precedence
+/// over this fallback: the notification is queued for newly registered
+/// dynamic handlers like any other retried message.
+///
+/// [`SuccessorMessage`]: crate::schema::SuccessorMessage
+fn is_protocol_level_notification(dispatch: &Dispatch) -> bool {
+    let Dispatch::Notification(message) = dispatch else {
+        return false;
+    };
+    let (method, _params) = peel_successor_envelopes(&message.method, &message.params);
+    method.starts_with("$/")
 }
 
 /// Messages send to be serialized over the transport.
@@ -1560,6 +2018,9 @@ enum OutgoingMessage {
 
         /// where to send the response when it arrives (includes ack channel)
         response_tx: oneshot::Sender<ResponsePayload>,
+
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     },
 
     /// Send a notification to the server.
@@ -1797,6 +2258,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// The request context's response type matches the request's response type,
     /// enabling type-safe message forwarding.
+    ///
+    /// When the `unstable_cancel_request` feature is enabled, `$/cancel_request`
+    /// notifications are *not* forwarded: their `requestId` refers to a request
+    /// on the connection they arrived over and would be meaningless to `peer`.
+    /// Cancellation instead propagates hop by hop, because the responders
+    /// passed to [`forward_response_to`](SentRequest::forward_response_to)
+    /// observe it and re-issue the cancellation with the forwarded request's
+    /// own ID.
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -1813,7 +2282,23 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             Dispatch::Request(request, responder) => self
                 .send_request_to(peer, request)
                 .forward_response_to(responder),
-            Dispatch::Notification(notification) => self.send_notification_to(peer, notification),
+            Dispatch::Notification(notification) => {
+                // `$/cancel_request` is connection-scoped: its `requestId` was
+                // allocated on the connection the notification arrived over
+                // and means nothing to `peer`. The cancellation has already
+                // been recorded on this connection's responder markers, and
+                // `forward_response_to` re-issues it for the forwarded request
+                // with the correct per-hop ID, so drop the raw notification
+                // instead of tunneling a meaningless ID across the hop.
+                #[cfg(feature = "unstable_cancel_request")]
+                if is_cancel_request_notification(&notification) {
+                    tracing::debug!(
+                        "not forwarding hop-scoped `$/cancel_request` notification across proxy hop"
+                    );
+                    return Ok(());
+                }
+                self.send_notification_to(peer, notification)
+            }
             Dispatch::Response(result, router) => {
                 // Responses are forwarded directly to their destination
                 router.respond_with_result(result)
@@ -1897,6 +2382,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let (response_tx, response_rx) = oneshot::channel();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation =
+            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
         match remote_style.transform_outgoing_message(request) {
             Ok(untyped) => {
                 // Transform the message for the target role
@@ -1906,11 +2394,16 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     role_id,
                     untyped,
                     response_tx,
+                    #[cfg(feature = "unstable_cancel_request")]
+                    cancellation_disarm: cancellation.disarm_handle(),
                 };
 
                 match self.message_tx.unbounded_send(message) {
                     Ok(()) => (),
                     Err(error) => {
+                        #[cfg(feature = "unstable_cancel_request")]
+                        cancellation.disarm();
+
                         let OutgoingMessage::Request {
                             method,
                             response_tx,
@@ -1933,6 +2426,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
 
             Err(err) => {
+                #[cfg(feature = "unstable_cancel_request")]
+                cancellation.disarm();
+
                 response_tx
                     .send(ResponsePayload {
                         result: Err(crate::util::internal_error(format!(
@@ -1944,8 +2440,15 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
         }
 
-        SentRequest::new(id, method.clone(), self.task_tx.clone(), response_rx)
-            .map(move |json| <Req::Response>::from_value(&method, json))
+        SentRequest::new(
+            id,
+            method.clone(),
+            self.task_tx.clone(),
+            response_rx,
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation,
+        )
+        .map(move |json| <Req::Response>::from_value(&method, json))
     }
 
     /// Send an outgoing notification to the default counterpart peer (no reply expected).
@@ -2006,6 +2509,46 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             OutgoingMessage::Notification {
                 untyped: transformed,
             },
+        )
+    }
+
+    /// Send a `$/cancel_request` notification for an arbitrary request ID to
+    /// the default counterpart peer.
+    ///
+    /// Prefer [`SentRequest::cancel`] when you have the request handle: it
+    /// already knows the correct peer, request ID, and proxy wrapping. Use this
+    /// low-level method only when implementing custom routing with a request ID
+    /// that is valid on this connection.
+    #[cfg(feature = "unstable_cancel_request")]
+    pub fn send_cancel_request(
+        &self,
+        request_id: impl Into<crate::schema::RequestId>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.send_cancel_request_to(self.counterpart.clone(), request_id)
+    }
+
+    /// Send a `$/cancel_request` notification for an arbitrary request ID to a
+    /// specific peer.
+    ///
+    /// Prefer [`SentRequest::cancel`] when you have the request handle: it
+    /// already knows the correct peer, request ID, and proxy wrapping. Use this
+    /// low-level method only when implementing custom routing with a request ID
+    /// that is valid on the target peer's connection.
+    #[cfg(feature = "unstable_cancel_request")]
+    pub fn send_cancel_request_to<Peer: Role>(
+        &self,
+        peer: Peer,
+        request_id: impl Into<crate::schema::RequestId>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.send_notification_to(
+            peer,
+            crate::schema::CancelRequestNotification::new(request_id),
         )
     }
 
@@ -2119,6 +2662,9 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// The `id` of the message we are replying to.
     id: RequestId,
 
+    /// Request-local cancellation state.
+    cancellation: ResponderCancellation,
+
     /// Function to send the response to its destination.
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
@@ -2140,12 +2686,19 @@ impl Responder<serde_json::Value> {
     /// Create a new request context for an incoming request.
     ///
     /// The response will be serialized to JSON and sent over the wire.
-    fn new(message_tx: OutgoingMessageTx, method: String, id: RequestId) -> Self {
+    fn new(
+        message_tx: OutgoingMessageTx,
+        method: String,
+        id: RequestId,
+        cancellation_registry: &RequestCancellationRegistry,
+    ) -> Self {
         let id_clone = id.clone();
         let method_clone = method.clone();
+        let cancellation = cancellation_registry.register(&id);
         Self {
             method,
             id,
+            cancellation,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 send_raw_message(
                     &message_tx,
@@ -2183,6 +2736,20 @@ impl<T: JsonRpcResponse> Responder<T> {
         crate::util::id_to_json(&self.id)
     }
 
+    /// Returns the cancellation marker for this request.
+    ///
+    /// The marker is set when the peer sends `$/cancel_request` for this
+    /// request's JSON-RPC ID. Cancellation is cooperative: handlers should use
+    /// the marker to stop long-running work and then decide whether to respond
+    /// with [`Error::request_cancelled`] or partial data.
+    ///
+    /// [`Error::request_cancelled`]: crate::Error::request_cancelled
+    #[cfg(feature = "unstable_cancel_request")]
+    #[must_use]
+    pub fn cancellation(&self) -> RequestCancellation {
+        self.cancellation.cancellation()
+    }
+
     /// Convert to a `Responder` that expects a JSON value
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
@@ -2195,6 +2762,7 @@ impl<T: JsonRpcResponse> Responder<T> {
         Responder {
             method,
             id: self.id,
+            cancellation: self.cancellation,
             send_fn: self.send_fn,
         }
     }
@@ -2211,6 +2779,7 @@ impl<T: JsonRpcResponse> Responder<T> {
         Responder {
             method: self.method,
             id: self.id,
+            cancellation: self.cancellation,
             send_fn: Box::new(move |input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
                 (self.send_fn)(t_value)
@@ -2252,6 +2821,16 @@ impl<T: JsonRpcResponse> Responder<T> {
 ///
 /// Both are fundamentally "sinks" that push the message through a `send_fn`, but they
 /// represent different points in the message lifecycle and carry different metadata.
+///
+/// # Drop Behavior
+///
+/// Dropping a `ResponseRouter` without responding (for example, from a
+/// dispatch handler that claims a [`Dispatch::Response`]) discards the
+/// response: the local awaiter observes the response as never received. The
+/// request still counts as settled — when the `unstable_cancel_request`
+/// feature is enabled, routing a response this far disarms the originating
+/// [`SentRequest`]'s drop-time auto-cancellation even if the router is never
+/// invoked, since the peer has already answered.
 #[must_use]
 pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the original request.
@@ -2282,26 +2861,43 @@ impl ResponseRouter<serde_json::Value> {
     /// Create a new response context for routing a response to a local awaiter.
     ///
     /// When `respond_with_result` is called, the response is sent through the oneshot
-    /// channel to the code that originally sent the request.
+    /// channel to the code that originally sent the request. If that receiver was
+    /// dropped, the response is discarded because there is no local awaiter left.
     pub(crate) fn new(
         method: String,
         id: RequestId,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm: SentRequestCancellationDisarm,
     ) -> Self {
+        let response_method = method.clone();
+        let response_id = id.clone();
+        // A response for the request reached this router, so the request is
+        // settled from the peer's perspective and a `$/cancel_request` could
+        // only ever be redundant. Disarm immediately so handlers may retain
+        // the router without leaving auto-cancellation armed.
+        #[cfg(feature = "unstable_cancel_request")]
+        cancellation_disarm.disarm();
         Self {
             method,
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                sender
+                if sender
                     .send(ResponsePayload {
                         result: response,
                         ack_tx: None,
                     })
-                    .map_err(|_| {
-                        crate::util::internal_error("failed to send response, receiver dropped")
-                    })
+                    .is_err()
+                {
+                    tracing::debug!(
+                        method = %response_method,
+                        id = ?response_id,
+                        "dropped response because local receiver was gone"
+                    );
+                }
+                Ok(())
             }),
         }
     }
@@ -2986,22 +3582,181 @@ impl JsonRpcNotification for UntypedMessage {}
 /// If you block the event loop while waiting for a response, the connection cannot process
 /// the incoming response message, creating a deadlock. This API design prevents that footgun
 /// by making blocking explicit and encouraging non-blocking patterns.
+///
+/// # Drop Behavior
+///
+/// By default, dropping a `SentRequest` without consuming it discards the
+/// response when it arrives. When the `unstable_cancel_request` feature is
+/// enabled, dropping a `SentRequest` before the SDK has received the response
+/// additionally sends a `$/cancel_request` notification asking the peer to
+/// cancel the request; requests whose eventual response should be ignored, but
+/// which should keep running on the peer, should use [`detach`](Self::detach)
+/// instead.
+#[must_use = "dropping a SentRequest discards the response (and, with the \
+              `unstable_cancel_request` feature, asks the peer to cancel the \
+              request); consume it with `block_task`, `on_receiving_result`, \
+              `forward_response_to`, or `detach`"]
 pub struct SentRequest<T> {
     id: RequestId,
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
     to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
+    #[cfg(feature = "unstable_cancel_request")]
+    cancellation: SentRequestCancellation,
+    /// Cancellation markers of other (incoming) requests whose cancellation
+    /// should be forwarded to this request. See
+    /// [`forward_cancellation_from`](Self::forward_cancellation_from).
+    #[cfg(feature = "unstable_cancel_request")]
+    cancellation_sources: Vec<RequestCancellation>,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+#[derive(Clone, Debug)]
+pub(crate) struct SentRequestCancellationDisarm {
+    armed: Arc<AtomicBool>,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl SentRequestCancellationDisarm {
+    fn new() -> Self {
+        Self {
+            armed: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn disarm(&self) {
+        self.armed.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+struct SentRequestCancellation {
+    message_tx: OutgoingMessageTx,
+    remote_style: crate::role::RemoteStyle,
+    request_id: RequestId,
+    disarm: SentRequestCancellationDisarm,
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl SentRequestCancellation {
+    fn new(
+        message_tx: OutgoingMessageTx,
+        remote_style: crate::role::RemoteStyle,
+        request_id: RequestId,
+    ) -> Self {
+        Self {
+            message_tx,
+            remote_style,
+            request_id,
+            disarm: SentRequestCancellationDisarm::new(),
+        }
+    }
+
+    fn disarm(&self) {
+        self.disarm.disarm();
+    }
+
+    fn disarm_handle(&self) -> SentRequestCancellationDisarm {
+        self.disarm.clone()
+    }
+
+    fn send(&self) -> Result<(), crate::Error> {
+        if !self.disarm.armed.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
+
+        // Build the notification lazily: most requests are never cancelled,
+        // so this avoids serializing a notification per outgoing request.
+        let untyped = self.remote_style.transform_outgoing_message(
+            crate::schema::CancelRequestNotification::new(self.request_id.clone()),
+        )?;
+
+        send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Drop for SentRequestCancellation {
+    fn drop(&mut self) {
+        if let Err(error) = self.send() {
+            tracing::debug!(?error, "failed to auto-cancel dropped request");
+        }
+    }
+}
+
+#[cfg(feature = "unstable_cancel_request")]
+impl Debug for SentRequestCancellation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SentRequestCancellation")
+            .field("request_id", &self.request_id)
+            .field("remote_style", &self.remote_style)
+            .field("armed", &self.disarm.armed.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
+/// Await the response payload for an outgoing request, watching `sources` for
+/// cancellation of the upstream requests it was registered with.
+///
+/// When any source reports cancellation, a `$/cancel_request` is forwarded to
+/// the outgoing request (at most once, shared with [`SentRequest::cancel`] and
+/// drop-time auto-cancellation), and the response is *still* awaited: the peer
+/// always answers, with normal data or a cancellation error.
+///
+/// Watching is deliberately bounded by response arrival so that completed
+/// requests do not leak waiters on markers that will never fire.
+#[cfg(feature = "unstable_cancel_request")]
+async fn await_response_forwarding_cancellation(
+    response_rx: oneshot::Receiver<ResponsePayload>,
+    cancellation: &SentRequestCancellation,
+    sources: &[RequestCancellation],
+) -> Result<ResponsePayload, oneshot::Canceled> {
+    // Failing to forward the cancellation must not abort the wait: the
+    // response (normal data or a cancellation error) may still arrive and
+    // must still be processed.
+    let forward_cancellation = || {
+        if let Err(error) = cancellation.send() {
+            tracing::debug!(
+                ?error,
+                "failed to forward cancellation to downstream request"
+            );
+        }
+    };
+
+    let response = if sources.is_empty() {
+        response_rx.await
+    } else if sources.iter().any(RequestCancellation::is_cancelled) {
+        forward_cancellation();
+        response_rx.await
+    } else {
+        let cancelled = sources.iter().map(|source| source.state.signal_rx.clone());
+        match future::select(future::select_all(cancelled), response_rx).await {
+            Either::Left((_, response_rx)) => {
+                forward_cancellation();
+                response_rx.await
+            }
+            Either::Right((response, _)) => response,
+        }
+    };
+
+    cancellation.disarm();
+    response
 }
 
 impl<T: Debug> Debug for SentRequest<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SentRequest")
+        let mut debug = f.debug_struct("SentRequest");
+        debug
             .field("id", &self.id)
             .field("method", &self.method)
             .field("task_tx", &self.task_tx)
-            .field("response_rx", &self.response_rx)
-            .finish_non_exhaustive()
+            .field("response_rx", &self.response_rx);
+        #[cfg(feature = "unstable_cancel_request")]
+        debug
+            .field("cancellation", &self.cancellation)
+            .field("cancellation_sources", &self.cancellation_sources);
+        debug.finish_non_exhaustive()
     }
 }
 
@@ -3011,6 +3766,7 @@ impl SentRequest<serde_json::Value> {
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
+        #[cfg(feature = "unstable_cancel_request")] cancellation: SentRequestCancellation,
     ) -> Self {
         Self {
             id,
@@ -3018,7 +3774,96 @@ impl SentRequest<serde_json::Value> {
             response_rx,
             task_tx,
             to_result: Box::new(Ok),
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation,
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation_sources: Vec::new(),
         }
+    }
+}
+
+impl<T> SentRequest<T> {
+    /// Detach this request handle without waiting for its response.
+    ///
+    /// The response will be discarded when it arrives. When the
+    /// `unstable_cancel_request` feature is enabled, this also disarms the
+    /// drop-time automatic cancellation described in
+    /// [Drop Behavior](Self#drop-behavior), so use it for requests whose
+    /// eventual response should be ignored, but which should keep running on the
+    /// peer. The peer is still expected to answer the JSON-RPC request
+    /// eventually; use a notification instead when no response is expected at
+    /// all.
+    ///
+    /// To ask the peer to stop the request, enable `unstable_cancel_request`
+    /// and call `cancel` instead, or drop the handle while automatic
+    /// cancellation is enabled.
+    pub fn detach(self) {
+        #[cfg(feature = "unstable_cancel_request")]
+        self.cancellation.disarm();
+    }
+
+    /// Send a `$/cancel_request` notification for this outgoing request.
+    ///
+    /// This uses the same peer and message wrapping that were used to send the
+    /// original request, so it is the preferred way to cancel a [`SentRequest`]
+    /// when the request handle is still available.
+    ///
+    /// At most one `$/cancel_request` is ever sent per request: the first
+    /// `cancel` call sends it (and also prevents the drop-time automatic
+    /// cancellation described in [Drop Behavior](Self#drop-behavior)), while
+    /// later calls return `Ok(())` without sending anything. Likewise, once
+    /// the SDK has routed the response to this handle, `cancel` becomes a
+    /// no-op: there is nothing left to cancel.
+    ///
+    /// Errors are only reported by the call that attempts to send the
+    /// notification.
+    #[cfg(feature = "unstable_cancel_request")]
+    pub fn cancel(&self) -> Result<(), crate::Error> {
+        self.cancellation.send()
+    }
+
+    /// Forward cancellation of another request to this one.
+    ///
+    /// When the request that `source` belongs to is cancelled by its peer,
+    /// a `$/cancel_request` for *this* request is sent to its peer, using the
+    /// same wrapping as the original request. The response is still awaited
+    /// and delivered as usual (normal data or a cancellation error), so this
+    /// composes with [`block_task`](Self::block_task) and
+    /// [`on_receiving_result`](Self::on_receiving_result).
+    ///
+    /// This is the building block for proxies that forward a request with
+    /// custom logic instead of [`forward_response_to`](Self::forward_response_to)
+    /// (which wires this up automatically from its responder). Without it,
+    /// custom forwarding *absorbs* cancellation: the upstream marker is still
+    /// set, but nothing is sent downstream.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{ConnectionTo, Error, Responder, UntypedRole};
+    /// # use agent_client_protocol_test::{MyRequest, MyResponse};
+    /// # async fn example(request: MyRequest, responder: Responder<MyResponse>, backend: ConnectionTo<UntypedRole>) -> Result<(), Error> {
+    /// backend
+    ///     .send_request(request)
+    ///     .forward_cancellation_from(responder.cancellation())
+    ///     .on_receiving_result(async move |result| {
+    ///         // Custom result handling, e.g. bookkeeping or rewriting.
+    ///         responder.respond_with_result(result)
+    ///     })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// May be called multiple times; cancellation of any registered source
+    /// triggers the forwarding (at most one `$/cancel_request` is ever sent
+    /// per request). Sources are observed while the response is being
+    /// awaited — that is, once the handle is consumed with
+    /// [`block_task`](Self::block_task),
+    /// [`on_receiving_result`](Self::on_receiving_result), or
+    /// [`forward_response_to`](Self::forward_response_to); a source that was
+    /// already cancelled by then is honored immediately.
+    #[cfg(feature = "unstable_cancel_request")]
+    pub fn forward_cancellation_from(mut self, source: RequestCancellation) -> Self {
+        self.cancellation_sources.push(source);
+        self
     }
 }
 
@@ -3046,6 +3891,10 @@ impl<T: JsonRpcResponse> SentRequest<T> {
             response_rx: self.response_rx,
             task_tx: self.task_tx,
             to_result: Box::new(move |value| map_fn((self.to_result)(value)?)),
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation: self.cancellation,
+            #[cfg(feature = "unstable_cancel_request")]
+            cancellation_sources: self.cancellation_sources,
         }
     }
 
@@ -3099,12 +3948,106 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// - The response types match between the outgoing request and incoming request
     ///
     /// This is equivalent to calling `on_receiving_result` and manually forwarding
-    /// the result, but more concise.
+    /// the result, with two proxy-specific additions:
+    ///
+    /// - If the pending response is dropped without ever being delivered (for
+    ///   example, the downstream connection closed), the incoming request is
+    ///   answered with an internal error instead of being left unanswered.
+    /// - When the `unstable_cancel_request` feature is enabled and the peer
+    ///   cancels the incoming request, the cancellation is forwarded to the
+    ///   outgoing request, and the downstream response (normal data or a
+    ///   cancellation error) is still forwarded back. This is equivalent to
+    ///   registering the responder's marker with
+    ///   [`forward_cancellation_from`](Self::forward_cancellation_from).
+    #[track_caller]
     pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
         T: Send,
     {
-        self.on_receiving_result(async move |result| responder.respond_with_result(result))
+        #[cfg(feature = "unstable_cancel_request")]
+        let this = self.forward_cancellation_from(responder.cancellation());
+        #[cfg(not(feature = "unstable_cancel_request"))]
+        let this = self;
+
+        this.consume_with(async move |response| {
+            // A response that was never delivered (outer `Err`, e.g. the
+            // downstream connection closed) is forwarded as an error: the
+            // incoming request must not be left unanswered.
+            responder.respond_with_result(response.unwrap_or_else(Err))
+        })
+    }
+
+    /// Spawn the response-consumption task shared by
+    /// [`on_receiving_result`](Self::on_receiving_result) and
+    /// [`forward_response_to`](Self::forward_response_to).
+    ///
+    /// The task awaits the response (forwarding cancellation from registered
+    /// sources while waiting, when the `unstable_cancel_request` feature is
+    /// enabled), converts the payload, and invokes `handle` with the typed
+    /// result (`Ok(Result<T, _>)`). The dispatch loop's ack, if any, is sent
+    /// after `handle` completes.
+    ///
+    /// If the pending response is dropped without ever being delivered (for
+    /// example, the connection closed), `handle` receives the outer `Err`
+    /// describing the loss; there is no ack in that case.
+    #[track_caller]
+    fn consume_with<F>(
+        self,
+        handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
+    ) -> Result<(), crate::Error>
+    where
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+        T: Send,
+    {
+        let task_tx = self.task_tx.clone();
+        let method = self.method;
+        let response_rx = self.response_rx;
+        let to_result = self.to_result;
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation = self.cancellation;
+        #[cfg(feature = "unstable_cancel_request")]
+        let cancellation_sources = self.cancellation_sources;
+        let location = Location::caller();
+
+        Task::new(location, async move {
+            #[cfg(feature = "unstable_cancel_request")]
+            let response = await_response_forwarding_cancellation(
+                response_rx,
+                &cancellation,
+                &cancellation_sources,
+            )
+            .await;
+            #[cfg(not(feature = "unstable_cancel_request"))]
+            let response = response_rx.await;
+
+            match response {
+                Ok(ResponsePayload { result, ack_tx }) => {
+                    // Convert the result using to_result for Ok values
+                    let typed_result = match result {
+                        Ok(json_value) => to_result(json_value),
+                        Err(err) => Err(err),
+                    };
+
+                    let outcome = handle(Ok(typed_result)).await;
+
+                    // Ack AFTER the handler completes - this is the key
+                    // difference from block_task. The dispatch loop waits for
+                    // this ack.
+                    if let Some(tx) = ack_tx {
+                        let _ = tx.send(());
+                    }
+
+                    outcome
+                }
+                Err(err) => {
+                    handle(Err(crate::util::internal_error(format!(
+                        "response to `{method}` never received: {err}"
+                    ))))
+                    .await
+                }
+            }
+        })
+        .spawn(&task_tx)
     }
 
     /// Block the current task until the response is received.
@@ -3173,7 +4116,17 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     where
         T: Send,
     {
-        match self.response_rx.await {
+        #[cfg(feature = "unstable_cancel_request")]
+        let response = await_response_forwarding_cancellation(
+            self.response_rx,
+            &self.cancellation,
+            &self.cancellation_sources,
+        )
+        .await;
+        #[cfg(not(feature = "unstable_cancel_request"))]
+        let response = self.response_rx.await;
+
+        match response {
             Ok(ResponsePayload {
                 result: Ok(json_value),
                 ack_tx,
@@ -3346,38 +4299,15 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
         T: Send,
     {
-        let task_tx = self.task_tx.clone();
-        let method = self.method;
-        let response_rx = self.response_rx;
-        let to_result = self.to_result;
-        let location = Location::caller();
-
-        Task::new(location, async move {
-            match response_rx.await {
-                Ok(ResponsePayload { result, ack_tx }) => {
-                    // Convert the result using to_result for Ok values
-                    let typed_result = match result {
-                        Ok(json_value) => to_result(json_value),
-                        Err(err) => Err(err),
-                    };
-
-                    // Run the user's callback
-                    let outcome = task(typed_result).await;
-
-                    // Ack AFTER the callback completes - this is the key difference
-                    // from block_task. The dispatch loop waits for this ack.
-                    if let Some(tx) = ack_tx {
-                        let _ = tx.send(());
-                    }
-
-                    outcome
-                }
-                Err(err) => Err(crate::util::internal_error(format!(
-                    "response to `{method}` never received: {err}"
-                ))),
+        self.consume_with(async move |response| {
+            match response {
+                // Run the user's callback on the peer's result.
+                Ok(result) => task(result).await,
+                // A response that was never delivered fails the consuming
+                // task instead of invoking the callback.
+                Err(err) => Err(err),
             }
         })
-        .spawn(&task_tx)
     }
 }
 
@@ -3649,5 +4579,162 @@ impl<R: Role> ConnectTo<R> for Channel {
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
         (self, Box::pin(future::ready(Ok(()))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peel_successor_envelopes_returns_plain_messages_unchanged() {
+        let params = serde_json::json!({ "key": "value" });
+        let (method, peeled) = peel_successor_envelopes("session/update", &params);
+        assert_eq!(method, "session/update");
+        assert_eq!(peeled, &params);
+    }
+
+    #[test]
+    fn peel_successor_envelopes_unwraps_nested_envelopes() {
+        let params = serde_json::json!({
+            "method": "_proxy/successor",
+            "params": {
+                "method": "$/cancel_request",
+                "params": { "requestId": "req-1" }
+            }
+        });
+        let (method, peeled) = peel_successor_envelopes("_proxy/successor", &params);
+        assert_eq!(method, "$/cancel_request");
+        assert_eq!(peeled, &serde_json::json!({ "requestId": "req-1" }));
+    }
+
+    #[test]
+    fn peel_successor_envelopes_leaves_malformed_envelopes_intact() {
+        // No string `method` field: the envelope cannot be peeled, so the
+        // message is returned as-is for the handler chain to deal with.
+        let params = serde_json::json!({ "unexpected": true });
+        let (method, peeled) = peel_successor_envelopes("_proxy/successor", &params);
+        assert_eq!(method, "_proxy/successor");
+        assert_eq!(peeled, &params);
+    }
+
+    #[cfg(feature = "unstable_cancel_request")]
+    mod cancel_request {
+        use super::super::*;
+
+        fn notification(method: &str, params: serde_json::Value) -> UntypedMessage {
+            UntypedMessage::new(method, params).expect("well-formed JSON")
+        }
+
+        #[test]
+        fn cancellation_request_id_is_extracted_from_wrapped_notifications() {
+            let message = notification(
+                "_proxy/successor",
+                serde_json::json!({
+                    "method": "$/cancel_request",
+                    "params": { "requestId": "req-1" }
+                }),
+            );
+            let request_id = cancellation_request_id_from_message(&message)
+                .expect("wrapped cancel should parse");
+            assert_eq!(request_id, Some(RequestId::Str("req-1".into())));
+        }
+
+        #[test]
+        fn malformed_successor_envelope_is_not_treated_as_cancellation() {
+            // The envelope cannot be peeled; the message must flow on to the
+            // handler chain instead of erroring the dispatch.
+            let message = notification("_proxy/successor", serde_json::json!({ "bogus": true }));
+            let request_id = cancellation_request_id_from_message(&message)
+                .expect("malformed envelope should be left to the handler chain");
+            assert_eq!(request_id, None);
+        }
+
+        #[test]
+        fn cancel_request_notifications_are_detected_even_when_wrapped() {
+            let plain = notification("$/cancel_request", serde_json::json!({ "requestId": 1 }));
+            assert!(is_cancel_request_notification(&plain));
+
+            let wrapped = notification(
+                "_proxy/successor",
+                serde_json::json!({
+                    "method": "$/cancel_request",
+                    "params": { "requestId": 1 }
+                }),
+            );
+            assert!(is_cancel_request_notification(&wrapped));
+
+            let other_wrapped = notification(
+                "_proxy/successor",
+                serde_json::json!({
+                    "method": "session/update",
+                    "params": {}
+                }),
+            );
+            assert!(!is_cancel_request_notification(&other_wrapped));
+
+            let malformed_envelope =
+                notification("_proxy/successor", serde_json::json!({ "bogus": true }));
+            assert!(!is_cancel_request_notification(&malformed_envelope));
+        }
+
+        #[test]
+        fn malformed_cancel_request_params_error() {
+            let message = notification(
+                "$/cancel_request",
+                serde_json::json!({ "requestId": { "not": "an id" } }),
+            );
+            cancellation_request_id_from_message(&message)
+                .expect_err("malformed cancel params should error");
+        }
+
+        #[test]
+        fn registry_marks_and_removes_requests() {
+            let registry = RequestCancellationRegistry::new();
+            let id = RequestId::Str("req-1".into());
+
+            let responder_cancellation = registry.register(&id);
+            let marker = responder_cancellation.cancellation();
+            assert!(!marker.is_cancelled());
+
+            assert!(registry.cancel(&id));
+            assert!(marker.is_cancelled());
+            assert!(responder_cancellation.cancellation().is_cancelled());
+
+            drop(responder_cancellation);
+            assert!(!registry.cancel(&id), "slot should be removed on drop");
+        }
+
+        #[test]
+        fn reused_request_id_does_not_cross_wire_cancellation_state() {
+            let registry = RequestCancellationRegistry::new();
+            let id = RequestId::Str("dup".into());
+
+            // A protocol-violating peer reuses an in-flight request ID.
+            let first = registry.register(&id);
+            let first_marker = first.cancellation();
+            let second = registry.register(&id);
+            let second_marker = second.cancellation();
+
+            // A cancellation targets whichever request currently owns the ID.
+            assert!(registry.cancel(&id));
+            assert!(second_marker.is_cancelled());
+            assert!(
+                !first_marker.is_cancelled(),
+                "the stale request must not observe the newer request's cancellation"
+            );
+
+            // The stale responder must hand out detached markers, not the
+            // newer request's marker.
+            assert!(!first.cancellation().is_cancelled());
+
+            // Dropping the stale responder must not remove the newer
+            // request's slot.
+            drop(first);
+            assert!(registry.cancel(&id), "newer slot should still be present");
+
+            drop(second);
+            assert!(!registry.cancel(&id), "slot should be removed on drop");
+        }
     }
 }

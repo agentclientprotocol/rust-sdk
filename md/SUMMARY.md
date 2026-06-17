@@ -6,6 +6,7 @@
 
 - [Design Overview](./design.md)
 - [Protocol Reference](./protocol.md)
+- [Request Cancellation](./request-cancellation.md)
 - [Protocol V2](./protocol-v2.md)
 
 # Transports
