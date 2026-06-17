@@ -10,7 +10,11 @@ pub(crate) fn method_requires_session_header(method: &str) -> bool {
         method,
         "session/prompt"
             | "session/cancel"
+            | "session/close"
+            | "session/delete"
             | "session/load"
+            | "session/resume"
+            | "session/set_config_option"
             | "session/set_mode"
             | "session/set_model"
     )
@@ -149,5 +153,25 @@ mod tests {
             error,
             "Acp-Session-Id header does not match params.sessionId"
         );
+    }
+
+    #[test]
+    fn all_session_scoped_client_methods_require_session_header() {
+        for method in [
+            "session/cancel",
+            "session/close",
+            "session/delete",
+            "session/load",
+            "session/prompt",
+            "session/resume",
+            "session/set_config_option",
+            "session/set_mode",
+            "session/set_model",
+        ] {
+            assert!(
+                method_requires_session_header(method),
+                "{method} should require Acp-Session-Id or params.sessionId"
+            );
+        }
     }
 }
