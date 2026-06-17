@@ -44,10 +44,26 @@ impl std::fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
+    /// Create a client from a base URL and target the standard ACP endpoint.
+    ///
+    /// If the URL path is empty, `/acp` is used. Otherwise `/acp` is appended
+    /// unless the path already ends with `/acp`.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, HttpClientError> {
         Self::with_client(base_url, reqwest::Client::new())
     }
 
+    /// Create a client that targets the exact endpoint URL.
+    ///
+    /// Use this when connecting to a server configured with a custom
+    /// [`ServerOptions::path`](crate::ServerOptions::path).
+    pub fn with_endpoint(endpoint: impl AsRef<str>) -> Result<Self, HttpClientError> {
+        Self::with_endpoint_and_client(endpoint, reqwest::Client::new())
+    }
+
+    /// Create a client with a custom HTTP client and the standard ACP endpoint.
+    ///
+    /// If the URL path is empty, `/acp` is used. Otherwise `/acp` is appended
+    /// unless the path already ends with `/acp`.
     pub fn with_client(
         base_url: impl AsRef<str>,
         http: reqwest::Client,
@@ -62,6 +78,18 @@ impl HttpClient {
             format!("{path}/acp")
         };
         endpoint.set_path(&path);
+        Ok(Self { endpoint, http })
+    }
+
+    /// Create a client with a custom HTTP client and exact endpoint URL.
+    ///
+    /// Use this when connecting to a server configured with a custom
+    /// [`ServerOptions::path`](crate::ServerOptions::path).
+    pub fn with_endpoint_and_client(
+        endpoint: impl AsRef<str>,
+        http: reqwest::Client,
+    ) -> Result<Self, HttpClientError> {
+        let endpoint = url::Url::parse(endpoint.as_ref())?;
         Ok(Self { endpoint, http })
     }
 
@@ -575,6 +603,52 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn new_targets_standard_acp_endpoint() {
+        assert_eq!(
+            HttpClient::new("http://example.com")
+                .unwrap()
+                .endpoint
+                .as_str(),
+            "http://example.com/acp"
+        );
+        assert_eq!(
+            HttpClient::new("http://example.com/proxy")
+                .unwrap()
+                .endpoint
+                .as_str(),
+            "http://example.com/proxy/acp"
+        );
+        assert_eq!(
+            HttpClient::new("http://example.com/proxy/acp")
+                .unwrap()
+                .endpoint
+                .as_str(),
+            "http://example.com/proxy/acp"
+        );
+    }
+
+    #[test]
+    fn with_endpoint_preserves_explicit_endpoint_path() {
+        assert_eq!(
+            HttpClient::with_endpoint("http://example.com/agent")
+                .unwrap()
+                .endpoint
+                .as_str(),
+            "http://example.com/agent"
+        );
+        assert_eq!(
+            HttpClient::with_endpoint_and_client(
+                "ws://example.com/custom/acp?token=abc",
+                reqwest::Client::new(),
+            )
+            .unwrap()
+            .endpoint
+            .as_str(),
+            "ws://example.com/custom/acp?token=abc"
+        );
+    }
 
     #[tokio::test]
     async fn post_error_deletes_initialized_connection() {
