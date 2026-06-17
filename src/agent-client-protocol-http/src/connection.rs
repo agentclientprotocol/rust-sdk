@@ -5,7 +5,7 @@ use std::{
 
 use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
 use futures::{SinkExt, StreamExt};
-use tokio::sync::{Mutex, RwLock, broadcast, mpsc, watch};
+use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
 
 use crate::protocol::session_id_from_message;
@@ -17,38 +17,57 @@ pub(crate) enum ResponseRoute {
 }
 
 struct OutboundStream {
-    tx: broadcast::Sender<String>,
-    replay: Mutex<Option<VecDeque<String>>>,
+    state: Mutex<OutboundStreamState>,
+}
+
+struct OutboundStreamState {
+    replay: Option<VecDeque<String>>,
+    subscribers: Vec<mpsc::Sender<String>>,
 }
 
 impl OutboundStream {
     fn new() -> Self {
-        let (tx, _) = broadcast::channel(1024);
         Self {
-            tx,
-            replay: Mutex::new(Some(VecDeque::new())),
+            state: Mutex::new(OutboundStreamState {
+                replay: Some(VecDeque::new()),
+                subscribers: Vec::new(),
+            }),
         }
     }
 
     async fn push(&self, msg: String) {
-        let mut replay = self.replay.lock().await;
-        if let Some(replay) = replay.as_mut() {
-            if replay.len() == 1024 {
+        let mut state = self.state.lock().await;
+        if let Some(replay) = state.replay.as_mut() {
+            if replay.len() == OUTBOUND_STREAM_CAPACITY {
                 replay.pop_front();
             }
             replay.push_back(msg);
         } else {
-            drop(replay);
-            drop(self.tx.send(msg));
+            state
+                .subscribers
+                .retain(|subscriber| match subscriber.try_send(msg.clone()) {
+                    Ok(()) => true,
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        debug!("outbound subscriber queue full; closing subscriber stream");
+                        false
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => false,
+                });
         }
     }
 
-    async fn subscribe(&self) -> (Vec<String>, broadcast::Receiver<String>) {
-        let mut replay = self.replay.lock().await;
-        let receiver = self.tx.subscribe();
-        (replay.take().map(Vec::from).unwrap_or_default(), receiver)
+    async fn subscribe(&self) -> (Vec<String>, mpsc::Receiver<String>) {
+        let mut state = self.state.lock().await;
+        let (tx, receiver) = mpsc::channel(OUTBOUND_STREAM_CAPACITY);
+        state.subscribers.push(tx);
+        (
+            state.replay.take().map(Vec::from).unwrap_or_default(),
+            receiver,
+        )
     }
 }
+
+pub(crate) const OUTBOUND_STREAM_CAPACITY: usize = 1024;
 
 pub(crate) struct Connection {
     inbound_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, agent_client_protocol::Error>>,
@@ -81,25 +100,28 @@ impl Connection {
 
     pub(crate) async fn subscribe_connection_stream(
         &self,
-    ) -> (Vec<String>, broadcast::Receiver<String>) {
+    ) -> (Vec<String>, mpsc::Receiver<String>) {
         self.connection_stream.subscribe().await
     }
 
     pub(crate) async fn subscribe_session_stream(
         &self,
         session_id: &str,
-    ) -> (Vec<String>, broadcast::Receiver<String>) {
+    ) -> (Vec<String>, mpsc::Receiver<String>) {
         self.session_stream(session_id).await.subscribe().await
     }
 
-    pub(crate) async fn subscribe_all_outbound(
-        &self,
-    ) -> (Vec<String>, broadcast::Receiver<String>) {
+    pub(crate) async fn subscribe_all_outbound(&self) -> (Vec<String>, mpsc::Receiver<String>) {
         self.all_outbound.subscribe().await
     }
 
     pub(crate) fn subscribe_closed(&self) -> watch::Receiver<bool> {
         self.closed_tx.subscribe()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn push_connection_stream_for_test(&self, msg: String) {
+        self.connection_stream.push(msg).await;
     }
 
     async fn session_stream(&self, session_id: &str) -> Arc<OutboundStream> {

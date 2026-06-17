@@ -115,17 +115,14 @@ async fn run_ws(
 
             recv = outbound_rx.recv() => {
                 match recv {
-                    Ok(text) => {
+                    Some(text) => {
                         trace!(connection_id = %connection_id, payload = %text, "Agent → Client: {} bytes", text.len());
                         if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
                             error!(connection_id = %connection_id, "WebSocket send failed");
                             break;
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(connection_id = %connection_id, "WebSocket lagged {n} messages");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    None => break,
                 }
             }
 

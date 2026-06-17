@@ -7,8 +7,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response, Sse, sse::Event},
 };
-use tokio::sync::broadcast;
-use tracing::{debug, error, info, trace};
+use tracing::{error, info, trace};
 
 use crate::{
     connection::{ConnectionRegistry, ResponseRoute},
@@ -190,12 +189,11 @@ pub(crate) async fn handle_get(
             }
             tokio::select! {
                 recv = receiver.recv() => match recv {
-                    Ok(msg) => {
+                    Some(msg) => {
                         trace!(payload = %msg, "SSE → client");
                         yield Ok(Event::default().data(msg));
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => debug!("SSE subscriber lagged {n} messages"),
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    None => break,
                 },
                 changed = closed.changed() => {
                     if changed.is_err() || *closed.borrow() {
@@ -298,7 +296,7 @@ mod tests {
     };
 
     use super::*;
-    use crate::connection::AgentFactory;
+    use crate::connection::{AgentFactory, OUTBOUND_STREAM_CAPACITY};
 
     struct CapturingAgentFactory {
         forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
@@ -415,6 +413,44 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn sse_closes_slow_subscriber_before_skipping_messages() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let request = Request::builder()
+            .method("GET")
+            .uri("/acp")
+            .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .body(Body::empty())
+            .unwrap();
+        let response = handle_get(registry, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        for i in 0..=OUTBOUND_STREAM_CAPACITY {
+            connection
+                .push_connection_stream_for_test(format!("message-{i}"))
+                .await;
+        }
+
+        let body = timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 1024 * 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("message-0"));
+        assert!(body.contains(&format!("message-{}", OUTBOUND_STREAM_CAPACITY - 1)));
+        assert!(!body.contains(&format!("message-{OUTBOUND_STREAM_CAPACITY}")));
+
+        connection.shutdown().await;
     }
 
     #[tokio::test]
