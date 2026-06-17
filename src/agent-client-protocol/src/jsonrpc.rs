@@ -2514,6 +2514,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Send a `$/cancel_request` notification for an arbitrary request ID to
     /// the default counterpart peer.
+    ///
+    /// Prefer [`SentRequest::cancel`] when you have the request handle: it
+    /// already knows the correct peer, request ID, and proxy wrapping. Use this
+    /// low-level method only when implementing custom routing with a request ID
+    /// that is valid on this connection.
     #[cfg(feature = "unstable_cancel_request")]
     pub fn send_cancel_request(
         &self,
@@ -2527,6 +2532,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Send a `$/cancel_request` notification for an arbitrary request ID to a
     /// specific peer.
+    ///
+    /// Prefer [`SentRequest::cancel`] when you have the request handle: it
+    /// already knows the correct peer, request ID, and proxy wrapping. Use this
+    /// low-level method only when implementing custom routing with a request ID
+    /// that is valid on the target peer's connection.
     #[cfg(feature = "unstable_cancel_request")]
     pub fn send_cancel_request_to<Peer: Role>(
         &self,

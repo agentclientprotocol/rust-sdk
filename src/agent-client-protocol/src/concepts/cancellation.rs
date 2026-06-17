@@ -49,17 +49,6 @@
 //! [`block_task`], [`on_receiving_result`], or [`forward_response_to`], and even
 //! if a dispatch handler claimed the response.
 //!
-//! If you already have the JSON-RPC request ID, send the notification
-//! directly:
-//!
-//! ```
-//! # use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
-//! # async fn example(cx: ConnectionTo<UntypedRole>) -> Result<(), Error> {
-//! cx.send_cancel_request("request-id".to_string())?;
-//! # Ok(())
-//! # }
-//! ```
-//!
 //! # Handling cancellation of incoming requests
 //!
 //! For incoming requests, get the request-local cancellation marker from the
@@ -143,8 +132,7 @@
 //!   completion there.
 //! - **Custom routing**: claim the `$/cancel_request` notification itself in a
 //!   handler (user handlers run before the generic forwarding fallbacks) and
-//!   translate it manually, for example with
-//!   [`ConnectionTo::send_cancel_request_to`].
+//!   translate it manually when you control the relevant hop-local request IDs.
 //!
 //! # Low-level access
 //!
@@ -173,6 +161,12 @@
 //! the built-in handling: the SDK updates the [`Responder`] cancellation
 //! markers for every incoming `$/cancel_request` before the handler chain
 //! runs, even when a handler claims the notification.
+//!
+//! If you are implementing custom routing and already know the JSON-RPC request
+//! ID on the peer connection you are targeting, use
+//! [`ConnectionTo::send_cancel_request_to`]. Most code should use
+//! [`SentRequest::cancel`] instead, because the request handle already knows the
+//! correct peer, request ID, and proxy wrapping.
 //!
 //! [`block_task`]: crate::SentRequest::block_task
 //! [`on_receiving_result`]: crate::SentRequest::on_receiving_result
