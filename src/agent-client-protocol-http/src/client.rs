@@ -551,7 +551,18 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                                 break;
                             }
                         }
-                        Err(e) => warn!("WS: malformed JSON-RPC payload: {e}"),
+                        Err(e) => {
+                            let message = format!("malformed JSON-RPC payload: {e}");
+                            warn!("WS: {message}");
+                            if incoming
+                                .unbounded_send(Err(AcpError::parse_error().data(message)))
+                                .is_err()
+                            {
+                                debug!("upstream channel closed; stopping WS reader");
+                                break;
+                            }
+                            continue;
+                        }
                     }
                 }
                 Some(Ok(WsMessage::Binary(_))) => {
@@ -592,9 +603,10 @@ mod tests {
     use agent_client_protocol::schema::RequestId;
     use axum::{
         Json, Router,
+        extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},
         http::{HeaderMap, HeaderValue, StatusCode},
         response::{IntoResponse, Sse, sse::Event},
-        routing::post,
+        routing::{get, post},
     };
     use serde_json::json;
     use tokio::{
@@ -900,6 +912,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn malformed_ws_json_reports_parse_error_and_continues() {
+        let app = Router::new().route("/acp", get(malformed_then_valid_ws));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("ws://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        let error = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("malformed JSON-RPC payload"));
+
+        let message = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(message, RawJsonRpcMessage::Response(_)));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn dropped_transport_future_deletes_initialized_connection() {
         let delete_count = Arc::new(AtomicUsize::new(0));
         let delete_count_for_handler = delete_count.clone();
@@ -1051,6 +1099,19 @@ mod tests {
             Ok::<_, Infallible>(Event::default().data("{not json"))
         });
         Sse::new(invalid.chain(futures::stream::pending()))
+    }
+
+    async fn malformed_then_valid_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(|mut socket| async move {
+            drop(socket.send(AxumWsMessage::Text("{not json".into())).await);
+            let valid = serde_json::to_string(&RawJsonRpcMessage::response(
+                RequestId::Number(1),
+                Ok(json!({})),
+            ))
+            .unwrap();
+            drop(socket.send(AxumWsMessage::Text(valid.into())).await);
+            futures::future::pending::<()>().await;
+        })
     }
 
     async fn closed_sse() -> StatusCode {

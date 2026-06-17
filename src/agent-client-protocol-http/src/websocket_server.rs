@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use agent_client_protocol::RawJsonRpcMessage;
+use agent_client_protocol::{Error as AcpError, RawJsonRpcMessage, schema::RequestId};
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     http::HeaderValue,
@@ -94,7 +94,24 @@ async fn run_ws(
                                 }
                             }
                             Err(e) => {
-                                warn!(connection_id = %connection_id, "Ignoring malformed JSON-RPC frame: {e}");
+                                let message = format!("malformed JSON-RPC payload: {e}");
+                                warn!(connection_id = %connection_id, "Returning parse error for malformed JSON-RPC frame: {e}");
+                                let response = RawJsonRpcMessage::response(
+                                    RequestId::Null,
+                                    Err(AcpError::parse_error().data(message)),
+                                );
+                                let text = match serde_json::to_string(&response) {
+                                    Ok(text) => text,
+                                    Err(e) => {
+                                        error!(connection_id = %connection_id, "Failed to serialize parse error response: {e}");
+                                        break;
+                                    }
+                                };
+                                if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
+                                    error!(connection_id = %connection_id, "WebSocket send failed");
+                                    break;
+                                }
+                                continue;
                             }
                         }
                     }
@@ -138,5 +155,133 @@ async fn run_ws(
     debug!(connection_id = %connection_id, "Cleaning up WebSocket connection");
     if let Some(conn) = registry.remove(&connection_id).await {
         conn.shutdown().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol::{
+        Channel,
+        schema::{RequestId, Response as RpcResponse},
+    };
+    use axum::{Router, extract::WebSocketUpgrade, routing::get};
+    use futures::{SinkExt as _, StreamExt as _, future::BoxFuture};
+    use serde_json::json;
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc,
+        time::{Duration, timeout},
+    };
+    use tokio_tungstenite::{connect_async, tungstenite::Message as ClientWsMessage};
+
+    use crate::connection::{AgentFactory, ConnectionRegistry};
+
+    use super::*;
+
+    struct CapturingAgentFactory {
+        forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
+    }
+
+    impl AgentFactory for CapturingAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let forwarded = self.forwarded.clone();
+            let future = Box::pin(async move {
+                let Channel {
+                    rx: mut incoming,
+                    tx: _,
+                } = agent;
+                while let Some(message) = incoming.next().await {
+                    if forwarded.send(message?).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_ws_frame_returns_parse_error_response_and_continues() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    async move { handle_ws_upgrade(registry, ws) }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+
+        client
+            .send(ClientWsMessage::Text("{not json".into()))
+            .await
+            .unwrap();
+
+        let frame = timeout(Duration::from_secs(1), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let ClientWsMessage::Text(text) = frame else {
+            panic!("expected text frame: {frame:?}");
+        };
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["id"], serde_json::Value::Null);
+        assert_eq!(value["error"]["code"], -32700);
+        assert!(
+            value["error"]["data"]
+                .as_str()
+                .unwrap()
+                .contains("malformed JSON-RPC payload")
+        );
+
+        let parsed = serde_json::from_value::<RawJsonRpcMessage>(value).unwrap();
+        assert!(matches!(
+            parsed,
+            RawJsonRpcMessage::Response(RpcResponse::Error {
+                id: RequestId::Null,
+                ..
+            })
+        ));
+
+        let notification =
+            RawJsonRpcMessage::notification("test/method".to_string(), json!({})).unwrap();
+        client
+            .send(ClientWsMessage::Text(
+                serde_json::to_string(&notification).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+
+        let forwarded = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            forwarded,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/method"
+        ));
+
+        server.abort();
     }
 }
