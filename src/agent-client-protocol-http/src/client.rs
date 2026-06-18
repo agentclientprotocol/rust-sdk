@@ -566,9 +566,9 @@ impl ClientState {
         let id = msg.response_id().and_then(pending_request_key)?;
         let method = self.pending_requests.remove(&id);
 
-        let Some("session/new") = method.as_deref() else {
+        if !method.as_deref().is_some_and(is_session_opening_method) {
             return None;
-        };
+        }
         let RpcResponse::Result { result, .. } = response else {
             return None;
         };
@@ -589,6 +589,10 @@ impl ClientState {
             debug!("upstream channel closed; dropping inbound message");
         }
     }
+}
+
+fn is_session_opening_method(method: &str) -> bool {
+    matches!(method, "session/new" | "session/fork")
 }
 
 async fn read_sse(
@@ -1007,6 +1011,127 @@ mod tests {
                 .is_err(),
             "custom response must not open a session SSE stream"
         );
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fork_response_with_session_id_opens_session_sse() {
+        let (get_tx, mut get_rx) = tokio::sync::mpsc::unbounded_channel();
+        let response_ready = Arc::new(tokio::sync::Notify::new());
+        let post_count = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let post_count = post_count.clone();
+                let response_ready = response_ready.clone();
+                move |Json(_message): Json<RawJsonRpcMessage>| {
+                    let post_count = post_count.clone();
+                    let response_ready = response_ready.clone();
+                    async move {
+                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return initialize_response().await.into_response();
+                        }
+
+                        response_ready.notify_waiters();
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get({
+                let get_tx = get_tx.clone();
+                let response_ready = response_ready.clone();
+                move |headers: HeaderMap| {
+                    let get_tx = get_tx.clone();
+                    let response_ready = response_ready.clone();
+                    async move {
+                        let session_header = headers
+                            .get(HEADER_SESSION_ID)
+                            .and_then(|value| value.to_str().ok())
+                            .map(String::from);
+                        get_tx.send(session_header).unwrap();
+
+                        let stream = async_stream::stream! {
+                            response_ready.notified().await;
+                            yield Ok::<_, Infallible>(sse_event(
+                                RawJsonRpcMessage::response(
+                                    RequestId::Number(2),
+                                    Ok(json!({ "sessionId": "forked-session" })),
+                                ),
+                            ));
+                            futures::future::pending::<()>().await;
+                        };
+                        Sse::new(stream)
+                    }
+                }
+            })
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        let connection_sse_header = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(connection_sse_header.is_none());
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "session/fork".to_string(),
+                json!({}),
+                RequestId::Number(2),
+            )
+            .unwrap()))
+            .unwrap();
+        let response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            response,
+            RawJsonRpcMessage::Response(RpcResponse::Result {
+                id: RequestId::Number(2),
+                ..
+            })
+        ));
+
+        let fork_sse_header = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fork_sse_header.as_deref(), Some("forked-session"));
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
