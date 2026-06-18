@@ -12,6 +12,7 @@ use futures::{
     channel::mpsc::{self, UnboundedSender},
     future::{BoxFuture, FutureExt},
     pin_mut,
+    stream::FuturesUnordered,
 };
 use thiserror::Error;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -127,7 +128,6 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         rx: mut outgoing,
         tx: incoming,
     } = channel;
-    let (sse_failure_tx, mut sse_failure_rx) = mpsc::unbounded();
     let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
     let connection = HttpConnection::new(endpoint, http);
     let mut state = ClientState {
@@ -142,7 +142,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         let event = {
             let outgoing_next = outgoing.next().fuse();
             let sse_event_next = sse_event_rx.next().fuse();
-            let sse_failure_next = sse_failure_rx.next().fuse();
+            let sse_failure_next = lifecycle.next_sse_failure().fuse();
             pin_mut!(outgoing_next, sse_event_next, sse_failure_next);
 
             futures::select! {
@@ -168,18 +168,11 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 let open_session_id = state.session_to_open_for_response(&event.message);
                 state.deliver(event.message);
                 if let Some(session_id) = open_session_id {
-                    lifecycle.spawn_sse(
-                        Some(session_id),
-                        sse_event_tx.clone(),
-                        sse_failure_tx.clone(),
-                    );
+                    lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
                 }
                 continue;
             }
             HttpLoopEvent::SseFailure(failure) => {
-                let Some(failure) = failure else {
-                    continue;
-                };
                 let scope = failure.session_id.as_deref().unwrap_or("connection");
                 error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
                 break Err(AcpError::internal_error()
@@ -194,7 +187,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
             match state.initialize(msg).await {
                 Ok(InitializeOutcome::Connected) => {
-                    lifecycle.spawn_sse(None, sse_event_tx.clone(), sse_failure_tx.clone());
+                    lifecycle.start_sse(None, sse_event_tx.clone());
                 }
                 Ok(InitializeOutcome::Rejected) => {}
                 Err(e) => {
@@ -208,11 +201,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         if let Some(session_id) = session_id_from_message(&msg)
             && state.open_session_streams.insert(session_id.clone())
         {
-            lifecycle.spawn_sse(
-                Some(session_id),
-                sse_event_tx.clone(),
-                sse_failure_tx.clone(),
-            );
+            lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
         }
 
         if let Err(e) = state.post(msg).await {
@@ -228,7 +217,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 enum HttpLoopEvent {
     Outgoing(Option<Result<RawJsonRpcMessage, AcpError>>),
     SseEvent(Option<SseMessage>),
-    SseFailure(Option<SseFailure>),
+    SseFailure(SseFailure),
 }
 
 #[derive(Debug)]
@@ -279,27 +268,24 @@ impl HttpConnection {
     }
 
     async fn close(&self) {
-        let Some(task) = self.spawn_close_task() else {
+        let Some(connection_id) = self.take_connection_id() else {
             return;
         };
-        if let Err(e) = task.await {
-            debug!("DELETE task failed (ignored): {e}");
-        }
+        Self::send_close(self.http.clone(), self.endpoint.clone(), connection_id).await;
     }
 
     fn spawn_close(&self) {
-        drop(self.spawn_close_task());
-    }
-
-    fn spawn_close_task(&self) -> Option<tokio::task::JoinHandle<()>> {
-        let connection_id = self.take_connection_id()?;
+        let Some(connection_id) = self.take_connection_id() else {
+            return;
+        };
         let http = self.http.clone();
         let endpoint = self.endpoint.clone();
         match tokio::runtime::Handle::try_current() {
-            Ok(handle) => Some(handle.spawn(Self::send_close(http, endpoint, connection_id))),
+            Ok(handle) => {
+                drop(handle.spawn(Self::send_close(http, endpoint, connection_id)));
+            }
             Err(e) => {
                 debug!("failed to spawn HTTP DELETE: {e}");
-                None
             }
         }
     }
@@ -330,18 +316,13 @@ impl HttpTransportLifecycle {
         }
     }
 
-    fn spawn_sse(
-        &mut self,
-        session_id: Option<String>,
-        event_tx: UnboundedSender<SseMessage>,
-        failure_tx: UnboundedSender<SseFailure>,
-    ) {
-        self.sse_tasks.push(spawn_sse(
-            self.connection.clone(),
-            session_id,
-            event_tx,
-            failure_tx,
-        ));
+    fn start_sse(&mut self, session_id: Option<String>, event_tx: UnboundedSender<SseMessage>) {
+        self.sse_tasks
+            .push(run_sse(self.connection.clone(), session_id, event_tx));
+    }
+
+    async fn next_sse_failure(&mut self) -> SseFailure {
+        self.sse_tasks.next_failure().await
     }
 
     async fn close(&mut self) {
@@ -357,40 +338,46 @@ impl Drop for HttpTransportLifecycle {
     }
 }
 
-fn spawn_sse(
+fn run_sse(
     connection: HttpConnection,
     session_id: Option<String>,
     event_tx: UnboundedSender<SseMessage>,
-    failure_tx: UnboundedSender<SseFailure>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> BoxFuture<'static, SseFailure> {
+    Box::pin(async move {
         let label = session_id.clone();
         let error = match read_sse(connection, session_id, event_tx).await {
             Ok(()) => "SSE stream closed".to_string(),
             Err(e) => e,
         };
         warn!(session_id = ?label, "SSE stream ended: {error}");
-        drop(failure_tx.unbounded_send(SseFailure {
+        SseFailure {
             session_id: label,
             error,
-        }));
+        }
     })
 }
 
 #[derive(Debug, Default)]
 struct SseTasks {
-    handles: Vec<tokio::task::JoinHandle<()>>,
+    handles: FuturesUnordered<BoxFuture<'static, SseFailure>>,
 }
 
 impl SseTasks {
-    fn push(&mut self, handle: tokio::task::JoinHandle<()>) {
-        self.handles.push(handle);
+    fn push(&mut self, task: BoxFuture<'static, SseFailure>) {
+        self.handles.push(task);
+    }
+
+    async fn next_failure(&mut self) -> SseFailure {
+        loop {
+            if let Some(failure) = self.handles.next().await {
+                return failure;
+            }
+            futures::future::pending::<()>().await;
+        }
     }
 
     fn abort_all(&mut self) {
-        for handle in self.handles.drain(..) {
-            handle.abort();
-        }
+        self.handles = FuturesUnordered::new();
     }
 }
 
