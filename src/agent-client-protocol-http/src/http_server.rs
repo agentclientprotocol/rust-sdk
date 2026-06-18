@@ -659,29 +659,32 @@ mod tests {
             forwarded: forwarded_tx,
         })));
         let (connection_id, connection) = registry.create_connection().await;
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "session/delete",
-            "params": {}
-        })
-        .to_string();
-        let request = Request::builder()
-            .method("POST")
-            .uri("/acp")
-            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
-            .header(HEADER_CONNECTION_ID, connection_id.as_str())
-            .body(Body::from(body))
-            .unwrap();
 
-        let response = handle_post(State(registry), request).await;
+        for method in ["session/delete", "session/fork"] {
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "params": {}
+            })
+            .to_string();
+            let request = Request::builder()
+                .method("POST")
+                .uri("/acp")
+                .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+                .header(HEADER_CONNECTION_ID, connection_id.as_str())
+                .body(Body::from(body))
+                .unwrap();
 
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        let body = axum::body::to_bytes(response.into_body(), 1024)
-            .await
-            .unwrap();
-        assert_eq!(body.as_ref(), b"Acp-Session-Id header required");
-        assert!(forwarded_rx.try_recv().is_err());
+            let response = handle_post(State(registry.clone()), request).await;
+
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{method}");
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(body.as_ref(), b"Acp-Session-Id header required", "{method}");
+            assert!(forwarded_rx.try_recv().is_err(), "{method}");
+        }
         connection.shutdown().await;
     }
 }

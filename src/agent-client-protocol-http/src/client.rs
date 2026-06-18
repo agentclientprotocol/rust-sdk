@@ -1094,16 +1094,19 @@ mod tests {
                             .get(HEADER_SESSION_ID)
                             .and_then(|value| value.to_str().ok())
                             .map(String::from);
+                        let is_connection_stream = session_header.is_none();
                         get_tx.send(session_header).unwrap();
 
                         let stream = async_stream::stream! {
-                            response_ready.notified().await;
-                            yield Ok::<_, Infallible>(sse_event(
-                                RawJsonRpcMessage::response(
-                                    RequestId::Number(2),
-                                    Ok(json!({ "sessionId": "forked-session" })),
-                                ),
-                            ));
+                            if is_connection_stream {
+                                response_ready.notified().await;
+                                yield Ok::<_, Infallible>(sse_event(
+                                    RawJsonRpcMessage::response(
+                                        RequestId::Number(2),
+                                        Ok(json!({ "sessionId": "forked-session" })),
+                                    ),
+                                ));
+                            }
                             futures::future::pending::<()>().await;
                         };
                         Sse::new(stream)
@@ -1147,11 +1150,17 @@ mod tests {
             .tx
             .unbounded_send(Ok(RawJsonRpcMessage::request(
                 "session/fork".to_string(),
-                json!({}),
+                json!({ "sessionId": "source-session" }),
                 RequestId::Number(2),
             )
             .unwrap()))
             .unwrap();
+        let source_sse_header = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_sse_header.as_deref(), Some("source-session"));
+
         let response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
             .unwrap()

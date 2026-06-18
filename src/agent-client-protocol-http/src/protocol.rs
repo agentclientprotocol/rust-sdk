@@ -14,6 +14,7 @@ pub(crate) fn method_requires_session_header(method: &str) -> bool {
             | "session/cancel"
             | "session/close"
             | "session/delete"
+            | "session/fork"
             | "session/load"
             | "session/resume"
             | "session/set_config_option"
@@ -239,6 +240,7 @@ mod tests {
             "session/cancel",
             "session/close",
             "session/delete",
+            "session/fork",
             "session/load",
             "session/prompt",
             "session/resume",
