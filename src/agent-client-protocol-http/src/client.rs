@@ -10,10 +10,10 @@ use agent_client_protocol::{
 use futures::{
     SinkExt, StreamExt,
     channel::mpsc::{self, UnboundedSender},
-    future::BoxFuture,
+    future::{BoxFuture, FutureExt},
+    pin_mut,
 };
 use thiserror::Error;
-use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, trace, warn};
 
@@ -130,17 +130,30 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     let (sse_failure_tx, mut sse_failure_rx) = mpsc::unbounded();
     let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
     let connection = HttpConnection::new(endpoint, http);
-    let state = Arc::new(ClientState {
+    let mut state = ClientState {
         connection: connection.clone(),
-        open_session_streams: Mutex::new(HashSet::new()),
-        pending_requests: Mutex::new(HashMap::new()),
+        open_session_streams: HashSet::new(),
+        pending_requests: HashMap::new(),
         incoming,
-    });
+    };
     let mut lifecycle = HttpTransportLifecycle::new(connection);
 
     let result = loop {
-        let msg = tokio::select! {
-            msg = outgoing.next() => match msg {
+        let event = {
+            let outgoing_next = outgoing.next().fuse();
+            let sse_event_next = sse_event_rx.next().fuse();
+            let sse_failure_next = sse_failure_rx.next().fuse();
+            pin_mut!(outgoing_next, sse_event_next, sse_failure_next);
+
+            futures::select! {
+                msg = outgoing_next => HttpLoopEvent::Outgoing(msg),
+                event = sse_event_next => HttpLoopEvent::SseEvent(event),
+                failure = sse_failure_next => HttpLoopEvent::SseFailure(failure),
+            }
+        };
+
+        let msg = match event {
+            HttpLoopEvent::Outgoing(msg) => match msg {
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
                     error!("upstream channel produced error: {e}");
@@ -148,11 +161,14 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 }
                 None => break Ok(()),
             },
-            Some(event) = sse_event_rx.next() => {
+            HttpLoopEvent::SseEvent(event) => {
+                let Some(event) = event else {
+                    continue;
+                };
+                let open_session_id = state.session_to_open_for_response(&event.message);
                 state.deliver(event.message);
-                if let Some(session_id) = event.open_session_id {
+                if let Some(session_id) = open_session_id {
                     lifecycle.spawn_sse(
-                        state.clone(),
                         Some(session_id),
                         sse_event_tx.clone(),
                         sse_failure_tx.clone(),
@@ -160,7 +176,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 }
                 continue;
             }
-            Some(failure) = sse_failure_rx.next() => {
+            HttpLoopEvent::SseFailure(failure) => {
+                let Some(failure) = failure else {
+                    continue;
+                };
                 let scope = failure.session_id.as_deref().unwrap_or("connection");
                 error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
                 break Err(AcpError::internal_error()
@@ -175,12 +194,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
             match state.initialize(msg).await {
                 Ok(InitializeOutcome::Connected) => {
-                    lifecycle.spawn_sse(
-                        state.clone(),
-                        None,
-                        sse_event_tx.clone(),
-                        sse_failure_tx.clone(),
-                    );
+                    lifecycle.spawn_sse(None, sse_event_tx.clone(), sse_failure_tx.clone());
                 }
                 Ok(InitializeOutcome::Rejected) => {}
                 Err(e) => {
@@ -192,14 +206,9 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         }
 
         if let Some(session_id) = session_id_from_message(&msg)
-            && state
-                .open_session_streams
-                .lock()
-                .await
-                .insert(session_id.clone())
+            && state.open_session_streams.insert(session_id.clone())
         {
             lifecycle.spawn_sse(
-                state.clone(),
                 Some(session_id),
                 sse_event_tx.clone(),
                 sse_failure_tx.clone(),
@@ -216,6 +225,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     result
 }
 
+enum HttpLoopEvent {
+    Outgoing(Option<Result<RawJsonRpcMessage, AcpError>>),
+    SseEvent(Option<SseMessage>),
+    SseFailure(Option<SseFailure>),
+}
+
 #[derive(Debug)]
 struct SseFailure {
     session_id: Option<String>,
@@ -225,7 +240,6 @@ struct SseFailure {
 #[derive(Debug)]
 struct SseMessage {
     message: RawJsonRpcMessage,
-    open_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -318,13 +332,16 @@ impl HttpTransportLifecycle {
 
     fn spawn_sse(
         &mut self,
-        state: Arc<ClientState>,
         session_id: Option<String>,
         event_tx: UnboundedSender<SseMessage>,
         failure_tx: UnboundedSender<SseFailure>,
     ) {
-        self.sse_tasks
-            .push(spawn_sse(state, session_id, event_tx, failure_tx));
+        self.sse_tasks.push(spawn_sse(
+            self.connection.clone(),
+            session_id,
+            event_tx,
+            failure_tx,
+        ));
     }
 
     async fn close(&mut self) {
@@ -341,14 +358,14 @@ impl Drop for HttpTransportLifecycle {
 }
 
 fn spawn_sse(
-    state: Arc<ClientState>,
+    connection: HttpConnection,
     session_id: Option<String>,
     event_tx: UnboundedSender<SseMessage>,
     failure_tx: UnboundedSender<SseFailure>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let label = session_id.clone();
-        let error = match state.sse(session_id, event_tx).await {
+        let error = match read_sse(connection, session_id, event_tx).await {
             Ok(()) => "SSE stream closed".to_string(),
             Err(e) => e,
         };
@@ -379,8 +396,8 @@ impl SseTasks {
 
 struct ClientState {
     connection: HttpConnection,
-    open_session_streams: Mutex<HashSet<String>>,
-    pending_requests: Mutex<HashMap<RequestId, String>>,
+    open_session_streams: HashSet<String>,
+    pending_requests: HashMap<RequestId, String>,
     incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
 }
 
@@ -434,7 +451,7 @@ impl ClientState {
         Ok(InitializeOutcome::Connected)
     }
 
-    async fn post(&self, msg: RawJsonRpcMessage) -> Result<(), String> {
+    async fn post(&mut self, msg: RawJsonRpcMessage) -> Result<(), String> {
         let session_id = match method_for_message(&msg) {
             Some(method) => {
                 let session_id = session_id_from_message(&msg);
@@ -461,21 +478,18 @@ impl ClientState {
 
         let pending_request = pending_request_for_message(&msg);
         if let Some((id, method)) = &pending_request {
-            self.pending_requests
-                .lock()
-                .await
-                .insert(id.clone(), method.clone());
+            self.pending_requests.insert(id.clone(), method.clone());
         }
 
         let response = match request.send().await {
             Ok(response) => response,
             Err(e) => {
-                self.remove_pending_request(pending_request.as_ref()).await;
+                self.remove_pending_request(pending_request.as_ref());
                 return Err(e.to_string());
             }
         };
         if response.status().as_u16() != 202 && !response.status().is_success() {
-            self.remove_pending_request(pending_request.as_ref()).await;
+            self.remove_pending_request(pending_request.as_ref());
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(format!("HTTP {status}: {body}"));
@@ -483,66 +497,18 @@ impl ClientState {
         Ok(())
     }
 
-    async fn sse(
-        &self,
-        session_id: Option<String>,
-        event_tx: UnboundedSender<SseMessage>,
-    ) -> Result<(), String> {
-        let connection_id = self
-            .connection
-            .connection_id()
-            .ok_or_else(|| "SSE attempted before initialize".to_string())?;
-        let mut request = self
-            .connection
-            .get()
-            .header("Accept", "text/event-stream")
-            .header(HEADER_CONNECTION_ID, connection_id);
-        if let Some(session_id) = &session_id {
-            request = request.header(HEADER_SESSION_ID, session_id);
-        }
-
-        let response = request.send().await.map_err(|e| e.to_string())?;
-        if !response.status().is_success() {
-            return Err(format!("HTTP {}", response.status()));
-        }
-        trace!(session_id = ?session_id, "SSE stream open");
-
-        let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
-        while let Some(event) = events.next().await {
-            let event = event.map_err(|e| e.to_string())?;
-            let payload = event.data;
-            if payload.is_empty() {
-                continue;
-            }
-            let msg = serde_json::from_str::<RawJsonRpcMessage>(&payload)
-                .map_err(|e| format!("malformed JSON-RPC payload: {e}"))?;
-            let open_session_id = self.session_to_open_for_response(&msg).await;
-
-            if event_tx
-                .unbounded_send(SseMessage {
-                    message: msg,
-                    open_session_id,
-                })
-                .is_err()
-            {
-                return Err("upstream channel closed".to_string());
-            }
-        }
-        Ok(())
-    }
-
-    async fn remove_pending_request(&self, pending_request: Option<&(RequestId, String)>) {
+    fn remove_pending_request(&mut self, pending_request: Option<&(RequestId, String)>) {
         if let Some((id, _)) = pending_request {
-            self.pending_requests.lock().await.remove(id);
+            self.pending_requests.remove(id);
         }
     }
 
-    async fn session_to_open_for_response(&self, msg: &RawJsonRpcMessage) -> Option<String> {
+    fn session_to_open_for_response(&mut self, msg: &RawJsonRpcMessage) -> Option<String> {
         let RawJsonRpcMessage::Response(response) = msg else {
             return None;
         };
         let id = msg.response_id().and_then(pending_request_key)?;
-        let method = self.pending_requests.lock().await.remove(&id);
+        let method = self.pending_requests.remove(&id);
 
         let Some("session/new") = method.as_deref() else {
             return None;
@@ -555,12 +521,7 @@ impl ClientState {
             .and_then(|v| v.as_str())
             .map(String::from)?;
 
-        if self
-            .open_session_streams
-            .lock()
-            .await
-            .insert(session_id.clone())
-        {
+        if self.open_session_streams.insert(session_id.clone()) {
             Some(session_id)
         } else {
             None
@@ -572,6 +533,48 @@ impl ClientState {
             debug!("upstream channel closed; dropping inbound message");
         }
     }
+}
+
+async fn read_sse(
+    connection: HttpConnection,
+    session_id: Option<String>,
+    event_tx: UnboundedSender<SseMessage>,
+) -> Result<(), String> {
+    let connection_id = connection
+        .connection_id()
+        .ok_or_else(|| "SSE attempted before initialize".to_string())?;
+    let mut request = connection
+        .get()
+        .header("Accept", "text/event-stream")
+        .header(HEADER_CONNECTION_ID, connection_id);
+    if let Some(session_id) = &session_id {
+        request = request.header(HEADER_SESSION_ID, session_id);
+    }
+
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    trace!(session_id = ?session_id, "SSE stream open");
+
+    let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
+    while let Some(event) = events.next().await {
+        let event = event.map_err(|e| e.to_string())?;
+        let payload = event.data;
+        if payload.is_empty() {
+            continue;
+        }
+        let msg = serde_json::from_str::<RawJsonRpcMessage>(&payload)
+            .map_err(|e| format!("malformed JSON-RPC payload: {e}"))?;
+
+        if event_tx
+            .unbounded_send(SseMessage { message: msg })
+            .is_err()
+        {
+            return Err("upstream channel closed".to_string());
+        }
+    }
+    Ok(())
 }
 
 fn pending_request_for_message(msg: &RawJsonRpcMessage) -> Option<(RequestId, String)> {
@@ -605,8 +608,12 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     loop {
-        tokio::select! {
-            msg = outgoing.next() => match msg {
+        let outgoing_next = outgoing.next().fuse();
+        let frame_next = ws_rx.next().fuse();
+        pin_mut!(outgoing_next, frame_next);
+
+        futures::select! {
+            msg = outgoing_next => match msg {
                 Some(Ok(msg)) => {
                     let text = match serde_json::to_string(&msg) {
                         Ok(t) => t,
@@ -628,7 +635,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 }
                 None => break,
             },
-            frame = ws_rx.next() => match frame {
+            frame = frame_next => match frame {
                 Some(Ok(WsMessage::Text(text))) => {
                     match serde_json::from_str::<RawJsonRpcMessage>(text.as_str()) {
                         Ok(parsed) => {

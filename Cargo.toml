@@ -40,7 +40,7 @@ yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 agent-client-protocol-schema = { version = "=0.13.6", features = ["tracing"] }
 
 # Core async runtime
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.52", default-features = false }
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
@@ -66,7 +66,7 @@ clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+reqwest = { version = "0.13", features = ["json"] }
 eventsource-stream = "0.2"
 url = "2.5"
 async-process = "2"
