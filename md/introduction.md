@@ -22,6 +22,7 @@ The `agent-client-protocol` crate includes a [`concepts`](https://docs.rs/agent-
 src/
 ├── agent-client-protocol/              # Core protocol SDK
 ├── agent-client-protocol-tokio/        # Tokio utilities (process spawning)
+├── agent-client-protocol-http/         # HTTP/SSE/WebSocket transport
 ├── agent-client-protocol-rmcp/         # Integration with rmcp crate
 ├── agent-client-protocol-cookbook/     # Usage patterns (rendered as rustdoc)
 ├── agent-client-protocol-derive/       # Proc macros
@@ -37,11 +38,13 @@ src/
 graph TD
     acp[agent-client-protocol<br/>Core SDK]
     tokio[agent-client-protocol-tokio<br/>Process spawning]
+    http[agent-client-protocol-http<br/>HTTP/SSE/WebSocket transport]
     rmcp[agent-client-protocol-rmcp<br/>rmcp integration]
     conductor[agent-client-protocol-conductor<br/>Proxy orchestration]
     cookbook[agent-client-protocol-cookbook<br/>Usage patterns]
 
     tokio --> acp
+    http --> acp
     rmcp --> acp
     conductor --> acp
     conductor --> tokio

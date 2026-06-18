@@ -20,7 +20,7 @@ futures-concurrency.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true
 thiserror = "2.0"
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
 tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true

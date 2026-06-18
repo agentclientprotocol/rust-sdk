@@ -7,6 +7,7 @@ members = [
     "src/agent-client-protocol-polyfill",
     "src/agent-client-protocol-rmcp",
     "src/agent-client-protocol-conductor",
+    "src/agent-client-protocol-http",
     "src/agent-client-protocol-test",
     "src/agent-client-protocol-trace-viewer",
     "src/yopo",
@@ -28,6 +29,7 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 agent-client-protocol = { path = "src/agent-client-protocol", version = "0.14.0" }
 agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "0.14.0" }
 agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "0.14.0" }
+agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "0.1.0" }
 agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "0.14.0" }
 agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "0.14.0" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
@@ -38,8 +40,9 @@ yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 agent-client-protocol-schema = { version = "=0.13.6", features = ["tracing"] }
 
 # Core async runtime
-tokio = { version = "1.52", features = ["full"] }
+tokio = { version = "1.52", default-features = false }
 tokio-util = { version = "0.7", features = ["compat"] }
+async-tungstenite = { version = "0.34.1", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -63,6 +66,9 @@ clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
 axum = "0.8"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
+eventsource-stream = "0.2"
+url = "2.5"
 async-process = "2"
 async-stream = "0.3.6"
 blocking = "1"
@@ -73,6 +79,7 @@ open = "5"
 rustc-hash = "2.1.1"
 shell-words = "1.1"
 strip-ansi-escapes = "0.2"
+tower-http = "0.6"
 
 
 # Proc macros
