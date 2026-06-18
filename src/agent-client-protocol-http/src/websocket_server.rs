@@ -77,11 +77,10 @@ async fn run_ws(
                         trace!(connection_id = %connection_id, payload = %text_str, "Client → Agent: {} bytes", text_str.len());
                         match serde_json::from_str::<RawJsonRpcMessage>(&text_str) {
                             Ok(parsed) => {
-                                if let Some(sid) = session_id_from_message(&parsed) {
-                                    if let RawJsonRpcMessage::Request(req) = &parsed {
+                                if let Some(sid) = session_id_from_message(&parsed)
+                                    && let RawJsonRpcMessage::Request(req) = &parsed {
                                         trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
                                     }
-                                }
                                 if connection.send_to_agent(parsed).is_err() {
                                     error!(connection_id = %connection_id, "Agent channel closed");
                                     break;
@@ -105,7 +104,6 @@ async fn run_ws(
                                     error!(connection_id = %connection_id, "WebSocket send failed");
                                     break;
                                 }
-                                continue;
                             }
                         }
                     }

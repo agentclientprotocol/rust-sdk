@@ -518,7 +518,7 @@ mod tests {
                                 response.status()
                             );
                         }
-                        _ = sleep(Duration::from_millis(10)) => {
+                        () = sleep(Duration::from_millis(10)) => {
                             if registry.len().await == 1 {
                                 break;
                             }

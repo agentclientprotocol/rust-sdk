@@ -541,9 +541,7 @@ impl ClientState {
         let RawJsonRpcMessage::Response(response) = msg else {
             return None;
         };
-        let Some(id) = msg.response_id().and_then(pending_request_key) else {
-            return None;
-        };
+        let id = msg.response_id().and_then(pending_request_key)?;
         let method = self.pending_requests.lock().await.remove(&id);
 
         let Some("session/new") = method.as_deref() else {
@@ -552,13 +550,10 @@ impl ClientState {
         let RpcResponse::Result { result, .. } = response else {
             return None;
         };
-        let Some(session_id) = result
+        let session_id = result
             .get("sessionId")
             .and_then(|v| v.as_str())
-            .map(String::from)
-        else {
-            return None;
-        };
+            .map(String::from)?;
 
         if self
             .open_session_streams
@@ -652,7 +647,6 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                                 debug!("upstream channel closed; stopping WS reader");
                                 break;
                             }
-                            continue;
                         }
                     }
                 }
