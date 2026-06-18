@@ -156,15 +156,15 @@ mod tests {
         Channel,
         schema::{RequestId, Response as RpcResponse},
     };
+    use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};
-    use futures::{SinkExt as _, StreamExt as _, future::BoxFuture};
+    use futures::{StreamExt as _, future::BoxFuture};
     use serde_json::json;
     use tokio::{
         net::TcpListener,
         sync::mpsc,
         time::{Duration, timeout},
     };
-    use tokio_tungstenite::{connect_async, tungstenite::Message as ClientWsMessage};
 
     use crate::connection::{AgentFactory, ConnectionRegistry};
 

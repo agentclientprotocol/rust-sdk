@@ -23,9 +23,9 @@ client = [
     "dep:reqwest",
     "dep:serde_json",
     "dep:thiserror",
+    "dep:async-tungstenite",
     "dep:tokio",
     "tokio/rt",
-    "dep:tokio-tungstenite",
     "dep:tracing",
     "dep:url",
 ]
@@ -61,9 +61,9 @@ tower-http = { workspace = true, features = ["cors"], optional = true }
 uuid = { workspace = true, optional = true }
 
 # Client
+async-tungstenite = { workspace = true, optional = true }
 eventsource-stream = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["stream"], optional = true }
-tokio-tungstenite = { workspace = true, features = ["connect"], optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -71,7 +71,7 @@ agent-client-protocol-test.workspace = true
 async-stream.workspace = true
 axum = { workspace = true, features = ["ws", "macros"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
-tokio-tungstenite.workspace = true
+async-tungstenite.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

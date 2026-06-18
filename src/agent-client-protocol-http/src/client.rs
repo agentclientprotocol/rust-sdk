@@ -7,15 +7,15 @@ use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
     schema::{RequestId, Response as RpcResponse},
 };
+use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
-    SinkExt, StreamExt,
+    StreamExt,
     channel::mpsc::{self, UnboundedSender},
     future::{BoxFuture, FutureExt},
     pin_mut,
     stream::FuturesUnordered,
 };
 use thiserror::Error;
-use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{debug, error, trace, warn};
 
 use crate::protocol::{
@@ -585,7 +585,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         tx: incoming,
     } = channel;
 
-    let (ws_stream, response) = tokio_tungstenite::connect_async(endpoint.as_str())
+    let (ws_stream, response) = async_tungstenite::tokio::connect_async(endpoint.as_str())
         .await
         .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
     trace!(
