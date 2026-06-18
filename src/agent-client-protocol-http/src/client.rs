@@ -511,17 +511,21 @@ impl ClientState {
             .await
             .map_err(|e| e.to_string())?;
 
+        let connection_id = response
+            .headers()
+            .get(HEADER_CONNECTION_ID)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        if let Some(connection_id) = &connection_id {
+            self.connection.set_connection_id(connection_id.clone());
+        }
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(format!("HTTP {status}: {body}"));
         }
 
-        let connection_id = response
-            .headers()
-            .get(HEADER_CONNECTION_ID)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from);
         let message = response
             .json::<RawJsonRpcMessage>()
             .await
@@ -532,13 +536,12 @@ impl ClientState {
             RawJsonRpcMessage::Response(RpcResponse::Error { .. })
         ) {
             self.deliver(message);
+            self.connection.close().await;
             return Ok(InitializeOutcome::Rejected);
         }
 
-        let connection_id = connection_id
+        connection_id
             .ok_or_else(|| format!("server did not return {HEADER_CONNECTION_ID} header"))?;
-
-        self.connection.set_connection_id(connection_id);
         self.deliver(message);
         Ok(InitializeOutcome::Connected)
     }
@@ -1797,6 +1800,50 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn malformed_initialize_body_with_connection_id_is_deleted() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(malformed_initialize_response).delete(move || {
+                let delete_count = delete_count_for_handler.clone();
+                async move {
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+
+        assert!(error.to_string().contains("initialize"));
+        wait_for_delete(&delete_count).await;
+
+        server.abort();
+    }
+
     async fn wait_for_delete(delete_count: &AtomicUsize) {
         wait_for_delete_count(delete_count, 1).await;
         assert_eq!(delete_count.load(Ordering::SeqCst), 1);
@@ -1833,6 +1880,12 @@ mod tests {
             RequestId::Number(1),
             Err(AcpError::invalid_request().data("initialize rejected")),
         ))
+    }
+
+    async fn malformed_initialize_response() -> impl IntoResponse {
+        let mut headers = HeaderMap::new();
+        headers.insert(HEADER_CONNECTION_ID, HeaderValue::from_static("conn-1"));
+        (StatusCode::OK, headers, "{not json")
     }
 
     async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
