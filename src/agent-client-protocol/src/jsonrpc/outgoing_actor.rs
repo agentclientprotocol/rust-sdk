@@ -73,11 +73,8 @@ pub(super) async fn outgoing_protocol_actor(
                 request
             }
             OutgoingMessage::Notification { untyped } => {
-                match protocol_compat
-                    .outgoing_message(untyped)
-                    .and_then(|untyped| untyped.into_raw_jsonrpc_message(None))
-                {
-                    Ok(msg) => msg,
+                let messages = match protocol_compat.outgoing_notification(untyped) {
+                    Ok(messages) => messages,
                     Err(error) => {
                         tracing::warn!(
                             ?error,
@@ -85,7 +82,24 @@ pub(super) async fn outgoing_protocol_actor(
                         );
                         continue;
                     }
+                };
+
+                for untyped in messages {
+                    let message = match untyped.into_raw_jsonrpc_message(None) {
+                        Ok(message) => message,
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                "Dropping outgoing notification after serialization failed"
+                            );
+                            continue;
+                        }
+                    };
+                    transport_tx
+                        .unbounded_send(Ok(message))
+                        .map_err(crate::Error::into_internal_error)?;
                 }
+                continue;
             }
             OutgoingMessage::Response {
                 id,
@@ -146,6 +160,10 @@ mod tests {
         crate::UntypedMessage::new("session/new", serde_json::json!({}))
     }
 
+    fn malformed_v2_known_notification() -> Result<crate::UntypedMessage, crate::Error> {
+        crate::UntypedMessage::new("session/update", serde_json::json!({}))
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn failed_request_conversion_completes_request_locally() -> Result<(), crate::Error> {
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
@@ -196,7 +214,7 @@ mod tests {
 
         outgoing_tx
             .unbounded_send(OutgoingMessage::Notification {
-                untyped: malformed_v2_known_method()?,
+                untyped: malformed_v2_known_notification()?,
             })
             .map_err(crate::Error::into_internal_error)?;
         outgoing_tx

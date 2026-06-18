@@ -46,6 +46,20 @@ mod imp {
             Ok(message)
         }
 
+        pub(crate) fn incoming_notification(
+            &self,
+            message: UntypedMessage,
+        ) -> Result<Vec<UntypedMessage>, crate::Error> {
+            Ok(vec![message])
+        }
+
+        pub(crate) fn outgoing_notification(
+            &self,
+            message: UntypedMessage,
+        ) -> Result<Vec<UntypedMessage>, crate::Error> {
+            Ok(vec![message])
+        }
+
         pub(crate) fn incoming_response(
             &self,
             _method: &str,
@@ -70,7 +84,7 @@ mod imp {
 
     use agent_client_protocol_schema::v2::{
         self,
-        conversion::{IntoV1, IntoV2, v1_to_v2, v2_to_v1},
+        conversion::{IntoV1, IntoV1Many, IntoV2, v1_to_v2, v2_to_v1, v2_to_v1_many},
     };
 
     use crate::schema::{
@@ -232,6 +246,28 @@ mod imp {
             };
 
             convert_message(message, mode.api, wire_version)
+        }
+
+        pub(crate) fn incoming_notification(
+            &self,
+            message: UntypedMessage,
+        ) -> Result<Vec<UntypedMessage>, crate::Error> {
+            let Some(mode) = self.mode else {
+                return Ok(vec![message]);
+            };
+
+            convert_notification(message, self.active_wire_version(), mode.api)
+        }
+
+        pub(crate) fn outgoing_notification(
+            &self,
+            message: UntypedMessage,
+        ) -> Result<Vec<UntypedMessage>, crate::Error> {
+            let Some(mode) = self.mode else {
+                return Ok(vec![message]);
+            };
+
+            convert_notification(message, mode.api, self.active_wire_version())
         }
 
         pub(crate) fn incoming_response(
@@ -453,6 +489,51 @@ mod imp {
         }
     }
 
+    fn convert_notification(
+        message: UntypedMessage,
+        from: ProtocolVersionKind,
+        to: ProtocolVersionKind,
+    ) -> Result<Vec<UntypedMessage>, crate::Error> {
+        if message.method().starts_with('_') || from == to {
+            return Ok(vec![message]);
+        }
+
+        match (from, to) {
+            (ProtocolVersionKind::V1, ProtocolVersionKind::V2) => {
+                public_to_v2_notification(message)
+            }
+            (ProtocolVersionKind::V2, ProtocolVersionKind::V1) => {
+                v2_to_public_notification(message)
+            }
+            _ => Ok(vec![message]),
+        }
+    }
+
+    fn public_to_v2_notification(
+        message: UntypedMessage,
+    ) -> Result<Vec<UntypedMessage>, crate::Error> {
+        public_to_v2_message(message).map(|message| vec![message])
+    }
+
+    fn v2_to_public_notification(
+        message: UntypedMessage,
+    ) -> Result<Vec<UntypedMessage>, crate::Error> {
+        let UntypedMessage { method, params } = message;
+
+        if let Some(message) =
+            try_convert_message_to_v1::<v2::ClientNotification>(&method, &params)?
+        {
+            return Ok(vec![message]);
+        }
+        if let Some(messages) =
+            try_convert_message_to_v1_many::<v2::AgentNotification>(&method, &params)?
+        {
+            return Ok(messages);
+        }
+
+        Ok(vec![UntypedMessage { method, params }])
+    }
+
     fn public_to_v2_message(message: UntypedMessage) -> Result<UntypedMessage, crate::Error> {
         let UntypedMessage { method, params } = message;
 
@@ -486,11 +567,6 @@ mod imp {
         {
             return Ok(message);
         }
-        if let Some(message) = try_convert_message_to_v1::<v2::AgentNotification>(&method, &params)?
-        {
-            return Ok(message);
-        }
-
         Ok(UntypedMessage { method, params })
     }
 
@@ -550,6 +626,24 @@ mod imp {
         };
         let public_message = v2_to_v1(message)?;
         public_message.to_untyped_message().map(Some)
+    }
+
+    fn try_convert_message_to_v1_many<T>(
+        method: &str,
+        params: &serde_json::Value,
+    ) -> Result<Option<Vec<UntypedMessage>>, crate::Error>
+    where
+        T: JsonRpcMessage + IntoV1Many,
+        T::Output: JsonRpcMessage,
+    {
+        let Some(message) = try_parse_message::<T>(method, params)? else {
+            return Ok(None);
+        };
+        v2_to_v1_many(message)?
+            .into_iter()
+            .map(|public_message| public_message.to_untyped_message())
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some)
     }
 
     fn try_parse_message<T: JsonRpcMessage>(
@@ -734,6 +828,61 @@ mod imp {
                 assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
                 assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V1);
             }
+
+            Ok(())
+        }
+
+        #[test]
+        fn outgoing_v2_agent_notification_fans_out_for_v1_wire() -> Result<(), crate::Error> {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_agent());
+            let messages = compat.outgoing_notification(UntypedMessage::new(
+                "session/update",
+                v2::SessionNotification::new(
+                    "sess",
+                    v2::SessionUpdate::AgentMessage(v2::AgentMessage::new("msg_agent").content(
+                        vec![
+                            v2::ContentBlock::Text(v2::TextContent::new("hello")),
+                            v2::ContentBlock::Text(v2::TextContent::new("world")),
+                        ],
+                    )),
+                ),
+            )?)?;
+
+            assert_eq!(messages.len(), 2);
+            let json = messages
+                .into_iter()
+                .map(|message| {
+                    assert_eq!(message.method(), "session/update");
+                    Ok(message.params)
+                })
+                .collect::<Result<Vec<_>, crate::Error>>()?;
+            assert_eq!(
+                json,
+                vec![
+                    serde_json::json!({
+                        "sessionId": "sess",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": "hello"
+                            },
+                            "messageId": "msg_agent"
+                        }
+                    }),
+                    serde_json::json!({
+                        "sessionId": "sess",
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {
+                                "type": "text",
+                                "text": "world"
+                            },
+                            "messageId": "msg_agent"
+                        }
+                    }),
+                ]
+            );
 
             Ok(())
         }
