@@ -1,9 +1,5 @@
 use std::{future::Future, marker::PhantomData, path::Path};
 
-use agent_client_protocol_schema::{
-    ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-    PromptResponse, SessionModeState, SessionNotification, SessionUpdate, StopReason,
-};
 use futures::channel::{mpsc, oneshot};
 
 use crate::{
@@ -14,7 +10,11 @@ use crate::{
     },
     mcp_server::McpServer,
     role::{HasPeer, acp::ProxySessionMessages},
-    schema::SessionId,
+    schema::v1::{
+        ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
+        PromptResponse, SessionId, SessionModeState, SessionNotification, SessionUpdate,
+        StopReason,
+    },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
 
@@ -258,7 +258,7 @@ where
     ///
     /// ```ignore
     /// # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
-    /// # use agent_client_protocol::schema::NewSessionRequest;
+    /// # use agent_client_protocol::schema::v1::NewSessionRequest;
     /// # use agent_client_protocol::mcp_server::McpServer;
     /// # use agent_client_protocol_rmcp::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {

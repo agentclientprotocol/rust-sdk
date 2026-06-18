@@ -84,7 +84,7 @@
 //!
 //! ```ignore
 //! # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
-//! # use agent_client_protocol::schema::NewSessionRequest;
+//! # use agent_client_protocol::schema::v1::NewSessionRequest;
 //! # use agent_client_protocol::mcp_server::McpServer;
 //! # use agent_client_protocol_rmcp::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {

@@ -21,14 +21,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use agent_client_protocol::DynConnectTo;
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::v1::{
     CancelRequestNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
-    McpConnectRequest, McpServer as SchemaMcpServer, NewSessionRequest, NewSessionResponse,
-    PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, StopReason,
-    ToolCallUpdate, ToolCallUpdateFields,
+    McpServer as SchemaMcpServer, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, StopReason, ToolCallUpdate, ToolCallUpdateFields,
 };
+use agent_client_protocol::schema::{McpConnectRequest, ProtocolVersion};
 use agent_client_protocol::{
     Agent, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, Error, JsonRpcRequest,
     JsonRpcResponse, NullRun, Proxy, Responder, Role, SentRequest,

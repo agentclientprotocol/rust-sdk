@@ -27,9 +27,12 @@ pub(crate) mod stdio;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use agent_client_protocol::schema::v1::{
+    McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
+};
 use agent_client_protocol::schema::{
     InitializeProxyRequest, McpConnectRequest, McpConnectResponse, McpDisconnectNotification,
-    McpOverAcpMessage, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
+    McpOverAcpMessage,
 };
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, Proxy, Role,

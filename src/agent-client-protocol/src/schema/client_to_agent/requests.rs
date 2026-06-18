@@ -1,4 +1,4 @@
-use crate::schema::{
+use crate::schema::v1::{
     AuthenticateRequest, AuthenticateResponse, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
     ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
@@ -7,7 +7,7 @@ use crate::schema::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
 #[cfg(feature = "unstable_session_fork")]
-use crate::schema::{ForkSessionRequest, ForkSessionResponse};
+use crate::schema::v1::{ForkSessionRequest, ForkSessionResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");

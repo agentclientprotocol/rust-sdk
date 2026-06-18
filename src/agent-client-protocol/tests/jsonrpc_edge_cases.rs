@@ -20,7 +20,7 @@ fn raw_jsonrpc_message_rejects_scalar_params() {
         RawJsonRpcMessage::request(
             "scalar_params".into(),
             serde_json::json!(1),
-            agent_client_protocol::schema::RequestId::Number(1),
+            agent_client_protocol::schema::v1::RequestId::Number(1),
         )
         .is_err()
     );
@@ -49,7 +49,7 @@ fn raw_jsonrpc_message_rejects_scalar_params() {
     );
 
     let response = RawJsonRpcMessage::response(
-        agent_client_protocol::schema::RequestId::Number(1),
+        agent_client_protocol::schema::v1::RequestId::Number(1),
         Ok(serde_json::json!(1)),
     );
     assert_eq!(

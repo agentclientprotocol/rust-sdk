@@ -23,7 +23,7 @@
 //!
 //! ```no_run
 //! use agent_client_protocol::Client;
-//! use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+//! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 //!
 //! # async fn run(transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
 //! Client.builder()
@@ -114,14 +114,8 @@ pub use component::{ConnectTo, DynConnectTo};
 // Re-export BoxFuture for implementing Component traits
 pub use futures::future::BoxFuture;
 
-// Re-export the six primary message enum types at the root
-pub use schema::{
-    AgentNotification, AgentRequest, AgentResponse, ClientNotification, ClientRequest,
-    ClientResponse,
-};
-
 // Re-export commonly used infrastructure types for convenience
-pub use schema::{Error, ErrorCode, Result};
+pub use schema::v1::{Error, ErrorCode, Result};
 
 // Re-export derive macros for custom JSON-RPC types
 pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};

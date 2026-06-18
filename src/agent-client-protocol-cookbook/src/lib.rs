@@ -61,7 +61,7 @@ pub mod one_shot_prompt {
     //!
     //! ```
     //! use agent_client_protocol::{Client, Agent, ConnectTo};
-    //! use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+    //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
     //!
     //! async fn ask_agent(
     //!     transport: impl ConnectTo<Client> + 'static,
@@ -114,7 +114,7 @@ pub mod one_shot_prompt {
     //! [`send_prompt`]: agent_client_protocol::ActiveSession::send_prompt
     //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
     //! [`connecting_as_client`]: super::connecting_as_client
-    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::v1::RequestPermissionRequest
 }
 
 pub mod connecting_as_client {
@@ -128,7 +128,7 @@ pub mod connecting_as_client {
     //!
     //! ```
     //! use agent_client_protocol::{Client, Agent, ConnectTo};
-    //! use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+    //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
     //!
     //! async fn connect_to_agent(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
     //!     Client.builder()
@@ -201,7 +201,7 @@ pub mod connecting_as_client {
     //! [`read_update`]: agent_client_protocol::ActiveSession::read_update
     //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
     //! [`with_mcp_server`]: agent_client_protocol::SessionBuilder::with_mcp_server
-    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::v1::RequestPermissionRequest
     //! [`on_receive_request`]: agent_client_protocol::Builder::on_receive_request
 }
 
@@ -220,7 +220,7 @@ pub mod building_an_agent {
     //!
     //! ```
     //! use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, ConnectionTo};
-    //! use agent_client_protocol::schema::{
+    //! use agent_client_protocol::schema::v1::{
     //!     InitializeRequest, InitializeResponse, AgentCapabilities,
     //!     NewSessionRequest, NewSessionResponse, SessionId,
     //!     PromptRequest, PromptResponse, StopReason,
@@ -321,11 +321,11 @@ pub mod building_an_agent {
     //! For agents that will be composed with proxies, implement [`ConnectTo`].
     //! See [`reusable_components`] for the pattern.
     //!
-    //! [`InitializeRequest`]: agent_client_protocol::schema::InitializeRequest
-    //! [`NewSessionRequest`]: agent_client_protocol::schema::NewSessionRequest
-    //! [`PromptRequest`]: agent_client_protocol::schema::PromptRequest
-    //! [`SessionNotification`]: agent_client_protocol::schema::SessionNotification
-    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::RequestPermissionRequest
+    //! [`InitializeRequest`]: agent_client_protocol::schema::v1::InitializeRequest
+    //! [`NewSessionRequest`]: agent_client_protocol::schema::v1::NewSessionRequest
+    //! [`PromptRequest`]: agent_client_protocol::schema::v1::PromptRequest
+    //! [`SessionNotification`]: agent_client_protocol::schema::v1::SessionNotification
+    //! [`RequestPermissionRequest`]: agent_client_protocol::schema::v1::RequestPermissionRequest
     //! [`Agent`]: agent_client_protocol::Agent
     //! [`ConnectTo`]: agent_client_protocol::ConnectTo
     //! [`reusable_components`]: super::reusable_components
@@ -342,7 +342,7 @@ pub mod reusable_components {
     //!
     //! ```
     //! use agent_client_protocol::{ConnectTo, Agent, Client};
-    //! use agent_client_protocol::schema::{
+    //! use agent_client_protocol::schema::v1::{
     //!     InitializeRequest, InitializeResponse, AgentCapabilities,
     //! };
     //!
@@ -397,7 +397,7 @@ pub mod custom_message_handlers {
     //!
     //! ```
     //! use agent_client_protocol::{HandleDispatchFrom, Dispatch, Handled, ConnectionTo, UntypedRole};
-    //! use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, AgentCapabilities};
+    //! use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
     //! use agent_client_protocol::util::MatchDispatch;
     //!
     //! struct MyHandler;
@@ -583,7 +583,7 @@ pub mod per_session_mcp_server {
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
     //! use agent_client_protocol_rmcp::McpServerExt;
-    //! use agent_client_protocol::schema::NewSessionRequest;
+    //! use agent_client_protocol::schema::v1::NewSessionRequest;
     //! use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
     //!
     //! async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
@@ -642,7 +642,7 @@ pub mod per_session_mcp_server {
     //! ```
     //! # use agent_client_protocol::mcp_server::McpServer;
     //! # use agent_client_protocol_rmcp::McpServerExt;
-    //! # use agent_client_protocol::schema::NewSessionRequest;
+    //! # use agent_client_protocol::schema::v1::NewSessionRequest;
     //! # use agent_client_protocol::{Client, Proxy, Conductor, ConnectTo};
     //! # async fn run_proxy(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
     //!     Proxy.builder()
@@ -674,7 +674,7 @@ pub mod per_session_mcp_server {
     //! [`start_session`]: agent_client_protocol::SessionBuilder::start_session
     //! [`proxy_remaining_messages`]: agent_client_protocol::ActiveSession::proxy_remaining_messages
     //!
-    //! [`NewSessionRequest`]: agent_client_protocol::schema::NewSessionRequest
+    //! [`NewSessionRequest`]: agent_client_protocol::schema::v1::NewSessionRequest
     //! [`on_proxy_session_start`]: agent_client_protocol::SessionBuilder::on_proxy_session_start
     //! [`block_task`]: agent_client_protocol::SessionBuilder::block_task
     //! [`start_session_proxy`]: agent_client_protocol::SessionBuilder::start_session_proxy

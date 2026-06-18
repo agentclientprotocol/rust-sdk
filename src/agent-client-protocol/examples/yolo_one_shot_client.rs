@@ -11,10 +11,11 @@
 //! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
-use agent_client_protocol::schema::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, TextContent,
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
+    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionNotification, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
 use clap::Parser;

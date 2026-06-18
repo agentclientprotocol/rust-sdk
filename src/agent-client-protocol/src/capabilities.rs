@@ -7,7 +7,7 @@
 //!
 //! ```rust,no_run
 //! use agent_client_protocol::{MetaCapability, MetaCapabilityExt};
-//! # use agent_client_protocol::schema::InitializeResponse;
+//! # use agent_client_protocol::schema::v1::InitializeResponse;
 //! # let init_response: InitializeResponse = unimplemented!();
 //!
 //! struct Proxy;
@@ -21,7 +21,7 @@
 //! }
 //! ```
 
-use crate::schema::{InitializeRequest, InitializeResponse};
+use crate::schema::v1::{InitializeRequest, InitializeResponse};
 use serde_json::{Value, json};
 
 /// Trait for capabilities stored in the `_meta.symposium` object.
@@ -129,7 +129,8 @@ impl MetaCapabilityExt for InitializeResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{ClientCapabilities, ProtocolVersion};
+    use crate::schema::ProtocolVersion;
+    use crate::schema::v1::ClientCapabilities;
     use serde_json::json;
 
     struct TestCapability;

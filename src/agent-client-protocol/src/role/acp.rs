@@ -1,10 +1,9 @@
 use std::{fmt::Debug, hash::Hash};
 
-use agent_client_protocol_schema::{NewSessionRequest, NewSessionResponse, SessionId};
-
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 use crate::role::{HasPeer, RemoteStyle};
-use crate::schema::{InitializeProxyRequest, InitializeRequest, METHOD_INITIALIZE_PROXY};
+use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
+use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
 use crate::util::MatchDispatchFrom;
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 

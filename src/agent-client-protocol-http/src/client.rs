@@ -5,7 +5,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
-    schema::{RequestId, Response as RpcResponse},
+    schema::v1::{RequestId, Response as RpcResponse},
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
@@ -793,7 +793,7 @@ mod tests {
         time::Duration,
     };
 
-    use agent_client_protocol::schema::RequestId;
+    use agent_client_protocol::schema::v1::RequestId;
     use axum::{
         Json, Router,
         extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},

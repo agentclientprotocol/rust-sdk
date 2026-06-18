@@ -1,4 +1,6 @@
-use agent_client_protocol::schema::{ClientRequest, DeleteSessionRequest, DeleteSessionResponse};
+use agent_client_protocol::schema::v1::{
+    ClientRequest, DeleteSessionRequest, DeleteSessionResponse,
+};
 use agent_client_protocol::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use serde_json::json;
 

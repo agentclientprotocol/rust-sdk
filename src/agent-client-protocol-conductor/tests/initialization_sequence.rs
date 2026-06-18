@@ -5,10 +5,8 @@
 //! 2. Multi-component chains: proxies receive `InitializeProxyRequest`
 //! 3. Last component (agent) receives `InitializeRequest`
 
-use agent_client_protocol::schema::{
-    AgentCapabilities, InitializeProxyRequest, InitializeRequest, InitializeResponse,
-    ProtocolVersion,
-};
+use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
+use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion};
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::Testy;

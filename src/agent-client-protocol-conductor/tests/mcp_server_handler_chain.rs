@@ -6,9 +6,10 @@
 //! from being invoked.
 
 use agent_client_protocol::mcp_server::McpServer;
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
     AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, ProtocolVersion, SessionId,
+    NewSessionResponse, SessionId,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};

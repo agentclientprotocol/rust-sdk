@@ -2,6 +2,7 @@ use std::pin::pin;
 
 // Types re-exported from crate root
 use crate::jsonrpc::RawJsonRpcMessage;
+use crate::schema::v1::Response;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 
@@ -53,8 +54,7 @@ pub(super) async fn transport_outgoing_lines_actor(
                         // If we failed to serialize a *response*,
                         // send an error in response.
                         let id = match response {
-                            agent_client_protocol_schema::Response::Result { id, .. }
-                            | agent_client_protocol_schema::Response::Error { id, .. } => id,
+                            Response::Result { id, .. } | Response::Error { id, .. } => id,
                         };
                         tracing::error!(
                             ?serialization_error,

@@ -21,7 +21,7 @@ The most common use case is connecting to an existing ACP agent as a client:
 
 ```rust
 use agent_client_protocol::{Client, Agent, ConnectTo};
-use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 
 Client.builder()
     .name("my-client")
