@@ -56,7 +56,7 @@ impl HttpClient {
     /// Create a client that targets the exact endpoint URL.
     ///
     /// Use this when connecting to a server configured with a custom
-    /// [`ServerOptions::path`](crate::ServerOptions::path).
+    /// `ServerOptions::path`.
     pub fn with_endpoint(endpoint: impl AsRef<str>) -> Result<Self, HttpClientError> {
         Self::with_endpoint_and_client(endpoint, reqwest::Client::new())
     }
@@ -85,7 +85,7 @@ impl HttpClient {
     /// Create a client with a custom HTTP client and exact endpoint URL.
     ///
     /// Use this when connecting to a server configured with a custom
-    /// [`ServerOptions::path`](crate::ServerOptions::path).
+    /// `ServerOptions::path`.
     pub fn with_endpoint_and_client(
         endpoint: impl AsRef<str>,
         http: reqwest::Client,

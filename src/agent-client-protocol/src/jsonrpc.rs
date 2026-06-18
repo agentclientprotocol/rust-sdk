@@ -3957,8 +3957,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     ///   cancels the incoming request, the cancellation is forwarded to the
     ///   outgoing request, and the downstream response (normal data or a
     ///   cancellation error) is still forwarded back. This is equivalent to
-    ///   registering the responder's marker with
-    ///   [`forward_cancellation_from`](Self::forward_cancellation_from).
+    ///   registering the responder's marker with `forward_cancellation_from`.
     #[track_caller]
     pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
