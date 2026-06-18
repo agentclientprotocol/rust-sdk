@@ -137,18 +137,21 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         incoming,
     };
     let mut lifecycle = HttpTransportLifecycle::new(connection);
+    let mut pending_posts = FuturesUnordered::new();
 
     let result = loop {
         let event = {
             let outgoing_next = outgoing.next().fuse();
             let sse_event_next = sse_event_rx.next().fuse();
             let sse_failure_next = lifecycle.next_sse_failure().fuse();
-            pin_mut!(outgoing_next, sse_event_next, sse_failure_next);
+            let post_next = next_post_completion(&mut pending_posts).fuse();
+            pin_mut!(outgoing_next, sse_event_next, sse_failure_next, post_next);
 
             futures::select! {
                 msg = outgoing_next => HttpLoopEvent::Outgoing(msg),
                 event = sse_event_next => HttpLoopEvent::SseEvent(event),
                 failure = sse_failure_next => HttpLoopEvent::SseFailure(failure),
+                post = post_next => HttpLoopEvent::Post(post),
             }
         };
 
@@ -178,6 +181,18 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 break Err(AcpError::internal_error()
                     .data(format!("{scope} SSE stream ended: {}", failure.error)));
             }
+            HttpLoopEvent::Post(completed) => {
+                let CompletedPost {
+                    pending_request,
+                    result,
+                } = completed;
+                if let Err(e) = result {
+                    state.remove_pending_request(pending_request.as_ref());
+                    error!("POST failed: {e}");
+                    break Err(AcpError::internal_error().data(format!("POST: {e}")));
+                }
+                continue;
+            }
         };
 
         if state.connection.connection_id().is_none() {
@@ -204,9 +219,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
         }
 
-        if let Err(e) = state.post(msg).await {
-            error!("POST failed: {e}");
-            break Err(AcpError::internal_error().data(format!("POST: {e}")));
+        match state.prepare_post(msg) {
+            Ok(post) => pending_posts.push(post.into_completion()),
+            Err(e) => {
+                error!("POST failed: {e}");
+                break Err(AcpError::internal_error().data(format!("POST: {e}")));
+            }
         }
     };
 
@@ -218,6 +236,7 @@ enum HttpLoopEvent {
     Outgoing(Option<Result<RawJsonRpcMessage, AcpError>>),
     SseEvent(Option<SseMessage>),
     SseFailure(SseFailure),
+    Post(CompletedPost),
 }
 
 #[derive(Debug)]
@@ -267,11 +286,24 @@ impl HttpConnection {
         self.connection_id.lock().expect("mutex poisoned").take()
     }
 
+    fn clear_connection_id(&self, expected: &str) {
+        let mut connection_id = self.connection_id.lock().expect("mutex poisoned");
+        if connection_id.as_deref() == Some(expected) {
+            *connection_id = None;
+        }
+    }
+
     async fn close(&self) {
-        let Some(connection_id) = self.take_connection_id() else {
+        let Some(connection_id) = self.connection_id() else {
             return;
         };
-        Self::send_close(self.http.clone(), self.endpoint.clone(), connection_id).await;
+        Self::send_close(
+            self.http.clone(),
+            self.endpoint.clone(),
+            connection_id.clone(),
+        )
+        .await;
+        self.clear_connection_id(&connection_id);
     }
 
     fn spawn_close(&self) {
@@ -388,6 +420,44 @@ struct ClientState {
     incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
 }
 
+struct PendingPost {
+    pending_request: Option<(RequestId, String)>,
+    response: BoxFuture<'static, Result<(), String>>,
+}
+
+impl PendingPost {
+    fn into_completion(self) -> BoxFuture<'static, CompletedPost> {
+        let Self {
+            pending_request,
+            response,
+        } = self;
+        async move {
+            CompletedPost {
+                pending_request,
+                result: response.await,
+            }
+        }
+        .boxed()
+    }
+}
+
+#[derive(Debug)]
+struct CompletedPost {
+    pending_request: Option<(RequestId, String)>,
+    result: Result<(), String>,
+}
+
+async fn next_post_completion(
+    pending_posts: &mut FuturesUnordered<BoxFuture<'static, CompletedPost>>,
+) -> CompletedPost {
+    loop {
+        if let Some(completed) = pending_posts.next().await {
+            return completed;
+        }
+        futures::future::pending::<()>().await;
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InitializeOutcome {
     Connected,
@@ -438,7 +508,7 @@ impl ClientState {
         Ok(InitializeOutcome::Connected)
     }
 
-    async fn post(&mut self, msg: RawJsonRpcMessage) -> Result<(), String> {
+    fn prepare_post(&mut self, msg: RawJsonRpcMessage) -> Result<PendingPost, String> {
         let session_id = match method_for_message(&msg) {
             Some(method) => {
                 let session_id = session_id_from_message(&msg);
@@ -468,20 +538,19 @@ impl ClientState {
             self.pending_requests.insert(id.clone(), method.clone());
         }
 
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(e) => {
-                self.remove_pending_request(pending_request.as_ref());
-                return Err(e.to_string());
+        let response = async move {
+            let response = request.send().await.map_err(|e| e.to_string())?;
+            if response.status().as_u16() != 202 && !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("HTTP {status}: {body}"));
             }
+            Ok(())
         };
-        if response.status().as_u16() != 202 && !response.status().is_success() {
-            self.remove_pending_request(pending_request.as_ref());
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(format!("HTTP {status}: {body}"));
-        }
-        Ok(())
+        Ok(PendingPost {
+            pending_request,
+            response: response.boxed(),
+        })
     }
 
     fn remove_pending_request(&mut self, pending_request: Option<&(RequestId, String)>) {
@@ -690,6 +759,7 @@ mod tests {
     use serde_json::json;
     use tokio::{
         net::TcpListener,
+        sync::Notify,
         time::{sleep, timeout},
     };
 
@@ -937,6 +1007,159 @@ mod tests {
                 .is_err(),
             "custom response must not open a session SSE stream"
         );
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn sse_continues_while_post_is_pending() {
+        let post_started = Arc::new(Notify::new());
+        let callback_response_seen = Arc::new(Notify::new());
+        let sse_started = Arc::new(Notify::new());
+        let (callback_tx, mut callback_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let post_started = post_started.clone();
+                let callback_response_seen = callback_response_seen.clone();
+                let callback_tx = callback_tx.clone();
+                move |Json(message): Json<RawJsonRpcMessage>| {
+                    let post_started = post_started.clone();
+                    let callback_response_seen = callback_response_seen.clone();
+                    let callback_tx = callback_tx.clone();
+                    async move {
+                        if is_initialize_request(&message) {
+                            return initialize_response().await.into_response();
+                        }
+
+                        match &message {
+                            RawJsonRpcMessage::Request(request)
+                                if request.method.as_ref() == "custom/slow" =>
+                            {
+                                post_started.notify_waiters();
+                                callback_response_seen.notified().await;
+                                StatusCode::ACCEPTED.into_response()
+                            }
+                            RawJsonRpcMessage::Response(
+                                RpcResponse::Result {
+                                    id: RequestId::Number(99),
+                                    ..
+                                }
+                                | RpcResponse::Error {
+                                    id: RequestId::Number(99),
+                                    ..
+                                },
+                            ) => {
+                                callback_tx.send(message).unwrap();
+                                callback_response_seen.notify_waiters();
+                                StatusCode::ACCEPTED.into_response()
+                            }
+                            _ => StatusCode::ACCEPTED.into_response(),
+                        }
+                    }
+                }
+            })
+            .get({
+                let post_started = post_started.clone();
+                let sse_started = sse_started.clone();
+                move || {
+                    let post_started = post_started.clone();
+                    let sse_started = sse_started.clone();
+                    async move {
+                        let stream = async_stream::stream! {
+                            sse_started.notify_waiters();
+                            post_started.notified().await;
+                            yield Ok::<_, Infallible>(sse_event(
+                                RawJsonRpcMessage::request(
+                                    "client/callback".to_string(),
+                                    json!({}),
+                                    RequestId::Number(99),
+                                )
+                                .unwrap(),
+                            ));
+                            futures::future::pending::<()>().await;
+                        };
+                        Sse::new(stream)
+                    }
+                }
+            })
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+        timeout(Duration::from_secs(1), sse_started.notified())
+            .await
+            .unwrap();
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "custom/slow".to_string(),
+                json!({}),
+                RequestId::Number(2),
+            )
+            .unwrap()))
+            .unwrap();
+
+        let callback = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            callback,
+            RawJsonRpcMessage::Request(request)
+                if request.method.as_ref() == "client/callback"
+                    && request.id == RequestId::Number(99)
+        ));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::response(
+                RequestId::Number(99),
+                Ok(json!({})),
+            )))
+            .unwrap();
+        let callback_response = timeout(Duration::from_secs(1), callback_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            callback_response,
+            RawJsonRpcMessage::Response(RpcResponse::Result {
+                id: RequestId::Number(99),
+                ..
+            })
+        ));
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -1201,6 +1424,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropped_transport_during_close_retries_delete() {
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let delete_count_for_handler = delete_count.clone();
+        let release_delete = Arc::new(Notify::new());
+        let release_delete_for_handler = release_delete.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response).get(pending_sse).delete(move || {
+                let delete_count = delete_count_for_handler.clone();
+                let release_delete = release_delete_for_handler.clone();
+                async move {
+                    delete_count.fetch_add(1, Ordering::SeqCst);
+                    release_delete.notified().await;
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        drop(caller);
+        wait_for_delete_count(&delete_count, 1).await;
+        transport.abort();
+        wait_for_delete_count(&delete_count, 2).await;
+        release_delete.notify_waiters();
+        drop(transport.await);
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn initialize_error_without_connection_id_is_delivered_without_sse() {
         let get_count = Arc::new(AtomicUsize::new(0));
         let get_count_for_handler = get_count.clone();
@@ -1258,9 +1534,14 @@ mod tests {
     }
 
     async fn wait_for_delete(delete_count: &AtomicUsize) {
+        wait_for_delete_count(delete_count, 1).await;
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
+    }
+
+    async fn wait_for_delete_count(delete_count: &AtomicUsize, expected: usize) {
         timeout(Duration::from_secs(1), async {
             loop {
-                if delete_count.load(Ordering::SeqCst) > 0 {
+                if delete_count.load(Ordering::SeqCst) >= expected {
                     break;
                 }
                 sleep(Duration::from_millis(10)).await;
@@ -1268,7 +1549,6 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
     }
 
     async fn initialize_response() -> impl IntoResponse {
