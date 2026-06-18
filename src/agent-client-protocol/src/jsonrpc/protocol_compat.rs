@@ -87,9 +87,10 @@ mod imp {
         conversion::{IntoV1, IntoV1Many, IntoV2, v1_to_v2, v2_to_v1, v2_to_v1_many},
     };
 
-    use crate::schema::{
+    use crate::schema::ProtocolVersion;
+    use crate::schema::v1::{
         AgentNotification, AgentRequest, AgentResponse, ClientNotification, ClientRequest,
-        ClientResponse, ErrorCode, ProtocolVersion,
+        ClientResponse, ErrorCode,
     };
     use crate::{JsonRpcMessage, JsonRpcResponse, UntypedMessage};
 

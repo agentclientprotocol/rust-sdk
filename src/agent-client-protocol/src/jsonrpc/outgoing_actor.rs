@@ -5,6 +5,7 @@ use futures::channel::mpsc;
 use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
 use crate::jsonrpc::{OutgoingMessage, RawJsonRpcMessage};
+use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
 
@@ -118,10 +119,7 @@ pub(super) async fn outgoing_protocol_actor(
             OutgoingMessage::Error { error } => {
                 // JSON-RPC reports parse/invalid-request errors with id null when
                 // they cannot be correlated to a specific request.
-                RawJsonRpcMessage::response(
-                    agent_client_protocol_schema::RequestId::Null,
-                    Err(error),
-                )
+                RawJsonRpcMessage::response(RequestId::Null, Err(error))
             }
         };
 
@@ -173,7 +171,7 @@ mod tests {
 
         outgoing_tx
             .unbounded_send(OutgoingMessage::Request {
-                id: agent_client_protocol_schema::RequestId::Number(1),
+                id: RequestId::Number(1),
                 role_id: crate::Agent.role_id(),
                 method: "session/new".into(),
                 untyped: malformed_v2_known_method()?,

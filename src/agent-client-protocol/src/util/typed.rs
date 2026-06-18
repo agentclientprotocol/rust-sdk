@@ -35,7 +35,7 @@ use crate::{
 ///
 /// ```
 /// # use agent_client_protocol::Dispatch;
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, AgentCapabilities};
+/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
 /// # use agent_client_protocol::util::MatchDispatch;
 /// # async fn example(message: Dispatch) -> Result<(), agent_client_protocol::Error> {
 /// MatchDispatch::new(message)
@@ -427,7 +427,7 @@ impl MatchDispatch {
 ///
 /// ```
 /// # use agent_client_protocol::Dispatch;
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, AgentCapabilities, StopReason};
+/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, StopReason};
 /// # use agent_client_protocol::util::MatchDispatchFrom;
 /// # async fn example(message: Dispatch, cx: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>) -> Result<(), agent_client_protocol::Error> {
 /// MatchDispatchFrom::new(message, cx)
@@ -820,7 +820,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 ///
 /// ```
 /// # use agent_client_protocol::{UntypedMessage, ConnectionTo, Agent};
-/// # use agent_client_protocol::schema::SessionNotification;
+/// # use agent_client_protocol::schema::v1::SessionNotification;
 /// # use agent_client_protocol::util::TypeNotification;
 /// # async fn example(message: UntypedMessage, cx: &ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error> {
 /// TypeNotification::new(message, cx)

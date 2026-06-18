@@ -68,7 +68,7 @@ pub fn parse_error(message: impl ToString) -> crate::Error {
 }
 
 /// Convert a JSON-RPC id to a serde_json::Value.
-pub(crate) fn id_to_json(id: &agent_client_protocol_schema::RequestId) -> serde_json::Value {
+pub(crate) fn id_to_json(id: &crate::schema::v1::RequestId) -> serde_json::Value {
     serde_json::to_value(id).expect("RequestId serializes infallibly")
 }
 

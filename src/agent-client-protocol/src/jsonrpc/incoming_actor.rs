@@ -25,6 +25,7 @@ use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
 
 use crate::role::Role;
+use crate::schema::v1::{RequestId, Response};
 
 use super::Handled;
 
@@ -70,8 +71,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
     // Map from request ID to (method, sender) for response dispatch.
     // The method is stored to allow routing responses through typed handlers.
-    let mut pending_replies: HashMap<agent_client_protocol_schema::RequestId, PendingReply> =
-        HashMap::new();
+    let mut pending_replies: HashMap<RequestId, PendingReply> = HashMap::new();
 
     while let Some(message_result) = my_rx.next().await {
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
@@ -211,12 +211,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     }
                     RawJsonRpcMessage::Response(response) => {
                         let (id, result) = match response {
-                            agent_client_protocol_schema::Response::Result { id, result } => {
-                                (id, Ok(result))
-                            }
-                            agent_client_protocol_schema::Response::Error { id, error } => {
-                                (id, Err(error))
-                            }
+                            Response::Result { id, result } => (id, Ok(result)),
+                            Response::Error { id, error } => (id, Err(error)),
                         };
 
                         tracing::trace!(?id, "Handling response");
@@ -267,7 +263,7 @@ fn dispatch_from_message<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     method: std::sync::Arc<str>,
     params: Option<RawJsonRpcParams>,
-    id: Option<agent_client_protocol_schema::RequestId>,
+    id: Option<RequestId>,
     protocol_compat: &ProtocolCompat,
     request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<Vec<Dispatch>, crate::Error> {
@@ -301,7 +297,7 @@ fn dispatch_from_message<Counterpart: Role>(
 /// the awaiting code. The default behavior is to forward the response to the
 /// local awaiter via the oneshot channel.
 fn dispatch_from_response(
-    id: agent_client_protocol_schema::RequestId,
+    id: RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
 ) -> Dispatch {
@@ -488,8 +484,7 @@ fn report_handler_error<Counterpart: Role>(
     match id {
         Some(id) => {
             // Request: send error response with the original request id
-            let jsonrpc_id =
-                serde_json::from_value(id).unwrap_or(agent_client_protocol_schema::RequestId::Null);
+            let jsonrpc_id = serde_json::from_value(id).unwrap_or(RequestId::Null);
             send_raw_message(
                 &connection.message_tx,
                 OutgoingMessage::Response {

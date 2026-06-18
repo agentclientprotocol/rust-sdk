@@ -121,7 +121,7 @@ use agent_client_protocol::{
 };
 use agent_client_protocol::{
     HandleDispatchFrom,
-    schema::{InitializeProxyRequest, InitializeRequest},
+    schema::{InitializeProxyRequest, v1::InitializeRequest},
     util::MatchDispatchFrom,
 };
 use agent_client_protocol::{Handled, schema::SuccessorMessage};

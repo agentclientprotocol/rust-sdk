@@ -3,7 +3,7 @@
 //! These types are intended to become part of the ACP protocol specification.
 
 use crate::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, UntypedMessage};
-use agent_client_protocol_schema::InitializeResponse;
+use agent_client_protocol_schema::v1::{InitializeRequest, InitializeResponse};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -217,11 +217,11 @@ pub const METHOD_INITIALIZE_PROXY: &str = "_proxy/initialize";
 pub struct InitializeProxyRequest {
     /// The underlying initialize request data.
     #[serde(flatten)]
-    pub initialize: agent_client_protocol_schema::InitializeRequest,
+    pub initialize: InitializeRequest,
 }
 
-impl From<agent_client_protocol_schema::InitializeRequest> for InitializeProxyRequest {
-    fn from(initialize: agent_client_protocol_schema::InitializeRequest) -> Self {
+impl From<InitializeRequest> for InitializeProxyRequest {
+    fn from(initialize: InitializeRequest) -> Self {
         Self { initialize }
     }
 }

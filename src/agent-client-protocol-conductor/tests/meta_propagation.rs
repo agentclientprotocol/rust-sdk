@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol::schema::{
-    AgentCapabilities, ContentBlock, InitializeProxyRequest, InitializeRequest, InitializeResponse,
-    Meta, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ProtocolVersion,
-    SessionId, StopReason, TextContent,
+use agent_client_protocol::schema::v1::{
+    AgentCapabilities, ContentBlock, InitializeRequest, InitializeResponse, Meta,
+    NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId, StopReason,
+    TextContent,
 };
+use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion};
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,

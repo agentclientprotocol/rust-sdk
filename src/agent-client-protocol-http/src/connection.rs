@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
+use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::v1::RequestId};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
@@ -681,7 +681,7 @@ mod tests {
 
         assert!(matches!(
             message,
-            RawJsonRpcMessage::Response(agent_client_protocol::schema::Response::Result {
+            RawJsonRpcMessage::Response(agent_client_protocol::schema::v1::Response::Result {
                 id: RequestId::Number(1),
                 ..
             })

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use agent_client_protocol::{Error as AcpError, RawJsonRpcMessage, schema::RequestId};
+use agent_client_protocol::{Error as AcpError, RawJsonRpcMessage, schema::v1::RequestId};
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     http::HeaderValue,
@@ -154,7 +154,7 @@ async fn run_ws(
 mod tests {
     use agent_client_protocol::{
         Channel,
-        schema::{RequestId, Response as RpcResponse},
+        schema::v1::{RequestId, Response as RpcResponse},
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};

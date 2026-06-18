@@ -79,7 +79,7 @@ pub use self::conductor::*;
 use clap::{Parser, Subcommand};
 
 use agent_client_protocol::{AcpAgent, Stdio};
-use agent_client_protocol::{Client, Conductor, DynConnectTo, schema::InitializeRequest};
+use agent_client_protocol::{Client, Conductor, DynConnectTo, schema::v1::InitializeRequest};
 use tracing::Instrument;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 

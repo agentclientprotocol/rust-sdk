@@ -2,7 +2,6 @@
 
 use std::{marker::PhantomData, sync::Arc};
 
-use agent_client_protocol_schema::NewSessionRequest;
 use futures::{StreamExt, channel::mpsc};
 use uuid::Uuid;
 
@@ -15,6 +14,7 @@ use crate::{
     },
     mcp_server::{McpConnectionTo, McpServerConnect, active_session::McpActiveSession},
     role::{self, HasPeer},
+    schema::v1::{McpServer as SchemaMcpServer, McpServerHttp, NewSessionRequest},
     util::MatchDispatchFrom,
 };
 
@@ -124,9 +124,12 @@ where
 
     /// Modify the new session request to include this MCP server.
     fn modify_new_session_request(&self, request: &mut NewSessionRequest) {
-        request.mcp_servers.push(crate::schema::McpServer::Http(
-            crate::schema::McpServerHttp::new(self.connect.name(), self.acp_id.clone()),
-        ));
+        request
+            .mcp_servers
+            .push(SchemaMcpServer::Http(McpServerHttp::new(
+                self.connect.name(),
+                self.acp_id.clone(),
+            )));
     }
 }
 

@@ -145,7 +145,7 @@ fn apply_session_header_to_params(
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "server")]
-    use agent_client_protocol::schema::RequestId;
+    use agent_client_protocol::schema::v1::RequestId;
     use axum::http::{HeaderMap, HeaderValue};
     #[cfg(feature = "server")]
     use serde_json::json;

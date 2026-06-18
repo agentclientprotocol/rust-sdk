@@ -1,7 +1,7 @@
 //! JsonRpcMessage and JsonRpcNotification/JsonRpcRequest implementations for
 //! the ACP enum types from agent-client-protocol-schema.
 
-use crate::schema::{
+use crate::schema::v1::{
     AgentNotification, AgentRequest, AgentResponse, ClientNotification, ClientRequest,
     ClientResponse,
 };

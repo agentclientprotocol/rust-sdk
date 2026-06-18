@@ -10,7 +10,7 @@
 //! verifies that MCP requests travel all the way back to the client.
 
 use agent_client_protocol::mcp_server::McpServer;
-use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};

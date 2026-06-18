@@ -104,7 +104,7 @@
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
-//! # use agent_client_protocol::schema::NewSessionRequest;
+//! # use agent_client_protocol::schema::v1::NewSessionRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! Client.builder()
 //!     .on_receive_request(async |req: NewSessionRequest, responder, cx| {

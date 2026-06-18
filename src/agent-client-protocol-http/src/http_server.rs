@@ -1,6 +1,6 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
-use agent_client_protocol::{RawJsonRpcMessage, schema::Response as RpcResponse};
+use agent_client_protocol::{RawJsonRpcMessage, schema::v1::Response as RpcResponse};
 use axum::{
     body::Body,
     extract::State,
@@ -336,7 +336,7 @@ fn post_body_too_large_response() -> Response {
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::RequestId};
+    use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::v1::RequestId};
     use futures::{StreamExt, future::BoxFuture};
     use serde_json::json;
     use tokio::{

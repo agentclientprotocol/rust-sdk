@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use agent_client_protocol::schema::{self, ProtocolVersion, v2};
+use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     Agent, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
     NullHandler, RawJsonRpcMessage, Role, UntypedRole,
@@ -76,7 +76,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         .unbounded_send(Ok(RawJsonRpcMessage::request(
             "initialize".into(),
             Value::Object(params),
-            schema::RequestId::Number(1),
+            v1::RequestId::Number(1),
         )?))
         .map_err(Error::into_internal_error)?;
 
@@ -85,7 +85,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         let RawJsonRpcMessage::Response(response) = message else {
             continue;
         };
-        let schema::Response::Error { error, .. } = response else {
+        let v1::Response::Error { error, .. } = response else {
             panic!("malformed initialize should fail");
         };
         assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
@@ -162,9 +162,9 @@ async fn v2_agent_rejects_initialize_with_malformed_protocol_version() -> Result
 #[tokio::test(flavor = "current_thread")]
 async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Error> {
     let agent = <Agent as Role>::builder(Agent).on_receive_request(
-        async |initialize: schema::InitializeRequest, responder, _cx| {
+        async |initialize: v1::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-            responder.respond(schema::InitializeResponse::new(initialize.protocol_version))
+            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
         },
         agent_client_protocol::on_receive_request!(),
     );
@@ -194,9 +194,9 @@ async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Err
 #[tokio::test(flavor = "current_thread")]
 async fn builder_new_v1_agent_rejects_v2_client_negotiation() -> Result<(), Error> {
     let agent = Builder::new(Agent).on_receive_request(
-        async |initialize: schema::InitializeRequest, responder, _cx| {
+        async |initialize: v1::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-            responder.respond(schema::InitializeResponse::new(initialize.protocol_version))
+            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
         },
         agent_client_protocol::on_receive_request!(),
     );
@@ -207,9 +207,9 @@ async fn builder_new_v1_agent_rejects_v2_client_negotiation() -> Result<(), Erro
 #[tokio::test(flavor = "current_thread")]
 async fn builder_new_with_v1_agent_rejects_v2_client_negotiation() -> Result<(), Error> {
     let agent = Builder::new_with(Agent, NullHandler).on_receive_request(
-        async |initialize: schema::InitializeRequest, responder, _cx| {
+        async |initialize: v1::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-            responder.respond(schema::InitializeResponse::new(initialize.protocol_version))
+            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
         },
         agent_client_protocol::on_receive_request!(),
     );
@@ -232,7 +232,7 @@ async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(
     <Client as Role>::builder(Client)
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(schema::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v1::InitializeRequest::new(ProtocolVersion::V2))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -288,70 +288,70 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
     assert_notification::<v2::MessageMcpNotification>();
 
     assert_message_mapping!(
-        schema::ClientRequest,
+        v1::ClientRequest,
         "mcp/message",
-        json_value(schema::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        schema::ClientRequest::MessageMcpRequest(_)
+        json_value(v1::MessageMcpRequest::new("conn-1", "tools/list"))?,
+        v1::ClientRequest::MessageMcpRequest(_)
     );
     assert_response_mapping!(
-        schema::AgentResponse,
+        v1::AgentResponse,
         "mcp/message",
         serde_json::json!({ "tools": [] }),
-        schema::AgentResponse::MessageMcpResponse(_)
+        v1::AgentResponse::MessageMcpResponse(_)
     );
     assert_message_mapping!(
-        schema::ClientNotification,
+        v1::ClientNotification,
         "mcp/message",
-        json_value(schema::MessageMcpNotification::new(
+        json_value(v1::MessageMcpNotification::new(
             "conn-1",
             "notifications/tools/list"
         ))?,
-        schema::ClientNotification::MessageMcpNotification(_)
+        v1::ClientNotification::MessageMcpNotification(_)
     );
     assert_message_mapping!(
-        schema::AgentRequest,
+        v1::AgentRequest,
         "mcp/connect",
-        json_value(schema::ConnectMcpRequest::new("server-1"))?,
-        schema::AgentRequest::ConnectMcpRequest(_)
+        json_value(v1::ConnectMcpRequest::new("server-1"))?,
+        v1::AgentRequest::ConnectMcpRequest(_)
     );
     assert_message_mapping!(
-        schema::AgentRequest,
+        v1::AgentRequest,
         "mcp/message",
-        json_value(schema::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        schema::AgentRequest::MessageMcpRequest(_)
+        json_value(v1::MessageMcpRequest::new("conn-1", "tools/list"))?,
+        v1::AgentRequest::MessageMcpRequest(_)
     );
     assert_message_mapping!(
-        schema::AgentRequest,
+        v1::AgentRequest,
         "mcp/disconnect",
-        json_value(schema::DisconnectMcpRequest::new("conn-1"))?,
-        schema::AgentRequest::DisconnectMcpRequest(_)
+        json_value(v1::DisconnectMcpRequest::new("conn-1"))?,
+        v1::AgentRequest::DisconnectMcpRequest(_)
     );
     assert_response_mapping!(
-        schema::ClientResponse,
+        v1::ClientResponse,
         "mcp/connect",
-        json_value(schema::ConnectMcpResponse::new("conn-1"))?,
-        schema::ClientResponse::ConnectMcpResponse(_)
+        json_value(v1::ConnectMcpResponse::new("conn-1"))?,
+        v1::ClientResponse::ConnectMcpResponse(_)
     );
     assert_response_mapping!(
-        schema::ClientResponse,
+        v1::ClientResponse,
         "mcp/message",
         serde_json::json!({ "tools": [] }),
-        schema::ClientResponse::MessageMcpResponse(_)
+        v1::ClientResponse::MessageMcpResponse(_)
     );
     assert_response_mapping!(
-        schema::ClientResponse,
+        v1::ClientResponse,
         "mcp/disconnect",
         serde_json::json!({}),
-        schema::ClientResponse::DisconnectMcpResponse(_)
+        v1::ClientResponse::DisconnectMcpResponse(_)
     );
     assert_message_mapping!(
-        schema::AgentNotification,
+        v1::AgentNotification,
         "mcp/message",
-        json_value(schema::MessageMcpNotification::new(
+        json_value(v1::MessageMcpNotification::new(
             "conn-1",
             "notifications/tools/list"
         ))?,
-        schema::AgentNotification::MessageMcpNotification(_)
+        v1::AgentNotification::MessageMcpNotification(_)
     );
 
     assert_message_mapping!(
@@ -478,13 +478,13 @@ async fn v2_agent_serves_v1_client_with_v2_handlers() -> Result<(), Error> {
         .builder()
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(schema::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
 
             let session = cx
-                .send_request(schema::NewSessionRequest::new(cwd()?))
+                .send_request(v1::NewSessionRequest::new(cwd()?))
                 .block_task()
                 .await?;
             assert_eq!(session.session_id.0.as_ref(), "v2-session");
@@ -620,12 +620,12 @@ async fn v1_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
         .builder()
         .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
             let initialize = cx
-                .send_request(schema::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
 
-            let request = cx.send_request(schema::NewSessionRequest::new(cwd()?));
+            let request = cx.send_request(v1::NewSessionRequest::new(cwd()?));
             request.cancel()?;
             let error = request
                 .block_task()

@@ -2,10 +2,12 @@
 //!
 //! Provides a convenient API for running one-shot prompts against ACP components.
 
-use agent_client_protocol::schema::{
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::schema::v1::{
     AudioContent, ContentBlock, EmbeddedResourceResource, ImageContent, InitializeRequest,
-    ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, TextContent,
+    PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    StopReason, TextContent,
 };
 use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage};
@@ -24,7 +26,7 @@ use std::path::PathBuf;
 ///
 /// ```no_run
 /// use yopo::content_block_to_string;
-/// use agent_client_protocol::schema::{ContentBlock, TextContent};
+/// use agent_client_protocol::schema::v1::{ContentBlock, TextContent};
 ///
 /// let block = ContentBlock::Text(TextContent::new("Hello".to_string()));
 /// assert_eq!(content_block_to_string(&block), "Hello");
@@ -99,101 +101,103 @@ pub async fn prompt_with_callback(
             },
             agent_client_protocol::on_receive_dispatch!(),
         )
-        .connect_with(component, |cx: agent_client_protocol::ConnectionTo<Agent>| async move {
-            // Initialize the agent
-            let _init_response = cx
-                .send_request(InitializeRequest::new(ProtocolVersion::V1))
-                .block_task()
-                .await?;
+        .connect_with(
+            component,
+            |cx: agent_client_protocol::ConnectionTo<Agent>| async move {
+                // Initialize the agent
+                let _init_response = cx
+                    .send_request(InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
 
-            let mut session = cx
-                .build_session(PathBuf::from("."))
-                .block_task()
-                .start_session()
-                .await?;
+                let mut session = cx
+                    .build_session(PathBuf::from("."))
+                    .block_task()
+                    .start_session()
+                    .await?;
 
-            session.send_prompt(prompt_text)?;
+                session.send_prompt(prompt_text)?;
 
-            loop {
-                let update = session.read_update().await?;
-                match update {
-                    agent_client_protocol::SessionMessage::SessionMessage(message) => {
-                        MatchDispatch::new(message)
-                            .if_notification(async |notification: SessionNotification| {
-                                tracing::debug!(
-                                    ?notification,
-                                    "yopo: received SessionNotification"
-                                );
-                                // Call the callback for each agent message chunk
-                                if let agent_client_protocol::schema::SessionUpdate::AgentMessageChunk(
-                                    content_chunk,
-                                ) = notification.update
-                                {
-                                    callback(content_chunk.content).await;
+                loop {
+                    let update = session.read_update().await?;
+                    match update {
+                        agent_client_protocol::SessionMessage::SessionMessage(message) => {
+                            MatchDispatch::new(message)
+                                .if_notification(async |notification: SessionNotification| {
+                                    tracing::debug!(
+                                        ?notification,
+                                        "yopo: received SessionNotification"
+                                    );
+                                    // Call the callback for each agent message chunk
+                                    if let SessionUpdate::AgentMessageChunk(content_chunk) =
+                                        notification.update
+                                    {
+                                        callback(content_chunk.content).await;
+                                    }
+                                    Ok(())
+                                })
+                                .await
+                                .if_request(async |request: RequestPermissionRequest, responder| {
+                                    // Auto-approve all permission requests by selecting the first option
+                                    // that looks "allow-ish"
+                                    let outcome = request
+                                        .options
+                                        .iter()
+                                        .find(|option| match option.kind {
+                                            PermissionOptionKind::AllowOnce
+                                            | PermissionOptionKind::AllowAlways => true,
+                                            PermissionOptionKind::RejectOnce
+                                            | PermissionOptionKind::RejectAlways
+                                            | _ => false,
+                                        })
+                                        .map_or(RequestPermissionOutcome::Cancelled, |option| {
+                                            RequestPermissionOutcome::Selected(
+                                                SelectedPermissionOutcome::new(
+                                                    option.option_id.clone(),
+                                                ),
+                                            )
+                                        });
+
+                                    responder.respond(RequestPermissionResponse::new(outcome))?;
+
+                                    Ok(())
+                                })
+                                .await
+                                .otherwise(async |_msg| Ok(()))
+                                .await?;
+                        }
+                        agent_client_protocol::SessionMessage::StopReason(stop_reason) => {
+                            match stop_reason {
+                                StopReason::EndTurn => break,
+                                StopReason::MaxTokens => {
+                                    tracing::debug!("Agent hit max tokens limit");
+                                    break;
                                 }
-                                Ok(())
-                            })
-                            .await
-                            .if_request(async |request: RequestPermissionRequest, responder| {
-                                // Auto-approve all permission requests by selecting the first option
-                                // that looks "allow-ish"
-                                let outcome = request
-                                    .options
-                                    .iter()
-                                    .find(|option| match option.kind {
-                                        agent_client_protocol::schema::PermissionOptionKind::AllowOnce
-                                        | agent_client_protocol::schema::PermissionOptionKind::AllowAlways => true,
-                                        agent_client_protocol::schema::PermissionOptionKind::RejectOnce
-                                        | agent_client_protocol::schema::PermissionOptionKind::RejectAlways
-                                        | _ => false,
-                                    })
-                                    .map_or(RequestPermissionOutcome::Cancelled, |option| {
-                                        RequestPermissionOutcome::Selected(
-                                            SelectedPermissionOutcome::new(
-                                                option.option_id.clone(),
-                                            ),
-                                        )
-                                    });
-
-                                responder.respond(RequestPermissionResponse::new(outcome))?;
-
-                                Ok(())
-                            })
-                            .await
-                            .otherwise(async |_msg| Ok(()))
-                            .await?;
-                    }
-                    agent_client_protocol::SessionMessage::StopReason(stop_reason) => {
-                        match stop_reason {
-                            agent_client_protocol::schema::StopReason::EndTurn => break,
-                            agent_client_protocol::schema::StopReason::MaxTokens => {
-                                tracing::debug!("Agent hit max tokens limit");
-                                break;
-                            }
-                            agent_client_protocol::schema::StopReason::MaxTurnRequests => {
-                                tracing::debug!("Agent hit max turn requests limit");
-                                break;
-                            }
-                            agent_client_protocol::schema::StopReason::Refusal => {
-                                tracing::warn!("Agent refused to continue");
-                                break;
-                            }
-                            agent_client_protocol::schema::StopReason::Cancelled => {
-                                tracing::debug!("Session was cancelled");
-                                break;
-                            }
-                            other => {
-                                tracing::warn!("Unknown stop reason: {:?}", other);
-                                break;
+                                StopReason::MaxTurnRequests => {
+                                    tracing::debug!("Agent hit max turn requests limit");
+                                    break;
+                                }
+                                StopReason::Refusal => {
+                                    tracing::warn!("Agent refused to continue");
+                                    break;
+                                }
+                                StopReason::Cancelled => {
+                                    tracing::debug!("Session was cancelled");
+                                    break;
+                                }
+                                other => {
+                                    tracing::warn!("Unknown stop reason: {:?}", other);
+                                    break;
+                                }
                             }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
 
-            Ok(())
-        })
+                Ok(())
+            },
+        )
         .await?;
 
     Ok(())

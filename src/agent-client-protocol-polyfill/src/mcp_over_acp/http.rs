@@ -3,7 +3,7 @@
 use agent_client_protocol::{
     BoxFuture, Channel, ConnectTo, RawJsonRpcMessage, RawJsonRpcParams,
     role::mcp,
-    schema::{
+    schema::v1::{
         Notification as RpcNotification, Request as RpcRequest, RequestId, Response as RpcResponse,
     },
 };

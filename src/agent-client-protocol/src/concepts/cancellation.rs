@@ -142,7 +142,7 @@
 //!
 //! ```
 //! # use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
-//! use agent_client_protocol::schema::CancelRequestNotification;
+//! use agent_client_protocol::schema::v1::CancelRequestNotification;
 //!
 //! # fn example() {
 //! let builder = UntypedRole.builder().on_receive_notification(
@@ -187,5 +187,5 @@
 //! [`Responder::cancellation`]: crate::Responder::cancellation
 //! [`Responder`]: crate::Responder
 //! [`Error::request_cancelled`]: crate::Error::request_cancelled
-//! [`CancelRequestNotification`]: crate::schema::CancelRequestNotification
-//! [`ProtocolLevelNotification`]: crate::schema::ProtocolLevelNotification
+//! [`CancelRequestNotification`]: crate::schema::v1::CancelRequestNotification
+//! [`ProtocolLevelNotification`]: crate::schema::v1::ProtocolLevelNotification

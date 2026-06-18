@@ -9,9 +9,10 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use agent_client_protocol::schema::{
-    McpOverAcpMessage, RequestId, Response as RpcResponse, SuccessorMessage,
+use agent_client_protocol::schema::v1::{
+    Notification as RpcNotification, Request as RpcRequest, RequestId, Response as RpcResponse,
 };
+use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
 use agent_client_protocol::{
     DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams, Role, UntypedMessage,
 };
@@ -559,16 +560,14 @@ impl MessageInfo {
     /// - `_mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).
-    fn from_request(req: agent_client_protocol::schema::Request<RawJsonRpcParams>) -> Self {
+    fn from_request(req: RpcRequest<RawJsonRpcParams>) -> Self {
         let untyped =
             UntypedMessage::parse_message(&req.method, &params_from_transport(req.params))
                 .expect("untyped message is infallible");
         Self::from_untyped(Successor(false), Some(req.id), Protocol::Acp, untyped)
     }
 
-    fn from_notification(
-        notification: agent_client_protocol::schema::Notification<RawJsonRpcParams>,
-    ) -> Self {
+    fn from_notification(notification: RpcNotification<RawJsonRpcParams>) -> Self {
         let untyped = UntypedMessage::parse_message(
             &notification.method,
             &params_from_transport(notification.params),

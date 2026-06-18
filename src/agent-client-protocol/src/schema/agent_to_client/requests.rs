@@ -1,6 +1,6 @@
 #[cfg(feature = "unstable_elicitation")]
-use crate::schema::{CreateElicitationRequest, CreateElicitationResponse};
-use crate::schema::{
+use crate::schema::v1::{CreateElicitationRequest, CreateElicitationResponse};
+use crate::schema::v1::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse,
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionRequest, RequestPermissionResponse, TerminalOutputRequest,

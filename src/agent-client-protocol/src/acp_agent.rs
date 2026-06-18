@@ -1,6 +1,6 @@
 //! Utilities for connecting to ACP agents and proxies.
 //!
-//! This module provides [`AcpAgent`], a convenient wrapper around [`crate::schema::McpServer`]
+//! This module provides [`AcpAgent`], a convenient wrapper around [`crate::schema::v1::McpServer`]
 //! that can be parsed from either a command string or JSON configuration.
 
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ use std::sync::Arc;
 use async_process::Child;
 use std::pin::pin;
 
+use crate::schema::v1::{EnvVariable, McpServer as SchemaMcpServer, McpServerStdio};
 use crate::{Client, Conductor, Role};
 
 /// Direction of a line being sent or received.
@@ -30,7 +31,7 @@ pub enum LineDirection {
 /// byte stream serialization automatically. This is the primary way to connect to agents
 /// that run as separate executables.
 ///
-/// This is a wrapper around [`crate::schema::McpServer`] that provides convenient parsing
+/// This is a wrapper around [`crate::schema::v1::McpServer`] that provides convenient parsing
 /// from command-line strings or JSON configurations.
 ///
 /// # Use Cases
@@ -56,7 +57,7 @@ pub enum LineDirection {
 /// let agent = AcpAgent::from_str(r#"{"type": "stdio", "name": "my-agent", "command": "python", "args": ["my_agent.py"], "env": []}"#).unwrap();
 /// ```
 pub struct AcpAgent {
-    server: crate::schema::McpServer,
+    server: SchemaMcpServer,
     debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
 }
 
@@ -73,9 +74,9 @@ impl std::fmt::Debug for AcpAgent {
 }
 
 impl AcpAgent {
-    /// Create a new `AcpAgent` from an [`crate::schema::McpServer`] configuration.
+    /// Create a new `AcpAgent` from an [`crate::schema::v1::McpServer`] configuration.
     #[must_use]
-    pub fn new(server: crate::schema::McpServer) -> Self {
+    pub fn new(server: SchemaMcpServer) -> Self {
         Self {
             server,
             debug_callback: None,
@@ -104,15 +105,15 @@ impl AcpAgent {
             .expect("valid bash command")
     }
 
-    /// Get the underlying [`crate::schema::McpServer`] configuration.
+    /// Get the underlying [`crate::schema::v1::McpServer`] configuration.
     #[must_use]
-    pub fn server(&self) -> &crate::schema::McpServer {
+    pub fn server(&self) -> &SchemaMcpServer {
         &self.server
     }
 
-    /// Convert into the underlying [`crate::schema::McpServer`] configuration.
+    /// Convert into the underlying [`crate::schema::v1::McpServer`] configuration.
     #[must_use]
-    pub fn into_server(self) -> crate::schema::McpServer {
+    pub fn into_server(self) -> SchemaMcpServer {
         self.server
     }
 
@@ -155,7 +156,7 @@ impl AcpAgent {
         crate::Error,
     > {
         match &self.server {
-            crate::schema::McpServer::Stdio(stdio) => {
+            SchemaMcpServer::Stdio(stdio) => {
                 let mut cmd = async_process::Command::new(&stdio.command);
                 cmd.args(&stdio.args);
                 for env_var in &stdio.env {
@@ -182,10 +183,10 @@ impl AcpAgent {
 
                 Ok((child_stdin, child_stdout, child_stderr, child))
             }
-            crate::schema::McpServer::Http(_) => Err(crate::util::internal_error(
+            SchemaMcpServer::Http(_) => Err(crate::util::internal_error(
                 "HTTP transport not yet supported by AcpAgent",
             )),
-            crate::schema::McpServer::Sse(_) => Err(crate::util::internal_error(
+            SchemaMcpServer::Sse(_) => Err(crate::util::internal_error(
                 "SSE transport not yet supported by AcpAgent",
             )),
             _ => Err(crate::util::internal_error(
@@ -387,7 +388,7 @@ impl AcpAgent {
 
         for (i, arg) in args.iter().enumerate() {
             if let Some((name, value)) = parse_env_var(arg) {
-                env.push(crate::schema::EnvVariable::new(name, value));
+                env.push(EnvVariable::new(name, value));
                 command_idx = i + 1;
             } else {
                 break;
@@ -410,10 +411,8 @@ impl AcpAgent {
             .to_string();
 
         Ok(AcpAgent {
-            server: crate::schema::McpServer::Stdio(
-                crate::schema::McpServerStdio::new(name, command)
-                    .args(cmd_args)
-                    .env(env),
+            server: SchemaMcpServer::Stdio(
+                McpServerStdio::new(name, command).args(cmd_args).env(env),
             ),
             debug_callback: None,
         })
@@ -449,7 +448,7 @@ impl FromStr for AcpAgent {
         let trimmed = s.trim();
 
         if trimmed.starts_with('{') {
-            let server: crate::schema::McpServer = serde_json::from_str(trimmed)
+            let server: SchemaMcpServer = serde_json::from_str(trimmed)
                 .map_err(|e| crate::util::internal_error(format!("Failed to parse JSON: {e}")))?;
             return Ok(Self {
                 server,
@@ -472,7 +471,7 @@ mod tests {
     fn test_parse_simple_command() {
         let agent = AcpAgent::from_str("python agent.py").unwrap();
         match agent.server {
-            crate::schema::McpServer::Stdio(stdio) => {
+            SchemaMcpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "python");
                 assert_eq!(stdio.command, PathBuf::from("python"));
                 assert_eq!(stdio.args, vec!["agent.py"]);
@@ -486,7 +485,7 @@ mod tests {
     fn test_parse_command_with_args() {
         let agent = AcpAgent::from_str("node server.js --port 8080 --verbose").unwrap();
         match agent.server {
-            crate::schema::McpServer::Stdio(stdio) => {
+            SchemaMcpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "node");
                 assert_eq!(stdio.command, PathBuf::from("node"));
                 assert_eq!(stdio.args, vec!["server.js", "--port", "8080", "--verbose"]);
@@ -500,7 +499,7 @@ mod tests {
     fn test_parse_command_with_quotes() {
         let agent = AcpAgent::from_str(r#"python "my agent.py" --name "Test Agent""#).unwrap();
         match agent.server {
-            crate::schema::McpServer::Stdio(stdio) => {
+            SchemaMcpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "python");
                 assert_eq!(stdio.command, PathBuf::from("python"));
                 assert_eq!(stdio.args, vec!["my agent.py", "--name", "Test Agent"]);
@@ -521,7 +520,7 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            crate::schema::McpServer::Stdio(stdio) => {
+            SchemaMcpServer::Stdio(stdio) => {
                 assert_eq!(stdio.name, "my-agent");
                 assert_eq!(stdio.command, PathBuf::from("/usr/bin/python"));
                 assert_eq!(stdio.args, vec!["agent.py", "--verbose"]);
@@ -541,7 +540,7 @@ mod tests {
         }"#;
         let agent = AcpAgent::from_str(json).unwrap();
         match agent.server {
-            crate::schema::McpServer::Http(http) => {
+            SchemaMcpServer::Http(http) => {
                 assert_eq!(http.name, "remote-agent");
                 assert_eq!(http.url, "https://example.com/agent");
                 assert!(http.headers.is_empty());

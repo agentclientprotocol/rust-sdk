@@ -1,6 +1,6 @@
 //! Core JSON-RPC server support.
 
-use agent_client_protocol_schema::{
+use agent_client_protocol_schema::v1::{
     JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification,
     Request as RpcRequest, RequestId, Response as RpcResponse, SessionId,
 };
@@ -295,7 +295,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 ///
 /// ```
 /// # use agent_client_protocol::{Agent, Client, ConnectTo};
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, AgentCapabilities};
+/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
 /// # use agent_client_protocol_test::StatusUpdate;
 /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
 /// Agent.builder()
@@ -455,7 +455,7 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, SessionNotification};
+/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -480,7 +480,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol_test::*;
 /// # use agent_client_protocol::{JsonRpcRequest, JsonRpcMessage, UntypedMessage};
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
+/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // Define an enum for multiple request types
@@ -518,7 +518,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol_test::*;
 /// # use agent_client_protocol::Dispatch;
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, SessionNotification};
+/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // on_receive_dispatch receives Dispatch which can be either a request or notification
@@ -558,7 +558,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol_test::*;
 /// # use agent_client_protocol::{Dispatch, UntypedMessage};
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
+/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -668,7 +668,7 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::schema::InitializeRequest;
+/// # use agent_client_protocol::schema::v1::InitializeRequest;
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -700,7 +700,7 @@ where
 /// # use agent_client_protocol::UntypedRole;
 /// # use agent_client_protocol::{Builder};
 /// # use agent_client_protocol::Stdio;
-/// # use agent_client_protocol::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, SessionNotification};
+/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// let transport = Stdio::new();
 ///
@@ -1002,7 +1002,7 @@ impl<
     /// ```ignore
     /// # use agent_client_protocol::UntypedRole;
     /// # use agent_client_protocol::{Builder};
-    /// # use agent_client_protocol::schema::{PromptRequest, PromptResponse, SessionNotification};
+    /// # use agent_client_protocol::schema::v1::{PromptRequest, PromptResponse, SessionNotification};
     /// # fn example<R: agent_client_protocol::Role>(connection: Builder<R, impl agent_client_protocol::HandleMessageAs<R>>) {
     /// connection.on_receive_request(async |request: PromptRequest, responder, cx| {
     ///     // Send a notification while processing
@@ -1192,7 +1192,7 @@ impl<
     ///
     /// ```ignore
     /// use agent_client_protocol::Agent;
-    /// use agent_client_protocol::schema::InitializeRequest;
+    /// use agent_client_protocol::schema::v1::InitializeRequest;
     ///
     /// // Conductor receiving from agent direction - messages will be unwrapped from SuccessorMessage
     /// connection.on_receive_request_from(Agent, async |req: InitializeRequest, responder, cx| {
@@ -1350,7 +1350,7 @@ impl<
     /// # use agent_client_protocol::UntypedRole;
     /// # use agent_client_protocol::{Builder};
     /// # use agent_client_protocol::ByteStreams;
-    /// # use agent_client_protocol::schema::InitializeRequest;
+    /// # use agent_client_protocol::schema::v1::InitializeRequest;
     /// # use agent_client_protocol::Stdio;
     /// # use agent_client_protocol_test::*;
     /// # async fn example() -> Result<(), agent_client_protocol::Error> {
@@ -1902,11 +1902,11 @@ fn cancellation_request_id_from_message(
     message: &UntypedMessage,
 ) -> Result<Option<RequestId>, crate::Error> {
     let (method, params) = peel_successor_envelopes(&message.method, &message.params);
-    if !crate::schema::CancelRequestNotification::matches_method(method) {
+    if !crate::schema::v1::CancelRequestNotification::matches_method(method) {
         return Ok(None);
     }
 
-    let notification = crate::schema::CancelRequestNotification::parse_message(method, params)?;
+    let notification = crate::schema::v1::CancelRequestNotification::parse_message(method, params)?;
     Ok(Some(notification.request_id))
 }
 
@@ -1954,7 +1954,7 @@ fn peel_successor_envelopes<'message>(
 #[must_use]
 pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) -> bool {
     let method = notification.method();
-    if crate::schema::CancelRequestNotification::matches_method(method) {
+    if crate::schema::v1::CancelRequestNotification::matches_method(method) {
         return true;
     }
     if !crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(method) {
@@ -1964,7 +1964,7 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
     match notification.to_untyped_message() {
         Ok(untyped) => {
             let (method, _params) = peel_successor_envelopes(&untyped.method, &untyped.params);
-            crate::schema::CancelRequestNotification::matches_method(method)
+            crate::schema::v1::CancelRequestNotification::matches_method(method)
         }
         Err(error) => {
             tracing::debug!(
@@ -2522,7 +2522,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     #[cfg(feature = "unstable_cancel_request")]
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<crate::schema::RequestId>,
+        request_id: impl Into<crate::schema::v1::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -2541,14 +2541,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<crate::schema::RequestId>,
+        request_id: impl Into<crate::schema::v1::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
     {
         self.send_notification_to(
             peer,
-            crate::schema::CancelRequestNotification::new(request_id),
+            crate::schema::v1::CancelRequestNotification::new(request_id),
         )
     }
 
@@ -3669,7 +3669,7 @@ impl SentRequestCancellation {
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
         let untyped = self.remote_style.transform_outgoing_message(
-            crate::schema::CancelRequestNotification::new(self.request_id.clone()),
+            crate::schema::v1::CancelRequestNotification::new(self.request_id.clone()),
         )?;
 
         send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })

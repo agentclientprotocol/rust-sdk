@@ -135,8 +135,8 @@ macro_rules! impl_jsonrpc_request_enum {
                     _ => {
                         if let Some(custom_method) = method.strip_prefix('_') {
                             $crate::util::json_cast_params(params).map(
-                                |ext_req: $crate::schema::ExtRequest| {
-                                    Self::$ext_variant($crate::schema::ExtRequest::new(
+                                |ext_req: $crate::schema::v1::ExtRequest| {
+                                    Self::$ext_variant($crate::schema::v1::ExtRequest::new(
                                         custom_method.to_string(),
                                         ext_req.params,
                                     ))
@@ -198,8 +198,8 @@ macro_rules! impl_jsonrpc_notification_enum {
                     _ => {
                         if let Some(custom_method) = method.strip_prefix('_') {
                             $crate::util::json_cast_params(params).map(
-                                |ext_notif: $crate::schema::ExtNotification| {
-                                    Self::$ext_variant($crate::schema::ExtNotification::new(
+                                |ext_notif: $crate::schema::v1::ExtNotification| {
+                                    Self::$ext_variant($crate::schema::v1::ExtNotification::new(
                                         custom_method.to_string(),
                                         ext_notif.params,
                                     ))
@@ -315,8 +315,20 @@ mod proxy_protocol;
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_impls;
 
-// Re-export everything from agent_client_protocol_schema
-pub use agent_client_protocol_schema::*;
+/// Agent Client Protocol v1 schema types.
+pub mod v1 {
+    pub use agent_client_protocol_schema::v1::*;
+}
 
-// Re-export proxy/MCP protocol types
+/// Agent Client Protocol v2 draft schema types.
+#[cfg(feature = "unstable_protocol_v2")]
+pub mod v2 {
+    pub use agent_client_protocol_schema::v2::*;
+}
+
+pub use agent_client_protocol_schema::{
+    IntoMaybeUndefined, IntoOption, MaybeUndefined, ProtocolVersion,
+};
+
+// Re-export SDK-local proxy/MCP bridge protocol types flatly.
 pub use proxy_protocol::*;

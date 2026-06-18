@@ -1,6 +1,7 @@
-use agent_client_protocol::schema::{
-    ContentBlock, McpOverAcpMessage, Meta, PromptRequest, SessionId, SuccessorMessage, TextContent,
+use agent_client_protocol::schema::v1::{
+    ContentBlock, Meta, PromptRequest, SessionId, TextContent,
 };
+use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
 use agent_client_protocol::{JsonRpcMessage, UntypedMessage};
 use serde_json::{Value, json};
 

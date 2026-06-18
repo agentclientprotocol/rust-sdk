@@ -41,7 +41,7 @@
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
-//! # use agent_client_protocol::schema::{InitializeRequest, ProtocolVersion};
+//! # use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 //! # use agent_client_protocol_test::StatusUpdate;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.builder().connect_with(transport, async |cx| {
