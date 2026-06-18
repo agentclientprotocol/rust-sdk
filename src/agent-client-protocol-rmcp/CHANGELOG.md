@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v0.14.0...agent-client-protocol-rmcp-v0.15.0) - 2026-06-18
+
+### Added
+
+- *(transports)* add HTTP/WebSocket transport support ([#162](https://github.com/agentclientprotocol/rust-sdk/pull/162))
+
 ## [0.14.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v0.13.1...agent-client-protocol-rmcp-v0.14.0) - 2026-06-05
 
 ### Other
