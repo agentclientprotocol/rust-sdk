@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -137,21 +137,30 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         incoming,
     };
     let mut lifecycle = HttpTransportLifecycle::new(connection);
-    let mut pending_posts = FuturesUnordered::new();
+    let mut ordered_posts = PostQueue::default();
+    let mut response_posts = PostQueue::default();
 
     let result = loop {
         let event = {
             let outgoing_next = outgoing.next().fuse();
             let sse_event_next = sse_event_rx.next().fuse();
             let sse_failure_next = lifecycle.next_sse_failure().fuse();
-            let post_next = next_post_completion(&mut pending_posts).fuse();
-            pin_mut!(outgoing_next, sse_event_next, sse_failure_next, post_next);
+            let ordered_post_next = ordered_posts.next_completion().fuse();
+            let response_post_next = response_posts.next_completion().fuse();
+            pin_mut!(
+                outgoing_next,
+                sse_event_next,
+                sse_failure_next,
+                ordered_post_next,
+                response_post_next
+            );
 
             futures::select! {
                 msg = outgoing_next => HttpLoopEvent::Outgoing(msg),
                 event = sse_event_next => HttpLoopEvent::SseEvent(event),
                 failure = sse_failure_next => HttpLoopEvent::SseFailure(failure),
-                post = post_next => HttpLoopEvent::Post(post),
+                post = ordered_post_next => HttpLoopEvent::Post(post),
+                post = response_post_next => HttpLoopEvent::Post(post),
             }
         };
 
@@ -219,8 +228,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
         }
 
+        let is_response = matches!(msg, RawJsonRpcMessage::Response(_));
         match state.prepare_post(msg) {
-            Ok(post) => pending_posts.push(post.into_completion()),
+            // Responses answer SSE-delivered callbacks and must not be blocked
+            // behind a POST that may be waiting for that callback response.
+            Ok(post) if is_response => response_posts.push(post),
+            Ok(post) => ordered_posts.push(post),
             Err(e) => {
                 error!("POST failed: {e}");
                 break Err(AcpError::internal_error().data(format!("POST: {e}")));
@@ -447,14 +460,36 @@ struct CompletedPost {
     result: Result<(), String>,
 }
 
-async fn next_post_completion(
-    pending_posts: &mut FuturesUnordered<BoxFuture<'static, CompletedPost>>,
-) -> CompletedPost {
-    loop {
-        if let Some(completed) = pending_posts.next().await {
-            return completed;
+#[derive(Default)]
+struct PostQueue {
+    queued: VecDeque<PendingPost>,
+    in_flight: Option<BoxFuture<'static, CompletedPost>>,
+}
+
+impl PostQueue {
+    fn push(&mut self, post: PendingPost) {
+        self.queued.push_back(post);
+        self.start_next();
+    }
+
+    async fn next_completion(&mut self) -> CompletedPost {
+        loop {
+            self.start_next();
+            if let Some(in_flight) = self.in_flight.as_mut() {
+                let completed = in_flight.await;
+                self.in_flight = None;
+                return completed;
+            }
+            futures::future::pending::<()>().await;
         }
-        futures::future::pending::<()>().await;
+    }
+
+    fn start_next(&mut self) {
+        if self.in_flight.is_none()
+            && let Some(post) = self.queued.pop_front()
+        {
+            self.in_flight = Some(post.into_completion());
+        }
     }
 }
 
@@ -1132,6 +1167,110 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fork_sse_header.as_deref(), Some("forked-session"));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn outbound_posts_are_sent_in_order() {
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+        let second_seen = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let first_started = first_started.clone();
+                let release_first = release_first.clone();
+                let second_seen = second_seen.clone();
+                move |Json(message): Json<RawJsonRpcMessage>| {
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    let second_seen = second_seen.clone();
+                    async move {
+                        if is_initialize_request(&message) {
+                            return initialize_response().await.into_response();
+                        }
+
+                        match method_for_message(&message) {
+                            Some("custom/first") => {
+                                first_started.notify_one();
+                                release_first.notified().await;
+                            }
+                            Some("custom/second") => {
+                                second_seen.notify_one();
+                            }
+                            _ => {}
+                        }
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get(pending_sse)
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                "custom/first".to_string(),
+                json!({}),
+            )
+            .unwrap()))
+            .unwrap();
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                "custom/second".to_string(),
+                json!({}),
+            )
+            .unwrap()))
+            .unwrap();
+
+        timeout(Duration::from_secs(1), first_started.notified())
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), second_seen.notified())
+                .await
+                .is_err(),
+            "second POST must not be sent while the first POST is pending"
+        );
+
+        release_first.notify_one();
+        timeout(Duration::from_secs(1), second_seen.notified())
+            .await
+            .unwrap();
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
