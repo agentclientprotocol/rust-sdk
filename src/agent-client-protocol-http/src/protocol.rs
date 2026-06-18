@@ -2,7 +2,9 @@ use agent_client_protocol::{RawJsonRpcMessage, RawJsonRpcParams};
 
 pub(crate) const HEADER_CONNECTION_ID: &str = "acp-connection-id";
 pub(crate) const HEADER_SESSION_ID: &str = "acp-session-id";
+#[cfg(feature = "server")]
 pub(crate) const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
+#[cfg(feature = "server")]
 pub(crate) const JSON_MIME_TYPE: &str = "application/json";
 
 pub(crate) fn method_requires_session_header(method: &str) -> bool {
@@ -84,6 +86,7 @@ pub(crate) fn session_id_from_message(msg: &RawJsonRpcMessage) -> Option<String>
     }
 }
 
+#[cfg(feature = "server")]
 pub(crate) fn apply_session_header_to_message(
     msg: &mut RawJsonRpcMessage,
     session_id: &str,
@@ -103,6 +106,7 @@ pub(crate) fn apply_session_header_to_message(
     }
 }
 
+#[cfg(feature = "server")]
 fn apply_session_header_to_params(
     params: &mut Option<RawJsonRpcParams>,
     session_id: &str,
@@ -139,8 +143,10 @@ fn apply_session_header_to_params(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "server")]
     use agent_client_protocol::schema::RequestId;
     use axum::http::{HeaderMap, HeaderValue};
+    #[cfg(feature = "server")]
     use serde_json::json;
 
     use super::*;
@@ -156,6 +162,7 @@ mod tests {
         assert_eq!(headers[HEADER_SESSION_ID], "session-1");
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn session_header_is_inserted_into_object_params() {
         let mut message = RawJsonRpcMessage::request(
@@ -173,6 +180,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn session_header_conflict_is_rejected() {
         let mut message = RawJsonRpcMessage::request(
@@ -190,6 +198,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "server")]
     #[test]
     fn protocol_level_message_ignores_session_header() {
         let mut message = RawJsonRpcMessage::notification(
@@ -205,7 +214,7 @@ mod tests {
         assert!(value["params"].get("sessionId").is_none());
     }
 
-    #[cfg(feature = "unstable_cancel_request")]
+    #[cfg(all(feature = "server", feature = "unstable_cancel_request"))]
     #[test]
     fn successor_wrapped_cancel_request_ignores_session_header() {
         let mut message = RawJsonRpcMessage::notification(

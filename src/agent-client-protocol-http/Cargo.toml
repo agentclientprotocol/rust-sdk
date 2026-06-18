@@ -10,33 +10,63 @@ description = "HTTP and WebSocket transport for the Agent Client Protocol (ACP)"
 keywords = ["acp", "agent", "protocol", "http", "websocket"]
 categories = ["development-tools", "web-programming::http-server"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = []
-unstable_cancel_request = ["agent-client-protocol/unstable_cancel_request"]
+client = [
+    "dep:agent-client-protocol",
+    "dep:eventsource-stream",
+    "dep:futures",
+    "dep:reqwest",
+    "dep:serde_json",
+    "dep:thiserror",
+    "dep:tokio",
+    "dep:tokio-tungstenite",
+    "dep:tracing",
+    "dep:url",
+]
+server = [
+    "dep:agent-client-protocol",
+    "dep:async-stream",
+    "dep:axum",
+    "dep:futures",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tower-http",
+    "dep:tracing",
+    "dep:uuid",
+]
+unstable_cancel_request = ["agent-client-protocol?/unstable_cancel_request"]
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, optional = true }
 
-futures.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
-tracing.workspace = true
-thiserror.workspace = true
+futures = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"], optional = true }
+tracing = { workspace = true, optional = true }
 
 # Server
-axum = { workspace = true, features = ["ws", "macros"] }
-tower-http = { workspace = true, features = ["cors"] }
-async-stream = { workspace = true }
-uuid = { workspace = true }
+async-stream = { workspace = true, optional = true }
+axum = { workspace = true, features = ["ws", "macros"], optional = true }
+tower-http = { workspace = true, features = ["cors"], optional = true }
+uuid = { workspace = true, optional = true }
 
 # Client
-reqwest = { workspace = true, features = ["stream"] }
-eventsource-stream = { workspace = true }
-url = { workspace = true }
-tokio-tungstenite = { workspace = true }
+eventsource-stream = { workspace = true, optional = true }
+reqwest = { workspace = true, features = ["stream"], optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+url = { workspace = true, optional = true }
 
 [dev-dependencies]
 agent-client-protocol-test.workspace = true
+async-stream.workspace = true
+axum = { workspace = true, features = ["ws", "macros"] }
+tokio-tungstenite.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

@@ -10,13 +10,26 @@
 
 `POST /acp` request bodies are limited to 16 MiB.
 
+## Features
+
+The crate does not enable either transport side by default. Opt into only the side(s) you need.
+
+```toml
+agent-client-protocol-http = { version = "...", features = ["client"] }
+agent-client-protocol-http = { version = "...", features = ["server"] }
+agent-client-protocol-http = { version = "...", features = ["client", "server"] }
+```
+
+The `client` feature exposes `HttpClient`. The `server` feature exposes
+`AcpHttpServer`, `ServerOptions`, and `CorsOptions`.
+
 ## Request Cancellation
 
 Request cancellation is available when the transport crate forwards the core SDK
 feature:
 
 ```toml
-agent-client-protocol-http = { version = "...", features = ["unstable_cancel_request"] }
+agent-client-protocol-http = { version = "...", features = ["client", "server", "unstable_cancel_request"] }
 ```
 
 `$/cancel_request` is connection-scoped. The HTTP transport does not apply
