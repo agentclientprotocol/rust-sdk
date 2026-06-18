@@ -186,17 +186,24 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_can_elicit_from_v1_client() -> Result<(), Error> {
+async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result<(), Error> {
     use agent_client_protocol::schema::{self, ProtocolVersion, v2};
     use agent_client_protocol::{Agent, Client};
     use std::collections::BTreeMap;
+
+    fn v2_initialize_response_with_session(
+        protocol_version: ProtocolVersion,
+    ) -> v2::InitializeResponse {
+        v2::InitializeResponse::new(protocol_version)
+            .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+    }
 
     let agent = Agent
         .v2()
         .on_receive_request(
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2::InitializeResponse::new(ProtocolVersion::V2))
+                responder.respond(v2_initialize_response_with_session(ProtocolVersion::V2))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -223,7 +230,7 @@ async fn v2_agent_can_elicit_from_v1_client() -> Result<(), Error> {
                             content.get("name"),
                             Some(&v2::ElicitationContentValue::String("Ada".into()))
                         );
-                        responder.respond(v2::PromptResponse::new(v2::StopReason::EndTurn))
+                        responder.respond_with_error(Error::request_cancelled())
                     })?;
 
                 Ok(())
@@ -255,14 +262,15 @@ async fn v2_agent_can_elicit_from_v1_client() -> Result<(), Error> {
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
 
-            let prompt = cx
+            let error = cx
                 .send_request(schema::PromptRequest::new(
                     "sess_abc123",
                     vec!["continue".into()],
                 ))
                 .block_task()
-                .await?;
-            assert_eq!(prompt.stop_reason, schema::StopReason::EndTurn);
+                .await
+                .expect_err("test agent cancels the prompt after the elicitation round trip");
+            assert_eq!(i32::from(error.code), -32800);
             Ok(())
         })
         .await

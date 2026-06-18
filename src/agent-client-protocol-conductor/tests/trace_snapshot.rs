@@ -74,7 +74,7 @@ impl EventNormalizer {
     fn normalize_json(&mut self, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
-                let normalized: serde_json::Map<String, serde_json::Value> = map
+                let mut normalized: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
                     .map(|(k, v)| {
                         let v = if k == "sessionId" {
@@ -89,6 +89,14 @@ impl EventNormalizer {
                         (k, v)
                     })
                     .collect();
+                if matches!(
+                    normalized.get("auth"),
+                    Some(serde_json::Value::Object(auth))
+                        if auth.len() == 1
+                            && auth.get("terminal") == Some(&serde_json::Value::Bool(false))
+                ) {
+                    normalized.remove("auth");
+                }
                 serde_json::Value::Object(normalized)
             }
             serde_json::Value::Array(arr) => {
@@ -197,9 +205,6 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                                 "writeTextFile": Bool(false),
                             },
                             "terminal": Bool(false),
-                            "auth": Object {
-                                "terminal": Bool(false),
-                            },
                         },
                     },
                 },

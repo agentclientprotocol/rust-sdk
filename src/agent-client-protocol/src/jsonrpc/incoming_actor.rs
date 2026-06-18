@@ -152,17 +152,19 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             &protocol_compat,
                             &request_cancellations,
                         ) {
-                            Ok(dispatch) => {
-                                dispatch_dispatch(
-                                    counterpart.clone(),
-                                    connection,
-                                    dispatch,
-                                    &mut dynamic_handlers,
-                                    &mut handler,
-                                    &mut pending_messages,
-                                    &request_cancellations,
-                                )
-                                .await?;
+                            Ok(dispatches) => {
+                                for dispatch in dispatches {
+                                    dispatch_dispatch(
+                                        counterpart.clone(),
+                                        connection,
+                                        dispatch,
+                                        &mut dynamic_handlers,
+                                        &mut handler,
+                                        &mut pending_messages,
+                                        &request_cancellations,
+                                    )
+                                    .await?;
+                                }
                             }
                             Err(error) => {
                                 report_handler_error(
@@ -188,17 +190,19 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             &protocol_compat,
                             &request_cancellations,
                         ) {
-                            Ok(dispatch) => {
-                                dispatch_dispatch(
-                                    counterpart.clone(),
-                                    connection,
-                                    dispatch,
-                                    &mut dynamic_handlers,
-                                    &mut handler,
-                                    &mut pending_messages,
-                                    &request_cancellations,
-                                )
-                                .await?;
+                            Ok(dispatches) => {
+                                for dispatch in dispatches {
+                                    dispatch_dispatch(
+                                        counterpart.clone(),
+                                        connection,
+                                        dispatch,
+                                        &mut dynamic_handlers,
+                                        &mut handler,
+                                        &mut pending_messages,
+                                        &request_cancellations,
+                                    )
+                                    .await?;
+                                }
                             }
                             Err(error) => {
                                 report_handler_error(connection, None, request_method, error)?;
@@ -266,22 +270,28 @@ fn dispatch_from_message<Counterpart: Role>(
     id: Option<agent_client_protocol_schema::RequestId>,
     protocol_compat: &ProtocolCompat,
     request_cancellations: &super::RequestCancellationRegistry,
-) -> Result<Dispatch, crate::Error> {
+) -> Result<Vec<Dispatch>, crate::Error> {
     let message = UntypedMessage::new(&method, crate::jsonrpc::params_from_transport(params))
         .expect("well-formed JSON");
-    let message = protocol_compat.incoming_message(message)?;
 
     match id {
-        Some(id) => Ok(Dispatch::Request(
-            message,
-            Responder::new(
-                connection.message_tx.clone(),
-                method.to_string(),
-                id,
-                request_cancellations,
-            ),
-        )),
-        None => Ok(Dispatch::Notification(message)),
+        Some(id) => {
+            let message = protocol_compat.incoming_message(message)?;
+            Ok(vec![Dispatch::Request(
+                message,
+                Responder::new(
+                    connection.message_tx.clone(),
+                    method.to_string(),
+                    id,
+                    request_cancellations,
+                ),
+            )])
+        }
+        None => Ok(protocol_compat
+            .incoming_notification(message)?
+            .into_iter()
+            .map(Dispatch::Notification)
+            .collect()),
     }
 }
 
