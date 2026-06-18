@@ -1,11 +1,11 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex as StdMutex},
 };
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
-    schema::Response as RpcResponse,
+    schema::{RequestId, Response as RpcResponse},
 };
 use futures::{
     SinkExt, StreamExt,
@@ -127,14 +127,14 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         rx: mut outgoing,
         tx: incoming,
     } = channel;
-    let (open_session_tx, mut open_session_rx) = mpsc::unbounded();
     let (sse_failure_tx, mut sse_failure_rx) = mpsc::unbounded();
+    let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
     let connection = HttpConnection::new(endpoint, http);
     let state = Arc::new(ClientState {
         connection: connection.clone(),
         open_session_streams: Mutex::new(HashSet::new()),
+        pending_requests: Mutex::new(HashMap::new()),
         incoming,
-        open_session_tx,
     });
     let mut lifecycle = HttpTransportLifecycle::new(connection);
 
@@ -148,12 +148,16 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 }
                 None => break Ok(()),
             },
-            Some(session_id) = open_session_rx.next() => {
-                lifecycle.spawn_sse(
-                    state.clone(),
-                    Some(session_id),
-                    sse_failure_tx.clone(),
-                );
+            Some(event) = sse_event_rx.next() => {
+                state.deliver(event.message);
+                if let Some(session_id) = event.open_session_id {
+                    lifecycle.spawn_sse(
+                        state.clone(),
+                        Some(session_id),
+                        sse_event_tx.clone(),
+                        sse_failure_tx.clone(),
+                    );
+                }
                 continue;
             }
             Some(failure) = sse_failure_rx.next() => {
@@ -171,7 +175,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
             match state.initialize(msg).await {
                 Ok(InitializeOutcome::Connected) => {
-                    lifecycle.spawn_sse(state.clone(), None, sse_failure_tx.clone());
+                    lifecycle.spawn_sse(
+                        state.clone(),
+                        None,
+                        sse_event_tx.clone(),
+                        sse_failure_tx.clone(),
+                    );
                 }
                 Ok(InitializeOutcome::Rejected) => {}
                 Err(e) => {
@@ -189,7 +198,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 .await
                 .insert(session_id.clone())
         {
-            lifecycle.spawn_sse(state.clone(), Some(session_id), sse_failure_tx.clone());
+            lifecycle.spawn_sse(
+                state.clone(),
+                Some(session_id),
+                sse_event_tx.clone(),
+                sse_failure_tx.clone(),
+            );
         }
 
         if let Err(e) = state.post(msg).await {
@@ -206,6 +220,12 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 struct SseFailure {
     session_id: Option<String>,
     error: String,
+}
+
+#[derive(Debug)]
+struct SseMessage {
+    message: RawJsonRpcMessage,
+    open_session_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -300,10 +320,11 @@ impl HttpTransportLifecycle {
         &mut self,
         state: Arc<ClientState>,
         session_id: Option<String>,
+        event_tx: UnboundedSender<SseMessage>,
         failure_tx: UnboundedSender<SseFailure>,
     ) {
         self.sse_tasks
-            .push(spawn_sse(state, session_id, failure_tx));
+            .push(spawn_sse(state, session_id, event_tx, failure_tx));
     }
 
     async fn close(&mut self) {
@@ -322,11 +343,12 @@ impl Drop for HttpTransportLifecycle {
 fn spawn_sse(
     state: Arc<ClientState>,
     session_id: Option<String>,
+    event_tx: UnboundedSender<SseMessage>,
     failure_tx: UnboundedSender<SseFailure>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let label = session_id.clone();
-        let error = match state.sse(session_id).await {
+        let error = match state.sse(session_id, event_tx).await {
             Ok(()) => "SSE stream closed".to_string(),
             Err(e) => e,
         };
@@ -358,8 +380,8 @@ impl SseTasks {
 struct ClientState {
     connection: HttpConnection,
     open_session_streams: Mutex<HashSet<String>>,
+    pending_requests: Mutex<HashMap<RequestId, String>>,
     incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
-    open_session_tx: mpsc::UnboundedSender<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -437,8 +459,23 @@ impl ClientState {
             request = request.header(HEADER_SESSION_ID, session_id);
         }
 
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let pending_request = pending_request_for_message(&msg);
+        if let Some((id, method)) = &pending_request {
+            self.pending_requests
+                .lock()
+                .await
+                .insert(id.clone(), method.clone());
+        }
+
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(e) => {
+                self.remove_pending_request(pending_request.as_ref()).await;
+                return Err(e.to_string());
+            }
+        };
         if response.status().as_u16() != 202 && !response.status().is_success() {
+            self.remove_pending_request(pending_request.as_ref()).await;
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(format!("HTTP {status}: {body}"));
@@ -446,7 +483,11 @@ impl ClientState {
         Ok(())
     }
 
-    async fn sse(&self, session_id: Option<String>) -> Result<(), String> {
+    async fn sse(
+        &self,
+        session_id: Option<String>,
+        event_tx: UnboundedSender<SseMessage>,
+    ) -> Result<(), String> {
         let connection_id = self
             .connection
             .connection_id()
@@ -468,37 +509,87 @@ impl ClientState {
 
         let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
         while let Some(event) = events.next().await {
-            let payload = event.map_err(|e| e.to_string())?.data;
+            let event = event.map_err(|e| e.to_string())?;
+            let payload = event.data;
             if payload.is_empty() {
                 continue;
             }
-            match serde_json::from_str::<RawJsonRpcMessage>(&payload) {
-                Ok(msg) => {
-                    if let RawJsonRpcMessage::Response(RpcResponse::Result { result, .. }) = &msg
-                        && let Some(session_id) = result
-                            .get("sessionId")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                        && self
-                            .open_session_streams
-                            .lock()
-                            .await
-                            .insert(session_id.clone())
-                    {
-                        drop(self.open_session_tx.unbounded_send(session_id));
-                    }
-                    self.deliver(msg);
-                }
-                Err(e) => return Err(format!("malformed JSON-RPC payload: {e}")),
+            let msg = serde_json::from_str::<RawJsonRpcMessage>(&payload)
+                .map_err(|e| format!("malformed JSON-RPC payload: {e}"))?;
+            let open_session_id = self.session_to_open_for_response(&msg).await;
+
+            if event_tx
+                .unbounded_send(SseMessage {
+                    message: msg,
+                    open_session_id,
+                })
+                .is_err()
+            {
+                return Err("upstream channel closed".to_string());
             }
         }
         Ok(())
+    }
+
+    async fn remove_pending_request(&self, pending_request: Option<&(RequestId, String)>) {
+        if let Some((id, _)) = pending_request {
+            self.pending_requests.lock().await.remove(id);
+        }
+    }
+
+    async fn session_to_open_for_response(&self, msg: &RawJsonRpcMessage) -> Option<String> {
+        let RawJsonRpcMessage::Response(response) = msg else {
+            return None;
+        };
+        let Some(id) = msg.response_id().and_then(pending_request_key) else {
+            return None;
+        };
+        let method = self.pending_requests.lock().await.remove(&id);
+
+        let Some("session/new") = method.as_deref() else {
+            return None;
+        };
+        let RpcResponse::Result { result, .. } = response else {
+            return None;
+        };
+        let Some(session_id) = result
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+        else {
+            return None;
+        };
+
+        if self
+            .open_session_streams
+            .lock()
+            .await
+            .insert(session_id.clone())
+        {
+            Some(session_id)
+        } else {
+            None
+        }
     }
 
     fn deliver(&self, msg: RawJsonRpcMessage) {
         if self.incoming.unbounded_send(Ok(msg)).is_err() {
             debug!("upstream channel closed; dropping inbound message");
         }
+    }
+}
+
+fn pending_request_for_message(msg: &RawJsonRpcMessage) -> Option<(RequestId, String)> {
+    let RawJsonRpcMessage::Request(request) = msg else {
+        return None;
+    };
+    pending_request_key(&request.id).map(|id| (id, request.method.to_string()))
+}
+
+fn pending_request_key(id: &RequestId) -> Option<RequestId> {
+    match id {
+        RequestId::Null => None,
+        RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
     }
 }
 
@@ -736,6 +827,128 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "$/cancel_request"
         ));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn custom_response_with_session_id_does_not_open_session_sse() {
+        let (get_tx, mut get_rx) = tokio::sync::mpsc::unbounded_channel();
+        let response_ready = Arc::new(tokio::sync::Notify::new());
+        let post_count = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let post_count = post_count.clone();
+                let response_ready = response_ready.clone();
+                move |Json(_message): Json<RawJsonRpcMessage>| {
+                    let post_count = post_count.clone();
+                    let response_ready = response_ready.clone();
+                    async move {
+                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return initialize_response().await.into_response();
+                        }
+
+                        response_ready.notify_waiters();
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get({
+                let get_tx = get_tx.clone();
+                let response_ready = response_ready.clone();
+                move |headers: HeaderMap| {
+                    let get_tx = get_tx.clone();
+                    let response_ready = response_ready.clone();
+                    async move {
+                        let session_header = headers
+                            .get(HEADER_SESSION_ID)
+                            .and_then(|value| value.to_str().ok())
+                            .map(String::from);
+                        get_tx.send(session_header).unwrap();
+
+                        let stream = async_stream::stream! {
+                            response_ready.notified().await;
+                            yield Ok::<_, Infallible>(sse_event(
+                                RawJsonRpcMessage::response(
+                                    RequestId::Number(2),
+                                    Ok(json!({ "sessionId": "session-1" })),
+                                ),
+                            ));
+                            futures::future::pending::<()>().await;
+                        };
+                        Sse::new(stream)
+                    }
+                }
+            })
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "initialize".to_string(),
+                json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap()))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        let connection_sse_header = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(connection_sse_header.is_none());
+
+        caller
+            .tx
+            .unbounded_send(Ok(RawJsonRpcMessage::request(
+                "custom/sessionish".to_string(),
+                json!({}),
+                RequestId::Number(2),
+            )
+            .unwrap()))
+            .unwrap();
+        let response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            response,
+            RawJsonRpcMessage::Response(RpcResponse::Result {
+                id: RequestId::Number(2),
+                ..
+            })
+        ));
+
+        assert!(
+            timeout(Duration::from_millis(100), get_rx.recv())
+                .await
+                .is_err(),
+            "custom response must not open a session SSE stream"
+        );
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -1092,6 +1305,10 @@ mod tests {
 
     async fn pending_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
         Sse::new(futures::stream::pending())
+    }
+
+    fn sse_event(message: RawJsonRpcMessage) -> Event {
+        Event::default().data(serde_json::to_string(&message).unwrap())
     }
 
     async fn malformed_sse() -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
