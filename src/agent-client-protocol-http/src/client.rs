@@ -763,14 +763,17 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 )) => {}
                 Some(Ok(WsMessage::Close(frame))) => {
                     debug!("server closed WebSocket: {frame:?}");
-                    break;
+                    return Err(AcpError::internal_error()
+                        .data(format!("WebSocket closed by peer: {frame:?}")));
                 }
                 Some(Err(e)) => {
                     error!("WebSocket receive error: {e}");
                     return Err(AcpError::internal_error()
                         .data(format!("ws recv: {e}")));
                 }
-                None => break,
+                None => {
+                    return Err(AcpError::internal_error().data("WebSocket stream ended"));
+                }
             },
         }
     }
@@ -1648,6 +1651,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn peer_ws_close_fails_transport() {
+        let app = Router::new().route("/acp", get(close_ws));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("ws://{addr}")).unwrap();
+        let (_caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("WebSocket closed by peer"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn dropped_transport_future_deletes_initialized_connection() {
         let delete_count = Arc::new(AtomicUsize::new(0));
         let delete_count_for_handler = delete_count.clone();
@@ -1922,6 +1947,12 @@ mod tests {
             .unwrap();
             drop(socket.send(AxumWsMessage::Text(valid.into())).await);
             futures::future::pending::<()>().await;
+        })
+    }
+
+    async fn close_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
+        ws.on_upgrade(|mut socket| async move {
+            drop(socket.send(AxumWsMessage::Close(None)).await);
         })
     }
 

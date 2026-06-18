@@ -4,11 +4,35 @@
 
 - `POST /acp` with `initialize` creates a connection and returns `Acp-Connection-Id`.
 - Later `POST /acp` requests include `Acp-Connection-Id`; session-scoped requests also include `Acp-Session-Id` or `params.sessionId`.
-- `GET /acp` with `Accept: text/event-stream` streams agent messages over SSE.
+- `GET /acp` with `Accept: text/event-stream` streams agent messages over SSE. Use a connection-level stream for connection-scoped messages and per-session streams for session-scoped messages.
 - `GET /acp` with a WebSocket upgrade uses text frames for JSON-RPC messages.
 - `DELETE /acp` tears down the connection.
 
 `POST /acp` request bodies are limited to 16 MiB.
+
+## HTTP + SSE Streams
+
+After `initialize`, clients should open a connection-level SSE stream:
+
+- `GET /acp`
+- `Accept: text/event-stream`
+- `Acp-Connection-Id: <connection id>`
+- no `Acp-Session-Id`
+
+This stream carries connection-scoped messages.
+
+Session-scoped messages are routed to session-specific SSE streams. For each
+active session, clients should also open:
+
+- `GET /acp`
+- `Accept: text/event-stream`
+- `Acp-Connection-Id: <connection id>`
+- `Acp-Session-Id: <session id>`
+
+Open a session stream before sending methods such as `session/prompt`,
+`session/load`, `session/resume`, or other session-scoped requests. When a
+`session/new` or `session/fork` response returns a new `sessionId`, open an SSE
+stream for that returned session before expecting updates or responses for it.
 
 ## Features
 
