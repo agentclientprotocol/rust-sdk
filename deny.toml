@@ -104,9 +104,9 @@ confidence-threshold = 0.8
 # Allow 1 or more licenses on a per-crate basis, so that particular licenses
 # aren't accepted for every possible crate as with the normal allow list
 exceptions = [
-    # Static Mozilla/WebPKI root certificate data bundles. CDLA-Permissive-2.0
-    # is a permissive data license, so keep it scoped to certificate roots
-    # instead of allowing it for arbitrary code crates.
+    # Each entry is the crate and version constraint, and its specific allow
+    # list
+    #{ allow = ["Zlib"], crate = "adler32" },
 ]
 
 # Some crates don't have (easily) machine readable licensing information,
