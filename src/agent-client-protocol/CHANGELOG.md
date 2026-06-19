@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.14.0...v0.15.0) - 2026-06-18
+
+### Added
+
+- *(deps)* update schema to 0.14.0 ([#211](https://github.com/agentclientprotocol/rust-sdk/pull/211))
+- *(acp)* Update schema crate to 0.13.8 ([#210](https://github.com/agentclientprotocol/rust-sdk/pull/210))
+- *(transports)* add HTTP/WebSocket transport support ([#162](https://github.com/agentclientprotocol/rust-sdk/pull/162))
+- *(acp)* add unstable request cancellation support ([#179](https://github.com/agentclientprotocol/rust-sdk/pull/179))
+
+### Other
+
+- *(acp)* Replace jsonrpcmsg crate with shared schema types ([#205](https://github.com/agentclientprotocol/rust-sdk/pull/205))
+- *(acp)* Remove unused module files ([#204](https://github.com/agentclientprotocol/rust-sdk/pull/204))
+- *(deps)* Preserve serde_json object order ([#202](https://github.com/agentclientprotocol/rust-sdk/pull/202))
+
 ## [0.14.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.13.1...v0.14.0) - 2026-06-05
 
 ### Added
