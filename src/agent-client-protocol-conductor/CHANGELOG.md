@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - *(deps)* update schema to 0.14.0 ([#211](https://github.com/agentclientprotocol/rust-sdk/pull/211))
-- *(acp)* Update scheam crate to 0.13.8 ([#210](https://github.com/agentclientprotocol/rust-sdk/pull/210))
+- *(acp)* Update schema crate to 0.13.8 ([#210](https://github.com/agentclientprotocol/rust-sdk/pull/210))
 - *(transports)* add HTTP/WebSocket transport support ([#162](https://github.com/agentclientprotocol/rust-sdk/pull/162))
 - *(acp)* add unstable request cancellation support ([#179](https://github.com/agentclientprotocol/rust-sdk/pull/179))
 
