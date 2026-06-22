@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.15.1](https://github.com/agentclientprotocol/rust-sdk/compare/v0.15.0...v0.15.1) - 2026-06-22
+
+### Fixed
+
+- *(acp)* Hide agent stdio windows on Windows ([#215](https://github.com/agentclientprotocol/rust-sdk/pull/215))
+
 ## [0.15.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.14.0...v0.15.0) - 2026-06-18
 
 ### Added
