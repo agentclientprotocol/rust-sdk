@@ -340,21 +340,35 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
-                            "loadSession": Bool(false),
+                            "loadSession": Bool(true),
                             "promptCapabilities": Object {
-                                "image": Bool(false),
-                                "audio": Bool(false),
-                                "embeddedContext": Bool(false),
+                                "image": Bool(true),
+                                "audio": Bool(true),
+                                "embeddedContext": Bool(true),
                             },
                             "mcpCapabilities": Object {
-                                "http": Bool(false),
+                                "http": Bool(true),
                                 "sse": Bool(false),
                                 "acp": Bool(true),
                             },
-                            "sessionCapabilities": Object {},
-                            "auth": Object {},
+                            "sessionCapabilities": Object {
+                                "list": Object {},
+                                "delete": Object {},
+                                "additionalDirectories": Object {},
+                                "resume": Object {},
+                                "close": Object {},
+                            },
+                            "auth": Object {
+                                "logout": Object {},
+                            },
                         },
-                        "authMethods": Array [],
+                        "authMethods": Array [
+                            Object {
+                                "id": String("testy-agent-auth"),
+                                "name": String("Testy agent auth"),
+                                "description": String("Deterministic no-op authentication for ACP client testing"),
+                            },
+                        ],
                     },
                 },
             ),
@@ -389,6 +403,44 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     is_error: false,
                     payload: Object {
                         "sessionId": String("session:0"),
+                        "modes": Object {
+                            "currentModeId": String("chat"),
+                            "availableModes": Array [
+                                Object {
+                                    "id": String("chat"),
+                                    "name": String("Chat"),
+                                    "description": String("Default deterministic chat mode"),
+                                },
+                                Object {
+                                    "id": String("plan"),
+                                    "name": String("Plan"),
+                                    "description": String("Planning-focused test mode"),
+                                },
+                            ],
+                        },
+                        "configOptions": Array [
+                            Object {
+                                "id": String("verbosity"),
+                                "name": String("Verbosity"),
+                                "description": String("Controls how much text Testy includes in summaries"),
+                                "type": String("select"),
+                                "currentValue": String("normal"),
+                                "options": Array [
+                                    Object {
+                                        "value": String("brief"),
+                                        "name": String("Brief"),
+                                    },
+                                    Object {
+                                        "value": String("normal"),
+                                        "name": String("Normal"),
+                                    },
+                                    Object {
+                                        "value": String("verbose"),
+                                        "name": String("Verbose"),
+                                    },
+                                ],
+                            },
+                        ],
                     },
                 },
             ),
@@ -428,6 +480,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                                 "type": String("text"),
                                 "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None }), annotations: None }], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
                             },
+                            "messageId": String("testy-message-end-turn-1"),
                         },
                     },
                 },
