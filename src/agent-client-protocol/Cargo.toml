@@ -54,6 +54,9 @@ async-process.workspace = true
 blocking.workspace = true
 shell-words.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
+
 [dev-dependencies]
 agent-client-protocol-test.workspace = true
 clap.workspace = true

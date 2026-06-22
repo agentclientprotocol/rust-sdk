@@ -162,6 +162,12 @@ impl AcpAgent {
                 for env_var in &stdio.env {
                     cmd.env(&env_var.name, &env_var.value);
                 }
+                #[cfg(windows)]
+                {
+                    use async_process::windows::CommandExt as _;
+
+                    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+                }
                 cmd.stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
