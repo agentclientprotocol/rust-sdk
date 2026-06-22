@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v0.1.0...agent-client-protocol-http-v0.1.1) - 2026-06-22
+
+### Other
+
+- updated the following local packages: agent-client-protocol
+
 ## [0.1.0](https://github.com/agentclientprotocol/rust-sdk/releases/tag/agent-client-protocol-http-v0.1.0) - 2026-06-18
 
 ### Added
