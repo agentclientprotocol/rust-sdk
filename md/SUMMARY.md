@@ -20,6 +20,7 @@
 
 # Tools
 
+- [Testy ACP Test Agent](./testy.md)
 - [Trace Viewer](./trace-viewer.md)
 
 # Reference

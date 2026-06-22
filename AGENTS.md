@@ -87,3 +87,7 @@ Common scopes for this repository (typically the crate name without the `agent-c
 - `deps` – Dependency updates
 
 **Agents should help ensure commit messages follow this format.**
+
+## Testing
+
+Run the tests with `just test` instead of `cargo test`.
