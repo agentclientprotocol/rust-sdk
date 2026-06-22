@@ -65,7 +65,7 @@ impl CorsOptions {
         match self {
             Self::Disabled => None,
             Self::AllowOrigins(origins) => Some(AllowOrigin::list(origins.clone())),
-            Self::AllowAnyOrigin => Some(AllowOrigin::mirror_request()),
+            Self::AllowAnyOrigin => Some(AllowOrigin::any()),
         }
     }
 
@@ -196,6 +196,8 @@ async fn handle_get(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use tower::{Layer as _, ServiceExt as _, service_fn};
 
     #[test]
     fn cors_is_disabled_by_default() {
@@ -226,5 +228,61 @@ mod tests {
         let origin = HeaderValue::from_static("https://example.com");
 
         assert!(CorsOptions::allow_any_origin().allows_origin(Some(&origin)));
+    }
+
+    #[tokio::test]
+    async fn allow_any_origin_uses_wildcard_cors_header() {
+        let response = default_cors(
+            CorsOptions::allow_any_origin()
+                .allow_origin_layer()
+                .expect("CORS layer"),
+        )
+        .layer(service_fn(|_: axum::http::Request<Body>| async {
+            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+        }))
+        .oneshot(
+            axum::http::Request::builder()
+                .header(header::ORIGIN, "https://example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("*"))
+        );
+        assert!(response.headers().get(header::VARY).is_none());
+    }
+
+    #[tokio::test]
+    async fn allowlisted_origins_vary_by_origin() {
+        let response = default_cors(
+            CorsOptions::allow_origins(["https://example.com"])
+                .unwrap()
+                .allow_origin_layer()
+                .expect("CORS layer"),
+        )
+        .layer(service_fn(|_: axum::http::Request<Body>| async {
+            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+        }))
+        .oneshot(
+            axum::http::Request::builder()
+                .header(header::ORIGIN, "https://example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://example.com"))
+        );
+        assert_eq!(
+            response.headers().get(header::VARY),
+            Some(&HeaderValue::from_static("origin"))
+        );
     }
 }
