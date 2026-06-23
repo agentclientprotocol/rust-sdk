@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
+use futures::stream;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
@@ -58,8 +59,11 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     mut handler: impl HandleDispatchFrom<Counterpart>,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
-    let mut my_rx = transport_rx
-        .map(IncomingProtocolMsg::Transport)
+    let transport_with_eof = futures::StreamExt::chain(
+        transport_rx.map(IncomingProtocolMsg::Transport),
+        stream::iter([IncomingProtocolMsg::TransportClosed]),
+    );
+    let mut my_rx = transport_with_eof
         .merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler))
         .merge(reply_rx.map(IncomingProtocolMsg::Reply));
 
@@ -76,6 +80,11 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     while let Some(message_result) = my_rx.next().await {
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
+            IncomingProtocolMsg::TransportClosed => {
+                tracing::debug!("Transport closed (EOF), shutting down incoming actor");
+                return Err(crate::Error::internal_error().data("transport closed".to_string()));
+            }
+
             IncomingProtocolMsg::Reply(message) => match message {
                 ReplyMessage::Subscribe {
                     id,
@@ -253,6 +262,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
     Transport(Result<RawJsonRpcMessage, crate::Error>),
+    TransportClosed,
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
     Reply(ReplyMessage),
 }
