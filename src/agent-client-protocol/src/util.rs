@@ -105,8 +105,9 @@ pub async fn both<E>(
 /// Run `background` until `foreground` completes.
 ///
 /// Returns the result of `foreground`. If `background` errors before
-/// `foreground` completes, the error is propagated. If `background`
-/// completes with `Ok(())`, we continue waiting for `foreground`.
+/// `foreground` completes, the error is propagated and `foreground` is
+/// cancelled. If `background` completes with `Ok(())`, we continue
+/// waiting for `foreground`.
 pub async fn run_until<T, E>(
     background: impl Future<Output = Result<(), E>>,
     foreground: impl Future<Output = Result<T, E>>,
