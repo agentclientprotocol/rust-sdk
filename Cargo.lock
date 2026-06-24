@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "quote",
  "syn",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-test",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "0.15.1"
+version = "0.15.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1969,9 +1969,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "1.7.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0810a9f717d9828f475fe1f629f4c305c8464b7f496c3a854b58d29e65f4058e"
+checksum = "1d1f571c72940a19d9532fe52dbea8bc9912bf1d766c2970bb824056b86f3f59"
 dependencies = [
  "async-trait",
  "base64",
@@ -1996,9 +1996,9 @@ dependencies = [
 
 [[package]]
 name = "rmcp-macros"
-version = "1.7.0"
+version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6aefac48c364756e97f04c0401ba3231e8607882c7c1d92da0437dc16307904d"
+checksum = "1aad0035b69380782d78ea95b508327e6deaa2235909053e596eea8f27b5e1d5"
 dependencies = [
  "darling",
  "proc-macro2",
@@ -2037,9 +2037,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "6b92b125634d9b795e7beca796cc790df15a7fb38323bf3196fda83292d06b1f"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
