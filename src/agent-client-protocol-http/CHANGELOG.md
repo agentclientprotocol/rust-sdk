@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.1.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v0.1.1...agent-client-protocol-http-v0.1.2) - 2026-06-24
+## [1.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v0.1.1...agent-client-protocol-http-v1.0.0) - 2026-06-24
 
 ### Other
 

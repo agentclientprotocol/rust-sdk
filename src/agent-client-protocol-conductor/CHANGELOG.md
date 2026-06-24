@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.15.2](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.15.1...agent-client-protocol-conductor-v0.15.2) - 2026-06-24
+## [1.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v0.15.1...agent-client-protocol-conductor-v1.0.0) - 2026-06-24
 
 ### Added
 

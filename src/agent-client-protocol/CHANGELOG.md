@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.15.2](https://github.com/agentclientprotocol/rust-sdk/compare/v0.15.1...v0.15.2) - 2026-06-24
+## [1.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.15.1...v1.0.0) - 2026-06-24
 
 ### Added
 

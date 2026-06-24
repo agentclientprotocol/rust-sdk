@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "quote",
  "syn",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "0.1.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-test",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "0.15.2"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
