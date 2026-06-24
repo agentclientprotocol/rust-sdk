@@ -26,7 +26,6 @@ unstable = [
     "unstable_elicitation",
     "unstable_end_turn_token_usage",
     "unstable_mcp_over_acp",
-    "unstable_model_config_category",
     "unstable_session_fork",
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
@@ -35,7 +34,6 @@ unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request
 unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
 unstable_end_turn_token_usage = ["agent-client-protocol-schema/unstable_end_turn_token_usage"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
-unstable_model_config_category = ["agent-client-protocol-schema/unstable_model_config_category"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
 
