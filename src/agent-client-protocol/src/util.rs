@@ -107,24 +107,26 @@ pub async fn both<E>(
 /// Returns the result of `foreground`. If `background` errors before
 /// `foreground` completes, the error is propagated. If `background`
 /// completes with `Ok(())`, we continue waiting for `foreground`.
-pub async fn run_until<T, E>(
+pub fn run_until<T, E>(
     background: impl Future<Output = Result<(), E>>,
     foreground: impl Future<Output = Result<T, E>>,
-) -> Result<T, E> {
+) -> impl Future<Output = Result<T, E>> {
     use futures::future::{Either, select};
     use std::pin::pin;
 
-    match select(pin!(background), pin!(foreground)).await {
-        Either::Left((bg_result, fg_future)) => {
-            // Background finished first
-            bg_result?; // propagate error, or if Ok(()), keep waiting
-            fg_future.await
+    Box::pin(async move {
+        match select(pin!(background), pin!(foreground)).await {
+            Either::Left((bg_result, fg_future)) => {
+                // Background finished first
+                bg_result?; // propagate error, or if Ok(()), keep waiting
+                fg_future.await
+            }
+            Either::Right((fg_result, _bg_future)) => {
+                // Foreground finished first, drop background
+                fg_result
+            }
         }
-        Either::Right((fg_result, _bg_future)) => {
-            // Foreground finished first, drop background
-            fg_result
-        }
-    }
+    })
 }
 
 /// Process items from a stream concurrently.
