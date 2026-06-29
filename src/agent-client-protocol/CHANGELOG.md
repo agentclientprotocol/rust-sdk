@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/v1.0.0...v1.0.1) - 2026-06-29
+
+### Fixed
+
+- *(acp)* Ignore all unhandled notifications ([#229](https://github.com/agentclientprotocol/rust-sdk/pull/229))
+
 ## [1.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v0.15.1...v1.0.0) - 2026-06-24
 
 ### Added
