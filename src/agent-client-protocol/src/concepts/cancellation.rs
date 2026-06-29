@@ -9,9 +9,9 @@
 //! finish with normal data, or may respond to the original request with
 //! [`Error::request_cancelled`] (`-32800`). The requesting side always
 //! receives a response to the original request; cancellation only changes
-//! *which* response that is. Unhandled `$/`-prefixed notifications are ignored
-//! by the SDK (even without this feature), so peers that do not support
-//! cancellation simply will not act on it.
+//! *which* response that is. Unhandled notifications are ignored by the SDK
+//! (even without this feature), so peers that do not support cancellation
+//! simply will not act on it.
 //!
 //! # Cancelling outgoing requests
 //!

@@ -3,10 +3,9 @@
 //! Everything in this file holds **regardless of feature flags** — these are
 //! baseline guarantees of the dispatch loop:
 //!
-//! - Unhandled protocol-level (`$/`-prefixed) notifications are ignored
-//!   instead of rejected, so peers that use optional protocol-level
-//!   extensions (such as `$/cancel_request`) interoperate with builds that do
-//!   not support them.
+//! - Unhandled notifications are ignored instead of rejected, so peers that
+//!   use optional protocol-level or vendor extensions interoperate with
+//!   components that do not support them.
 //! - A `_proxy/successor` envelope that cannot be peeled still reaches the
 //!   handler chain unchanged.
 //! - A response routed to a request handle that was already dropped is
@@ -112,7 +111,7 @@ impl JsonRpcResponse for SimpleResponse {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn unhandled_protocol_level_notifications_are_ignored() {
+async fn unhandled_notifications_are_ignored() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;
 
@@ -153,14 +152,28 @@ async fn unhandled_protocol_level_notifications_are_ignored() {
                 )
                 .await
                 .unwrap();
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"_x.ai/settings/update","params":{"theme":"auto"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"unknown/notification","params":{"value":1}}
+"#,
+                )
+                .await
+                .unwrap();
             client_writer.flush().await.unwrap();
 
             // The server processes messages in order: a response to this
-            // request proves the unknown `$/` notification before it was
+            // request proves the unknown notifications sent before it were
             // ignored without erroring or closing the connection.
             client_writer
                 .write_all(
-                    br#"{"jsonrpc":"2.0","id":2,"method":"simple_method","params":{"message":"after cancel"}}
+                    br#"{"jsonrpc":"2.0","id":2,"method":"simple_method","params":{"message":"after notifications"}}
 "#,
                 )
                 .await
@@ -173,7 +186,58 @@ async fn unhandled_protocol_level_notifications_are_ignored() {
                   "jsonrpc": "2.0",
                   "id": 2,
                   "result": {
-                    "result": "echo: after cancel"
+                    "result": "echo: after notifications"
+                  }
+                }"#]]
+            .assert_eq(&serde_json::to_string_pretty(&response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unhandled_requests_are_rejected_with_method_not_found() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, client_reader) = tokio::io::duplex(4096);
+
+            let server_transport = agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            );
+            let server = UntypedRole.builder();
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":1,"method":"unknown/request","params":{"value":1}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let response = read_jsonrpc_response_line(&mut client_reader).await;
+            expect![[r#"
+                {
+                  "jsonrpc": "2.0",
+                  "id": 1,
+                  "error": {
+                    "code": -32601,
+                    "message": "Method not found",
+                    "data": "unknown/request"
                   }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&response).unwrap());

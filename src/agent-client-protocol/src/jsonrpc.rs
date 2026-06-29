@@ -262,7 +262,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 ///                              │ Handled::No
 ///                              ▼
 /// ┌─────────────────────────────────────────────────────────────────┐
-/// │  Unhandled: Error response sent (or queued if retry=true)       │
+/// │  Unhandled: requests error, notifications ignored               │
 /// └─────────────────────────────────────────────────────────────────┘
 /// ```
 ///
@@ -280,7 +280,8 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 ///
 /// The `retry` flag in `Handled::No` controls what happens when no handler claims a message:
 ///
-/// - **`retry: false`** (default) - Send a "method not found" error response immediately.
+/// - **`retry: false`** (default) - Send a "method not found" error
+///   response immediately for requests, or ignore notifications.
 /// - **`retry: true`** - Queue the message and retry it when new dynamic handlers are added.
 ///
 /// This mechanism exists because of a timing issue with sessions: when a `session/new`
@@ -1922,6 +1923,7 @@ fn cancellation_request_id_from_message(
 ///   flows on to the handler chain, which is responsible for reporting it.
 ///
 /// [`SuccessorMessage`]: crate::schema::SuccessorMessage
+#[cfg(feature = "unstable_cancel_request")]
 fn peel_successor_envelopes<'message>(
     mut method: &'message str,
     mut params: &'message serde_json::Value,
@@ -1974,28 +1976,6 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
             false
         }
     }
-}
-
-/// Whether the dispatch is a protocol-level (`$/`-prefixed) notification,
-/// possibly wrapped in a [`SuccessorMessage`] envelope.
-///
-/// Unhandled protocol-level notifications are ignored rather than rejected
-/// with a method-not-found error. This is deliberately *not* feature-gated:
-/// protocol-level notifications are optional by design, so a peer that sends
-/// `$/cancel_request` must be able to interoperate with an SDK built without
-/// `unstable_cancel_request` (which simply won't act on it).
-///
-/// A handler that explicitly declines with `retry: true` takes precedence
-/// over this fallback: the notification is queued for newly registered
-/// dynamic handlers like any other retried message.
-///
-/// [`SuccessorMessage`]: crate::schema::SuccessorMessage
-fn is_protocol_level_notification(dispatch: &Dispatch) -> bool {
-    let Dispatch::Notification(message) = dispatch else {
-        return false;
-    };
-    let (method, _params) = peel_successor_envelopes(&message.method, &message.params);
-    method.starts_with("$/")
 }
 
 /// Messages send to be serialized over the transport.
@@ -4585,6 +4565,7 @@ impl<R: Role> ConnectTo<R> for Channel {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_returns_plain_messages_unchanged() {
         let params = serde_json::json!({ "key": "value" });
@@ -4593,6 +4574,7 @@ mod tests {
         assert_eq!(peeled, &params);
     }
 
+    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_unwraps_nested_envelopes() {
         let params = serde_json::json!({
@@ -4607,6 +4589,7 @@ mod tests {
         assert_eq!(peeled, &serde_json::json!({ "requestId": "req-1" }));
     }
 
+    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_leaves_malformed_envelopes_intact() {
         // No string `method` field: the envelope cannot be peeled, so the
