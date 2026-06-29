@@ -48,13 +48,13 @@ not a string, number, or null) is different: when the receiver is built with
 the `unstable_cancel_request` feature, it is reported back with an
 out-of-band error notification, like any other malformed notification. A
 receiver built without the feature never parses the params and ignores the
-notification like any other unhandled `$/` notification (see
+notification like any other unhandled notification (see
 [Interoperability](#interoperability)).
 
 ## Interoperability
 
 Protocol-level (`$/`-prefixed) notifications are optional by design. The SDK
-ignores unhandled `$/` notifications instead of rejecting them with a
+ignores unhandled notifications instead of rejecting them with a
 method-not-found error, and does so even when the `unstable_cancel_request`
 feature is disabled. A peer that sends `$/cancel_request` to a component built
 without cancellation support therefore loses nothing: the request simply runs

@@ -436,9 +436,9 @@ async fn dispatch_dispatch<Counterpart: Role>(
     // If the message was never handled, check whether the retry flag was set.
     // If so, enqueue it for later processing. Else, reject it.
     //
-    // An explicit retry request takes precedence over the protocol-level
-    // fallback below, so that handlers may defer `$/` notifications to a
-    // dynamic handler that has not been registered yet.
+    // An explicit retry request takes precedence over the unhandled-message
+    // fallback below, so that handlers may defer notifications to a dynamic
+    // handler that has not been registered yet.
     if retry_any {
         tracing::debug!(
             ?method,
@@ -446,15 +446,14 @@ async fn dispatch_dispatch<Counterpart: Role>(
         );
         pending_messages.push(dispatch);
         Ok(())
-    } else if super::is_protocol_level_notification(&dispatch) {
-        // Unsupported protocol-level notifications are ignored rather than
-        // rejected; see `is_protocol_level_notification` for the rationale.
-        tracing::debug!(?method, "Ignoring unhandled protocol-level notification");
-        Ok(())
     } else {
         match dispatch {
-            Dispatch::Request(..) | Dispatch::Notification(_) => {
-                tracing::info!(?method, "Rejecting message with error, no handler");
+            Dispatch::Notification(_) => {
+                tracing::debug!(?method, "Ignoring unhandled notification");
+                Ok(())
+            }
+            Dispatch::Request(..) => {
+                tracing::info!(?method, "Rejecting request with error, no handler");
                 let method = dispatch.method().to_string();
                 dispatch.respond_with_error(
                     crate::Error::method_not_found().data(method),

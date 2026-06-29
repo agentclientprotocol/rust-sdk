@@ -2086,7 +2086,7 @@ async fn retried_protocol_level_notification_reaches_later_dynamic_handler() {
                 .builder()
                 .on_receive_notification(
                     // Decline the notification but ask for a retry: this must
-                    // take precedence over the "ignore unhandled `$/`
+                    // take precedence over the "ignore unhandled
                     // notifications" fallback.
                     async |cancel: CancelRequestNotification, cx: ConnectionTo<UntypedRole>| {
                         Ok::<_, agent_client_protocol::Error>(Handled::No {
