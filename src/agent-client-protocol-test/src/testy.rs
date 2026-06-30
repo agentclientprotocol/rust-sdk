@@ -98,11 +98,14 @@ pub enum TestyScenario {
     Content,
     /// Emits tool-call create/update notifications with content, diff, and locations.
     ToolCalls,
-    /// Sends every stable agent-to-client request and records client responses or errors.
+    /// Sends every stable agent-to-client request and any enabled unstable callback coverage.
     Callbacks,
+    /// Runs unstable elicitation coverage without the stable callback requests.
+    #[cfg(feature = "unstable")]
+    Elicitations,
     /// Reports whether the session has received a `session/cancel` notification.
     CancelStatus,
-    /// Runs all stable scenarios in a deterministic order.
+    /// Runs all stable scenarios and any enabled unstable coverage in a deterministic order.
     Full,
 }
 
@@ -113,6 +116,8 @@ impl TestyScenario {
             Self::Content,
             Self::ToolCalls,
             Self::Callbacks,
+            #[cfg(feature = "unstable")]
+            Self::Elicitations,
             Self::CancelStatus,
             Self::Full,
         ]
@@ -124,6 +129,8 @@ impl TestyScenario {
             "content" => Some(Self::Content),
             "tool_calls" | "tool calls" | "tools" => Some(Self::ToolCalls),
             "callbacks" | "client_callbacks" | "client callbacks" => Some(Self::Callbacks),
+            #[cfg(feature = "unstable")]
+            "elicitations" | "elicitation" | "elicit" => Some(Self::Elicitations),
             "cancel_status" | "cancel status" | "cancel" => Some(Self::CancelStatus),
             "full" | "all" => Some(Self::Full),
             _ => None,
@@ -136,6 +143,8 @@ impl TestyScenario {
             Self::Content => "content",
             Self::ToolCalls => "tool_calls",
             Self::Callbacks => "callbacks",
+            #[cfg(feature = "unstable")]
+            Self::Elicitations => "elicitations",
             Self::CancelStatus => "cancel_status",
             Self::Full => "full",
         }
@@ -696,6 +705,15 @@ impl Testy {
                     .await?;
                 #[cfg(feature = "unstable")]
                 if !self.is_cancelled(session_id) {
+                    self.exercise_elicitations(session_id, connection, report)
+                        .await?;
+                }
+            }
+            #[cfg(feature = "unstable")]
+            TestyScenario::Elicitations => {
+                if self.is_cancelled(session_id) {
+                    report.push("elicitations: cancelled".to_string());
+                } else {
                     self.exercise_elicitations(session_id, connection, report)
                         .await?;
                 }
@@ -1669,12 +1687,24 @@ fn available_commands() -> Vec<AvailableCommand> {
         "Exercise agent-to-client requests"
     };
 
-    vec![
+    let full_command =
         AvailableCommand::new("full", full_description).input(AvailableCommandInput::Unstructured(
             UnstructuredCommandInput::new("optional scenario arguments"),
-        )),
-        AvailableCommand::new("callbacks", callbacks_description),
-    ]
+        ));
+    let callbacks_command = AvailableCommand::new("callbacks", callbacks_description);
+
+    #[cfg(feature = "unstable")]
+    {
+        vec![
+            full_command,
+            callbacks_command,
+            AvailableCommand::new("elicitations", "Exercise unstable elicitation requests"),
+        ]
+    }
+    #[cfg(not(feature = "unstable"))]
+    {
+        vec![full_command, callbacks_command]
+    }
 }
 
 #[cfg(feature = "unstable")]
@@ -2045,5 +2075,22 @@ mod tests {
             StopReason::Cancelled
         );
         assert!(!testy.is_cancelled(&session_id));
+    }
+
+    #[cfg(feature = "unstable")]
+    #[test]
+    fn parse_command_accepts_elicitation_prompt_aliases() {
+        for input in ["elicitations", "elicitation", "elicit"] {
+            let command = parse_command(input);
+            assert!(
+                matches!(
+                    command,
+                    TestyCommand::RunScenario {
+                        scenario: TestyScenario::Elicitations
+                    }
+                ),
+                "unexpected command for {input:?}: {command:?}"
+            );
+        }
     }
 }

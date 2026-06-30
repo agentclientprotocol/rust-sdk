@@ -1643,7 +1643,7 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
 
 #[cfg(feature = "unstable")]
 #[tokio::test]
-async fn testy_callbacks_with_unstable_feature_exercises_all_elicitation_create_and_complete_paths()
+async fn testy_elicitations_prompt_exercises_all_elicitation_create_and_complete_paths()
 -> Result<(), agent_client_protocol::Error> {
     let agent_messages = Arc::new(Mutex::new(Vec::<String>::new()));
     let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
@@ -1794,13 +1794,7 @@ async fn testy_callbacks_with_unstable_feature_exercises_all_elicitation_create_
             let response = cx
                 .send_request(PromptRequest::new(
                     session.session_id,
-                    vec![
-                        TestyCommand::RunScenario {
-                            scenario: TestyScenario::Callbacks,
-                        }
-                        .to_prompt()
-                        .into(),
-                    ],
+                    vec!["elicitations".to_string().into()],
                 ))
                 .block_task()
                 .await?;
@@ -1826,7 +1820,7 @@ async fn testy_callbacks_with_unstable_feature_exercises_all_elicitation_create_
 
     let messages = agent_messages.lock().unwrap().join("\n");
     for expected in [
-        "scenario: callbacks",
+        "scenario: elicitations",
         "elicitation/form_session_accept: ok accept content_fields=5",
         "elicitation/form_session_decline: ok decline",
         "elicitation/form_request_cancel: ok cancel",
