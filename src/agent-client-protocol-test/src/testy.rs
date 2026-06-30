@@ -26,11 +26,20 @@ use agent_client_protocol::schema::v1::{
     ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput, UsageUpdate, WriteTextFileRequest,
 };
+#[cfg(feature = "unstable")]
+use agent_client_protocol::schema::v1::{
+    CompleteElicitationNotification, CreateElicitationRequest, ElicitationAction,
+    ElicitationCapabilities, ElicitationFormMode, ElicitationRequestScope, ElicitationSchema,
+    ElicitationSessionScope, ElicitationUrlMode, ErrorCode, MultiSelectPropertySchema, RequestId,
+    StringPropertySchema, UrlElicitationRequiredData, UrlElicitationRequiredItem,
+};
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, Responder, SentRequest,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "unstable")]
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -89,23 +98,30 @@ pub enum TestyScenario {
     Content,
     /// Emits tool-call create/update notifications with content, diff, and locations.
     ToolCalls,
-    /// Sends every stable agent-to-client request and records client responses or errors.
+    /// Sends every stable agent-to-client request and any enabled unstable callback coverage.
     Callbacks,
+    /// Runs unstable elicitation coverage without the stable callback requests.
+    #[cfg(feature = "unstable")]
+    Elicitations,
     /// Reports whether the session has received a `session/cancel` notification.
     CancelStatus,
-    /// Runs all stable scenarios in a deterministic order.
+    /// Runs all stable scenarios and any enabled unstable coverage in a deterministic order.
     Full,
 }
 
 impl TestyScenario {
-    const ALL: [Self; 6] = [
-        Self::SessionUpdates,
-        Self::Content,
-        Self::ToolCalls,
-        Self::Callbacks,
-        Self::CancelStatus,
-        Self::Full,
-    ];
+    fn all() -> Vec<Self> {
+        vec![
+            Self::SessionUpdates,
+            Self::Content,
+            Self::ToolCalls,
+            Self::Callbacks,
+            #[cfg(feature = "unstable")]
+            Self::Elicitations,
+            Self::CancelStatus,
+            Self::Full,
+        ]
+    }
 
     fn from_prompt(input: &str) -> Option<Self> {
         match input.trim().to_ascii_lowercase().as_str() {
@@ -113,6 +129,8 @@ impl TestyScenario {
             "content" => Some(Self::Content),
             "tool_calls" | "tool calls" | "tools" => Some(Self::ToolCalls),
             "callbacks" | "client_callbacks" | "client callbacks" => Some(Self::Callbacks),
+            #[cfg(feature = "unstable")]
+            "elicitations" | "elicitation" | "elicit" => Some(Self::Elicitations),
             "cancel_status" | "cancel status" | "cancel" => Some(Self::CancelStatus),
             "full" | "all" => Some(Self::Full),
             _ => None,
@@ -125,6 +143,8 @@ impl TestyScenario {
             Self::Content => "content",
             Self::ToolCalls => "tool_calls",
             Self::Callbacks => "callbacks",
+            #[cfg(feature = "unstable")]
+            Self::Elicitations => "elicitations",
             Self::CancelStatus => "cancel_status",
             Self::Full => "full",
         }
@@ -154,6 +174,8 @@ struct TestyState {
     next_message_id: u64,
     next_tool_call_id: u64,
     authenticated_methods: HashSet<String>,
+    #[cfg(feature = "unstable")]
+    client_elicitation_capabilities: Option<ElicitationCapabilities>,
 }
 
 impl Default for TestyState {
@@ -164,6 +186,8 @@ impl Default for TestyState {
             next_message_id: 1,
             next_tool_call_id: 1,
             authenticated_methods: HashSet::new(),
+            #[cfg(feature = "unstable")]
+            client_elicitation_capabilities: None,
         }
     }
 }
@@ -370,6 +394,33 @@ impl Testy {
             AuthMethodAgent::new(TESTY_AGENT_AUTH_METHOD_ID, "Testy agent auth")
                 .description("Deterministic no-op authentication for ACP client testing"),
         )]
+    }
+
+    fn handle_initialize(
+        &self,
+        request: InitializeRequest,
+        responder: Responder<InitializeResponse>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        #[cfg(feature = "unstable")]
+        {
+            self.lock_state()
+                .client_elicitation_capabilities
+                .clone_from(&request.client_capabilities.elicitation);
+        }
+
+        responder.respond(
+            InitializeResponse::new(request.protocol_version)
+                .agent_capabilities(Testy::agent_capabilities())
+                .auth_methods(Testy::auth_methods()),
+        )
+    }
+
+    #[cfg(feature = "unstable")]
+    fn client_supports_url_elicitation(&self) -> bool {
+        self.lock_state()
+            .client_elicitation_capabilities
+            .as_ref()
+            .is_some_and(|capabilities| capabilities.url.is_some())
     }
 
     fn handle_authenticate(
@@ -585,6 +636,10 @@ impl Testy {
             Ok(response) => response,
             Err(error) => {
                 self.finish_prompt(&session_id, StopReason::EndTurn);
+                #[cfg(feature = "unstable")]
+                if error.code == ErrorCode::UrlElicitationRequired {
+                    return responder.respond_with_error(error);
+                }
                 return Err(error);
             }
         };
@@ -648,6 +703,20 @@ impl Testy {
             TestyScenario::Callbacks => {
                 self.exercise_client_callbacks(session_id, connection, report)
                     .await?;
+                #[cfg(feature = "unstable")]
+                if !self.is_cancelled(session_id) {
+                    self.exercise_elicitations(session_id, connection, report)
+                        .await?;
+                }
+            }
+            #[cfg(feature = "unstable")]
+            TestyScenario::Elicitations => {
+                if self.is_cancelled(session_id) {
+                    report.push("elicitations: cancelled".to_string());
+                } else {
+                    self.exercise_elicitations(session_id, connection, report)
+                        .await?;
+                }
             }
             TestyScenario::CancelStatus => {
                 if self.take_cancelled(session_id) {
@@ -695,6 +764,11 @@ impl Testy {
                 }
                 self.exercise_client_callbacks(session_id, connection, report)
                     .await?;
+                #[cfg(feature = "unstable")]
+                if !self.is_cancelled(session_id) {
+                    self.exercise_elicitations(session_id, connection, report)
+                        .await?;
+                }
                 if self.take_cancelled(session_id) {
                     report.push("cancel_status: cancelled".to_string());
                 } else {
@@ -736,14 +810,9 @@ impl Testy {
         send_session_update(
             connection,
             session_id,
-            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
-                AvailableCommand::new("full", "Run every stable Testy scenario").input(
-                    AvailableCommandInput::Unstructured(UnstructuredCommandInput::new(
-                        "optional scenario arguments",
-                    )),
-                ),
-                AvailableCommand::new("callbacks", "Exercise agent-to-client requests"),
-            ])),
+            SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+                available_commands(),
+            )),
         )?;
         send_session_update(
             connection,
@@ -1044,6 +1113,152 @@ impl Testy {
         tokio::select! {
             result = request.block_task() => result,
             () = self.wait_for_cancelled(session_id) => Err(agent_client_protocol::Error::new(-32800, "Request was cancelled")),
+        }
+    }
+
+    #[cfg(feature = "unstable")]
+    async fn exercise_elicitations(
+        &self,
+        session_id: &SessionId,
+        connection: &ConnectionTo<Client>,
+        report: &mut Vec<String>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let tool_call_id = self.next_tool_call_id("testy-elicit-tool");
+        let form_accept = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationSessionScope::new(session_id.clone())
+                    .tool_call_id(tool_call_id.as_str()),
+                testy_elicitation_schema(),
+            ),
+            "Accept the Testy session-scoped form elicitation",
+        );
+        report.push(
+            self.request_elicitation_report_until_cancelled(
+                session_id,
+                connection,
+                "elicitation/form_session_accept",
+                form_accept,
+            )
+            .await,
+        );
+        if elicitation_cancelled(self, session_id, report) {
+            return Ok(());
+        }
+
+        let form_decline = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationSessionScope::new(session_id.clone()),
+                ElicitationSchema::new().string("reason", false),
+            ),
+            "Decline the Testy session-scoped form elicitation",
+        );
+        report.push(
+            self.request_elicitation_report_until_cancelled(
+                session_id,
+                connection,
+                "elicitation/form_session_decline",
+                form_decline,
+            )
+            .await,
+        );
+        if elicitation_cancelled(self, session_id, report) {
+            return Ok(());
+        }
+
+        let form_cancel = CreateElicitationRequest::new(
+            ElicitationFormMode::new(
+                ElicitationRequestScope::new(RequestId::Str(
+                    "testy-request-form-cancel".to_string(),
+                )),
+                ElicitationSchema::new().boolean("confirmed", true),
+            ),
+            "Cancel the Testy request-scoped form elicitation",
+        );
+        report.push(
+            self.request_elicitation_report_until_cancelled(
+                session_id,
+                connection,
+                "elicitation/form_request_cancel",
+                form_cancel,
+            )
+            .await,
+        );
+        if elicitation_cancelled(self, session_id, report) {
+            return Ok(());
+        }
+
+        if !self.client_supports_url_elicitation() {
+            return Err(url_elicitation_required_error());
+        }
+
+        let session_url_id = "testy-url-session";
+        let url_accept = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationSessionScope::new(session_id.clone()),
+                session_url_id,
+                "https://example.com/testy/session",
+            ),
+            "Accept the Testy session-scoped URL elicitation",
+        );
+        report.push(
+            self.request_elicitation_report_until_cancelled(
+                session_id,
+                connection,
+                "elicitation/url_session_accept",
+                url_accept,
+            )
+            .await,
+        );
+        if elicitation_cancelled(self, session_id, report) {
+            return Ok(());
+        }
+        connection.send_notification(CompleteElicitationNotification::new(session_url_id))?;
+        report.push("elicitation/complete_session_url: sent".to_string());
+
+        let url_decline = CreateElicitationRequest::new(
+            ElicitationUrlMode::new(
+                ElicitationRequestScope::new(RequestId::Str(
+                    "testy-request-url-decline".to_string(),
+                )),
+                "testy-url-request",
+                "https://example.com/testy/request",
+            ),
+            "Decline the Testy request-scoped URL elicitation",
+        );
+        report.push(
+            self.request_elicitation_report_until_cancelled(
+                session_id,
+                connection,
+                "elicitation/url_request_decline",
+                url_decline,
+            )
+            .await,
+        );
+        if elicitation_cancelled(self, session_id, report) {
+            return Ok(());
+        }
+
+        report.push("elicitations: completed".to_string());
+        Ok(())
+    }
+
+    #[cfg(feature = "unstable")]
+    async fn request_elicitation_report_until_cancelled(
+        &self,
+        session_id: &SessionId,
+        connection: &ConnectionTo<Client>,
+        label: &str,
+        request: CreateElicitationRequest,
+    ) -> String {
+        match self
+            .request_result_until_cancelled(session_id, connection, request)
+            .await
+        {
+            Ok(response) => format!(
+                "{label}: ok {}",
+                elicitation_action_summary(&response.action)
+            ),
+            Err(error) => format!("{label}: error {error:?}"),
         }
     }
 
@@ -1438,18 +1653,127 @@ fn parse_command(input_text: &str) -> TestyCommand {
 }
 
 fn help_text() -> String {
-    let scenarios = TestyScenario::ALL
+    let unstable = cfg!(feature = "unstable");
+    let scenarios = TestyScenario::all()
         .into_iter()
         .map(TestyScenario::name)
         .collect::<Vec<_>>()
         .join(", ");
-    format!(
+    let mut text = format!(
         "Testy commands: help, greet, echo <message>, {scenarios}. JSON command form: {}",
         TestyCommand::RunScenario {
             scenario: TestyScenario::Full
         }
         .to_prompt()
-    )
+    );
+    if unstable {
+        text.push_str(
+            ". Unstable mode is enabled: callbacks and full include unstable elicitation coverage",
+        );
+    }
+    text
+}
+
+fn available_commands() -> Vec<AvailableCommand> {
+    let unstable = cfg!(feature = "unstable");
+    let full_description = if unstable {
+        "Run every stable and enabled unstable Testy scenario"
+    } else {
+        "Run every stable Testy scenario"
+    };
+    let callbacks_description = if unstable {
+        "Exercise stable and enabled unstable agent-to-client requests"
+    } else {
+        "Exercise agent-to-client requests"
+    };
+
+    let full_command =
+        AvailableCommand::new("full", full_description).input(AvailableCommandInput::Unstructured(
+            UnstructuredCommandInput::new("optional scenario arguments"),
+        ));
+    let callbacks_command = AvailableCommand::new("callbacks", callbacks_description);
+
+    #[cfg(feature = "unstable")]
+    {
+        vec![
+            full_command,
+            callbacks_command,
+            AvailableCommand::new("elicitations", "Exercise unstable elicitation requests"),
+        ]
+    }
+    #[cfg(not(feature = "unstable"))]
+    {
+        vec![full_command, callbacks_command]
+    }
+}
+
+#[cfg(feature = "unstable")]
+fn testy_elicitation_schema() -> ElicitationSchema {
+    ElicitationSchema::new()
+        .title("Testy elicitation form")
+        .description("Deterministic form covering ACP elicitation field and value shapes")
+        .string("name", true)
+        .email("email", false)
+        .uri("homepage", false)
+        .date("birthday", false)
+        .date_time("available_at", false)
+        .number("confidence", 0.0, 1.0, true)
+        .integer("age", 0, 120, true)
+        .boolean("confirmed", true)
+        .property(
+            "priority",
+            StringPropertySchema::new().enum_values(vec![
+                "low".to_string(),
+                "normal".to_string(),
+                "high".to_string(),
+            ]),
+            false,
+        )
+        .property(
+            "tags",
+            MultiSelectPropertySchema::new(vec![
+                "rust".to_string(),
+                "acp".to_string(),
+                "testy".to_string(),
+            ]),
+            false,
+        )
+}
+
+#[cfg(feature = "unstable")]
+fn elicitation_action_summary(action: &ElicitationAction) -> String {
+    match action {
+        ElicitationAction::Accept(action) => {
+            let field_count = action.content.as_ref().map_or(0, BTreeMap::len);
+            format!("accept content_fields={field_count}")
+        }
+        ElicitationAction::Decline => "decline".to_string(),
+        ElicitationAction::Cancel => "cancel".to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+#[cfg(feature = "unstable")]
+fn elicitation_cancelled(agent: &Testy, session_id: &SessionId, report: &mut Vec<String>) -> bool {
+    if agent.is_cancelled(session_id) {
+        report.push("elicitations: cancelled".to_string());
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(feature = "unstable")]
+fn url_elicitation_required_error() -> agent_client_protocol::Error {
+    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
+        "testy-url-required",
+        "https://example.com/testy/required",
+        "Complete the Testy URL elicitation before continuing",
+    )]);
+    match serde_json::to_value(data) {
+        Ok(data) => agent_client_protocol::Error::url_elicitation_required().data(data),
+        Err(error) => agent_client_protocol::Error::into_internal_error(error),
+    }
 }
 
 fn send_session_update(
@@ -1518,12 +1842,11 @@ impl ConnectTo<Client> for Testy {
             .builder()
             .name("test-agent")
             .on_receive_request(
-                async |initialize: InitializeRequest, responder, _cx| {
-                    responder.respond(
-                        InitializeResponse::new(initialize.protocol_version)
-                            .agent_capabilities(Testy::agent_capabilities())
-                            .auth_methods(Testy::auth_methods()),
-                    )
+                {
+                    let agent = self.clone();
+                    async move |initialize: InitializeRequest, responder, _cx| {
+                        agent.handle_initialize(initialize, responder)
+                    }
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -1752,5 +2075,22 @@ mod tests {
             StopReason::Cancelled
         );
         assert!(!testy.is_cancelled(&session_id));
+    }
+
+    #[cfg(feature = "unstable")]
+    #[test]
+    fn parse_command_accepts_elicitation_prompt_aliases() {
+        for input in ["elicitations", "elicitation", "elicit"] {
+            let command = parse_command(input);
+            assert!(
+                matches!(
+                    command,
+                    TestyCommand::RunScenario {
+                        scenario: TestyScenario::Elicitations
+                    }
+                ),
+                "unexpected command for {input:?}: {command:?}"
+            );
+        }
     }
 }
