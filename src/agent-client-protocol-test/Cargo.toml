@@ -9,6 +9,10 @@ homepage.workspace = true
 description = "Test utilities and mock implementations for the Agent Client Protocol"
 publish = false
 
+[features]
+default = ["unstable"]
+unstable = ["agent-client-protocol/unstable"]
+
 [[bin]]
 name = "mcp-echo-server"
 path = "src/bin/mcp_echo_server.rs"

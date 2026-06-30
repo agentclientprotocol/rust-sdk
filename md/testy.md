@@ -3,8 +3,17 @@
 `testy` is a deterministic ACP agent binary for exercising clients against the stable ACP v1 surface.
 It is built from the `agent-client-protocol-test` crate and communicates over stdio like a normal agent.
 
+The default build enables `agent-client-protocol-test`'s `unstable` cargo feature, which forwards
+to the SDK's `unstable` feature:
+
 ```bash
 cargo build -p agent-client-protocol-test --bin testy
+```
+
+To build stable-only coverage:
+
+```bash
+cargo build -p agent-client-protocol-test --bin testy --no-default-features
 ```
 
 The binary lands at `target/debug/testy`. Integration tests that need to spawn it should use
@@ -25,6 +34,9 @@ Plain-text commands:
 - `cancel_status` reports whether `session/cancel` has been received.
 - `full` runs all stable scenarios in deterministic order.
 
+With default features, the existing `callbacks` and `full` scenarios also run unstable protocol
+coverage.
+
 JSON command form:
 
 ```json
@@ -43,3 +55,8 @@ The `full` scenario sends every stable agent-to-client callback request:
 `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release`.
 It also emits the stable session update variants, including message chunks, tool calls, plans,
 available commands, mode/config/session info, and usage.
+
+With default features, `callbacks` and `full` additionally cover `elicitation/create` form mode, URL
+mode, session scope, request scope, accept, decline, cancel, and `elicitation/complete`.
+If the client advertises form elicitation but not URL elicitation, the URL part returns a
+`UrlElicitationRequired` prompt error with deterministic error data.

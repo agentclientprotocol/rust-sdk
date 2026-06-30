@@ -1,3 +1,5 @@
+#[cfg(feature = "unstable")]
+use std::collections::BTreeMap;
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
@@ -5,6 +7,13 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "unstable")]
+use agent_client_protocol::schema::v1::{
+    CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
+    ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
+    ElicitationFormCapabilities, ElicitationMode, ElicitationScope, ElicitationUrlCapabilities,
+    ErrorCode, UrlElicitationRequiredData,
+};
 use agent_client_protocol::{
     Client, Responder,
     schema::{
@@ -1297,8 +1306,12 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     let created_terminal_ids = Arc::new(Mutex::new(Vec::<String>::new()));
     let released_terminal_ids = Arc::new(Mutex::new(Vec::<String>::new()));
     let terminal_content_ids = Arc::new(Mutex::new(Vec::<String>::new()));
+    #[cfg(feature = "unstable")]
+    let elicitation_requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    #[cfg(feature = "unstable")]
+    let completed_elicitations = Arc::new(Mutex::new(Vec::<String>::new()));
 
-    Client
+    let builder = Client
         .builder()
         .on_receive_notification(
             {
@@ -1448,11 +1461,74 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
                 }
             },
             agent_client_protocol::on_receive_request!(),
+        );
+
+    #[cfg(feature = "unstable")]
+    let builder = builder
+        .on_receive_notification(
+            {
+                let completed_elicitations = Arc::clone(&completed_elicitations);
+                async move |notification: CompleteElicitationNotification, _cx| {
+                    completed_elicitations
+                        .lock()
+                        .unwrap()
+                        .push(notification.elicitation_id.to_string());
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
         )
+        .on_receive_request(
+            {
+                let elicitation_requests = Arc::clone(&elicitation_requests);
+                async move |request: CreateElicitationRequest, responder, _cx| {
+                    let label = testy_elicitation_request_label(&request);
+                    elicitation_requests.lock().unwrap().push(label);
+
+                    let action = match label {
+                        "form_session_accept" => ElicitationAction::Accept(
+                            ElicitationAcceptAction::new().content(BTreeMap::from([
+                                ("name".to_string(), ElicitationContentValue::from("Ada")),
+                                ("age".to_string(), ElicitationContentValue::from(42_i32)),
+                                (
+                                    "confidence".to_string(),
+                                    ElicitationContentValue::from(0.95_f64),
+                                ),
+                                ("confirmed".to_string(), ElicitationContentValue::from(true)),
+                                (
+                                    "tags".to_string(),
+                                    ElicitationContentValue::from(vec!["rust", "acp"]),
+                                ),
+                            ])),
+                        ),
+                        "form_session_decline" | "url_request_decline" => {
+                            ElicitationAction::Decline
+                        }
+                        "form_request_cancel" => ElicitationAction::Cancel,
+                        "url_session_accept" => {
+                            ElicitationAction::Accept(ElicitationAcceptAction::new())
+                        }
+                        other => panic!("unexpected elicitation request label: {other}"),
+                    };
+
+                    responder.respond(CreateElicitationResponse::new(action))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    builder
         .connect_with(Testy::new(), async |cx| {
-            cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
-                .block_task()
-                .await?;
+            let initialize = InitializeRequest::new(ProtocolVersion::V1);
+            #[cfg(feature = "unstable")]
+            let initialize = initialize.client_capabilities(
+                ClientCapabilities::new().elicitation(
+                    ElicitationCapabilities::new()
+                        .form(ElicitationFormCapabilities::new())
+                        .url(ElicitationUrlCapabilities::new()),
+                ),
+            );
+            cx.send_request(initialize).block_task().await?;
             let session = cx
                 .send_request(NewSessionRequest::new(PathBuf::from("/tmp")))
                 .block_task()
@@ -1513,6 +1589,39 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     assert!(messages.contains("scenario: full"));
     assert!(messages.contains("terminal/release_for_tool_call: ok"));
     assert!(messages.contains("terminal/release: ok"));
+    #[cfg(feature = "unstable")]
+    for expected in [
+        "elicitation/form_session_accept: ok accept content_fields=5",
+        "elicitation/form_session_decline: ok decline",
+        "elicitation/form_request_cancel: ok cancel",
+        "elicitation/url_session_accept: ok accept content_fields=0",
+        "elicitation/complete_session_url: sent",
+        "elicitation/url_request_decline: ok decline",
+        "elicitations: completed",
+    ] {
+        assert!(
+            messages.contains(expected),
+            "missing report line: {expected}"
+        );
+    }
+
+    #[cfg(feature = "unstable")]
+    {
+        assert_eq!(
+            elicitation_requests.lock().unwrap().as_slice(),
+            [
+                "form_session_accept",
+                "form_session_decline",
+                "form_request_cancel",
+                "url_session_accept",
+                "url_request_decline",
+            ]
+        );
+        assert_eq!(
+            completed_elicitations.lock().unwrap().as_slice(),
+            ["testy-url-session"]
+        );
+    }
 
     let created_terminal_ids = created_terminal_ids.lock().unwrap();
     let released_terminal_ids = released_terminal_ids.lock().unwrap();
@@ -1530,6 +1639,426 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     }
 
     Ok(())
+}
+
+#[cfg(feature = "unstable")]
+#[tokio::test]
+async fn testy_callbacks_with_unstable_feature_exercises_all_elicitation_create_and_complete_paths()
+-> Result<(), agent_client_protocol::Error> {
+    let agent_messages = Arc::new(Mutex::new(Vec::<String>::new()));
+    let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let completions = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    Client
+        .builder()
+        .on_receive_notification(
+            {
+                let agent_messages = Arc::clone(&agent_messages);
+                async move |notification: SessionNotification, _cx| {
+                    let SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
+                        return Ok(());
+                    };
+                    let ContentBlock::Text(text) = chunk.content else {
+                        return Ok(());
+                    };
+                    agent_messages.lock().unwrap().push(text.text);
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_notification(
+            {
+                let completions = Arc::clone(&completions);
+                async move |notification: CompleteElicitationNotification, _cx| {
+                    completions
+                        .lock()
+                        .unwrap()
+                        .push(notification.elicitation_id.to_string());
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _cx| {
+                let option_id = request.options.first().map_or_else(
+                    || PermissionOptionId::new("allow_once"),
+                    |option| option.option_id.clone(),
+                );
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: WriteTextFileRequest, responder, _cx| {
+                responder.respond(WriteTextFileResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: ReadTextFileRequest, responder, _cx| {
+                responder.respond(ReadTextFileResponse::new("read by testy client"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: CreateTerminalRequest, responder, _cx| {
+                responder.respond(CreateTerminalResponse::new("testy-terminal-client"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: TerminalOutputRequest, responder, _cx| {
+                responder.respond(
+                    TerminalOutputResponse::new("terminal output", false)
+                        .exit_status(TerminalExitStatus::new().exit_code(0)),
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: WaitForTerminalExitRequest, responder, _cx| {
+                responder.respond(WaitForTerminalExitResponse::new(
+                    TerminalExitStatus::new().exit_code(0),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: KillTerminalRequest, responder, _cx| {
+                responder.respond(KillTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: ReleaseTerminalRequest, responder, _cx| {
+                responder.respond(ReleaseTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let requests = Arc::clone(&requests);
+                async move |request: CreateElicitationRequest, responder, _cx| {
+                    let label = testy_elicitation_request_label(&request);
+                    requests.lock().unwrap().push(label);
+
+                    let action = match label {
+                        "form_session_accept" => ElicitationAction::Accept(
+                            ElicitationAcceptAction::new().content(BTreeMap::from([
+                                ("name".to_string(), ElicitationContentValue::from("Ada")),
+                                ("age".to_string(), ElicitationContentValue::from(42_i32)),
+                                (
+                                    "confidence".to_string(),
+                                    ElicitationContentValue::from(0.95_f64),
+                                ),
+                                ("confirmed".to_string(), ElicitationContentValue::from(true)),
+                                (
+                                    "tags".to_string(),
+                                    ElicitationContentValue::from(vec!["rust", "acp"]),
+                                ),
+                            ])),
+                        ),
+                        "form_session_decline" | "url_request_decline" => {
+                            ElicitationAction::Decline
+                        }
+                        "form_request_cancel" => ElicitationAction::Cancel,
+                        "url_session_accept" => {
+                            ElicitationAction::Accept(ElicitationAcceptAction::new())
+                        }
+                        other => panic!("unexpected elicitation request label: {other}"),
+                    };
+
+                    responder.respond(CreateElicitationResponse::new(action))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(Testy::new(), async |cx| {
+            let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                ClientCapabilities::new().elicitation(
+                    ElicitationCapabilities::new()
+                        .form(ElicitationFormCapabilities::new())
+                        .url(ElicitationUrlCapabilities::new()),
+                ),
+            );
+            cx.send_request(initialize).block_task().await?;
+            let session = cx
+                .send_request(NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?;
+
+            let response = cx
+                .send_request(PromptRequest::new(
+                    session.session_id,
+                    vec![
+                        TestyCommand::RunScenario {
+                            scenario: TestyScenario::Callbacks,
+                        }
+                        .to_prompt()
+                        .into(),
+                    ],
+                ))
+                .block_task()
+                .await?;
+            assert_eq!(response.stop_reason, StopReason::EndTurn);
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(
+        requests.lock().unwrap().as_slice(),
+        [
+            "form_session_accept",
+            "form_session_decline",
+            "form_request_cancel",
+            "url_session_accept",
+            "url_request_decline",
+        ]
+    );
+    assert_eq!(
+        completions.lock().unwrap().as_slice(),
+        ["testy-url-session"]
+    );
+
+    let messages = agent_messages.lock().unwrap().join("\n");
+    for expected in [
+        "scenario: callbacks",
+        "elicitation/form_session_accept: ok accept content_fields=5",
+        "elicitation/form_session_decline: ok decline",
+        "elicitation/form_request_cancel: ok cancel",
+        "elicitation/url_session_accept: ok accept content_fields=0",
+        "elicitation/complete_session_url: sent",
+        "elicitation/url_request_decline: ok decline",
+        "elicitations: completed",
+    ] {
+        assert!(
+            messages.contains(expected),
+            "missing report line: {expected}"
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "unstable")]
+#[tokio::test]
+async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_elicitation_is_unsupported()
+-> Result<(), agent_client_protocol::Error> {
+    let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+
+    Client
+        .builder()
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _cx| {
+                let option_id = request.options.first().map_or_else(
+                    || PermissionOptionId::new("allow_once"),
+                    |option| option.option_id.clone(),
+                );
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: WriteTextFileRequest, responder, _cx| {
+                responder.respond(WriteTextFileResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: ReadTextFileRequest, responder, _cx| {
+                responder.respond(ReadTextFileResponse::new("read by testy client"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: CreateTerminalRequest, responder, _cx| {
+                responder.respond(CreateTerminalResponse::new("testy-terminal-client"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: TerminalOutputRequest, responder, _cx| {
+                responder.respond(
+                    TerminalOutputResponse::new("terminal output", false)
+                        .exit_status(TerminalExitStatus::new().exit_code(0)),
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: WaitForTerminalExitRequest, responder, _cx| {
+                responder.respond(WaitForTerminalExitResponse::new(
+                    TerminalExitStatus::new().exit_code(0),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: KillTerminalRequest, responder, _cx| {
+                responder.respond(KillTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: ReleaseTerminalRequest, responder, _cx| {
+                responder.respond(ReleaseTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let requests = Arc::clone(&requests);
+                async move |request: CreateElicitationRequest, responder, _cx| {
+                    let label = testy_elicitation_request_label(&request);
+                    requests.lock().unwrap().push(label);
+                    let action = match label {
+                        "form_session_accept" => ElicitationAction::Accept(
+                            ElicitationAcceptAction::new().content(BTreeMap::from([
+                                ("name".to_string(), ElicitationContentValue::from("Ada")),
+                                ("age".to_string(), ElicitationContentValue::from(42_i32)),
+                                (
+                                    "confidence".to_string(),
+                                    ElicitationContentValue::from(0.95_f64),
+                                ),
+                                ("confirmed".to_string(), ElicitationContentValue::from(true)),
+                            ])),
+                        ),
+                        "form_session_decline" => ElicitationAction::Decline,
+                        "form_request_cancel" => ElicitationAction::Cancel,
+                        other => panic!("unexpected elicitation request before URL error: {other}"),
+                    };
+                    responder.respond(CreateElicitationResponse::new(action))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(Testy::new(), async |cx| {
+            let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                ClientCapabilities::new().elicitation(
+                    ElicitationCapabilities::new().form(ElicitationFormCapabilities::new()),
+                ),
+            );
+            cx.send_request(initialize).block_task().await?;
+            let session = cx
+                .send_request(NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?;
+
+            let error = cx
+                .send_request(PromptRequest::new(
+                    session.session_id,
+                    vec![
+                        TestyCommand::RunScenario {
+                            scenario: TestyScenario::Callbacks,
+                        }
+                        .to_prompt()
+                        .into(),
+                    ],
+                ))
+                .block_task()
+                .await
+                .expect_err("url-required elicitation scenario should fail the prompt request");
+            assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
+
+            let data: UrlElicitationRequiredData =
+                serde_json::from_value(error.data.expect("url-required error should include data"))
+                    .expect("url-required error data should deserialize");
+            assert_eq!(data.elicitations.len(), 1);
+            let elicitation = &data.elicitations[0];
+            assert_eq!(elicitation.elicitation_id.to_string(), "testy-url-required");
+            assert_eq!(elicitation.url, "https://example.com/testy/required");
+            assert_eq!(
+                elicitation.message,
+                "Complete the Testy URL elicitation before continuing"
+            );
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(
+        requests.lock().unwrap().as_slice(),
+        [
+            "form_session_accept",
+            "form_session_decline",
+            "form_request_cancel",
+        ]
+    );
+
+    Ok(())
+}
+
+#[cfg(feature = "unstable")]
+fn testy_elicitation_request_label(request: &CreateElicitationRequest) -> &'static str {
+    match request.message.as_str() {
+        "Accept the Testy session-scoped form elicitation" => {
+            let ElicitationMode::Form(form) = &request.mode else {
+                panic!("expected form mode for session accept");
+            };
+            let ElicitationScope::Session(scope) = &form.scope else {
+                panic!("expected session scope for form accept");
+            };
+            assert!(scope.tool_call_id.is_some());
+            for property in [
+                "name",
+                "email",
+                "homepage",
+                "birthday",
+                "available_at",
+                "confidence",
+                "age",
+                "confirmed",
+                "priority",
+                "tags",
+            ] {
+                assert!(
+                    form.requested_schema.properties.contains_key(property),
+                    "missing schema property: {property}"
+                );
+            }
+            "form_session_accept"
+        }
+        "Decline the Testy session-scoped form elicitation" => {
+            assert!(matches!(
+                &request.mode,
+                ElicitationMode::Form(form)
+                    if matches!(&form.scope, ElicitationScope::Session(scope) if scope.tool_call_id.is_none())
+            ));
+            "form_session_decline"
+        }
+        "Cancel the Testy request-scoped form elicitation" => {
+            assert!(matches!(
+                &request.mode,
+                ElicitationMode::Form(form)
+                    if matches!(&form.scope, ElicitationScope::Request(_))
+            ));
+            "form_request_cancel"
+        }
+        "Accept the Testy session-scoped URL elicitation" => {
+            let ElicitationMode::Url(url) = &request.mode else {
+                panic!("expected URL mode for session URL accept");
+            };
+            assert!(matches!(&url.scope, ElicitationScope::Session(_)));
+            assert_eq!(url.elicitation_id.to_string(), "testy-url-session");
+            assert_eq!(url.url, "https://example.com/testy/session");
+            "url_session_accept"
+        }
+        "Decline the Testy request-scoped URL elicitation" => {
+            let ElicitationMode::Url(url) = &request.mode else {
+                panic!("expected URL mode for request URL decline");
+            };
+            assert!(matches!(&url.scope, ElicitationScope::Request(_)));
+            assert_eq!(url.elicitation_id.to_string(), "testy-url-request");
+            assert_eq!(url.url, "https://example.com/testy/request");
+            "url_request_decline"
+        }
+        other => panic!("unexpected elicitation request message: {other}"),
+    }
 }
 
 fn assert_all_unique(values: &[String]) {
