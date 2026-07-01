@@ -191,10 +191,14 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
     use agent_client_protocol::{Agent, Client};
     use std::collections::BTreeMap;
 
+    fn v2_implementation() -> v2::Implementation {
+        v2::Implementation::new("rust-sdk-test", "0.0.0")
+    }
+
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,
     ) -> v2::InitializeResponse {
-        v2::InitializeResponse::new(protocol_version)
+        v2::InitializeResponse::new(protocol_version, v2_implementation())
             .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
     }
 

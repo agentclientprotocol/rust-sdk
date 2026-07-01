@@ -536,7 +536,11 @@ mod imp {
     }
 
     fn public_to_v2_message(message: UntypedMessage) -> Result<UntypedMessage, crate::Error> {
-        let UntypedMessage { method, params } = message;
+        let UntypedMessage { method, mut params } = message;
+
+        if method == "initialize" {
+            ensure_legacy_initialize_info(&mut params, "clientInfo");
+        }
 
         if let Some(message) = try_convert_message_to_v2::<ClientRequest>(&method, &params)? {
             return Ok(message);
@@ -573,8 +577,12 @@ mod imp {
 
     fn public_to_v2_response(
         method: &str,
-        value: serde_json::Value,
+        mut value: serde_json::Value,
     ) -> Result<serde_json::Value, crate::Error> {
+        if method == "initialize" {
+            ensure_legacy_initialize_info(&mut value, "agentInfo");
+        }
+
         if let Some(value) = try_convert_response_to_v2::<AgentResponse>(method, &value)? {
             return Ok(value);
         }
@@ -583,6 +591,27 @@ mod imp {
         }
 
         Ok(value)
+    }
+
+    fn ensure_legacy_initialize_info(value: &mut serde_json::Value, field: &str) {
+        let serde_json::Value::Object(object) = value else {
+            return;
+        };
+
+        let needs_default = match object.get(field) {
+            Some(value) => value.is_null(),
+            None => true,
+        };
+
+        if needs_default {
+            object.insert(
+                field.into(),
+                serde_json::json!({
+                    "name": "legacy-acp-peer",
+                    "version": "unknown",
+                }),
+            );
+        }
     }
 
     fn v2_to_public_response(
@@ -728,6 +757,10 @@ mod imp {
                 .negotiated
         }
 
+        fn v2_implementation() -> v2::Implementation {
+            v2::Implementation::new("rust-sdk-test", "0.0.0")
+        }
+
         #[test]
         fn initialize_request_sets_active_wire_version_before_response() -> Result<(), crate::Error>
         {
@@ -736,7 +769,7 @@ mod imp {
 
             compat.incoming_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V2),
+                v2::InitializeRequest::new(ProtocolVersion::V2, v2_implementation()),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -746,6 +779,7 @@ mod imp {
                 "initialize",
                 Ok(serde_json::to_value(v2::InitializeResponse::new(
                     ProtocolVersion::V2,
+                    v2_implementation(),
                 ))?),
             )?;
 
@@ -762,7 +796,7 @@ mod imp {
 
             compat.outgoing_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V1),
+                v2::InitializeRequest::new(ProtocolVersion::V1, v2_implementation()),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -772,6 +806,7 @@ mod imp {
                 "initialize",
                 Ok(serde_json::to_value(v2::InitializeResponse::new(
                     ProtocolVersion::V2,
+                    v2_implementation(),
                 ))?),
             )?;
 
@@ -788,7 +823,7 @@ mod imp {
 
             compat.outgoing_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V1),
+                v2::InitializeRequest::new(ProtocolVersion::V1, v2_implementation()),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -814,7 +849,7 @@ mod imp {
                 let compat = ProtocolCompat::new(ProtocolMode::v2_client());
                 compat.outgoing_message(UntypedMessage::new(
                     "initialize",
-                    v2::InitializeRequest::new(ProtocolVersion::V1),
+                    v2::InitializeRequest::new(ProtocolVersion::V1, v2_implementation()),
                 )?)?;
 
                 let error = compat
@@ -838,7 +873,7 @@ mod imp {
             let compat = ProtocolCompat::new(ProtocolMode::v2_agent());
             let messages = compat.outgoing_notification(UntypedMessage::new(
                 "session/update",
-                v2::SessionNotification::new(
+                v2::UpdateSessionNotification::new(
                     "sess",
                     v2::SessionUpdate::AgentMessage(v2::AgentMessage::new("msg_agent").content(
                         vec![

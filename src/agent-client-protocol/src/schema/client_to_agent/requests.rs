@@ -5,6 +5,7 @@ use crate::schema::v1::{
     LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
     PromptResponse, ResumeSessionRequest, ResumeSessionResponse, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
+    SetSessionTitleRequest, SetSessionTitleResponse,
 };
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::v1::{ForkSessionRequest, ForkSessionResponse};
@@ -30,6 +31,11 @@ impl_jsonrpc_request!(
     SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse,
     "session/set_config_option"
+);
+impl_jsonrpc_request!(
+    SetSessionTitleRequest,
+    SetSessionTitleResponse,
+    "session/setTitle"
 );
 
 #[cfg(feature = "unstable_session_fork")]

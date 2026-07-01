@@ -107,10 +107,10 @@ macro_rules! impl_v2_jsonrpc_request_enum {
                         if method.starts_with('_') {
                             crate::util::json_cast_params(params).map(
                                 |ext_req: v2::ExtRequest| {
-                                    Self::$ext_variant(v2::ExtRequest::new(
+                                    Self::$ext_variant(Box::new(v2::ExtRequest::new(
                                         method.to_string(),
                                         ext_req.params,
-                                    ))
+                                    )))
                                 },
                             )
                         } else {
@@ -159,10 +159,10 @@ macro_rules! impl_v2_jsonrpc_notification_enum {
                         if method.starts_with('_') {
                             crate::util::json_cast_params(params).map(
                                 |ext_notif: v2::ExtNotification| {
-                                    Self::$ext_variant(v2::ExtNotification::new(
+                                    Self::$ext_variant(Box::new(v2::ExtNotification::new(
                                         method.to_string(),
                                         ext_notif.params,
-                                    ))
+                                    )))
                                 },
                             )
                         } else {
@@ -210,12 +210,8 @@ macro_rules! impl_v2_jsonrpc_response_enum {
 }
 
 impl_v2_jsonrpc_request!(v2::InitializeRequest, v2::InitializeResponse, "initialize");
-impl_v2_jsonrpc_request!(
-    v2::AuthenticateRequest,
-    v2::AuthenticateResponse,
-    "authenticate"
-);
-impl_v2_jsonrpc_request!(v2::LogoutRequest, v2::LogoutResponse, "logout");
+impl_v2_jsonrpc_request!(v2::LoginAuthRequest, v2::LoginAuthResponse, "auth/login");
+impl_v2_jsonrpc_request!(v2::LogoutAuthRequest, v2::LogoutAuthResponse, "auth/logout");
 impl_v2_jsonrpc_request!(v2::NewSessionRequest, v2::NewSessionResponse, "session/new");
 impl_v2_jsonrpc_request!(
     v2::LoadSessionRequest,
@@ -249,6 +245,11 @@ impl_v2_jsonrpc_request!(
     "session/close"
 );
 impl_v2_jsonrpc_request!(
+    v2::SetSessionTitleRequest,
+    v2::SetSessionTitleResponse,
+    "session/setTitle"
+);
+impl_v2_jsonrpc_request!(
     v2::SetSessionConfigOptionRequest,
     v2::SetSessionConfigOptionResponse,
     "session/set_config_option"
@@ -259,7 +260,7 @@ impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/mes
 
 #[cfg(feature = "unstable_cancel_request")]
 impl_v2_jsonrpc_notification!(v2::CancelRequestNotification, "$/cancel_request");
-impl_v2_jsonrpc_notification!(v2::CancelNotification, "session/cancel");
+impl_v2_jsonrpc_notification!(v2::CancelSessionNotification, "session/cancel");
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_notification!(v2::MessageMcpNotification, "mcp/message");
 
@@ -283,7 +284,7 @@ impl_v2_jsonrpc_request!(
     "mcp/disconnect"
 );
 
-impl_v2_jsonrpc_notification!(v2::SessionNotification, "session/update");
+impl_v2_jsonrpc_notification!(v2::UpdateSessionNotification, "session/update");
 #[cfg(feature = "unstable_elicitation")]
 impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
 
@@ -294,8 +295,8 @@ impl_jsonrpc_protocol_level_notification_enum!(v2::ProtocolLevelNotification {
 
 impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",
-    AuthenticateRequest => "authenticate",
-    LogoutRequest => "logout",
+    LoginAuthRequest => "auth/login",
+    LogoutAuthRequest => "auth/logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",
@@ -304,6 +305,7 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     ForkSessionRequest => "session/fork",
     ResumeSessionRequest => "session/resume",
     CloseSessionRequest => "session/close",
+    SetSessionTitleRequest => "session/setTitle",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -313,8 +315,8 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
 
 impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     InitializeResponse => "initialize",
-    AuthenticateResponse => "authenticate",
-    LogoutResponse => "logout",
+    LoginAuthResponse => "auth/login",
+    LogoutAuthResponse => "auth/logout",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
     ListSessionsResponse => "session/list",
@@ -323,6 +325,7 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     ForkSessionResponse => "session/fork",
     ResumeSessionResponse => "session/resume",
     CloseSessionResponse => "session/close",
+    SetSessionTitleResponse => "session/setTitle",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
     #[cfg(feature = "unstable_mcp_over_acp")]
@@ -331,7 +334,7 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
 });
 
 impl_v2_jsonrpc_notification_enum!(v2::ClientNotification {
-    CancelNotification => "session/cancel",
+    CancelSessionNotification => "session/cancel",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpNotification => "mcp/message",
     [ext] ExtNotification,
@@ -364,7 +367,7 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
 });
 
 impl_v2_jsonrpc_notification_enum!(v2::AgentNotification {
-    SessionNotification => "session/update",
+    UpdateSessionNotification => "session/update",
     #[cfg(feature = "unstable_elicitation")]
     CompleteElicitationNotification => "elicitation/complete",
     #[cfg(feature = "unstable_mcp_over_acp")]
