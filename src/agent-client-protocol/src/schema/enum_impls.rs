@@ -24,6 +24,7 @@ impl_jsonrpc_request_enum!(ClientRequest {
     CloseSessionRequest => "session/close",
     SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
+    SetSessionTitleRequest => "session/setTitle",
     PromptRequest => "session/prompt",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",

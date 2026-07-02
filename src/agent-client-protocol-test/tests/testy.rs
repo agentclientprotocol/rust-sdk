@@ -12,7 +12,7 @@ use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationScope, ElicitationUrlCapabilities,
-    ErrorCode, UrlElicitationRequiredData,
+    ErrorCode,
 };
 use agent_client_protocol::{
     Client, Responder,
@@ -1958,18 +1958,18 @@ async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_eli
                 .block_task()
                 .await
                 .expect_err("url-required elicitation scenario should fail the prompt request");
-            assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
+            assert_eq!(error.code, ErrorCode::InvalidParams);
 
-            let data: UrlElicitationRequiredData =
-                serde_json::from_value(error.data.expect("url-required error should include data"))
-                    .expect("url-required error data should deserialize");
-            assert_eq!(data.elicitations.len(), 1);
-            let elicitation = &data.elicitations[0];
-            assert_eq!(elicitation.elicitation_id.to_string(), "testy-url-required");
-            assert_eq!(elicitation.url, "https://example.com/testy/required");
             assert_eq!(
-                elicitation.message,
-                "Complete the Testy URL elicitation before continuing"
+                error.data.expect("url-required error should include data"),
+                serde_json::json!({
+                    "elicitations": [{
+                        "mode": "url",
+                        "elicitationId": "testy-url-required",
+                        "url": "https://example.com/testy/required",
+                        "message": "Complete the Testy URL elicitation before continuing"
+                    }]
+                })
             );
             Ok(())
         })

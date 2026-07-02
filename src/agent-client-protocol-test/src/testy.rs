@@ -31,7 +31,7 @@ use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, ElicitationAction,
     ElicitationCapabilities, ElicitationFormMode, ElicitationRequestScope, ElicitationSchema,
     ElicitationSessionScope, ElicitationUrlMode, ErrorCode, MultiSelectPropertySchema, RequestId,
-    StringPropertySchema, UrlElicitationRequiredData, UrlElicitationRequiredItem,
+    StringPropertySchema,
 };
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, Responder, SentRequest,
@@ -637,7 +637,7 @@ impl Testy {
             Err(error) => {
                 self.finish_prompt(&session_id, StopReason::EndTurn);
                 #[cfg(feature = "unstable")]
-                if error.code == ErrorCode::UrlElicitationRequired {
+                if is_url_elicitation_required_error(&error) {
                     return responder.respond_with_error(error);
                 }
                 return Err(error);
@@ -1765,15 +1765,28 @@ fn elicitation_cancelled(agent: &Testy, session_id: &SessionId, report: &mut Vec
 
 #[cfg(feature = "unstable")]
 fn url_elicitation_required_error() -> agent_client_protocol::Error {
-    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
-        "testy-url-required",
-        "https://example.com/testy/required",
-        "Complete the Testy URL elicitation before continuing",
-    )]);
-    match serde_json::to_value(data) {
-        Ok(data) => agent_client_protocol::Error::url_elicitation_required().data(data),
-        Err(error) => agent_client_protocol::Error::into_internal_error(error),
-    }
+    agent_client_protocol::Error::invalid_params().data(url_elicitation_required_data())
+}
+
+#[cfg(feature = "unstable")]
+fn is_url_elicitation_required_error(error: &agent_client_protocol::Error) -> bool {
+    error.code == ErrorCode::InvalidParams
+        && error
+            .data
+            .as_ref()
+            .is_some_and(|data| data.get("elicitations").is_some())
+}
+
+#[cfg(feature = "unstable")]
+fn url_elicitation_required_data() -> serde_json::Value {
+    serde_json::json!({
+        "elicitations": [{
+            "mode": "url",
+            "elicitationId": "testy-url-required",
+            "url": "https://example.com/testy/required",
+            "message": "Complete the Testy URL elicitation before continuing"
+        }]
+    })
 }
 
 fn send_session_update(
