@@ -62,7 +62,7 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
             async |cx| {
                 // Initialize first
                 cx.send_request(agent_client_protocol::schema::v1::InitializeRequest::new(
-                    agent_client_protocol::schema::ProtocolVersion::LATEST,
+                    agent_client_protocol::schema::ProtocolVersion::V1,
                 ))
                 .block_task()
                 .await?;

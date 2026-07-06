@@ -58,5 +58,5 @@ available commands, mode/config/session info, and usage.
 
 With default features, `elicitations`, `callbacks`, and `full` cover `elicitation/create` form mode,
 URL mode, session scope, request scope, accept, decline, cancel, and `elicitation/complete`.
-If the client advertises form elicitation but not URL elicitation, the URL part returns a
-`UrlElicitationRequired` prompt error with deterministic error data.
+If the client advertises form elicitation but not URL elicitation, the URL portion is skipped and
+the scenario completes normally with a skipped-unsupported report.

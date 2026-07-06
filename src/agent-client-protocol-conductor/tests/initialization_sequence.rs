@@ -152,10 +152,9 @@ async fn test_single_component_gets_initialize_request() -> Result<(), agent_cli
     // Single component (agent) should receive InitializeRequest - we use ElizaAgent
     // which properly handles InitializeRequest
     run_test_with_components(vec![], async |connection_to_editor| {
-        let init_response = recv(
-            connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
-        )
-        .await;
+        let init_response =
+            recv(connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)))
+                .await;
 
         assert!(
             init_response.is_ok(),
@@ -180,7 +179,7 @@ async fn test_two_components_proxy_gets_initialize_proxy()
         vec![InitComponent::new(&component1)],
         async |connection_to_editor| {
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 
@@ -221,7 +220,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
         ],
         async |connection_to_editor| {
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 
@@ -323,7 +322,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
         DynConnectTo::new(Testy::new()),
         async |connection_to_editor| {
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 
@@ -365,7 +364,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
         DynConnectTo::new(Testy::new()), // Agent
         async |connection_to_editor| {
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 

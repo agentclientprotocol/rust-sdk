@@ -4,8 +4,7 @@ use agent_client_protocol::schema::v1::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAction, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationFormMode,
-    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error, ErrorCode,
-    UrlElicitationRequiredData, UrlElicitationRequiredItem,
+    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, EnumOption, Error,
 };
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use serde::Serialize;
@@ -124,24 +123,15 @@ fn client_capabilities_can_declare_elicitation_modes() {
 }
 
 #[test]
-fn url_elicitation_required_error_helper_is_available() {
-    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
-        "elicit_1",
-        "https://example.com/connect",
-        "Connect your account",
-    )]);
-    let error = Error::url_elicitation_required().data(json_value(data).unwrap());
+fn enum_options_can_carry_descriptions() {
+    let option = EnumOption::new("balanced", "Balanced").description("Recommended default");
 
-    assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
     assert_eq!(
-        error.data.unwrap(),
+        json_value(option).unwrap(),
         json!({
-            "elicitations": [{
-                "mode": "url",
-                "elicitationId": "elicit_1",
-                "url": "https://example.com/connect",
-                "message": "Connect your account"
-            }]
+            "const": "balanced",
+            "title": "Balanced",
+            "description": "Recommended default"
         })
     );
 }
@@ -194,8 +184,11 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,
     ) -> v2::InitializeResponse {
-        v2::InitializeResponse::new(protocol_version)
-            .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+        v2::InitializeResponse::new(
+            protocol_version,
+            v2::Implementation::new("test-agent", "0.0.0"),
+        )
+        .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
     }
 
     let agent = Agent
@@ -257,7 +250,10 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
         )
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    v1::InitializeRequest::new(ProtocolVersion::V1)
+                        .client_info(v1::Implementation::new("test-client", "0.0.0")),
+                )
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);

@@ -12,7 +12,6 @@ use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationScope, ElicitationUrlCapabilities,
-    ErrorCode, UrlElicitationRequiredData,
 };
 use agent_client_protocol::{
     Client, Responder,
@@ -1840,12 +1839,29 @@ async fn testy_elicitations_prompt_exercises_all_elicitation_create_and_complete
 
 #[cfg(feature = "unstable")]
 #[tokio::test]
-async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_elicitation_is_unsupported()
+async fn testy_callbacks_with_unstable_feature_skips_url_elicitation_when_unsupported()
 -> Result<(), agent_client_protocol::Error> {
     let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let agent_messages = Arc::new(Mutex::new(Vec::<String>::new()));
 
     Client
         .builder()
+        .on_receive_notification(
+            {
+                let agent_messages = Arc::clone(&agent_messages);
+                async move |notification: SessionNotification, _cx| {
+                    let SessionUpdate::AgentMessageChunk(chunk) = notification.update else {
+                        return Ok(());
+                    };
+                    let ContentBlock::Text(text) = chunk.content else {
+                        return Ok(());
+                    };
+                    agent_messages.lock().unwrap().push(text.text);
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _cx| {
                 let option_id = request.options.first().map_or_else(
@@ -1925,7 +1941,7 @@ async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_eli
                         ),
                         "form_session_decline" => ElicitationAction::Decline,
                         "form_request_cancel" => ElicitationAction::Cancel,
-                        other => panic!("unexpected elicitation request before URL error: {other}"),
+                        other => panic!("unexpected elicitation request: {other}"),
                     };
                     responder.respond(CreateElicitationResponse::new(action))
                 }
@@ -1944,7 +1960,7 @@ async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_eli
                 .block_task()
                 .await?;
 
-            let error = cx
+            let response = cx
                 .send_request(PromptRequest::new(
                     session.session_id,
                     vec![
@@ -1956,21 +1972,8 @@ async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_eli
                     ],
                 ))
                 .block_task()
-                .await
-                .expect_err("url-required elicitation scenario should fail the prompt request");
-            assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
-
-            let data: UrlElicitationRequiredData =
-                serde_json::from_value(error.data.expect("url-required error should include data"))
-                    .expect("url-required error data should deserialize");
-            assert_eq!(data.elicitations.len(), 1);
-            let elicitation = &data.elicitations[0];
-            assert_eq!(elicitation.elicitation_id.to_string(), "testy-url-required");
-            assert_eq!(elicitation.url, "https://example.com/testy/required");
-            assert_eq!(
-                elicitation.message,
-                "Complete the Testy URL elicitation before continuing"
-            );
+                .await?;
+            assert_eq!(response.stop_reason, StopReason::EndTurn);
             Ok(())
         })
         .await?;
@@ -1983,6 +1986,10 @@ async fn testy_callbacks_with_unstable_feature_returns_url_required_when_url_eli
             "form_request_cancel",
         ]
     );
+
+    let messages = agent_messages.lock().unwrap().join("\n");
+    assert!(messages.contains("elicitation/url: skipped unsupported"));
+    assert!(messages.contains("elicitations: completed"));
 
     Ok(())
 }

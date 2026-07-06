@@ -49,10 +49,14 @@ fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(Error::into_internal_error)
 }
 
+fn v2_test_implementation(name: &str) -> v2::Implementation {
+    v2::Implementation::new(name, "0.0.0")
+}
+
 fn v2_initialize_response_with_session(
     protocol_version: ProtocolVersion,
 ) -> v2::InitializeResponse {
-    v2::InitializeResponse::new(protocol_version)
+    v2::InitializeResponse::new(protocol_version, v2_test_implementation("test-agent"))
         .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
 }
 
@@ -110,7 +114,10 @@ async fn assert_v2_client_rejected_by_v1_agent(agent: impl ConnectTo<Client>) ->
         .v2()
         .connect_with(agent, async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    v2_test_implementation("test-client"),
+                ))
                 .block_task()
                 .await
                 .expect_err("v1 agent protocol mode should reject v2 clients");
@@ -173,7 +180,10 @@ async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Err
         .v2()
         .connect_with(agent, async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    v2_test_implementation("test-client"),
+                ))
                 .block_task()
                 .await
                 .expect_err("Role::builder should preserve v1 agent protocol mode");
@@ -232,7 +242,10 @@ async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(
     <Client as Role>::builder(Client)
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(
+                    v1::InitializeRequest::new(ProtocolVersion::V2)
+                        .client_info(v1::Implementation::new("test-client", "0.0.0")),
+                )
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -478,7 +491,10 @@ async fn v2_agent_serves_v1_client_with_v2_handlers() -> Result<(), Error> {
         .builder()
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    v1::InitializeRequest::new(ProtocolVersion::V1)
+                        .client_info(v1::Implementation::new("test-client", "0.0.0")),
+                )
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -499,7 +515,10 @@ async fn v2_client_rejects_v1_agent() -> Result<(), Error> {
         .v2()
         .connect_with(Testy::new(), async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V1,
+                    v2_test_implementation("test-client"),
+                ))
                 .block_task()
                 .await
                 .expect_err("v2 clients require a v2 agent");
@@ -524,7 +543,10 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         .on_receive_request(
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+                responder.respond(v2::InitializeResponse::new(
+                    initialize.protocol_version,
+                    v2_test_implementation("test-agent"),
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -542,7 +564,10 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         .v2()
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V1,
+                    v2_test_implementation("test-client"),
+                ))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
@@ -596,7 +621,10 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
         .v2()
         .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
             let initialize = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    v2_test_implementation("test-client"),
+                ))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
@@ -620,7 +648,10 @@ async fn v1_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
         .builder()
         .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(
+                    v1::InitializeRequest::new(ProtocolVersion::V1)
+                        .client_info(v1::Implementation::new("test-client", "0.0.0")),
+                )
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
