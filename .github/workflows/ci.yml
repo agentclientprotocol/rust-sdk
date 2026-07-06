@@ -17,6 +17,29 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          msrv="$(sed -n 's/^rust-version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml)"
+          test -n "$msrv"
+          echo "version=$msrv" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Check with MSRV
+        run: cargo check --workspace --all-targets --all-features --locked
+
   build:
     name: Build
     runs-on: ubuntu-latest

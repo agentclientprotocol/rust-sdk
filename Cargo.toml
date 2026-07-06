@@ -20,6 +20,7 @@ resolver = "3"
 [workspace.package]
 authors = ["Zed <hi@zed.dev>"]
 edition = "2024"
+rust-version = "1.88.0"
 license = "Apache-2.0"
 repository = "https://github.com/agentclientprotocol/rust-sdk"
 homepage = "https://github.com/agentclientprotocol/rust-sdk"
