@@ -4,8 +4,7 @@ use agent_client_protocol::schema::v1::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAction, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationFormMode,
-    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error, ErrorCode,
-    UrlElicitationRequiredData, UrlElicitationRequiredItem,
+    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error,
 };
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use serde::Serialize;
@@ -121,29 +120,6 @@ fn client_capabilities_can_declare_elicitation_modes() {
 
     let parsed: ClientCapabilities = serde_json::from_value(json!({ "elicitation": {} })).unwrap();
     assert!(parsed.elicitation.is_some());
-}
-
-#[test]
-fn url_elicitation_required_error_helper_is_available() {
-    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
-        "elicit_1",
-        "https://example.com/connect",
-        "Connect your account",
-    )]);
-    let error = Error::url_elicitation_required().data(json_value(data).unwrap());
-
-    assert_eq!(error.code, ErrorCode::UrlElicitationRequired);
-    assert_eq!(
-        error.data.unwrap(),
-        json!({
-            "elicitations": [{
-                "mode": "url",
-                "elicitationId": "elicit_1",
-                "url": "https://example.com/connect",
-                "message": "Connect your account"
-            }]
-        })
-    );
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

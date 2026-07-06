@@ -107,10 +107,10 @@ macro_rules! impl_v2_jsonrpc_request_enum {
                         if method.starts_with('_') {
                             crate::util::json_cast_params(params).map(
                                 |ext_req: v2::ExtRequest| {
-                                    Self::$ext_variant(v2::ExtRequest::new(
+                                    Self::$ext_variant(Box::new(v2::ExtRequest::new(
                                         method.to_string(),
                                         ext_req.params,
-                                    ))
+                                    )))
                                 },
                             )
                         } else {
@@ -159,10 +159,10 @@ macro_rules! impl_v2_jsonrpc_notification_enum {
                         if method.starts_with('_') {
                             crate::util::json_cast_params(params).map(
                                 |ext_notif: v2::ExtNotification| {
-                                    Self::$ext_variant(v2::ExtNotification::new(
+                                    Self::$ext_variant(Box::new(v2::ExtNotification::new(
                                         method.to_string(),
                                         ext_notif.params,
-                                    ))
+                                    )))
                                 },
                             )
                         } else {
@@ -213,11 +213,6 @@ impl_v2_jsonrpc_request!(v2::InitializeRequest, v2::InitializeResponse, "initial
 impl_v2_jsonrpc_request!(v2::LoginAuthRequest, v2::LoginAuthResponse, "auth/login");
 impl_v2_jsonrpc_request!(v2::LogoutAuthRequest, v2::LogoutAuthResponse, "auth/logout");
 impl_v2_jsonrpc_request!(v2::NewSessionRequest, v2::NewSessionResponse, "session/new");
-impl_v2_jsonrpc_request!(
-    v2::LoadSessionRequest,
-    v2::LoadSessionResponse,
-    "session/load"
-);
 impl_v2_jsonrpc_request!(
     v2::ListSessionsRequest,
     v2::ListSessionsResponse,
@@ -291,7 +286,6 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     LoginAuthRequest => "auth/login",
     LogoutAuthRequest => "auth/logout",
     NewSessionRequest => "session/new",
-    LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",
     DeleteSessionRequest => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
@@ -310,7 +304,6 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     LoginAuthResponse => "auth/login",
     LogoutAuthResponse => "auth/logout",
     NewSessionResponse => "session/new",
-    LoadSessionResponse => "session/load",
     ListSessionsResponse => "session/list",
     DeleteSessionResponse => "session/delete",
     #[cfg(feature = "unstable_session_fork")]

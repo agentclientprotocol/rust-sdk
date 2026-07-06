@@ -277,7 +277,7 @@ fn v2_extension_enum_parsing_preserves_method_prefix() -> Result<(), Error> {
 }
 
 #[test]
-fn v2_schema_1_2_method_names_are_jsonrpc_mapped() -> Result<(), Error> {
+fn v2_schema_1_4_method_names_are_jsonrpc_mapped() -> Result<(), Error> {
     fn assert_request<Req: JsonRpcRequest>() {}
     fn assert_notification<Notif: agent_client_protocol::JsonRpcNotification>() {}
 
