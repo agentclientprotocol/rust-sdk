@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "quote",
  "syn",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-test",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -728,9 +728,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-utils"
-version = "0.8.21"
+version = "0.8.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "crypto-common"
@@ -3338,18 +3338,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.52"
+version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce1022995ff5ff5d841ad7d994facc23098cd40152f2c1d11cd607c6f530653f"
+checksum = "75726053136156d419e285b9b7eddaaea9e3fea6ce32eed44a89901f0bd98de1"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.52"
+version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ae7f38b72ec2a254e2b87ef277cf2cd4fb97cbebf944faa6f33354da0867930"
+checksum = "4714fd92cf900833d49538023a9b3915155210801d1c1169eba513b2addefd71"
 dependencies = [
  "proc-macro2",
  "quote",
