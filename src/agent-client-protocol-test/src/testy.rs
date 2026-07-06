@@ -30,8 +30,8 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, ElicitationAction,
     ElicitationCapabilities, ElicitationFormMode, ElicitationRequestScope, ElicitationSchema,
-    ElicitationSessionScope, ElicitationUrlMode, ErrorCode, MultiSelectPropertySchema, RequestId,
-    StringPropertySchema, UrlElicitationRequiredData, UrlElicitationRequiredItem,
+    ElicitationSessionScope, ElicitationUrlMode, MultiSelectPropertySchema, RequestId,
+    StringPropertySchema,
 };
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, Responder, SentRequest,
@@ -636,11 +636,7 @@ impl Testy {
             Ok(response) => response,
             Err(error) => {
                 self.finish_prompt(&session_id, StopReason::EndTurn);
-                #[cfg(feature = "unstable")]
-                if error.code == ErrorCode::UrlElicitationRequired {
-                    return responder.respond_with_error(error);
-                }
-                return Err(error);
+                return responder.respond_with_error(error);
             }
         };
         let stop_reason = self.finish_prompt(&session_id, stop_reason);
@@ -1188,7 +1184,7 @@ impl Testy {
         }
 
         if !self.client_supports_url_elicitation() {
-            return Err(url_elicitation_required_error());
+            return Err(url_elicitation_unsupported_error());
         }
 
         let session_url_id = "testy-url-session";
@@ -1764,16 +1760,8 @@ fn elicitation_cancelled(agent: &Testy, session_id: &SessionId, report: &mut Vec
 }
 
 #[cfg(feature = "unstable")]
-fn url_elicitation_required_error() -> agent_client_protocol::Error {
-    let data = UrlElicitationRequiredData::new(vec![UrlElicitationRequiredItem::new(
-        "testy-url-required",
-        "https://example.com/testy/required",
-        "Complete the Testy URL elicitation before continuing",
-    )]);
-    match serde_json::to_value(data) {
-        Ok(data) => agent_client_protocol::Error::url_elicitation_required().data(data),
-        Err(error) => agent_client_protocol::Error::into_internal_error(error),
-    }
+fn url_elicitation_unsupported_error() -> agent_client_protocol::Error {
+    invalid_params("client does not support URL elicitation")
 }
 
 fn send_session_update(
