@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_add_capability_to_request() {
-        let request = InitializeRequest::new(ProtocolVersion::LATEST);
+        let request = InitializeRequest::new(ProtocolVersion::V1);
 
         let request = request.add_meta_capability(TestCapability);
 
@@ -165,8 +165,8 @@ mod tests {
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
 
-        let request = InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(client_capabilities);
+        let request =
+            InitializeRequest::new(ProtocolVersion::V1).client_capabilities(client_capabilities);
 
         let request = request.remove_meta_capability(TestCapability);
 
@@ -175,7 +175,7 @@ mod tests {
 
     #[test]
     fn test_add_capability_to_response() {
-        let response = InitializeResponse::new(ProtocolVersion::LATEST);
+        let response = InitializeResponse::new(ProtocolVersion::V1);
 
         let response = response.add_meta_capability(TestCapability);
 
@@ -198,8 +198,8 @@ mod tests {
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
 
-        let request = InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(client_capabilities);
+        let request =
+            InitializeRequest::new(ProtocolVersion::V1).client_capabilities(client_capabilities);
 
         assert!(!request.has_meta_capability(TestCapability));
     }
@@ -216,8 +216,8 @@ mod tests {
         );
         let client_capabilities = ClientCapabilities::new().meta(meta);
 
-        let request = InitializeRequest::new(ProtocolVersion::LATEST)
-            .client_capabilities(client_capabilities);
+        let request =
+            InitializeRequest::new(ProtocolVersion::V1).client_capabilities(client_capabilities);
 
         assert!(!request.has_meta_capability(TestCapability));
     }

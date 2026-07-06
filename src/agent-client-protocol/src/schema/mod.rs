@@ -233,7 +233,6 @@ macro_rules! impl_jsonrpc_notification_enum {
 ///     CancelRequestNotification => "$/cancel_request",
 /// });
 /// ```
-#[cfg(feature = "unstable_cancel_request")]
 macro_rules! impl_jsonrpc_protocol_level_notification_enum {
     ($enum:ty {
         $( $variant:ident => $method:literal, )*

@@ -80,7 +80,7 @@ async fn test_proxy_provides_mcp_tools_stdio() -> Result<(), agent_client_protoc
         async |connection_to_editor| {
             // Send initialization request
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 
@@ -123,7 +123,7 @@ async fn test_proxy_provides_mcp_tools_http() -> Result<(), agent_client_protoco
         async |connection_to_editor| {
             // Send initialization request
             let init_response = recv(
-                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
             )
             .await;
 
@@ -214,8 +214,7 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error>
             async |connection_to_editor| {
                 // Initialize
                 recv(
-                    connection_to_editor
-                        .send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
+                    connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)),
                 )
                 .await?;
 

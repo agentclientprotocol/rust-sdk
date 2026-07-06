@@ -42,7 +42,6 @@ pub(super) async fn outgoing_protocol_actor(
                 method,
                 untyped,
                 response_tx,
-                #[cfg(feature = "unstable_cancel_request")]
                 cancellation_disarm,
             } => {
                 let request = match protocol_compat
@@ -52,7 +51,6 @@ pub(super) async fn outgoing_protocol_actor(
                     Ok(request) => request,
                     Err(error) => {
                         tracing::warn!(?id, %method, ?error, "Failed to convert outgoing request");
-                        #[cfg(feature = "unstable_cancel_request")]
                         cancellation_disarm.disarm();
                         complete_request_with_error(response_tx, error);
                         continue;
@@ -66,7 +64,6 @@ pub(super) async fn outgoing_protocol_actor(
                         role_id,
                         method,
                         sender: response_tx,
-                        #[cfg(feature = "unstable_cancel_request")]
                         cancellation_disarm,
                     })
                     .map_err(crate::Error::into_internal_error)?;
@@ -176,7 +173,6 @@ mod tests {
                 method: "session/new".into(),
                 untyped: malformed_v2_known_method()?,
                 response_tx,
-                #[cfg(feature = "unstable_cancel_request")]
                 cancellation_disarm: crate::jsonrpc::SentRequestCancellationDisarm::new(),
             })
             .map_err(crate::Error::into_internal_error)?;

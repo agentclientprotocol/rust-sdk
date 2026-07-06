@@ -170,7 +170,7 @@ async fn conductor_proxy_chain_preserves_prompt_meta() -> Result<(), agent_clien
     run_with_conductor(
         ProxiesAndAgent::new(agent).proxy(PassthroughProxy),
         async |connection| {
-            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await?;
+            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
 
             let session = recv(connection.send_request(NewSessionRequest::new("/"))).await?;
             recv(

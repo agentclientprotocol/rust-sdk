@@ -243,7 +243,6 @@ impl Role for Conductor {
                 // `forward_response_to`, so wire up cancellation forwarding
                 // explicitly to keep `session/new` cancellable like every
                 // other proxied request.
-                #[cfg(feature = "unstable_cancel_request")]
                 let sent = sent.forward_cancellation_from(responder.cancellation());
                 sent.on_receiving_result({
                     let cx = cx.clone();

@@ -303,7 +303,6 @@ where
 
         // Send the "new session" request to the agent.
         let sent = connection.send_request_to(Agent, request);
-        #[cfg(feature = "unstable_cancel_request")]
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -514,12 +513,9 @@ where
 /// Incoming message from the agent
 #[non_exhaustive]
 #[derive(Debug)]
-#[cfg_attr(
-    feature = "unstable_cancel_request",
-    allow(
-        clippy::large_enum_variant,
-        reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
-    )
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
 )]
 pub enum SessionMessage {
     /// Periodic updates with new content, tool requests, etc.

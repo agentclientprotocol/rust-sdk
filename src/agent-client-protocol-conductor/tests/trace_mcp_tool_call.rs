@@ -252,7 +252,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                 ),
                 async |cx| {
                     // Initialize
-                    recv(cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))).await?;
+                    recv(cx.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
 
                     // Create session
                     let session = recv(

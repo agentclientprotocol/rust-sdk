@@ -469,7 +469,6 @@ where
                 // already propagates the cancellation hop by hop through the
                 // `forward_response_to` calls above, so drop the raw
                 // notification instead of tunneling a meaningless ID.
-                #[cfg(feature = "unstable_cancel_request")]
                 if agent_client_protocol::is_cancel_request_notification(&notification) {
                     tracing::debug!(
                         "not forwarding hop-scoped `$/cancel_request` notification to predecessor"
@@ -784,7 +783,6 @@ where
                 // used here; wire up cancellation forwarding explicitly to
                 // keep `initialize` cancellable like every other forwarded
                 // request.
-                #[cfg(feature = "unstable_cancel_request")]
                 let sent = sent.forward_cancellation_from(responder.cancellation());
                 sent.on_receiving_result(async move |result| {
                     tracing::debug!(?result, "got initialize_proxy response from proxy");

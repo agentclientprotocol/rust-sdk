@@ -30,12 +30,11 @@
 //! 8. [Error Handling][`crate::concepts::error_handling`] - Protocol errors vs
 //!    connection errors, and how to handle them.
 //!
-//! When the `unstable_cancel_request` feature is enabled, there is also a
-//! chapter on request cancellation (`crate::concepts::cancellation`).
+//! 9. [Request Cancellation][`crate::concepts::cancellation`] - Cancelling
+//!    outstanding JSON-RPC requests cooperatively.
 
 pub mod acp_basics;
 pub mod callbacks;
-#[cfg(feature = "unstable_cancel_request")]
 pub mod cancellation;
 pub mod connections;
 pub mod error_handling;

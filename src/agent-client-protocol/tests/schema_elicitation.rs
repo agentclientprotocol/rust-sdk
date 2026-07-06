@@ -194,8 +194,18 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
     fn v2_initialize_response_with_session(
         protocol_version: ProtocolVersion,
     ) -> v2::InitializeResponse {
-        v2::InitializeResponse::new(protocol_version)
-            .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+        v2::InitializeResponse::new(
+            protocol_version,
+            v2::Implementation::new("schema-elicitation-test", env!("CARGO_PKG_VERSION")),
+        )
+        .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+    }
+
+    fn v1_initialize_request(protocol_version: ProtocolVersion) -> v1::InitializeRequest {
+        v1::InitializeRequest::new(protocol_version).client_info(v1::Implementation::new(
+            "schema-elicitation-test",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 
     let agent = Agent
@@ -257,7 +267,7 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
         )
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
