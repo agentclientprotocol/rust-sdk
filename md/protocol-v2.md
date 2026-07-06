@@ -18,12 +18,19 @@ construct the builder with `Client.v2()` or `Agent.v2()`:
 use agent_client_protocol::schema::{ProtocolVersion, v2};
 use agent_client_protocol::{Agent, Client};
 
+fn implementation() -> v2::Implementation {
+    v2::Implementation::new("example", "0.1.0")
+}
+
 # async fn run(agent_transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
 Client
     .v2()
     .connect_with(agent_transport, async |cx| {
         let initialize = cx
-            .send_request(v2::InitializeRequest::new(ProtocolVersion::V1))
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V1,
+                implementation(),
+            ))
             .block_task()
             .await?;
 
@@ -39,7 +46,10 @@ Agent
     .v2()
     .on_receive_request(
         async |initialize: v2::InitializeRequest, responder, _cx| {
-            responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+            responder.respond(v2::InitializeResponse::new(
+                initialize.protocol_version,
+                implementation(),
+            ))
         },
         agent_client_protocol::on_receive_request!(),
     )

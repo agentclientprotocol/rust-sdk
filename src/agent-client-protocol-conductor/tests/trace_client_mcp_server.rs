@@ -253,7 +253,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                 ),
                 async |cx| {
                     // Initialize
-                    cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
                         .await?;
 

@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable_cancel_request")]
-
 //! Integration tests for `$/cancel_request` support.
 //!
 //! These tests avoid sleeps by relying on two ordering guarantees:

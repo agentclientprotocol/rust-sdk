@@ -8,20 +8,17 @@ use agent_client_protocol_schema::v1::{
 // Types re-exported from crate root
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
-#[cfg(feature = "unstable_cancel_request")]
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
 use std::sync::Arc;
-#[cfg(feature = "unstable_cancel_request")]
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use uuid::Uuid;
 
-#[cfg(feature = "unstable_cancel_request")]
 use futures::FutureExt;
 use futures::channel::{mpsc, oneshot};
 use futures::future::{self, BoxFuture, Either};
@@ -1536,7 +1533,6 @@ enum ReplyMessage {
 
         sender: oneshot::Sender<ResponsePayload>,
 
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm: SentRequestCancellationDisarm,
     },
 }
@@ -1558,20 +1554,17 @@ impl std::fmt::Debug for ReplyMessage {
 /// Request handlers can get this handle from [`Responder::cancellation`] and
 /// use it from spawned work to stop long-running request processing
 /// cooperatively.
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Clone)]
 pub struct RequestCancellation {
     state: Arc<RequestCancellationState>,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 struct RequestCancellationState {
     cancelled: AtomicBool,
     signal_tx: Mutex<Option<oneshot::Sender<()>>>,
     signal_rx: future::Shared<BoxFuture<'static, ()>>,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl RequestCancellation {
     fn new() -> Self {
         let (signal_tx, signal_rx) = oneshot::channel();
@@ -1646,7 +1639,6 @@ impl RequestCancellation {
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl Debug for RequestCancellation {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1662,7 +1654,6 @@ impl Debug for RequestCancellation {
 /// allocated once a handler asks for it via [`Responder::cancellation`]; until
 /// then an incoming `$/cancel_request` just flips the entry to `Cancelled`.
 /// This keeps the per-request cost of the registry to a single map entry.
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug)]
 enum RequestCancellationEntry {
     /// The request is in flight; no marker handed out, no cancellation yet.
@@ -1680,31 +1671,23 @@ enum RequestCancellationEntry {
 /// the same request ID, so that when a (protocol-violating) peer reuses the
 /// ID of a request that is still in flight, the stale request's responder can
 /// neither remove nor observe the cancellation state of the newer request.
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug)]
 struct RequestCancellationSlot {
     generation: u64,
     entry: RequestCancellationEntry,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug, Default)]
 struct RequestCancellationRegistryInner {
     slots: HashMap<RequestId, RequestCancellationSlot>,
     next_generation: u64,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Clone, Debug, Default)]
 struct RequestCancellationRegistry {
     inner: Arc<Mutex<RequestCancellationRegistryInner>>,
 }
 
-#[cfg(not(feature = "unstable_cancel_request"))]
-#[derive(Clone, Debug, Default)]
-struct RequestCancellationRegistry;
-
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Debug)]
 struct ResponderCancellation {
     id: RequestId,
@@ -1712,11 +1695,6 @@ struct ResponderCancellation {
     registry: RequestCancellationRegistry,
 }
 
-#[cfg(not(feature = "unstable_cancel_request"))]
-#[derive(Debug)]
-struct ResponderCancellation;
-
-#[cfg(feature = "unstable_cancel_request")]
 impl RequestCancellationRegistry {
     fn new() -> Self {
         Self::default()
@@ -1852,45 +1830,18 @@ impl RequestCancellationRegistry {
     }
 }
 
-#[cfg(not(feature = "unstable_cancel_request"))]
-impl RequestCancellationRegistry {
-    fn new() -> Self {
-        Self
-    }
-
-    #[expect(
-        clippy::unused_self,
-        reason = "feature-disabled stub mirrors the real registry API"
-    )]
-    fn register(&self, _id: &RequestId) -> ResponderCancellation {
-        ResponderCancellation
-    }
-
-    #[expect(
-        clippy::unused_self,
-        clippy::unnecessary_wraps,
-        reason = "feature-disabled stub mirrors the real registry API"
-    )]
-    fn cancel_if_requested(&self, _dispatch: &Dispatch) -> Result<bool, crate::Error> {
-        Ok(false)
-    }
-}
-
-#[cfg(feature = "unstable_cancel_request")]
 impl ResponderCancellation {
     fn cancellation(&self) -> RequestCancellation {
         self.registry.marker(&self.id, self.generation)
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl Drop for ResponderCancellation {
     fn drop(&mut self) {
         self.registry.remove(&self.id, self.generation);
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, crate::Error> {
     let Dispatch::Notification(message) = dispatch else {
         return Ok(None);
@@ -1898,7 +1849,6 @@ fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, cra
     cancellation_request_id_from_message(message)
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 fn cancellation_request_id_from_message(
     message: &UntypedMessage,
 ) -> Result<Option<RequestId>, crate::Error> {
@@ -1923,7 +1873,6 @@ fn cancellation_request_id_from_message(
 ///   flows on to the handler chain, which is responsible for reporting it.
 ///
 /// [`SuccessorMessage`]: crate::schema::SuccessorMessage
-#[cfg(feature = "unstable_cancel_request")]
 fn peel_successor_envelopes<'message>(
     mut method: &'message str,
     mut params: &'message serde_json::Value,
@@ -1952,7 +1901,6 @@ fn peel_successor_envelopes<'message>(
 /// Checking a notification whose method is not the successor envelope is a
 /// plain method-name comparison. Only successor-wrapped notifications pay for
 /// a serialization to peel the envelope.
-#[cfg(feature = "unstable_cancel_request")]
 #[must_use]
 pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) -> bool {
     let method = notification.method();
@@ -1999,7 +1947,6 @@ enum OutgoingMessage {
         /// where to send the response when it arrives (includes ack channel)
         response_tx: oneshot::Sender<ResponsePayload>,
 
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm: SentRequestCancellationDisarm,
     },
 
@@ -2239,13 +2186,12 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// The request context's response type matches the request's response type,
     /// enabling type-safe message forwarding.
     ///
-    /// When the `unstable_cancel_request` feature is enabled, `$/cancel_request`
-    /// notifications are *not* forwarded: their `requestId` refers to a request
-    /// on the connection they arrived over and would be meaningless to `peer`.
-    /// Cancellation instead propagates hop by hop, because the responders
-    /// passed to [`forward_response_to`](SentRequest::forward_response_to)
-    /// observe it and re-issue the cancellation with the forwarded request's
-    /// own ID.
+    /// `$/cancel_request` notifications are *not* forwarded: their `requestId`
+    /// refers to a request on the connection they arrived over and would be
+    /// meaningless to `peer`. Cancellation instead propagates hop by hop,
+    /// because the responders passed to
+    /// [`forward_response_to`](SentRequest::forward_response_to) observe it
+    /// and re-issue the cancellation with the forwarded request's own ID.
     pub fn send_proxied_message_to<
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
@@ -2270,7 +2216,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 // `forward_response_to` re-issues it for the forwarded request
                 // with the correct per-hop ID, so drop the raw notification
                 // instead of tunneling a meaningless ID across the hop.
-                #[cfg(feature = "unstable_cancel_request")]
                 if is_cancel_request_notification(&notification) {
                     tracing::debug!(
                         "not forwarding hop-scoped `$/cancel_request` notification across proxy hop"
@@ -2362,7 +2307,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let (response_tx, response_rx) = oneshot::channel();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
-        #[cfg(feature = "unstable_cancel_request")]
         let cancellation =
             SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
         match remote_style.transform_outgoing_message(request) {
@@ -2374,14 +2318,12 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     role_id,
                     untyped,
                     response_tx,
-                    #[cfg(feature = "unstable_cancel_request")]
                     cancellation_disarm: cancellation.disarm_handle(),
                 };
 
                 match self.message_tx.unbounded_send(message) {
                     Ok(()) => (),
                     Err(error) => {
-                        #[cfg(feature = "unstable_cancel_request")]
                         cancellation.disarm();
 
                         let OutgoingMessage::Request {
@@ -2406,7 +2348,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
 
             Err(err) => {
-                #[cfg(feature = "unstable_cancel_request")]
                 cancellation.disarm();
 
                 response_tx
@@ -2425,7 +2366,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             method.clone(),
             self.task_tx.clone(),
             response_rx,
-            #[cfg(feature = "unstable_cancel_request")]
             cancellation,
         )
         .map(move |json| <Req::Response>::from_value(&method, json))
@@ -2499,7 +2439,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// already knows the correct peer, request ID, and proxy wrapping. Use this
     /// low-level method only when implementing custom routing with a request ID
     /// that is valid on this connection.
-    #[cfg(feature = "unstable_cancel_request")]
     pub fn send_cancel_request(
         &self,
         request_id: impl Into<crate::schema::v1::RequestId>,
@@ -2517,7 +2456,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// already knows the correct peer, request ID, and proxy wrapping. Use this
     /// low-level method only when implementing custom routing with a request ID
     /// that is valid on the target peer's connection.
-    #[cfg(feature = "unstable_cancel_request")]
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
@@ -2724,7 +2662,6 @@ impl<T: JsonRpcResponse> Responder<T> {
     /// with [`Error::request_cancelled`] or partial data.
     ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
-    #[cfg(feature = "unstable_cancel_request")]
     #[must_use]
     pub fn cancellation(&self) -> RequestCancellation {
         self.cancellation.cancellation()
@@ -2807,10 +2744,9 @@ impl<T: JsonRpcResponse> Responder<T> {
 /// Dropping a `ResponseRouter` without responding (for example, from a
 /// dispatch handler that claims a [`Dispatch::Response`]) discards the
 /// response: the local awaiter observes the response as never received. The
-/// request still counts as settled — when the `unstable_cancel_request`
-/// feature is enabled, routing a response this far disarms the originating
-/// [`SentRequest`]'s drop-time auto-cancellation even if the router is never
-/// invoked, since the peer has already answered.
+/// request still counts as settled: routing a response this far disarms the
+/// originating [`SentRequest`]'s drop-time auto-cancellation even if the router
+/// is never invoked, since the peer has already answered.
 #[must_use]
 pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the original request.
@@ -2848,7 +2784,6 @@ impl ResponseRouter<serde_json::Value> {
         id: RequestId,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm: SentRequestCancellationDisarm,
     ) -> Self {
         let response_method = method.clone();
@@ -2857,7 +2792,6 @@ impl ResponseRouter<serde_json::Value> {
         // settled from the peer's perspective and a `$/cancel_request` could
         // only ever be redundant. Disarm immediately so handlers may retain
         // the router without leaving auto-cancellation armed.
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm.disarm();
         Self {
             method,
@@ -3565,39 +3499,32 @@ impl JsonRpcNotification for UntypedMessage {}
 ///
 /// # Drop Behavior
 ///
-/// By default, dropping a `SentRequest` without consuming it discards the
-/// response when it arrives. When the `unstable_cancel_request` feature is
-/// enabled, dropping a `SentRequest` before the SDK has received the response
-/// additionally sends a `$/cancel_request` notification asking the peer to
-/// cancel the request; requests whose eventual response should be ignored, but
-/// which should keep running on the peer, should use [`detach`](Self::detach)
-/// instead.
-#[must_use = "dropping a SentRequest discards the response (and, with the \
-              `unstable_cancel_request` feature, asks the peer to cancel the \
-              request); consume it with `block_task`, `on_receiving_result`, \
-              `forward_response_to`, or `detach`"]
+/// By default, dropping a `SentRequest` before the SDK has received the
+/// response sends a `$/cancel_request` notification asking the peer to cancel
+/// the request, then discards the response when it arrives. Requests whose
+/// eventual response should be ignored, but which should keep running on the
+/// peer, should use [`detach`](Self::detach) instead.
+#[must_use = "dropping a SentRequest asks the peer to cancel the request and \
+              discards the response; consume it with `block_task`, \
+              `on_receiving_result`, `forward_response_to`, or `detach`"]
 pub struct SentRequest<T> {
     id: RequestId,
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
     to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
-    #[cfg(feature = "unstable_cancel_request")]
     cancellation: SentRequestCancellation,
     /// Cancellation markers of other (incoming) requests whose cancellation
     /// should be forwarded to this request. See
     /// [`forward_cancellation_from`](Self::forward_cancellation_from).
-    #[cfg(feature = "unstable_cancel_request")]
     cancellation_sources: Vec<RequestCancellation>,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 #[derive(Clone, Debug)]
 pub(crate) struct SentRequestCancellationDisarm {
     armed: Arc<AtomicBool>,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl SentRequestCancellationDisarm {
     fn new() -> Self {
         Self {
@@ -3610,7 +3537,6 @@ impl SentRequestCancellationDisarm {
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 struct SentRequestCancellation {
     message_tx: OutgoingMessageTx,
     remote_style: crate::role::RemoteStyle,
@@ -3618,7 +3544,6 @@ struct SentRequestCancellation {
     disarm: SentRequestCancellationDisarm,
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl SentRequestCancellation {
     fn new(
         message_tx: OutgoingMessageTx,
@@ -3656,7 +3581,6 @@ impl SentRequestCancellation {
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl Drop for SentRequestCancellation {
     fn drop(&mut self) {
         if let Err(error) = self.send() {
@@ -3665,7 +3589,6 @@ impl Drop for SentRequestCancellation {
     }
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 impl Debug for SentRequestCancellation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SentRequestCancellation")
@@ -3686,7 +3609,6 @@ impl Debug for SentRequestCancellation {
 ///
 /// Watching is deliberately bounded by response arrival so that completed
 /// requests do not leak waiters on markers that will never fire.
-#[cfg(feature = "unstable_cancel_request")]
 async fn await_response_forwarding_cancellation(
     response_rx: oneshot::Receiver<ResponsePayload>,
     cancellation: &SentRequestCancellation,
@@ -3732,7 +3654,6 @@ impl<T: Debug> Debug for SentRequest<T> {
             .field("method", &self.method)
             .field("task_tx", &self.task_tx)
             .field("response_rx", &self.response_rx);
-        #[cfg(feature = "unstable_cancel_request")]
         debug
             .field("cancellation", &self.cancellation)
             .field("cancellation_sources", &self.cancellation_sources);
@@ -3746,7 +3667,7 @@ impl SentRequest<serde_json::Value> {
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
-        #[cfg(feature = "unstable_cancel_request")] cancellation: SentRequestCancellation,
+        cancellation: SentRequestCancellation,
     ) -> Self {
         Self {
             id,
@@ -3754,9 +3675,7 @@ impl SentRequest<serde_json::Value> {
             response_rx,
             task_tx,
             to_result: Box::new(Ok),
-            #[cfg(feature = "unstable_cancel_request")]
             cancellation,
-            #[cfg(feature = "unstable_cancel_request")]
             cancellation_sources: Vec::new(),
         }
     }
@@ -3765,20 +3684,17 @@ impl SentRequest<serde_json::Value> {
 impl<T> SentRequest<T> {
     /// Detach this request handle without waiting for its response.
     ///
-    /// The response will be discarded when it arrives. When the
-    /// `unstable_cancel_request` feature is enabled, this also disarms the
+    /// The response will be discarded when it arrives. This also disarms the
     /// drop-time automatic cancellation described in
     /// [Drop Behavior](Self#drop-behavior), so use it for requests whose
-    /// eventual response should be ignored, but which should keep running on the
-    /// peer. The peer is still expected to answer the JSON-RPC request
+    /// eventual response should be ignored, but which should keep running on
+    /// the peer. The peer is still expected to answer the JSON-RPC request
     /// eventually; use a notification instead when no response is expected at
     /// all.
     ///
-    /// To ask the peer to stop the request, enable `unstable_cancel_request`
-    /// and call `cancel` instead, or drop the handle while automatic
-    /// cancellation is enabled.
+    /// To ask the peer to stop the request, call `cancel` instead, or drop the
+    /// handle while automatic cancellation is armed.
     pub fn detach(self) {
-        #[cfg(feature = "unstable_cancel_request")]
         self.cancellation.disarm();
     }
 
@@ -3797,7 +3713,6 @@ impl<T> SentRequest<T> {
     ///
     /// Errors are only reported by the call that attempts to send the
     /// notification.
-    #[cfg(feature = "unstable_cancel_request")]
     pub fn cancel(&self) -> Result<(), crate::Error> {
         self.cancellation.send()
     }
@@ -3840,7 +3755,6 @@ impl<T> SentRequest<T> {
     /// [`on_receiving_result`](Self::on_receiving_result), or
     /// [`forward_response_to`](Self::forward_response_to); a source that was
     /// already cancelled by then is honored immediately.
-    #[cfg(feature = "unstable_cancel_request")]
     pub fn forward_cancellation_from(mut self, source: RequestCancellation) -> Self {
         self.cancellation_sources.push(source);
         self
@@ -3871,9 +3785,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
             response_rx: self.response_rx,
             task_tx: self.task_tx,
             to_result: Box::new(move |value| map_fn((self.to_result)(value)?)),
-            #[cfg(feature = "unstable_cancel_request")]
             cancellation: self.cancellation,
-            #[cfg(feature = "unstable_cancel_request")]
             cancellation_sources: self.cancellation_sources,
         }
     }
@@ -3933,20 +3845,17 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// - If the pending response is dropped without ever being delivered (for
     ///   example, the downstream connection closed), the incoming request is
     ///   answered with an internal error instead of being left unanswered.
-    /// - When the `unstable_cancel_request` feature is enabled and the peer
-    ///   cancels the incoming request, the cancellation is forwarded to the
-    ///   outgoing request, and the downstream response (normal data or a
-    ///   cancellation error) is still forwarded back. This is equivalent to
-    ///   registering the responder's marker with `forward_cancellation_from`.
+    /// - When the peer cancels the incoming request, the cancellation is
+    ///   forwarded to the outgoing request, and the downstream response
+    ///   (normal data or a cancellation error) is still forwarded back. This is
+    ///   equivalent to registering the responder's marker with
+    ///   `forward_cancellation_from`.
     #[track_caller]
     pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
         T: Send,
     {
-        #[cfg(feature = "unstable_cancel_request")]
         let this = self.forward_cancellation_from(responder.cancellation());
-        #[cfg(not(feature = "unstable_cancel_request"))]
-        let this = self;
 
         this.consume_with(async move |response| {
             // A response that was never delivered (outer `Err`, e.g. the
@@ -3961,10 +3870,9 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// [`forward_response_to`](Self::forward_response_to).
     ///
     /// The task awaits the response (forwarding cancellation from registered
-    /// sources while waiting, when the `unstable_cancel_request` feature is
-    /// enabled), converts the payload, and invokes `handle` with the typed
-    /// result (`Ok(Result<T, _>)`). The dispatch loop's ack, if any, is sent
-    /// after `handle` completes.
+    /// sources while waiting, converts the payload, and invokes `handle` with
+    /// the typed result (`Ok(Result<T, _>)`). The dispatch loop's ack, if any,
+    /// is sent after `handle` completes.
     ///
     /// If the pending response is dropped without ever being delivered (for
     /// example, the connection closed), `handle` receives the outer `Err`
@@ -3982,22 +3890,17 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         let method = self.method;
         let response_rx = self.response_rx;
         let to_result = self.to_result;
-        #[cfg(feature = "unstable_cancel_request")]
         let cancellation = self.cancellation;
-        #[cfg(feature = "unstable_cancel_request")]
         let cancellation_sources = self.cancellation_sources;
         let location = Location::caller();
 
         Task::new(location, async move {
-            #[cfg(feature = "unstable_cancel_request")]
             let response = await_response_forwarding_cancellation(
                 response_rx,
                 &cancellation,
                 &cancellation_sources,
             )
             .await;
-            #[cfg(not(feature = "unstable_cancel_request"))]
-            let response = response_rx.await;
 
             match response {
                 Ok(ResponsePayload { result, ack_tx }) => {
@@ -4095,15 +3998,12 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     where
         T: Send,
     {
-        #[cfg(feature = "unstable_cancel_request")]
         let response = await_response_forwarding_cancellation(
             self.response_rx,
             &self.cancellation,
             &self.cancellation_sources,
         )
         .await;
-        #[cfg(not(feature = "unstable_cancel_request"))]
-        let response = self.response_rx.await;
 
         match response {
             Ok(ResponsePayload {
@@ -4565,7 +4465,6 @@ impl<R: Role> ConnectTo<R> for Channel {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_returns_plain_messages_unchanged() {
         let params = serde_json::json!({ "key": "value" });
@@ -4574,7 +4473,6 @@ mod tests {
         assert_eq!(peeled, &params);
     }
 
-    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_unwraps_nested_envelopes() {
         let params = serde_json::json!({
@@ -4589,7 +4487,6 @@ mod tests {
         assert_eq!(peeled, &serde_json::json!({ "requestId": "req-1" }));
     }
 
-    #[cfg(feature = "unstable_cancel_request")]
     #[test]
     fn peel_successor_envelopes_leaves_malformed_envelopes_intact() {
         // No string `method` field: the envelope cannot be peeled, so the
@@ -4600,7 +4497,6 @@ mod tests {
         assert_eq!(peeled, &params);
     }
 
-    #[cfg(feature = "unstable_cancel_request")]
     mod cancel_request {
         use super::super::*;
 

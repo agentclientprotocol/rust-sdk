@@ -1,7 +1,6 @@
 //! Request cancellation with `$/cancel_request`.
 //!
-//! The SDK exposes the ACP `$/cancel_request` notification behind the
-//! `unstable_cancel_request` feature. The notification is protocol-level:
+//! The SDK exposes the ACP `$/cancel_request` protocol-level notification:
 //! either side may send it to ask the peer to cancel one outstanding JSON-RPC
 //! request by ID.
 //!
@@ -10,8 +9,7 @@
 //! [`Error::request_cancelled`] (`-32800`). The requesting side always
 //! receives a response to the original request; cancellation only changes
 //! *which* response that is. Unhandled notifications are ignored by the SDK
-//! (even without this feature), so peers that do not support cancellation
-//! simply will not act on it.
+//! so peers that do not support cancellation simply will not act on it.
 //!
 //! # Cancelling outgoing requests
 //!

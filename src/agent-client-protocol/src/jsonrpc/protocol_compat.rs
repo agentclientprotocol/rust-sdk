@@ -728,6 +728,18 @@ mod imp {
                 .negotiated
         }
 
+        fn v2_implementation() -> v2::Implementation {
+            v2::Implementation::new("protocol-compat-test", env!("CARGO_PKG_VERSION"))
+        }
+
+        fn v2_initialize_request(protocol_version: ProtocolVersion) -> v2::InitializeRequest {
+            v2::InitializeRequest::new(protocol_version, v2_implementation())
+        }
+
+        fn v2_initialize_response(protocol_version: ProtocolVersion) -> v2::InitializeResponse {
+            v2::InitializeResponse::new(protocol_version, v2_implementation())
+        }
+
         #[test]
         fn initialize_request_sets_active_wire_version_before_response() -> Result<(), crate::Error>
         {
@@ -736,7 +748,7 @@ mod imp {
 
             compat.incoming_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V2),
+                v2_initialize_request(ProtocolVersion::V2),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -744,7 +756,7 @@ mod imp {
 
             compat.outgoing_response(
                 "initialize",
-                Ok(serde_json::to_value(v2::InitializeResponse::new(
+                Ok(serde_json::to_value(v2_initialize_response(
                     ProtocolVersion::V2,
                 ))?),
             )?;
@@ -762,7 +774,7 @@ mod imp {
 
             compat.outgoing_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V1),
+                v2_initialize_request(ProtocolVersion::V1),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -770,7 +782,7 @@ mod imp {
 
             compat.incoming_response(
                 "initialize",
-                Ok(serde_json::to_value(v2::InitializeResponse::new(
+                Ok(serde_json::to_value(v2_initialize_response(
                     ProtocolVersion::V2,
                 ))?),
             )?;
@@ -788,7 +800,7 @@ mod imp {
 
             compat.outgoing_message(UntypedMessage::new(
                 "initialize",
-                v2::InitializeRequest::new(ProtocolVersion::V1),
+                v2_initialize_request(ProtocolVersion::V1),
             )?)?;
 
             assert_eq!(negotiated(&compat), ProtocolVersionKind::V1);
@@ -814,7 +826,7 @@ mod imp {
                 let compat = ProtocolCompat::new(ProtocolMode::v2_client());
                 compat.outgoing_message(UntypedMessage::new(
                     "initialize",
-                    v2::InitializeRequest::new(ProtocolVersion::V1),
+                    v2_initialize_request(ProtocolVersion::V1),
                 )?)?;
 
                 let error = compat
@@ -838,7 +850,7 @@ mod imp {
             let compat = ProtocolCompat::new(ProtocolMode::v2_agent());
             let messages = compat.outgoing_notification(UntypedMessage::new(
                 "session/update",
-                v2::SessionNotification::new(
+                v2::UpdateSessionNotification::new(
                     "sess",
                     v2::SessionUpdate::AgentMessage(v2::AgentMessage::new("msg_agent").content(
                         vec![

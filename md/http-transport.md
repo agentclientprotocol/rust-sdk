@@ -49,11 +49,10 @@ The `client` feature exposes `HttpClient`. The `server` feature exposes
 
 ## Request Cancellation
 
-Request cancellation is available when the transport crate forwards the core SDK
-feature:
+Request cancellation is available through the core SDK:
 
 ```toml
-agent-client-protocol-http = { version = "...", features = ["client", "server", "unstable_cancel_request"] }
+agent-client-protocol-http = { version = "...", features = ["client", "server"] }
 ```
 
 `$/cancel_request` is connection-scoped. The HTTP transport does not apply

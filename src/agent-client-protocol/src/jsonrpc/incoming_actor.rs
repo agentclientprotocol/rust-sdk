@@ -33,7 +33,6 @@ struct PendingReply {
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<crate::jsonrpc::ResponsePayload>,
-    #[cfg(feature = "unstable_cancel_request")]
     cancellation_disarm: super::SentRequestCancellationDisarm,
 }
 
@@ -82,7 +81,6 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     role_id,
                     method,
                     sender,
-                    #[cfg(feature = "unstable_cancel_request")]
                     cancellation_disarm,
                 } => {
                     tracing::trace!(?id, %method, "incoming_actor: subscribing to response");
@@ -92,7 +90,6 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             method,
                             role_id,
                             sender,
-                            #[cfg(feature = "unstable_cancel_request")]
                             cancellation_disarm,
                         },
                     );
@@ -305,7 +302,6 @@ fn dispatch_from_response(
         method,
         role_id,
         sender,
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm,
     } = pending_reply;
 
@@ -315,7 +311,6 @@ fn dispatch_from_response(
         id.clone(),
         role_id,
         sender,
-        #[cfg(feature = "unstable_cancel_request")]
         cancellation_disarm,
     );
     Dispatch::Response(result, router)

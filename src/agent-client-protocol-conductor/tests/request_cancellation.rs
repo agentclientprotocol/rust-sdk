@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable_cancel_request")]
-
 //! Integration tests for `$/cancel_request` propagation through the conductor.
 //!
 //! Cancellation is hop-by-hop: every hop re-issues `$/cancel_request` with

@@ -199,10 +199,9 @@ async fn test_new_session_handler_invoked_with_mcp_server()
 
     run_test(vec![proxy], agent, async |connection_to_editor| {
         // Initialize first
-        let _init_response = recv(
-            connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::LATEST)),
-        )
-        .await?;
+        let _init_response =
+            recv(connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)))
+                .await?;
 
         // Create a new session - this should trigger the handler in the proxy
         let session_response =

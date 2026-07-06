@@ -22,7 +22,6 @@ default = []
 unstable = [
     "unstable_auth_methods",
     "unstable_boolean_config",
-    "unstable_cancel_request",
     "unstable_elicitation",
     "unstable_end_turn_token_usage",
     "unstable_mcp_over_acp",
@@ -30,7 +29,6 @@ unstable = [
 ]
 unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
 unstable_boolean_config = ["agent-client-protocol-schema/unstable_boolean_config"]
-unstable_cancel_request = ["agent-client-protocol-schema/unstable_cancel_request"]
 unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
 unstable_end_turn_token_usage = ["agent-client-protocol-schema/unstable_end_turn_token_usage"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]

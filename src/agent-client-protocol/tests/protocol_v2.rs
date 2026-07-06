@@ -49,10 +49,26 @@ fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(Error::into_internal_error)
 }
 
+fn v2_implementation() -> v2::Implementation {
+    v2::Implementation::new("agent-client-protocol-test", env!("CARGO_PKG_VERSION"))
+}
+
+fn v1_implementation() -> v1::Implementation {
+    v1::Implementation::new("agent-client-protocol-test", env!("CARGO_PKG_VERSION"))
+}
+
+fn v1_initialize_request(protocol_version: ProtocolVersion) -> v1::InitializeRequest {
+    v1::InitializeRequest::new(protocol_version).client_info(v1_implementation())
+}
+
+fn v2_initialize_request(protocol_version: ProtocolVersion) -> v2::InitializeRequest {
+    v2::InitializeRequest::new(protocol_version, v2_implementation())
+}
+
 fn v2_initialize_response_with_session(
     protocol_version: ProtocolVersion,
 ) -> v2::InitializeResponse {
-    v2::InitializeResponse::new(protocol_version)
+    v2::InitializeResponse::new(protocol_version, v2_implementation())
         .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
 }
 
@@ -110,7 +126,7 @@ async fn assert_v2_client_rejected_by_v1_agent(agent: impl ConnectTo<Client>) ->
         .v2()
         .connect_with(agent, async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
                 .block_task()
                 .await
                 .expect_err("v1 agent protocol mode should reject v2 clients");
@@ -173,7 +189,7 @@ async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Err
         .v2()
         .connect_with(agent, async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
                 .block_task()
                 .await
                 .expect_err("Role::builder should preserve v1 agent protocol mode");
@@ -232,7 +248,7 @@ async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(
     <Client as Role>::builder(Client)
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v1_initialize_request(ProtocolVersion::V2))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -256,6 +272,81 @@ fn v2_extension_enum_parsing_preserves_method_prefix() -> Result<(), Error> {
     let untyped_notification = notification.to_untyped_message()?;
     assert_eq!(untyped_notification.method(), "_vendor/notify");
     assert_eq!(untyped_notification.params(), &params);
+
+    Ok(())
+}
+
+#[test]
+fn v2_schema_1_2_method_names_are_jsonrpc_mapped() -> Result<(), Error> {
+    fn assert_request<Req: JsonRpcRequest>() {}
+    fn assert_notification<Notif: agent_client_protocol::JsonRpcNotification>() {}
+
+    assert_request::<v2::LoginAuthRequest>();
+    assert_request::<v2::LogoutAuthRequest>();
+    assert_notification::<v2::CancelRequestNotification>();
+    assert_notification::<v2::CancelSessionNotification>();
+    assert_notification::<v2::UpdateSessionNotification>();
+
+    let login_params = serde_json::json!({ "methodId": "browser" });
+    let login = v2::LoginAuthRequest::parse_message("auth/login", &login_params)?;
+    assert_eq!(login.method(), "auth/login");
+    let client_request = v2::ClientRequest::parse_message("auth/login", &login_params)?;
+    assert!(matches!(
+        client_request,
+        v2::ClientRequest::LoginAuthRequest(_)
+    ));
+    let login_response = v2::AgentResponse::from_value("auth/login", serde_json::json!({}))?;
+    assert!(matches!(
+        login_response,
+        v2::AgentResponse::LoginAuthResponse(_)
+    ));
+
+    let logout = v2::LogoutAuthRequest::parse_message("auth/logout", &serde_json::json!({}))?;
+    assert_eq!(logout.method(), "auth/logout");
+    let client_request = v2::ClientRequest::parse_message("auth/logout", &serde_json::json!({}))?;
+    assert!(matches!(
+        client_request,
+        v2::ClientRequest::LogoutAuthRequest(_)
+    ));
+    let logout_response = v2::AgentResponse::from_value("auth/logout", serde_json::json!({}))?;
+    assert!(matches!(
+        logout_response,
+        v2::AgentResponse::LogoutAuthResponse(_)
+    ));
+
+    let cancel_params = serde_json::json!({ "requestId": "req-1" });
+    let cancel = v2::CancelRequestNotification::parse_message("$/cancel_request", &cancel_params)?;
+    assert_eq!(cancel.method(), "$/cancel_request");
+    let protocol_notification =
+        v2::ProtocolLevelNotification::parse_message("$/cancel_request", &cancel_params)?;
+    assert!(matches!(
+        protocol_notification,
+        v2::ProtocolLevelNotification::CancelRequestNotification(_)
+    ));
+
+    let session_cancel_params = serde_json::json!({ "sessionId": "session-1" });
+    let session_cancel =
+        v2::CancelSessionNotification::parse_message("session/cancel", &session_cancel_params)?;
+    assert_eq!(session_cancel.method(), "session/cancel");
+    let client_notification =
+        v2::ClientNotification::parse_message("session/cancel", &session_cancel_params)?;
+    assert!(matches!(
+        client_notification,
+        v2::ClientNotification::CancelSessionNotification(_)
+    ));
+
+    let update_params = serde_json::json!({
+        "sessionId": "session-1",
+        "update": { "sessionUpdate": "_custom" }
+    });
+    let update = v2::UpdateSessionNotification::parse_message("session/update", &update_params)?;
+    assert_eq!(update.method(), "session/update");
+    let agent_notification =
+        v2::AgentNotification::parse_message("session/update", &update_params)?;
+    assert!(matches!(
+        agent_notification,
+        v2::AgentNotification::UpdateSessionNotification(_)
+    ));
 
     Ok(())
 }
@@ -478,7 +569,7 @@ async fn v2_agent_serves_v1_client_with_v2_handlers() -> Result<(), Error> {
         .builder()
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -499,7 +590,7 @@ async fn v2_client_rejects_v1_agent() -> Result<(), Error> {
         .v2()
         .connect_with(Testy::new(), async |cx| {
             let error = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v2_initialize_request(ProtocolVersion::V1))
                 .block_task()
                 .await
                 .expect_err("v2 clients require a v2 agent");
@@ -524,7 +615,9 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         .on_receive_request(
             async |initialize: v2::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2::InitializeResponse::new(initialize.protocol_version))
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -542,7 +635,7 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         .v2()
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v2_initialize_request(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
@@ -559,7 +652,6 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
 
 /// A v2 agent whose `session/new` handler only responds once the peer cancels
 /// the request via `$/cancel_request`.
-#[cfg(feature = "unstable_cancel_request")]
 fn v2_agent_with_cancellable_new_session()
 -> Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>> {
     Agent
@@ -589,14 +681,13 @@ fn v2_agent_with_cancellable_new_session()
         )
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 #[tokio::test(flavor = "current_thread")]
 async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
     Client
         .v2()
         .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
             let initialize = cx
-                .send_request(v2::InitializeRequest::new(ProtocolVersion::V2))
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
@@ -613,14 +704,13 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
         .await
 }
 
-#[cfg(feature = "unstable_cancel_request")]
 #[tokio::test(flavor = "current_thread")]
 async fn v1_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
     Client
         .builder()
         .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
             let initialize = cx
-                .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
                 .block_task()
                 .await?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);

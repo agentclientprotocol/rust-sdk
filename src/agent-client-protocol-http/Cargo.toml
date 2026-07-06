@@ -43,8 +43,6 @@ server = [
     "dep:tracing",
     "dep:uuid",
 ]
-unstable_cancel_request = ["agent-client-protocol?/unstable_cancel_request"]
-
 [dependencies]
 agent-client-protocol = { workspace = true, optional = true }
 

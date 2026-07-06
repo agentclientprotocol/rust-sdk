@@ -5,12 +5,7 @@ how the SDK implements it.
 
 For API usage (cancelling a `SentRequest`, observing cancellation from a
 `Responder`), see the `concepts::cancellation` chapter in the
-[agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol). The
-SDK support is gated behind the `unstable_cancel_request` feature:
-
-```toml
-agent-client-protocol = { version = "...", features = ["unstable_cancel_request"] }
-```
+[agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol).
 
 ## The `$/cancel_request` Notification
 
@@ -44,27 +39,22 @@ The requesting side always receives a response to the original request;
 cancellation only changes _which_ response that is. A `$/cancel_request` for
 an unknown or already-completed request ID is silently ignored. A
 `$/cancel_request` with malformed params (for example, a `requestId` that is
-not a string, number, or null) is different: when the receiver is built with
-the `unstable_cancel_request` feature, it is reported back with an
-out-of-band error notification, like any other malformed notification. A
-receiver built without the feature never parses the params and ignores the
-notification like any other unhandled notification (see
-[Interoperability](#interoperability)).
+not a string, number, or null) is different: it is reported back with an
+out-of-band error notification, like any other malformed notification.
 
 ## Interoperability
 
 Protocol-level (`$/`-prefixed) notifications are optional by design. The SDK
 ignores unhandled notifications instead of rejecting them with a
-method-not-found error, and does so even when the `unstable_cancel_request`
-feature is disabled. A peer that sends `$/cancel_request` to a component built
-without cancellation support therefore loses nothing: the request simply runs
-to completion.
+method-not-found error. A peer that sends `$/cancel_request` to a component
+that does not support cancellation therefore loses nothing: the request simply
+runs to completion.
 
-When cancellation support is enabled, dropping an unconsumed `SentRequest`
-asks the peer to cancel it. Use `SentRequest::detach()` for requests whose
-eventual response should be ignored, but which should continue running on the
-peer. The peer is still expected to answer the JSON-RPC request eventually; use
-a notification instead when no response is expected at all.
+Dropping an unconsumed `SentRequest` asks the peer to cancel it. Use
+`SentRequest::detach()` for requests whose eventual response should be ignored,
+but which should continue running on the peer. The peer is still expected to
+answer the JSON-RPC request eventually; use a notification instead when no
+response is expected at all.
 
 ## Proxy Chains
 
@@ -81,11 +71,11 @@ request on the connection it is sent over:
    back up the chain as the response to each hop's request.
 
 Because the notification is hop-scoped, it is never tunneled across hops:
-when the feature is enabled, generic forwarding helpers
-(`send_proxied_message_to` in the SDK, and the conductor's internal routing)
-drop a raw `$/cancel_request` instead of forwarding a request ID that means
-nothing on the next connection. The cancellation still reaches the next hop,
-re-issued by `forward_response_to` with that hop's own request ID.
+generic forwarding helpers (`send_proxied_message_to` in the SDK, and the
+conductor's internal routing) drop a raw `$/cancel_request` instead of
+forwarding a request ID that means nothing on the next connection. The
+cancellation still reaches the next hop, re-issued by `forward_response_to`
+with that hop's own request ID.
 
 Proxies that intercept methods with custom handlers stay in control: the
 request's cancellation marker is their decision point, and handlers see the
@@ -102,12 +92,10 @@ When the notification targets a request that was wrapped in a
 `$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
 the JSON-RPC `id` of the wrapped request on that connection.
 
-The conductor translates cancellations between hops when it is built with its
-`unstable_cancel_request` feature, which forwards the feature of the same name
-to the SDK. Without it, no per-hop cancellation is issued; since request IDs
-are reallocated at every hop, a `$/cancel_request` cannot match anything
-beyond the hop it was sent over, and the affected request simply runs to
-completion as described in [Interoperability](#interoperability).
+The conductor translates cancellations between hops. Since request IDs are
+reallocated at every hop, a raw `$/cancel_request` cannot match anything
+beyond the hop it was sent over; the conductor re-issues cancellation with the
+next hop's request ID instead.
 
 ## Related Documentation
 
