@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.0.1...v1.1.0) - 2026-07-06
+
+### Added
+
+- *(deps)* bump schema to 1.4.0 ([#243](https://github.com/agentclientprotocol/rust-sdk/pull/243))
+- *(acp)* Make request cancellation stable ([#242](https://github.com/agentclientprotocol/rust-sdk/pull/242))
+
 ## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/v1.0.0...v1.0.1) - 2026-06-29
 
 ### Fixed
