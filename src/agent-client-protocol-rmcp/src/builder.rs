@@ -329,9 +329,9 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
                     if has_structured_output {
                         Ok(CallToolResult::structured(result))
                     } else {
-                        Ok(CallToolResult::success(vec![rmcp::model::ContentBlock::text(
-                            result.to_string(),
-                        )]))
+                        Ok(CallToolResult::success(vec![
+                            rmcp::model::ContentBlock::text(result.to_string()),
+                        ]))
                     }
                 }
                 Err(error) => Err(to_rmcp_error(error)),
