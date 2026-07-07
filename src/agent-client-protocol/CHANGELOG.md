@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.1.0...v1.2.0) - 2026-07-07
+
+### Added
+
+- *(acp)* add constructors for renamed adapters ([#247](https://github.com/agentclientprotocol/rust-sdk/pull/247))
+
 ## [1.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.0.1...v1.1.0) - 2026-07-06
 
 ### Added

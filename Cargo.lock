@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -29,7 +29,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -59,7 +59,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "quote",
  "syn",
@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-test",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2179,9 +2179,9 @@ dependencies = [
 
 [[package]]
 name = "rustversion"
-version = "1.0.22"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ryu"
@@ -2466,9 +2466,9 @@ dependencies = [
 
 [[package]]
 name = "sse-stream"
-version = "0.2.3"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3962b63f038885f15bce2c6e02c0e7925c072f1ac86bb60fd44c5c6b762fb72"
+checksum = "39f24a9b78c40b90817bbcd1821c74ddfd74916aadd29403d001532a9195532d"
 dependencies = [
  "bytes",
  "futures-util",
