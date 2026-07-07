@@ -30,9 +30,10 @@ version_group = "acp"
 name = "agent-client-protocol-polyfill"
 version_group = "acp"
 
+# rmcp is a public dependency, so this crate's major version tracks rmcp's
+# major releases independently of the rest of the workspace.
 [[package]]
 name = "agent-client-protocol-rmcp"
-version_group = "acp"
 
 [[package]]
 name = "agent-client-protocol-conductor"

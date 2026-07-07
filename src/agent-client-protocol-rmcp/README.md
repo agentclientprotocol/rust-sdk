@@ -40,6 +40,15 @@ This crate is separate from `agent-client-protocol` to avoid coupling the core p
 - `agent-client-protocol-rmcp` to track `rmcp` updates independently
 - Breaking changes in `rmcp` only require updating this crate
 
+## Versioning
+
+`rmcp` is a public dependency of this crate: its types appear in the public API (e.g. `McpServerExt::from_rmcp`). Each major release of `rmcp` therefore requires a major release of this crate, independent of the other `agent-client-protocol` crates. The crate re-exports the `rmcp` version it was built against as `agent_client_protocol_rmcp::rmcp` — prefer it over a direct `rmcp` dependency to guarantee matching versions.
+
+| agent-client-protocol-rmcp | rmcp |
+| -------------------------- | ---- |
+| 2.x                        | 2.x  |
+| 1.x                        | 1.x  |
+
 ## Related Crates
 
 - **[agent-client-protocol](../agent-client-protocol/)** — Core ACP protocol types and traits

@@ -478,7 +478,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None }), annotations: None }], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { content: [Text(TextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None, annotations: None })], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },
