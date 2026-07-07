@@ -83,8 +83,27 @@ impl AcpAgent {
         }
     }
 
+    /// Create an ACP agent for the Claude Agent adapter.
+    /// Just runs `npx -y @agentclientprotocol/claude-agent-acp@latest`.
+    #[must_use]
+    pub fn claude_agent() -> Self {
+        Self::from_str("npx -y @agentclientprotocol/claude-agent-acp@latest")
+            .expect("valid bash command")
+    }
+
+    /// Create an ACP agent for the Codex adapter.
+    /// Just runs `npx -y @agentclientprotocol/codex-acp@latest`.
+    #[must_use]
+    pub fn codex() -> Self {
+        Self::from_str("npx -y @agentclientprotocol/codex-acp@latest").expect("valid bash command")
+    }
+
     /// Create an ACP agent for Zed Industries' Claude Code tool.
     /// Just runs `npx -y @zed-industries/claude-code-acp@latest`.
+    #[deprecated(
+        since = "1.2.0",
+        note = "the package moved to @agentclientprotocol/claude-agent-acp; use `AcpAgent::claude_agent()` instead"
+    )]
     #[must_use]
     pub fn zed_claude_code() -> Self {
         Self::from_str("npx -y @zed-industries/claude-code-acp@latest").expect("valid bash command")
@@ -92,6 +111,10 @@ impl AcpAgent {
 
     /// Create an ACP agent for Zed Industries' Codex tool.
     /// Just runs `npx -y @zed-industries/codex-acp@latest`.
+    #[deprecated(
+        since = "1.2.0",
+        note = "the package moved to @agentclientprotocol/codex-acp; use `AcpAgent::codex()` instead"
+    )]
     #[must_use]
     pub fn zed_codex() -> Self {
         Self::from_str("npx -y @zed-industries/codex-acp@latest").expect("valid bash command")
