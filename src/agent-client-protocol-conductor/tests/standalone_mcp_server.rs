@@ -145,7 +145,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
             let text = result
                 .content
                 .first()
-                .and_then(|c| c.raw.as_text())
+                .and_then(|c| c.as_text())
                 .map(|t| t.text.as_str())
                 .expect("Expected text content");
 
@@ -197,7 +197,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
 
             // Structured output should have the result
             let content = result.content.first().expect("Expected content");
-            let text = content.raw.as_text().expect("Expected text content");
+            let text = content.as_text().expect("Expected text content");
             assert!(
                 text.text.contains('8') || text.text.contains("result"),
                 "Expected result to contain 8, got: {}",

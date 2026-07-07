@@ -527,7 +527,7 @@ pub mod global_mcp_server {
     //! impl MyMcpServer {
     //!     #[tool(description = "Echoes back the input message")]
     //!     async fn echo(&self, Parameters(params): Parameters<EchoParams>) -> Result<CallToolResult, rmcp::ErrorData> {
-    //!         Ok(CallToolResult::success(vec![Content::text(format!("Echo: {}", params.message))]))
+    //!         Ok(CallToolResult::success(vec![ContentBlock::text(format!("Echo: {}", params.message))]))
     //!     }
     //! }
     //!

@@ -648,7 +648,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.8.0"),
+                            "version": String("2.1.0"),
                         },
                     },
                 },
@@ -667,7 +667,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         },
                         "serverInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("1.8.0"),
+                            "version": String("2.1.0"),
                         },
                         "instructions": String("A simple test MCP server with an echo tool"),
                     },
@@ -739,7 +739,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },
@@ -772,7 +772,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None }), annotations: None }], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },

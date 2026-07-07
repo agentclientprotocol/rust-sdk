@@ -41,7 +41,7 @@ impl EchoServer {
         &self,
         Parameters(params): Parameters<EchoParams>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Echo: {}",
             params.message
         ))]))

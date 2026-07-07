@@ -74,7 +74,7 @@ async fn test_tool_fn_greet() -> Result<(), agent_client_protocol::Error> {
     .await?;
 
     expect_test::expect![[r#"
-        "OK: CallToolResult { content: [Annotated { raw: Text(RawTextContent { text: \"\\\"Hello, World!\\\"\", meta: None }), annotations: None }], structured_content: None, is_error: Some(false), meta: None }"
+        "OK: CallToolResult { content: [Text(TextContent { text: \"\\\"Hello, World!\\\"\", meta: None, annotations: None })], structured_content: None, is_error: Some(false), meta: None }"
     "#]].assert_debug_eq(&result);
 
     Ok(())
