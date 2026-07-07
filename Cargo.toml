@@ -32,7 +32,7 @@ agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor"
 agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "1.2.0" }
 agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "1.2.0" }
 agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "1.2.0" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "1.2.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "2.0.0" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
 agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "1.2.0" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }

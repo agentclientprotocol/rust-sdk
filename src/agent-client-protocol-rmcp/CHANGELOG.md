@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v1.1.0...agent-client-protocol-rmcp-v1.2.0) - 2026-07-07
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v1.1.0...agent-client-protocol-rmcp-v2.0.0) - 2026-07-07
 
 ### Added
 
-- *(deps)* bump rmcp from 1.8.0 to 2.1.0 ([#239](https://github.com/agentclientprotocol/rust-sdk/pull/239))
+- [**breaking**] *(deps)* bump rmcp from 1.8.0 to 2.1.0 ([#239](https://github.com/agentclientprotocol/rust-sdk/pull/239)) — `rmcp` is a public dependency; its 2.x types (e.g. `ContentBlock`) appear in this crate's API
 
 ## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v1.0.0...agent-client-protocol-rmcp-v1.0.1) - 2026-06-29
 
