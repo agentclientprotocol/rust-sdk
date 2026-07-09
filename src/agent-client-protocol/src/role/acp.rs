@@ -2,17 +2,19 @@ use std::{fmt::Debug, hash::Hash};
 
 #[cfg(feature = "unstable_protocol_v2")]
 use futures::{StreamExt as _, future};
+#[cfg(feature = "unstable_protocol_v2")]
+use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 use crate::role::{HasPeer, RemoteStyle};
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::ProtocolVersion;
 use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::{RequestId, Response as RpcResponse};
 use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
@@ -332,13 +334,6 @@ enum AgentProtocol {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl AgentProtocol {
-    fn version(self) -> ProtocolVersion {
-        match self {
-            Self::V1 => ProtocolVersion::V1,
-            Self::V2 => ProtocolVersion::V2,
-        }
-    }
-
     fn take_agent(self, agent: AgentProtocolRouter) -> Option<DynConnectTo<Client>> {
         match self {
             Self::V1 => agent.v1,
@@ -418,12 +413,62 @@ fn select_agent_protocol(
     let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
         .map_err(|_| invalid_initialize_protocol_version())?;
     let selected = highest_compatible_agent_protocol(requested, supported)?;
-    params.insert(
-        "protocolVersion".into(),
-        serde_json::to_value(selected.version()).map_err(crate::Error::into_internal_error)?,
-    );
+    rewrite_initialize_params(params, requested, selected)?;
 
     Ok(selected)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn rewrite_initialize_params(
+    params: &mut serde_json::Map<String, serde_json::Value>,
+    requested: ProtocolVersion,
+    selected: AgentProtocol,
+) -> Result<(), crate::Error> {
+    match selected {
+        AgentProtocol::V1 => {
+            let mut initialize = if requested >= ProtocolVersion::V2 {
+                v2::conversion::v2_to_v1(parse_initialize_params::<v2::InitializeRequest>(params)?)
+                    .map_err(invalid_initialize_params)?
+            } else {
+                parse_initialize_params::<InitializeRequest>(params)?
+            };
+            initialize.protocol_version = ProtocolVersion::V1;
+            replace_initialize_params(params, initialize)
+        }
+        AgentProtocol::V2 => {
+            let mut initialize = if requested >= ProtocolVersion::V2 {
+                parse_initialize_params::<v2::InitializeRequest>(params)?
+            } else {
+                v2::conversion::v1_to_v2(parse_initialize_params::<InitializeRequest>(params)?)
+                    .map_err(invalid_initialize_params)?
+            };
+            initialize.protocol_version = ProtocolVersion::V2;
+            replace_initialize_params(params, initialize)
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn parse_initialize_params<T: DeserializeOwned>(
+    params: &serde_json::Map<String, serde_json::Value>,
+) -> Result<T, crate::Error> {
+    serde_json::from_value(serde_json::Value::Object(params.clone()))
+        .map_err(invalid_initialize_params)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn replace_initialize_params(
+    params: &mut serde_json::Map<String, serde_json::Value>,
+    initialize: impl Serialize,
+) -> Result<(), crate::Error> {
+    let value = serde_json::to_value(initialize).map_err(crate::Error::into_internal_error)?;
+    let serde_json::Value::Object(object) = value else {
+        return Err(crate::util::internal_error(
+            "initialize params did not serialize to an object",
+        ));
+    };
+    *params = object;
+    Ok(())
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -443,6 +488,11 @@ fn highest_compatible_agent_protocol(
 fn invalid_initialize_protocol_version() -> crate::Error {
     crate::Error::invalid_params()
         .data("initialize.protocolVersion must be a valid ACP protocol version")
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn invalid_initialize_params(error: impl ToString) -> crate::Error {
+    crate::Error::invalid_params().data(format!("invalid initialize params: {}", error.to_string()))
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

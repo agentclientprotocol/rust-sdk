@@ -1017,6 +1017,52 @@ async fn protocol_router_supports_runtime_v2_registration_flag() -> Result<(), E
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(Agent.builder().on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                let client_info = initialize
+                    .client_info
+                    .as_ref()
+                    .expect("v2 info should become v1 clientInfo");
+                assert_eq!(client_info.name, "v2-metadata-client");
+                assert_eq!(client_info.title.as_deref(), Some("V2 Metadata Client"));
+                assert!(
+                    initialize.client_capabilities.session.is_some(),
+                    "{:?}",
+                    initialize.client_capabilities
+                );
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let request = v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                v2::Implementation::new("v2-metadata-client", "9.9.9").title("V2 Metadata Client"),
+            );
+            let error = cx
+                .send_request(request)
+                .block_task()
+                .await
+                .expect_err("v2 client should reject the downgraded v1 initialize response");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("peer negotiated 1"), "{error:?}");
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
