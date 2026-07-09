@@ -162,8 +162,8 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result<(), Error> {
-    use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
+async fn v2_agent_can_elicit_from_v2_client_before_prompt_completion() -> Result<(), Error> {
+    use agent_client_protocol::schema::{ProtocolVersion, v2};
     use agent_client_protocol::{Agent, Client};
     use std::collections::BTreeMap;
 
@@ -175,13 +175,6 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
             v2::Implementation::new("schema-elicitation-test", env!("CARGO_PKG_VERSION")),
         )
         .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
-    }
-
-    fn v1_initialize_request(protocol_version: ProtocolVersion) -> v1::InitializeRequest {
-        v1::InitializeRequest::new(protocol_version).client_info(v1::Implementation::new(
-            "schema-elicitation-test",
-            env!("CARGO_PKG_VERSION"),
-        ))
     }
 
     let agent = Agent
@@ -225,31 +218,39 @@ async fn v2_agent_can_elicit_from_v1_client_before_prompt_completion() -> Result
         );
 
     Client
-        .builder()
+        .v2()
         .on_receive_request(
-            async |request: CreateElicitationRequest, responder, _cx| {
+            async |request: v2::CreateElicitationRequest, responder, _cx| {
                 assert_eq!(request.method(), "elicitation/create");
                 assert!(matches!(
                     request.mode,
-                    v1::ElicitationMode::Form(v1::ElicitationFormMode { .. })
+                    v2::ElicitationMode::Form(v2::ElicitationFormMode { .. })
                 ));
 
-                let content = BTreeMap::from([("name".to_string(), "Ada".into())]);
-                responder.respond(CreateElicitationResponse::new(ElicitationAction::Accept(
-                    v1::ElicitationAcceptAction::new().content(content),
-                )))
+                let content = BTreeMap::from([(
+                    "name".to_string(),
+                    v2::ElicitationContentValue::from("Ada"),
+                )]);
+                responder.respond(v2::CreateElicitationResponse::new(
+                    v2::ElicitationAction::Accept(
+                        v2::ElicitationAcceptAction::new().content(content),
+                    ),
+                ))
             },
             agent_client_protocol::on_receive_request!(),
         )
         .connect_with(agent, async |cx| {
             let initialize = cx
-                .send_request(v1_initialize_request(ProtocolVersion::V1))
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    v2::Implementation::new("schema-elicitation-test", env!("CARGO_PKG_VERSION")),
+                ))
                 .block_task()
                 .await?;
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
 
             let error = cx
-                .send_request(v1::PromptRequest::new(
+                .send_request(v2::PromptRequest::new(
                     "sess_abc123",
                     vec!["continue".into()],
                 ))

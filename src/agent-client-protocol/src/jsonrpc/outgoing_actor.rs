@@ -50,7 +50,7 @@ pub(super) async fn outgoing_protocol_actor(
                 {
                     Ok(request) => request,
                     Err(error) => {
-                        tracing::warn!(?id, %method, ?error, "Failed to convert outgoing request");
+                        tracing::warn!(?id, %method, ?error, "Failed to prepare outgoing request");
                         cancellation_disarm.disarm();
                         complete_request_with_error(response_tx, error);
                         continue;
@@ -76,7 +76,7 @@ pub(super) async fn outgoing_protocol_actor(
                     Err(error) => {
                         tracing::warn!(
                             ?error,
-                            "Dropping outgoing notification after conversion failed"
+                            "Dropping outgoing notification after preparation failed"
                         );
                         continue;
                     }
@@ -140,105 +140,5 @@ fn complete_request_with_error(
         .is_err()
     {
         tracing::debug!("Dropped failed outgoing request because receiver was gone");
-    }
-}
-
-#[cfg(all(test, feature = "unstable_protocol_v2"))]
-mod tests {
-    use futures::StreamExt as _;
-    use futures::channel::{mpsc, oneshot};
-
-    use super::*;
-    use crate::Role as _;
-
-    fn malformed_v2_known_method() -> Result<crate::UntypedMessage, crate::Error> {
-        crate::UntypedMessage::new("session/new", serde_json::json!({}))
-    }
-
-    fn malformed_v2_known_notification() -> Result<crate::UntypedMessage, crate::Error> {
-        crate::UntypedMessage::new("session/update", serde_json::json!({}))
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn failed_request_conversion_completes_request_locally() -> Result<(), crate::Error> {
-        let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
-        let (reply_tx, mut reply_rx) = mpsc::unbounded();
-        let (transport_tx, mut transport_rx) = mpsc::unbounded();
-        let (response_tx, response_rx) = oneshot::channel();
-
-        outgoing_tx
-            .unbounded_send(OutgoingMessage::Request {
-                id: RequestId::Number(1),
-                role_id: crate::Agent.role_id(),
-                method: "session/new".into(),
-                untyped: malformed_v2_known_method()?,
-                response_tx,
-                cancellation_disarm: crate::jsonrpc::SentRequestCancellationDisarm::new(),
-            })
-            .map_err(crate::Error::into_internal_error)?;
-        drop(outgoing_tx);
-
-        outgoing_protocol_actor(
-            outgoing_rx,
-            reply_tx,
-            transport_tx,
-            ProtocolCompat::new(crate::jsonrpc::protocol_compat::ProtocolMode::v2_agent()),
-        )
-        .await?;
-
-        let response = response_rx
-            .await
-            .map_err(crate::Error::into_internal_error)?;
-        assert!(
-            response.result.is_err(),
-            "conversion failure should complete the local request"
-        );
-        assert!(response.ack_tx.is_none());
-        assert!(reply_rx.next().await.is_none());
-        assert!(transport_rx.next().await.is_none());
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn failed_notification_conversion_does_not_stop_actor() -> Result<(), crate::Error> {
-        let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
-        let (reply_tx, _reply_rx) = mpsc::unbounded();
-        let (transport_tx, mut transport_rx) = mpsc::unbounded();
-
-        outgoing_tx
-            .unbounded_send(OutgoingMessage::Notification {
-                untyped: malformed_v2_known_notification()?,
-            })
-            .map_err(crate::Error::into_internal_error)?;
-        outgoing_tx
-            .unbounded_send(OutgoingMessage::Notification {
-                untyped: crate::UntypedMessage::new(
-                    "_local/notify",
-                    serde_json::json!({ "ok": true }),
-                )?,
-            })
-            .map_err(crate::Error::into_internal_error)?;
-        drop(outgoing_tx);
-
-        outgoing_protocol_actor(
-            outgoing_rx,
-            reply_tx,
-            transport_tx,
-            ProtocolCompat::new(crate::jsonrpc::protocol_compat::ProtocolMode::v2_agent()),
-        )
-        .await?;
-
-        let message = transport_rx
-            .next()
-            .await
-            .expect("valid notification should still be sent")?;
-        let RawJsonRpcMessage::Notification(request) = message else {
-            panic!("expected outgoing notification request, got {message:?}");
-        };
-        assert_eq!(&*request.method, "_local/notify");
-        assert!(transport_rx.next().await.is_none());
-
-        Ok(())
     }
 }

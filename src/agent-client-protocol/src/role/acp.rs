@@ -129,9 +129,8 @@ impl Agent {
 
     /// Create an agent builder that uses the ACP protocol v2 API.
     ///
-    /// The SDK will negotiate v1 or v2 during initialization and convert
-    /// supported messages at the transport boundary, so handlers can be written
-    /// against v2 types while still serving v1 clients.
+    /// This builder requires clients to negotiate protocol v2 during
+    /// initialization. Use a v1 builder for v1 clients.
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
