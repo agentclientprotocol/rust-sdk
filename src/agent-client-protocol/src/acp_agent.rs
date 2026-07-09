@@ -180,11 +180,24 @@ impl AcpAgent {
     > {
         match &self.server {
             SchemaMcpServer::Stdio(stdio) => {
-                let mut cmd = async_process::Command::new(&stdio.command);
-                cmd.args(&stdio.args);
+                let mut std_cmd = std::process::Command::new(&stdio.command);
+                std_cmd.args(&stdio.args);
                 for env_var in &stdio.env {
-                    cmd.env(&env_var.name, &env_var.value);
+                    std_cmd.env(&env_var.name, &env_var.value);
                 }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::process::CommandExt as _;
+
+                    // Make the child the leader of its own process group so
+                    // `ChildGuard` can terminate the entire process tree.
+                    // Agents are commonly distributed behind wrapper launchers
+                    // (`npx …`, `uvx …`): killing only the immediate child
+                    // orphans the real agent, which re-parents to pid 1 and
+                    // does not reliably exit on stdin EOF.
+                    std_cmd.process_group(0);
+                }
+                let mut cmd = async_process::Command::from(std_cmd);
                 #[cfg(windows)]
                 {
                     use async_process::windows::CommandExt as _;
@@ -225,7 +238,8 @@ impl AcpAgent {
     }
 }
 
-/// A wrapper around Child that kills the process when dropped.
+/// A wrapper around Child that kills the process — and, on unix, its whole
+/// process group (see `spawn_process`) — when dropped.
 struct ChildGuard(Child);
 
 impl ChildGuard {
@@ -236,6 +250,18 @@ impl ChildGuard {
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
+        // SIGKILL the child's process group first: the child was spawned as
+        // its own group leader, so this reaches grandchildren spawned by
+        // wrapper launchers (`npx → node`, `uvx → python`). This also covers
+        // the case where the direct child already exited but its wrapper left
+        // the real agent running. An error (e.g. `ESRCH`) just means the
+        // group is already gone.
+        #[cfg(unix)]
+        if let Some(pid) = rustix::process::Pid::from_raw(self.0.id().cast_signed()) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+        // Fallback for platforms without group semantics (and a no-op double
+        // tap on unix).
         drop(self.0.kill());
     }
 }
@@ -495,6 +521,88 @@ impl FromStr for AcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropping the guard must terminate the whole process TREE, not just the
+    /// immediate child. The spawned command is a wrapper chain
+    /// (`bash → bash inner.sh`, mimicking `npx → node` / `uvx → python`): the
+    /// inner process writes its pid to a file, and after the guard drops that
+    /// pid must be gone — killing only the outer wrapper leaves it orphaned
+    /// on pid 1, where it can outlive the client indefinitely.
+    #[cfg(unix)]
+    #[test]
+    fn test_child_guard_kills_wrapper_chain_process_group() {
+        let dir = std::env::temp_dir().join(format!(
+            "acp-guard-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or_default()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("inner.pid");
+        let inner = dir.join("inner.sh");
+        std::fs::write(
+            &inner,
+            format!("echo $$ > {}\nsleep 30\n", pid_file.display()),
+        )
+        .unwrap();
+
+        // `; :` keeps the outer bash alive as a parent instead of exec-ing the
+        // inner command (which would collapse the chain to one process).
+        let agent = AcpAgent::new(SchemaMcpServer::Stdio(
+            McpServerStdio::new("bash", "bash").args(vec![
+                "-c".to_string(),
+                format!("bash {} ; :", inner.display()),
+            ]),
+        ));
+
+        let (_stdin, _stdout, _stderr, child) = agent.spawn_process().unwrap();
+        let guard = ChildGuard(child);
+
+        // Wait for the inner (grand)child to report its pid.
+        let mut inner_pid = String::new();
+        for _ in 0..200 {
+            if let Ok(raw) = std::fs::read_to_string(&pid_file) {
+                let raw = raw.trim().to_string();
+                if !raw.is_empty() {
+                    inner_pid = raw;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!inner_pid.is_empty(), "inner script never reported its pid");
+        assert!(pid_alive(&inner_pid), "inner process should be alive");
+
+        drop(guard);
+
+        // The grandchild must die with the group rather than linger orphaned.
+        let mut gone = false;
+        for _ in 0..200 {
+            if !pid_alive(&inner_pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            gone,
+            "wrapper-chain grandchild (pid {inner_pid}) survived ChildGuard drop"
+        );
+    }
+
+    /// `kill -0` liveness probe.
+    #[cfg(unix)]
+    fn pid_alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
 
     #[test]
     fn test_parse_simple_command() {

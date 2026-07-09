@@ -42,6 +42,8 @@ agent-client-protocol-schema = { version = "=1.4.0", features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }
+# Unix process-group termination (already in-tree transitively via async-process)
+rustix = { version = "1", default-features = false, features = ["std", "process"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 async-tungstenite = { version = "0.34.1", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
