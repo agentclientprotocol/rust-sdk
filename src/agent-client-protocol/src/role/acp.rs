@@ -71,21 +71,22 @@ impl Client {
         self.builder().v2_client()
     }
 
-    /// Create a router that chooses between configured protocol implementations.
+    /// Create a connector that chooses between configured protocol implementations.
     ///
-    /// Add implementations with [`ClientProtocolRouter::with_v1`] and
-    /// [`ClientProtocolRouter::with_v2`]. The resulting router starts the
-    /// highest configured protocol implementation, observes the initial
-    /// `initialize` response, and falls back to a configured v1 implementation
-    /// when v2 initialization negotiates v1. It does not convert traffic
-    /// between protocol versions after routing.
+    /// Add implementation factories with [`ClientProtocolConnector::with_v1`]
+    /// and [`ClientProtocolConnector::with_v2`]. The resulting connector starts
+    /// the highest configured protocol implementation. If a v2 implementation
+    /// successfully negotiates v1 and a v1 implementation is configured, the
+    /// connector opens a fresh agent connection and restarts with the v1
+    /// implementation so the agent observes the v1 implementation's own
+    /// `initialize` metadata and capabilities.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
     #[cfg(feature = "unstable_protocol_v2")]
     #[must_use]
-    pub fn protocol_router(self) -> ClientProtocolRouter {
-        ClientProtocolRouter::new()
+    pub fn protocol_connector(self) -> ClientProtocolConnector {
+        ClientProtocolConnector::new()
     }
 
     /// Connect to `agent` and run `main_fn` with the [`ConnectionTo`].
@@ -101,78 +102,123 @@ impl Client {
     }
 }
 
-/// Client component that routes each connection to a configured protocol implementation.
+/// Client connector that opens an agent connection with a configured protocol implementation.
 ///
-/// Use [`Client::protocol_router`] to start the builder, then add each supported
-/// protocol version independently. The selected implementation owns the
-/// connection after the initial `initialize` negotiation.
+/// Use [`Client::protocol_connector`] to start the builder, then add each
+/// supported protocol version independently. Implementations and the agent
+/// connection are provided as factories because fallback from v2 to v1 requires
+/// a fresh connection initialized by the v1 implementation.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
-pub struct ClientProtocolRouter {
-    v1: Option<DynConnectTo<Agent>>,
-    v2: Option<DynConnectTo<Agent>>,
+pub struct ClientProtocolConnector {
+    v1: Option<DynConnectToFactory<Agent>>,
+    v2: Option<DynConnectToFactory<Agent>>,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-impl ClientProtocolRouter {
-    /// Create an empty client protocol router.
+impl ClientProtocolConnector {
+    /// Create an empty client protocol connector.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Return this router with an ACP v1 implementation configured.
+    /// Return this connector with an ACP v1 implementation factory configured.
     #[must_use]
-    pub fn with_v1(mut self, client: impl ConnectTo<Agent>) -> Self {
-        self.v1 = Some(DynConnectTo::new(client));
+    pub fn with_v1<C>(mut self, client: impl FnMut() -> C + Send + 'static) -> Self
+    where
+        C: ConnectTo<Agent>,
+    {
+        self.v1 = Some(DynConnectToFactory::new(client));
         self
     }
 
-    /// Return this router with an ACP v2 implementation configured.
+    /// Return this connector with an ACP v2 implementation factory configured.
     #[must_use]
-    pub fn with_v2(mut self, client: impl ConnectTo<Agent>) -> Self {
-        self.v2 = Some(DynConnectTo::new(client));
+    pub fn with_v2<C>(mut self, client: impl FnMut() -> C + Send + 'static) -> Self
+    where
+        C: ConnectTo<Agent>,
+    {
+        self.v2 = Some(DynConnectToFactory::new(client));
         self
     }
-}
 
-#[cfg(feature = "unstable_protocol_v2")]
-impl ConnectTo<Agent> for ClientProtocolRouter {
-    async fn connect_to(mut self, agent: impl ConnectTo<Client>) -> Result<(), crate::Error> {
+    /// Connect to an agent produced by `agent` using the highest configured
+    /// compatible protocol implementation.
+    pub async fn connect_to<C>(
+        mut self,
+        mut agent: impl FnMut() -> C + Send + 'static,
+    ) -> Result<(), crate::Error>
+    where
+        C: ConnectTo<Client>,
+    {
         let supported = SupportedClientProtocols {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
         let Some(selected) = supported.highest_configured() else {
             return Err(crate::Error::invalid_request()
-                .data("client protocol router has no configured ACP protocol implementations"));
+                .data("client protocol connector has no configured ACP protocol implementations"));
         };
 
-        let agent = RunningProtocolPeer::new(agent);
-        let client = selected
-            .take_client(&mut self)
-            .expect("selected protocol is configured");
-        let (client, initialize) = start_client_protocol(selected, client).await?;
-        let (client, agent, initialize_response) =
-            send_initialize_and_receive(client, agent, initialize).await?;
+        match selected {
+            ClientProtocol::V1 => {
+                let client = self
+                    .v1
+                    .as_mut()
+                    .expect("selected protocol is configured")
+                    .create();
+                connect_client_protocol(ClientProtocol::V1, client, agent()).await
+            }
+            ClientProtocol::V2 => {
+                let client = self
+                    .v2
+                    .as_mut()
+                    .expect("selected protocol is configured")
+                    .create();
+                let (client, agent_connection, initialize_response) =
+                    initialize_client_protocol(ClientProtocol::V2, client, agent()).await?;
 
-        if selected == ClientProtocol::V2
-            && let Some(client) = self.v1.take()
-            && initialize_response_negotiated_v1(&initialize_response)
-        {
-            let (fallback_client, fallback_initialize) =
-                start_client_protocol(ClientProtocol::V1, client).await?;
+                if initialize_response_negotiated_v1(&initialize_response)
+                    && let Some(v1) = self.v1.as_mut()
+                {
+                    drop((client, agent_connection, initialize_response));
+                    return connect_client_protocol(ClientProtocol::V1, v1.create(), agent()).await;
+                }
 
-            let fallback_response = initialize_response.with_id(
-                initialize_request_id(&fallback_initialize)
-                    .expect("validated initialize request has an id"),
-            );
-            fallback_client.send(fallback_response)?;
-            return pipe_protocol_peers_until_done(fallback_client, agent).await;
+                client.send(initialize_response.into_message())?;
+                pipe_protocol_peers_until_done(client, agent_connection).await
+            }
         }
+    }
+}
 
-        client.send(initialize_response.into_message())?;
-        pipe_protocol_peers_until_done(client, agent).await
+#[cfg(feature = "unstable_protocol_v2")]
+struct DynConnectToFactory<R: Role> {
+    inner: Box<dyn FnMut() -> DynConnectTo<R> + Send>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<R: Role> DynConnectToFactory<R> {
+    fn new<C>(mut factory: impl FnMut() -> C + Send + 'static) -> Self
+    where
+        C: ConnectTo<R>,
+    {
+        Self {
+            inner: Box::new(move || DynConnectTo::new(factory())),
+        }
+    }
+
+    fn create(&mut self) -> DynConnectTo<R> {
+        (self.inner)()
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<R: Role> Debug for DynConnectToFactory<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynConnectToFactory")
+            .finish_non_exhaustive()
     }
 }
 
@@ -661,10 +707,6 @@ impl InitializeResponse {
         RawJsonRpcMessage::response(self.id, self.result)
     }
 
-    fn with_id(self, id: RequestId) -> RawJsonRpcMessage {
-        RawJsonRpcMessage::response(id, self.result)
-    }
-
     fn protocol_version(&self) -> Option<ProtocolVersion> {
         serde_json::from_value(self.result.as_ref().ok()?.get("protocolVersion")?.clone()).ok()
     }
@@ -679,13 +721,6 @@ enum ClientProtocol {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl ClientProtocol {
-    fn take_client(self, router: &mut ClientProtocolRouter) -> Option<DynConnectTo<Agent>> {
-        match self {
-            Self::V1 => router.v1.take(),
-            Self::V2 => router.v2.take(),
-        }
-    }
-
     fn name(self) -> &'static str {
         match self {
             Self::V1 => "1",
@@ -747,6 +782,29 @@ async fn send_initialize_and_receive(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
+async fn initialize_client_protocol(
+    protocol: ClientProtocol,
+    client: DynConnectTo<Agent>,
+    agent: impl ConnectTo<Client>,
+) -> Result<(RunningProtocolPeer, RunningProtocolPeer, InitializeResponse), crate::Error> {
+    let agent = RunningProtocolPeer::new(agent);
+    let (client, initialize) = start_client_protocol(protocol, client).await?;
+    send_initialize_and_receive(client, agent, initialize).await
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn connect_client_protocol(
+    protocol: ClientProtocol,
+    client: DynConnectTo<Agent>,
+    agent: impl ConnectTo<Client>,
+) -> Result<(), crate::Error> {
+    let (client, agent, initialize_response) =
+        initialize_client_protocol(protocol, client, agent).await?;
+    client.send(initialize_response.into_message())?;
+    pipe_protocol_peers_until_done(client, agent).await
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
 fn ensure_client_initialize_request(
     protocol: ClientProtocol,
     message: &RawJsonRpcMessage,
@@ -766,14 +824,6 @@ fn ensure_client_initialize_request(
     }
 
     Ok(())
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-fn initialize_request_id(message: &RawJsonRpcMessage) -> Option<RequestId> {
-    let RawJsonRpcMessage::Request(request) = message else {
-        return None;
-    };
-    Some(request.id.clone())
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
