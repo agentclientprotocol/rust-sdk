@@ -70,16 +70,14 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 - A v2 client requires a v2 agent. If the agent responds with v1, the
   `initialize` request resolves with an error and the caller must explicitly
   fall back to a v1 client implementation if that is acceptable.
-- A v2 agent responds with v2 when the client supports it, or v1 when the client
-  only supports v1. Agent handlers still receive v2 schema types; the SDK tracks
-  the negotiated wire version separately and adapts supported behavior at the
-  transport boundary.
+- A v2 agent requires a v2 client. If a client initializes with v1, the
+  `initialize` request resolves with an error and the caller must use a v1
+  agent implementation instead.
 - If the agent responds with any other unsupported version, the request resolves
   with an error so the client can close the connection.
-- After initialization, the SDK converts supported messages and responses between
-  the local API version and the negotiated wire version.
+- After initialization, the local API version and negotiated wire version must
+  match. The SDK does not convert traffic between v1 and v2.
 
-That means an agent can be implemented against v2 request and response types
-while still serving v1 clients. The goal is for agent-side v1 compatibility to
-live in the SDK wherever it can be represented as protocol adaptation. Clients
-should opt into v2 separately and should not assume v2 behavior from v1 agents.
+That means v1 and v2 implementations need separate handlers today. A future SDK
+API can route traffic to a registered implementation for the negotiated protocol
+version, but `Agent.v2()` and `Client.v2()` are currently v2-only.

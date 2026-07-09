@@ -136,7 +136,7 @@ async fn assert_v2_client_rejected_by_v1_agent(agent: impl ConnectTo<Client>) ->
                 .and_then(|data| data.as_str())
                 .unwrap_or_default();
             assert!(
-                data.contains("required ACP protocol version 2"),
+                data.contains("only supports ACP protocol version 1"),
                 "{error:?}"
             );
             Ok(())
@@ -185,26 +185,7 @@ async fn role_builder_v1_agent_rejects_v2_client_negotiation() -> Result<(), Err
         agent_client_protocol::on_receive_request!(),
     );
 
-    Client
-        .v2()
-        .connect_with(agent, async |cx| {
-            let error = cx
-                .send_request(v2_initialize_request(ProtocolVersion::V2))
-                .block_task()
-                .await
-                .expect_err("Role::builder should preserve v1 agent protocol mode");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(|data| data.as_str())
-                .unwrap_or_default();
-            assert!(
-                data.contains("required ACP protocol version 2"),
-                "{error:?}"
-            );
-            Ok(())
-        })
-        .await
+    assert_v2_client_rejected_by_v1_agent(agent).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -234,24 +215,30 @@ async fn builder_new_with_v1_agent_rejects_v2_client_negotiation() -> Result<(),
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn role_builder_v1_client_downgrades_initialize_for_v2_agent() -> Result<(), Error> {
+async fn role_builder_v1_client_is_rejected_by_v2_agent() -> Result<(), Error> {
     let agent = Agent.v2().on_receive_request(
-        async |initialize: v2::InitializeRequest, responder, _cx| {
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-            responder.respond(v2_initialize_response_with_session(
-                initialize.protocol_version,
-            ))
+        async |_initialize: v2::InitializeRequest, responder, _cx| {
+            responder.respond_with_internal_error("handler should not run")
         },
         agent_client_protocol::on_receive_request!(),
     );
 
     <Client as Role>::builder(Client)
         .connect_with(agent, async |cx| {
-            let initialize = cx
-                .send_request(v1_initialize_request(ProtocolVersion::V2))
+            let error = cx
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
                 .block_task()
-                .await?;
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                .await
+                .expect_err("v2 agents require a v2 client implementation");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains("only supports ACP protocol version 2"),
+                "{error:?}"
+            );
             Ok(())
         })
         .await
@@ -544,47 +531,6 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_serves_v1_client_with_v2_handlers() -> Result<(), Error> {
-    let agent = Agent
-        .v2()
-        .on_receive_request(
-            async |initialize: v2::InitializeRequest, responder, _cx| {
-                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                // The compatibility layer should force this back to the negotiated v1 wire version.
-                responder.respond(v2_initialize_response_with_session(ProtocolVersion::V2))
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_request(
-            async |request: v2::NewSessionRequest, responder, _cx| {
-                assert!(request.cwd.is_absolute());
-                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
-                    "v2-session",
-                )))
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
-
-    Client
-        .builder()
-        .connect_with(agent, async |cx| {
-            let initialize = cx
-                .send_request(v1_initialize_request(ProtocolVersion::V1))
-                .block_task()
-                .await?;
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-
-            let session = cx
-                .send_request(v1::NewSessionRequest::new(cwd()?))
-                .block_task()
-                .await?;
-            assert_eq!(session.session_id.0.as_ref(), "v2-session");
-            Ok(())
-        })
-        .await
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn v2_client_rejects_v1_agent() -> Result<(), Error> {
     Client
         .v2()
@@ -600,7 +546,7 @@ async fn v2_client_rejects_v1_agent() -> Result<(), Error> {
                 .and_then(|data| data.as_str())
                 .unwrap_or_default();
             assert!(
-                data.contains("required ACP protocol version 2"),
+                data.contains("only supports ACP protocol version 1"),
                 "{error:?}"
             );
             Ok(())
@@ -693,29 +639,6 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
 
             let request = cx.send_request(v2::NewSessionRequest::new(cwd()?));
-            request.cancel()?;
-            let error = request
-                .block_task()
-                .await
-                .expect_err("request should be cancelled");
-            assert_eq!(i32::from(error.code), -32800);
-            Ok(())
-        })
-        .await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn v1_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
-    Client
-        .builder()
-        .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
-            let initialize = cx
-                .send_request(v1_initialize_request(ProtocolVersion::V1))
-                .block_task()
-                .await?;
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-
-            let request = cx.send_request(v1::NewSessionRequest::new(cwd()?));
             request.cancel()?;
             let error = request
                 .block_task()
