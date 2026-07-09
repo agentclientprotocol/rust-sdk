@@ -184,7 +184,7 @@ mod imp {
                 ProtocolMode::Disabled => None,
                 ProtocolMode::Acp(mode) => Some(mode),
             };
-            let negotiated = mode.map(|mode| mode.api).unwrap_or(ProtocolVersionKind::V1);
+            let negotiated = mode.map_or(ProtocolVersionKind::V1, |mode| mode.api);
 
             Self {
                 mode,
