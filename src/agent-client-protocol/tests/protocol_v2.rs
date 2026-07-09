@@ -127,6 +127,7 @@ fn runtime_flag_client_protocol_connector(enable_protocol_v2: bool) -> ClientPro
 struct InitializingV1Client {
     expected_session_id: &'static str,
     implementation_name: &'static str,
+    client_capabilities: Option<v1::ClientCapabilities>,
 }
 
 impl InitializingV1Client {
@@ -134,6 +135,7 @@ impl InitializingV1Client {
         Self {
             expected_session_id,
             implementation_name: "agent-client-protocol-test",
+            client_capabilities: None,
         }
     }
 
@@ -144,7 +146,13 @@ impl InitializingV1Client {
         Self {
             expected_session_id,
             implementation_name,
+            client_capabilities: None,
         }
+    }
+
+    fn with_client_capabilities(mut self, client_capabilities: v1::ClientCapabilities) -> Self {
+        self.client_capabilities = Some(client_capabilities);
+        self
     }
 }
 
@@ -152,15 +160,18 @@ impl ConnectTo<Agent> for InitializingV1Client {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
         let expected_session_id = self.expected_session_id;
         let implementation_name = self.implementation_name;
+        let client_capabilities = self.client_capabilities;
         Client
             .builder()
             .connect_with(agent, async move |cx| {
-                let initialize = cx
-                    .send_request(v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
-                        v1::Implementation::new(implementation_name, env!("CARGO_PKG_VERSION")),
-                    ))
-                    .block_task()
-                    .await?;
+                let mut request = v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
+                    v1::Implementation::new(implementation_name, env!("CARGO_PKG_VERSION")),
+                );
+                if let Some(client_capabilities) = client_capabilities {
+                    request = request.client_capabilities(client_capabilities);
+                }
+
+                let initialize = cx.send_request(request).block_task().await?;
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
 
                 let session = cx
@@ -837,6 +848,66 @@ async fn client_protocol_connector_falls_back_to_v1_when_agent_router_negotiates
                 .with_v1(v1_agent_with_session("v1-client-connector-session"))
         })
         .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_protocol_connector_reuses_matching_connection_before_v1_fallback()
+-> Result<(), Error> {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let agent_connections = Arc::clone(&connections);
+
+    Client
+        .protocol_connector()
+        .with_v1(|| {
+            InitializingV1Client::new("v1-reused-session").with_client_capabilities(
+                v1::ClientCapabilities::new().session(
+                    v1::ClientSessionCapabilities::new().config_options(
+                        v1::SessionConfigOptionsCapabilities::new()
+                            .boolean(v1::BooleanConfigOptionCapabilities::new()),
+                    ),
+                ),
+            )
+        })
+        .with_v2(|| InitializingV2Client::new("v2-client-should-not-continue"))
+        .connect_to(move || {
+            let connection_number = agent_connections.fetch_add(1, Ordering::SeqCst) + 1;
+            let initialize_connection_number = connection_number;
+            let session_connection_number = connection_number;
+
+            Agent.protocol_router().with_v1(
+                Agent
+                    .builder()
+                    .on_receive_request(
+                        async move |initialize: v1::InitializeRequest, responder, _cx| {
+                            assert_eq!(initialize_connection_number, 1);
+                            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                            let info = initialize
+                                .client_info
+                                .as_ref()
+                                .expect("initialize should include client info");
+                            assert_eq!(&*info.name, "agent-client-protocol-test");
+
+                            responder
+                                .respond(v1::InitializeResponse::new(initialize.protocol_version))
+                        },
+                        agent_client_protocol::on_receive_request!(),
+                    )
+                    .on_receive_request(
+                        async move |request: v1::NewSessionRequest, responder, _cx| {
+                            assert_eq!(session_connection_number, 1);
+                            assert!(request.cwd.is_absolute());
+                            responder.respond(v1::NewSessionResponse::new(v1::SessionId::new(
+                                "v1-reused-session",
+                            )))
+                        },
+                        agent_client_protocol::on_receive_request!(),
+                    ),
+            )
+        })
+        .await?;
+
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
