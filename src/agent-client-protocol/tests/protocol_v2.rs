@@ -4,14 +4,15 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
-    Agent, AgentProtocolRouter, Builder, Client, ClientProtocolRouter, ConnectTo, Error,
-    JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role,
+    Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolRouter, ConnectTo,
+    Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role,
     UntypedRole,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
 #[request(method = "initialize", response = ForeignInitializeResponse)]
@@ -1060,6 +1061,84 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
     Err(agent_client_protocol::util::internal_error(
         "protocol router did not reject v1 initialize",
     ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_rejection_is_initialize_request_error() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |_initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v2 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    Client
+        .builder()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await
+                .expect_err("v1 initialize should be rejected by the v2-only router");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains("supports ACP protocol version 2"),
+                "{error:?}"
+            );
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |_initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v2 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    let (client_writer, server_reader) = tokio::io::duplex(1024);
+    let (server_writer, client_reader) = tokio::io::duplex(1024);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let client_transport = ByteStreams::new(client_writer.compat_write(), client_reader.compat());
+
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+
+    Client
+        .builder()
+        .connect_with(client_transport, async |cx| {
+            let error = cx
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await
+                .expect_err("v1 initialize should be rejected by the v2-only router");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains("supports ACP protocol version 2"),
+                "{error:?}"
+            );
+            Ok(())
+        })
+        .await?;
+
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

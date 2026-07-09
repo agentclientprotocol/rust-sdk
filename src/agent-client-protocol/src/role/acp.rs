@@ -309,14 +309,12 @@ impl ConnectTo<Client> for AgentProtocolRouter {
         let selected = match select_agent_protocol(&mut first_message, supported) {
             Ok(selected) => selected,
             Err(error) => {
-                send_initialize_error(&client.tx, &first_message, error.clone())?;
-                return Err(error);
+                return reject_initialize(client, &first_message, error).await;
             }
         };
         let Some(agent) = selected.take_agent(self) else {
             let error = selected.unsupported_error(supported);
-            send_initialize_error(&client.tx, &first_message, error.clone())?;
-            return Err(error);
+            return reject_initialize(client, &first_message, error).await;
         };
 
         let agent = RunningProtocolPeer::new(agent);
@@ -459,6 +457,27 @@ fn send_initialize_error(
     };
     tx.unbounded_send(Ok(RawJsonRpcMessage::response(id, Err(error))))
         .map_err(crate::util::internal_error)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn reject_initialize(
+    client: RunningProtocolPeer,
+    message: &RawJsonRpcMessage,
+    error: crate::Error,
+) -> Result<(), crate::Error> {
+    let RunningProtocolPeer { mut rx, tx, future } = client;
+    send_initialize_error(&tx, message, error)?;
+    drop(tx);
+
+    let drain_incoming = async move {
+        while let Some(message) = rx.next().await {
+            message?;
+        }
+        Ok(())
+    };
+
+    let ((), ()) = futures::try_join!(future, drain_incoming)?;
+    Ok(())
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
