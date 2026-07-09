@@ -80,9 +80,8 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
 That means v1 and v2 implementations still need separate handlers.
 `Agent.v2()` and `Client.v2()` are v2-only. While protocol v2 stabilizes, the
-`unstable_protocol_v2` crate feature also exposes `Agent.protocol_router()`,
-which can route each connection to the configured implementation compatible
-with the client's requested protocol version.
+`unstable_protocol_v2` crate feature also exposes `Agent.protocol_router()` and
+`Client.protocol_router()` for composing version-specific implementations.
 
 Agents can add protocol implementations independently, which makes it easy for
 applications built with v2 support to control v2 rollout with a runtime feature
@@ -134,3 +133,38 @@ highest configured protocol version that is compatible with the requested
 version, and then hands the connection to that implementation. If only v2 is
 configured, v1 clients are rejected without changing the fluent API. The router
 does not convert messages between v1 and v2 after routing.
+
+Clients use the same fluent shape:
+
+```rust
+use agent_client_protocol::{Client, ConnectTo};
+
+# fn v1_client() -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> {
+#     Client.builder()
+# }
+# fn v2_client() -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> {
+#     Client.v2()
+# }
+# async fn run(agent_transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
+# let enable_protocol_v2 = true;
+let client = Client.protocol_router().with_v1(v1_client());
+
+let client = if enable_protocol_v2 {
+    client.with_v2(v2_client())
+} else {
+    client
+};
+
+client
+    .connect_to(agent_transport)
+    .await?;
+# Ok(())
+# }
+```
+
+The client router starts the highest configured implementation. If v2
+initialization negotiates v1 and a v1 implementation is configured, it switches
+to the local v1 client implementation and forwards the original initialize
+response. It does not send a second initialize request on the same connection.
+If v2 initialization is rejected, that error is surfaced to the v2 client
+implementation.

@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
-    Agent, AgentProtocolRouter, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest,
-    JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role, UntypedRole,
+    Agent, AgentProtocolRouter, Builder, Client, ClientProtocolRouter, ConnectTo, Error,
+    JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role,
+    UntypedRole,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
@@ -102,6 +103,163 @@ fn runtime_flag_protocol_router(enable_protocol_v2: bool) -> AgentProtocolRouter
     } else {
         agent
     }
+}
+
+fn runtime_flag_client_protocol_router(enable_protocol_v2: bool) -> ClientProtocolRouter {
+    let client = Client
+        .protocol_router()
+        .with_v1(InitializingV1Client::new("v1-client-router-session"));
+
+    if enable_protocol_v2 {
+        client.with_v2(InitializingV2Client::new("v2-client-router-session"))
+    } else {
+        client
+    }
+}
+
+struct InitializingV1Client {
+    expected_session_id: &'static str,
+}
+
+impl InitializingV1Client {
+    fn new(expected_session_id: &'static str) -> Self {
+        Self {
+            expected_session_id,
+        }
+    }
+}
+
+impl ConnectTo<Agent> for InitializingV1Client {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let expected_session_id = self.expected_session_id;
+        Client
+            .builder()
+            .connect_with(agent, async move |cx| {
+                let initialize = cx
+                    .send_request(v1_initialize_request(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(cwd()?))
+                    .block_task()
+                    .await?;
+                assert_eq!(session.session_id.0.as_ref(), expected_session_id);
+                Ok(())
+            })
+            .await
+    }
+}
+
+struct RejectingV1Client;
+
+impl ConnectTo<Agent> for RejectingV1Client {
+    async fn connect_to(self, _agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        Err(Error::internal_error().data("v1 client fallback should not run"))
+    }
+}
+
+struct ExpectingV2InitializeErrorClient;
+
+impl ConnectTo<Agent> for ExpectingV2InitializeErrorClient {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        Client
+            .v2()
+            .connect_with(agent, async |cx| {
+                let error = cx
+                    .send_request(v2_initialize_request(ProtocolVersion::V1))
+                    .block_task()
+                    .await
+                    .expect_err("v2 initialize rejection should be surfaced");
+                let data = error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.as_str())
+                    .unwrap_or_default();
+                assert!(
+                    data.contains("only supports ACP protocol version 1"),
+                    "{error:?}"
+                );
+                Ok(())
+            })
+            .await
+    }
+}
+
+struct InitializingV2Client {
+    expected_session_id: &'static str,
+}
+
+impl InitializingV2Client {
+    fn new(expected_session_id: &'static str) -> Self {
+        Self {
+            expected_session_id,
+        }
+    }
+}
+
+impl ConnectTo<Agent> for InitializingV2Client {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let expected_session_id = self.expected_session_id;
+        Client
+            .v2()
+            .connect_with(agent, async move |cx| {
+                let initialize = cx
+                    .send_request(v2_initialize_request(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+
+                let session = cx
+                    .send_request(v2::NewSessionRequest::new(cwd()?))
+                    .block_task()
+                    .await?;
+                assert_eq!(session.session_id.0.as_ref(), expected_session_id);
+                Ok(())
+            })
+            .await
+    }
+}
+
+fn v1_agent_with_session(session_id: &'static str) -> impl ConnectTo<Client> {
+    Agent
+        .builder()
+        .on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v1::NewSessionRequest, responder, _cx| {
+                assert!(request.cwd.is_absolute());
+                responder.respond(v1::NewSessionResponse::new(v1::SessionId::new(session_id)))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+}
+
+fn v2_agent_with_session(session_id: &'static str) -> impl ConnectTo<Client> {
+    Agent
+        .v2()
+        .on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::NewSessionRequest, responder, _cx| {
+                assert!(request.cwd.is_absolute());
+                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(session_id)))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
 }
 
 async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Result<(), Error> {
@@ -620,6 +778,53 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
             assert_eq!(session.session_id.0.as_ref(), "v2-native-session");
             Ok(())
         })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_protocol_router_routes_to_v2_client_for_v2_agent() -> Result<(), Error> {
+    Client
+        .protocol_router()
+        .with_v1(InitializingV1Client::new("v1-client-router-session"))
+        .with_v2(InitializingV2Client::new("v2-client-router-session"))
+        .connect_to(v2_agent_with_session("v2-client-router-session"))
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_protocol_router_does_not_retry_after_v2_initialize_rejection() -> Result<(), Error>
+{
+    Client
+        .protocol_router()
+        .with_v1(RejectingV1Client)
+        .with_v2(ExpectingV2InitializeErrorClient)
+        .connect_to(v1_agent_with_session("v1-client-router-session"))
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_protocol_router_falls_back_to_v1_when_agent_router_negotiates_v1()
+-> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(v1_agent_with_session("v1-client-router-session"));
+
+    Client
+        .protocol_router()
+        .with_v1(InitializingV1Client::new("v1-client-router-session"))
+        .with_v2(InitializingV2Client::new("v2-client-router-session"))
+        .connect_to(agent)
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_protocol_router_supports_runtime_v2_registration_flag() -> Result<(), Error> {
+    runtime_flag_client_protocol_router(false)
+        .connect_to(v1_agent_with_session("v1-client-router-session"))
+        .await?;
+
+    runtime_flag_client_protocol_router(true)
+        .connect_to(v2_agent_with_session("v2-client-router-session"))
         .await
 }
 

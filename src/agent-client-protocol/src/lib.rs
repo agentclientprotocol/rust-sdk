@@ -105,6 +105,8 @@ pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
 
 #[cfg(feature = "unstable_protocol_v2")]
 pub use role::acp::AgentProtocolRouter;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use role::acp::ClientProtocolRouter;
 pub use role::{
     Role, RoleId, UntypedRole,
     acp::{Agent, Client, Conductor, Proxy},

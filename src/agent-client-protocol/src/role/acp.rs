@@ -9,9 +9,9 @@ use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 use crate::role::{HasPeer, RemoteStyle};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::ProtocolVersion;
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v1::RequestId;
 use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::{RequestId, Response as RpcResponse};
 use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
 use crate::util::MatchDispatchFrom;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -69,6 +69,23 @@ impl Client {
         self.builder().v2_client()
     }
 
+    /// Create a router that chooses between configured protocol implementations.
+    ///
+    /// Add implementations with [`ClientProtocolRouter::with_v1`] and
+    /// [`ClientProtocolRouter::with_v2`]. The resulting router starts the
+    /// highest configured protocol implementation, observes the initial
+    /// `initialize` response, and falls back to a configured v1 implementation
+    /// when v2 initialization negotiates v1. It does not convert traffic
+    /// between protocol versions after routing.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature while protocol v2
+    /// stabilizes.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn protocol_router(self) -> ClientProtocolRouter {
+        ClientProtocolRouter::new()
+    }
+
     /// Connect to `agent` and run `main_fn` with the [`ConnectionTo`].
     /// Returns the result of `main_fn` (or an error if something goes wrong).
     ///
@@ -79,6 +96,81 @@ impl Client {
         main_fn: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<R, crate::Error>,
     ) -> Result<R, crate::Error> {
         self.builder().connect_with(agent, main_fn).await
+    }
+}
+
+/// Client component that routes each connection to a configured protocol implementation.
+///
+/// Use [`Client::protocol_router`] to start the builder, then add each supported
+/// protocol version independently. The selected implementation owns the
+/// connection after the initial `initialize` negotiation.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Default)]
+pub struct ClientProtocolRouter {
+    v1: Option<DynConnectTo<Agent>>,
+    v2: Option<DynConnectTo<Agent>>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ClientProtocolRouter {
+    /// Create an empty client protocol router.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return this router with an ACP v1 implementation configured.
+    #[must_use]
+    pub fn with_v1(mut self, client: impl ConnectTo<Agent>) -> Self {
+        self.v1 = Some(DynConnectTo::new(client));
+        self
+    }
+
+    /// Return this router with an ACP v2 implementation configured.
+    #[must_use]
+    pub fn with_v2(mut self, client: impl ConnectTo<Agent>) -> Self {
+        self.v2 = Some(DynConnectTo::new(client));
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ConnectTo<Agent> for ClientProtocolRouter {
+    async fn connect_to(mut self, agent: impl ConnectTo<Client>) -> Result<(), crate::Error> {
+        let supported = SupportedClientProtocols {
+            v1: self.v1.is_some(),
+            v2: self.v2.is_some(),
+        };
+        let Some(selected) = supported.highest_configured() else {
+            return Err(crate::Error::invalid_request()
+                .data("client protocol router has no configured ACP protocol implementations"));
+        };
+
+        let agent = RunningProtocolPeer::new(agent);
+        let client = selected
+            .take_client(&mut self)
+            .expect("selected protocol is configured");
+        let (client, initialize) = start_client_protocol(selected, client).await?;
+        let (client, agent, initialize_response) =
+            send_initialize_and_receive(client, agent, initialize).await?;
+
+        if selected == ClientProtocol::V2
+            && let Some(client) = self.v1.take()
+            && initialize_response_negotiated_v1(&initialize_response)
+        {
+            let (fallback_client, fallback_initialize) =
+                start_client_protocol(ClientProtocol::V1, client).await?;
+
+            let fallback_response = initialize_response.with_id(
+                initialize_request_id(&fallback_initialize)
+                    .expect("validated initialize request has an id"),
+            );
+            fallback_client.send(fallback_response)?;
+            return pipe_protocol_peers_until_done(fallback_client, agent).await;
+        }
+
+        client.send(initialize_response.into_message())?;
+        pipe_protocol_peers_until_done(client, agent).await
     }
 }
 
@@ -206,26 +298,10 @@ impl AgentProtocolRouter {
 #[cfg(feature = "unstable_protocol_v2")]
 impl ConnectTo<Client> for AgentProtocolRouter {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), crate::Error> {
-        let (mut client_channel, client_future) = client.into_channel_and_future();
-        let (first_message, client_future): (
-            Result<RawJsonRpcMessage, crate::Error>,
-            crate::BoxFuture<'static, Result<(), crate::Error>>,
-        ) = match future::select(Box::pin(client_channel.rx.next()), client_future).await {
-            future::Either::Left((Some(first_message), client_future)) => {
-                (first_message, client_future)
-            }
-            future::Either::Left((None, client_future)) => return client_future.await,
-            future::Either::Right((result, first_message)) => {
-                result?;
-                drop(first_message);
-                let Some(first_message) = client_channel.rx.next().await else {
-                    return Ok(());
-                };
-                (first_message, Box::pin(future::ready(Ok(()))))
-            }
+        let client = RunningProtocolPeer::new(client);
+        let Some((mut first_message, client)) = client.next_message().await? else {
+            return Ok(());
         };
-
-        let mut first_message = first_message?;
         let supported = SupportedAgentProtocols {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
@@ -233,44 +309,19 @@ impl ConnectTo<Client> for AgentProtocolRouter {
         let selected = match select_agent_protocol(&mut first_message, supported) {
             Ok(selected) => selected,
             Err(error) => {
-                send_initialize_error(&client_channel.tx, &first_message, error.clone())?;
+                send_initialize_error(&client.tx, &first_message, error.clone())?;
                 return Err(error);
             }
         };
         let Some(agent) = selected.take_agent(self) else {
             let error = selected.unsupported_error(supported);
-            send_initialize_error(&client_channel.tx, &first_message, error.clone())?;
+            send_initialize_error(&client.tx, &first_message, error.clone())?;
             return Err(error);
         };
 
-        let (router_channel, agent_channel) = Channel::duplex();
-        let Channel {
-            rx: from_agent,
-            tx: to_agent,
-        } = router_channel;
-
-        to_agent
-            .unbounded_send(Ok(first_message))
-            .map_err(crate::util::internal_error)?;
-
-        let agent_future = Box::pin(agent.connect_to(agent_channel));
-
-        let ((), (), (), ()) = futures::try_join!(
-            client_future,
-            agent_future,
-            Channel {
-                rx: client_channel.rx,
-                tx: to_agent,
-            }
-            .copy(),
-            Channel {
-                rx: from_agent,
-                tx: client_channel.tx,
-            }
-            .copy(),
-        )?;
-
-        Ok(())
+        let agent = RunningProtocolPeer::new(agent);
+        agent.send(first_message)?;
+        pipe_protocol_peers_until_closed(client, agent).await
     }
 }
 
@@ -408,6 +459,257 @@ fn send_initialize_error(
     };
     tx.unbounded_send(Ok(RawJsonRpcMessage::response(id, Err(error))))
         .map_err(crate::util::internal_error)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+struct RunningProtocolPeer {
+    rx: futures::channel::mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
+    tx: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
+    future: crate::BoxFuture<'static, Result<(), crate::Error>>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl RunningProtocolPeer {
+    fn new<R: Role>(component: impl ConnectTo<R>) -> Self {
+        let (Channel { rx, tx }, future) = component.into_channel_and_future();
+        Self { rx, tx, future }
+    }
+
+    async fn next_message(self) -> Result<Option<(RawJsonRpcMessage, Self)>, crate::Error> {
+        let Self { mut rx, tx, future } = self;
+        match future::select(Box::pin(rx.next()), future).await {
+            future::Either::Left((Some(message), future)) => {
+                Ok(Some((message?, Self { rx, tx, future })))
+            }
+            future::Either::Left((None, future)) => {
+                future.await?;
+                Ok(None)
+            }
+            future::Either::Right((result, next_message)) => {
+                result?;
+                drop(next_message);
+                let Some(message) = rx.next().await else {
+                    return Ok(None);
+                };
+                Ok(Some((
+                    message?,
+                    Self {
+                        rx,
+                        tx,
+                        future: Box::pin(future::ready(Ok(()))),
+                    },
+                )))
+            }
+        }
+    }
+
+    fn send(&self, message: RawJsonRpcMessage) -> Result<(), crate::Error> {
+        self.tx
+            .unbounded_send(Ok(message))
+            .map_err(crate::util::internal_error)
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn pipe_protocol_peers_until_closed(
+    left: RunningProtocolPeer,
+    right: RunningProtocolPeer,
+) -> Result<(), crate::Error> {
+    let ((), (), (), ()) = futures::try_join!(
+        left.future,
+        right.future,
+        Channel {
+            rx: left.rx,
+            tx: right.tx,
+        }
+        .copy(),
+        Channel {
+            rx: right.rx,
+            tx: left.tx,
+        }
+        .copy(),
+    )?;
+
+    Ok(())
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn pipe_protocol_peers_until_done(
+    left: RunningProtocolPeer,
+    right: RunningProtocolPeer,
+) -> Result<(), crate::Error> {
+    let bridge = Box::pin(async move {
+        let ((), ()) = futures::try_join!(
+            Channel {
+                rx: left.rx,
+                tx: right.tx,
+            }
+            .copy(),
+            Channel {
+                rx: right.rx,
+                tx: left.tx,
+            }
+            .copy(),
+        )?;
+        Ok(())
+    });
+
+    match future::select(left.future, future::select(right.future, bridge)).await {
+        future::Either::Left((result, _))
+        | future::Either::Right((
+            future::Either::Left((result, _)) | future::Either::Right((result, _)),
+            _,
+        )) => result,
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug)]
+struct InitializeResponse {
+    id: RequestId,
+    result: Result<serde_json::Value, crate::Error>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl InitializeResponse {
+    fn from_message(message: RawJsonRpcMessage) -> Result<Self, crate::Error> {
+        match message {
+            RawJsonRpcMessage::Response(RpcResponse::Result { id, result }) => Ok(Self {
+                id,
+                result: Ok(result),
+            }),
+            RawJsonRpcMessage::Response(RpcResponse::Error { id, error }) => Ok(Self {
+                id,
+                result: Err(error),
+            }),
+            message => Err(crate::Error::invalid_request().data(format!(
+                "first ACP response must be an initialize response, got {message:?}",
+            ))),
+        }
+    }
+
+    fn into_message(self) -> RawJsonRpcMessage {
+        RawJsonRpcMessage::response(self.id, self.result)
+    }
+
+    fn with_id(self, id: RequestId) -> RawJsonRpcMessage {
+        RawJsonRpcMessage::response(id, self.result)
+    }
+
+    fn protocol_version(&self) -> Option<ProtocolVersion> {
+        serde_json::from_value(self.result.as_ref().ok()?.get("protocolVersion")?.clone()).ok()
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientProtocol {
+    V1,
+    V2,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ClientProtocol {
+    fn take_client(self, router: &mut ClientProtocolRouter) -> Option<DynConnectTo<Agent>> {
+        match self {
+            Self::V1 => router.v1.take(),
+            Self::V2 => router.v2.take(),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::V1 => "1",
+            Self::V2 => "2",
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SupportedClientProtocols {
+    v1: bool,
+    v2: bool,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl SupportedClientProtocols {
+    fn highest_configured(self) -> Option<ClientProtocol> {
+        if self.v2 {
+            return Some(ClientProtocol::V2);
+        }
+
+        if self.v1 {
+            return Some(ClientProtocol::V1);
+        }
+
+        None
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn start_client_protocol(
+    protocol: ClientProtocol,
+    client: DynConnectTo<Agent>,
+) -> Result<(RunningProtocolPeer, RawJsonRpcMessage), crate::Error> {
+    let client = RunningProtocolPeer::new(client);
+    let Some((initialize, client)) = client.next_message().await? else {
+        return Err(crate::Error::invalid_request().data(format!(
+            "ACP protocol version {} client implementation ended before initialize",
+            protocol.name()
+        )));
+    };
+    ensure_client_initialize_request(protocol, &initialize)?;
+    Ok((client, initialize))
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+async fn send_initialize_and_receive(
+    client: RunningProtocolPeer,
+    agent: RunningProtocolPeer,
+    initialize: RawJsonRpcMessage,
+) -> Result<(RunningProtocolPeer, RunningProtocolPeer, InitializeResponse), crate::Error> {
+    agent.send(initialize)?;
+    let Some((response, agent)) = agent.next_message().await? else {
+        return Err(crate::Error::internal_error().data("agent closed before initialize response"));
+    };
+    let response = InitializeResponse::from_message(response)?;
+    Ok((client, agent, response))
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn ensure_client_initialize_request(
+    protocol: ClientProtocol,
+    message: &RawJsonRpcMessage,
+) -> Result<(), crate::Error> {
+    let RawJsonRpcMessage::Request(request) = message else {
+        return Err(crate::Error::invalid_request().data(format!(
+            "ACP protocol version {} client implementation must send initialize first",
+            protocol.name()
+        )));
+    };
+
+    if request.method.as_ref() != "initialize" {
+        return Err(crate::Error::invalid_request().data(format!(
+            "ACP protocol version {} client implementation must send initialize first",
+            protocol.name()
+        )));
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn initialize_request_id(message: &RawJsonRpcMessage) -> Option<RequestId> {
+    let RawJsonRpcMessage::Request(request) = message else {
+        return None;
+    };
+    Some(request.id.clone())
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn initialize_response_negotiated_v1(response: &InitializeResponse) -> bool {
+    response.protocol_version() == Some(ProtocolVersion::V1)
 }
 
 impl HasPeer<Agent> for Agent {
