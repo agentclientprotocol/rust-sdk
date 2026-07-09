@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
-    Agent, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
-    NullHandler, RawJsonRpcMessage, Role, UntypedRole,
+    Agent, AgentProtocolRouter, Builder, Client, ConnectTo, Error, JsonRpcMessage, JsonRpcRequest,
+    JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role, UntypedRole,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
@@ -72,9 +72,36 @@ fn v2_initialize_response_with_session(
         .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
 }
 
-#[cfg(feature = "unstable_mcp_over_acp")]
 fn json_value(value: impl Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(Error::into_internal_error)
+}
+
+fn runtime_flag_protocol_router(enable_protocol_v2: bool) -> AgentProtocolRouter {
+    let v1_agent = Agent.builder().on_receive_request(
+        async |initialize: v1::InitializeRequest, responder, _cx| {
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let agent = Agent.protocol_router().with_v1(v1_agent);
+
+    if enable_protocol_v2 {
+        let v2_agent = Agent.v2().on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+        agent.with_v2(v2_agent)
+    } else {
+        agent
+    }
 }
 
 async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Result<(), Error> {
@@ -594,6 +621,289 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
             Ok(())
         })
         .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_routes_v1_client_to_v1_implementation() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(
+            Agent
+                .builder()
+                .on_receive_request(
+                    async |initialize: v1::InitializeRequest, responder, _cx| {
+                        assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                        responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async |request: v1::NewSessionRequest, responder, _cx| {
+                        assert!(request.cwd.is_absolute());
+                        responder.respond(v1::NewSessionResponse::new(v1::SessionId::new(
+                            "v1-protocol-router-session",
+                        )))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                ),
+        )
+        .with_v2(Agent.v2().on_receive_request(
+            async |_initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v2 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    Client
+        .builder()
+        .connect_with(agent, async |cx| {
+            let initialize = cx
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+
+            let session = cx
+                .send_request(v1::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await?;
+            assert_eq!(session.session_id.0.as_ref(), "v1-protocol-router-session");
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_routes_v2_client_to_v2_implementation() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(Agent.builder().on_receive_request(
+            async |_initialize: v1::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v1 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ))
+        .with_v2(
+            Agent
+                .v2()
+                .on_receive_request(
+                    async |initialize: v2::InitializeRequest, responder, _cx| {
+                        assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                        responder.respond(v2_initialize_response_with_session(
+                            initialize.protocol_version,
+                        ))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async |request: v2::NewSessionRequest, responder, _cx| {
+                        assert!(request.cwd.is_absolute());
+                        responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                            "v2-protocol-router-session",
+                        )))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                ),
+        );
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let initialize = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+
+            let session = cx
+                .send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await?;
+            assert_eq!(session.session_id.0.as_ref(), "v2-protocol-router-session");
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_can_route_only_v1() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(Agent.builder().on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    Client
+        .builder()
+        .connect_with(agent, async |cx| {
+            let initialize = cx
+                .send_request(v1_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_can_route_only_v2() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let initialize = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_supports_runtime_v2_registration_flag() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(runtime_flag_protocol_router(false), async |cx| {
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("runtime-disabled v2 should route to v1 and fail v2 negotiation");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("peer negotiated 1"), "{error:?}");
+            Ok(())
+        })
+        .await?;
+
+    Client
+        .v2()
+        .connect_with(runtime_flag_protocol_router(true), async |cx| {
+            let initialize = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V1))
+                .block_task()
+                .await?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |_initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v2 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let agent_task = tokio::spawn(agent_future);
+
+    channel
+        .tx
+        .unbounded_send(Ok(RawJsonRpcMessage::request(
+            "initialize".into(),
+            json_value(v1_initialize_request(ProtocolVersion::V1))?,
+            v1::RequestId::Number(1),
+        )?))
+        .map_err(Error::into_internal_error)?;
+
+    while let Some(message) = channel.rx.next().await {
+        let message = message?;
+        let RawJsonRpcMessage::Response(v1::Response::Error { error, .. }) = message else {
+            continue;
+        };
+        let data = error
+            .data
+            .as_ref()
+            .and_then(|data| data.as_str())
+            .unwrap_or_default();
+        assert!(
+            data.contains("supports ACP protocol version 2"),
+            "{error:?}"
+        );
+        agent_task.abort();
+        return Ok(());
+    }
+
+    agent_task.abort();
+    Err(agent_client_protocol::util::internal_error(
+        "protocol router did not reject v1 initialize",
+    ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v1(Agent.builder().on_receive_request(
+            async |_initialize: v1::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v1 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ))
+        .with_v2(Agent.v2().on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let agent_task = tokio::spawn(agent_future);
+
+    channel
+        .tx
+        .unbounded_send(Ok(RawJsonRpcMessage::request(
+            "initialize".into(),
+            json_value(v2_initialize_request(ProtocolVersion::from(3_u16)))?,
+            v1::RequestId::Number(1),
+        )?))
+        .map_err(Error::into_internal_error)?;
+
+    while let Some(message) = channel.rx.next().await {
+        let message = message?;
+        let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
+            continue;
+        };
+        let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+        assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+        agent_task.abort();
+        return Ok(());
+    }
+
+    agent_task.abort();
+    Err(agent_client_protocol::util::internal_error(
+        "protocol router did not respond to initialize",
+    ))
 }
 
 /// A v2 agent whose `session/new` handler only responds once the peer cancels

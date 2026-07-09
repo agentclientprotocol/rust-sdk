@@ -78,6 +78,59 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 - After initialization, the local API version and negotiated wire version must
   match. The SDK does not convert traffic between v1 and v2.
 
-That means v1 and v2 implementations need separate handlers today. A future SDK
-API can route traffic to a registered implementation for the negotiated protocol
-version, but `Agent.v2()` and `Client.v2()` are currently v2-only.
+That means v1 and v2 implementations still need separate handlers.
+`Agent.v2()` and `Client.v2()` are v2-only. While protocol v2 stabilizes, the
+`unstable_protocol_v2` crate feature also exposes `Agent.protocol_router()`,
+which can route each connection to the configured implementation compatible
+with the client's requested protocol version.
+
+Agents can add protocol implementations independently, which makes it easy for
+applications built with v2 support to control v2 rollout with a runtime feature
+flag:
+
+```rust
+use agent_client_protocol::schema::{v1, v2};
+use agent_client_protocol::{Agent, ConnectTo};
+
+# fn implementation() -> v2::Implementation {
+#     v2::Implementation::new("example", "0.1.0")
+# }
+# async fn serve(client_transport: impl agent_client_protocol::ConnectTo<Agent>) -> agent_client_protocol::Result<()> {
+# let enable_protocol_v2 = true;
+let v1_agent = Agent.builder().on_receive_request(
+    async |initialize: v1::InitializeRequest, responder, _cx| {
+        responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+    },
+    agent_client_protocol::on_receive_request!(),
+);
+
+let agent = Agent.protocol_router().with_v1(v1_agent);
+
+let agent = if enable_protocol_v2 {
+    let v2_agent = Agent.v2().on_receive_request(
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            responder.respond(v2::InitializeResponse::new(
+                initialize.protocol_version,
+                implementation(),
+            ))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    agent.with_v2(v2_agent)
+} else {
+    agent
+};
+
+agent
+    .connect_to(client_transport)
+    .await?;
+# Ok(())
+# }
+```
+
+The protocol router reads the initial `initialize` request, selects the
+highest configured protocol version that is compatible with the requested
+version, and then hands the connection to that implementation. If only v2 is
+configured, v1 clients are rejected without changing the fluent API. The router
+does not convert messages between v1 and v2 after routing.

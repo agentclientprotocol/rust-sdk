@@ -1,10 +1,21 @@
 use std::{fmt::Debug, hash::Hash};
 
+#[cfg(feature = "unstable_protocol_v2")]
+use futures::{StreamExt as _, future};
+
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 use crate::role::{HasPeer, RemoteStyle};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::ProtocolVersion;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::RequestId;
 use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
 use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
 use crate::util::MatchDispatchFrom;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
 /// The client role - typically an IDE or CLI that controls an agent.
@@ -137,6 +148,266 @@ impl Agent {
     pub fn v2(self) -> Builder<Agent, NullHandler, NullRun> {
         self.builder().v2_agent()
     }
+
+    /// Create a router that chooses between configured protocol implementations.
+    ///
+    /// Add implementations with [`AgentProtocolRouter::with_v1`] and
+    /// [`AgentProtocolRouter::with_v2`].
+    /// The resulting router reads the initial
+    /// `initialize` request, selects the highest configured implementation
+    /// compatible with the client's requested protocol version, then forwards
+    /// the connection to that implementation. It does not convert traffic
+    /// between protocol versions after routing.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature while protocol v2
+    /// stabilizes.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn protocol_router(self) -> AgentProtocolRouter {
+        AgentProtocolRouter::new()
+    }
+}
+
+/// Agent component that routes each connection to a configured protocol implementation.
+///
+/// Use [`Agent::protocol_router`] to start the builder, then add each supported
+/// protocol version independently. The selected implementation owns the
+/// connection after the initial `initialize` negotiation.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Default)]
+pub struct AgentProtocolRouter {
+    v1: Option<DynConnectTo<Client>>,
+    v2: Option<DynConnectTo<Client>>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl AgentProtocolRouter {
+    /// Create an empty agent protocol router.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return this router with an ACP v1 implementation configured.
+    #[must_use]
+    pub fn with_v1(mut self, agent: impl ConnectTo<Client>) -> Self {
+        self.v1 = Some(DynConnectTo::new(agent));
+        self
+    }
+
+    /// Return this router with an ACP v2 implementation configured.
+    #[must_use]
+    pub fn with_v2(mut self, agent: impl ConnectTo<Client>) -> Self {
+        self.v2 = Some(DynConnectTo::new(agent));
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ConnectTo<Client> for AgentProtocolRouter {
+    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), crate::Error> {
+        let (mut client_channel, client_future) = client.into_channel_and_future();
+        let (first_message, client_future): (
+            Result<RawJsonRpcMessage, crate::Error>,
+            crate::BoxFuture<'static, Result<(), crate::Error>>,
+        ) = match future::select(Box::pin(client_channel.rx.next()), client_future).await {
+            future::Either::Left((Some(first_message), client_future)) => {
+                (first_message, client_future)
+            }
+            future::Either::Left((None, client_future)) => return client_future.await,
+            future::Either::Right((result, first_message)) => {
+                result?;
+                drop(first_message);
+                let Some(first_message) = client_channel.rx.next().await else {
+                    return Ok(());
+                };
+                (first_message, Box::pin(future::ready(Ok(()))))
+            }
+        };
+
+        let mut first_message = first_message?;
+        let supported = SupportedAgentProtocols {
+            v1: self.v1.is_some(),
+            v2: self.v2.is_some(),
+        };
+        let selected = match select_agent_protocol(&mut first_message, supported) {
+            Ok(selected) => selected,
+            Err(error) => {
+                send_initialize_error(&client_channel.tx, &first_message, error.clone())?;
+                return Err(error);
+            }
+        };
+        let Some(agent) = selected.take_agent(self) else {
+            let error = selected.unsupported_error(supported);
+            send_initialize_error(&client_channel.tx, &first_message, error.clone())?;
+            return Err(error);
+        };
+
+        let (router_channel, agent_channel) = Channel::duplex();
+        let Channel {
+            rx: from_agent,
+            tx: to_agent,
+        } = router_channel;
+
+        to_agent
+            .unbounded_send(Ok(first_message))
+            .map_err(crate::util::internal_error)?;
+
+        let agent_future = Box::pin(agent.connect_to(agent_channel));
+
+        let ((), (), (), ()) = futures::try_join!(
+            client_future,
+            agent_future,
+            Channel {
+                rx: client_channel.rx,
+                tx: to_agent,
+            }
+            .copy(),
+            Channel {
+                rx: from_agent,
+                tx: client_channel.tx,
+            }
+            .copy(),
+        )?;
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentProtocol {
+    V1,
+    V2,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl AgentProtocol {
+    fn version(self) -> ProtocolVersion {
+        match self {
+            Self::V1 => ProtocolVersion::V1,
+            Self::V2 => ProtocolVersion::V2,
+        }
+    }
+
+    fn take_agent(self, agent: AgentProtocolRouter) -> Option<DynConnectTo<Client>> {
+        match self {
+            Self::V1 => agent.v1,
+            Self::V2 => agent.v2,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::V1 => "1",
+            Self::V2 => "2",
+        }
+    }
+
+    fn unsupported_error(self, supported: SupportedAgentProtocols) -> crate::Error {
+        crate::Error::invalid_request().data(format!(
+            "ACP protocol version {} is not configured; this endpoint supports {}",
+            self.name(),
+            supported.description()
+        ))
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SupportedAgentProtocols {
+    v1: bool,
+    v2: bool,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl SupportedAgentProtocols {
+    fn highest_compatible(self, requested: ProtocolVersion) -> Option<AgentProtocol> {
+        if self.v2 && requested >= ProtocolVersion::V2 {
+            return Some(AgentProtocol::V2);
+        }
+
+        if self.v1 && requested >= ProtocolVersion::V1 {
+            return Some(AgentProtocol::V1);
+        }
+
+        None
+    }
+
+    fn description(self) -> String {
+        match (self.v1, self.v2) {
+            (true, true) => "ACP protocol versions 1 and 2".into(),
+            (true, false) => "ACP protocol version 1".into(),
+            (false, true) => "ACP protocol version 2".into(),
+            (false, false) => "no ACP protocol versions".into(),
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn select_agent_protocol(
+    message: &mut RawJsonRpcMessage,
+    supported: SupportedAgentProtocols,
+) -> Result<AgentProtocol, crate::Error> {
+    let RawJsonRpcMessage::Request(request) = message else {
+        return Err(
+            crate::Error::invalid_request().data("first ACP message must be an initialize request")
+        );
+    };
+
+    if request.method.as_ref() != "initialize" {
+        return Err(crate::Error::invalid_request().data("first ACP request must be initialize"));
+    }
+
+    let Some(RawJsonRpcParams::Object(params)) = &mut request.params else {
+        return Err(invalid_initialize_protocol_version());
+    };
+    let Some(protocol_version) = params.get("protocolVersion") else {
+        return Err(invalid_initialize_protocol_version());
+    };
+
+    let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
+        .map_err(|_| invalid_initialize_protocol_version())?;
+    let selected = highest_compatible_agent_protocol(requested, supported)?;
+    params.insert(
+        "protocolVersion".into(),
+        serde_json::to_value(selected.version()).map_err(crate::Error::into_internal_error)?,
+    );
+
+    Ok(selected)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn highest_compatible_agent_protocol(
+    requested: ProtocolVersion,
+    supported: SupportedAgentProtocols,
+) -> Result<AgentProtocol, crate::Error> {
+    supported.highest_compatible(requested).ok_or_else(|| {
+        crate::Error::invalid_request().data(format!(
+            "unsupported ACP protocol version {requested}; this endpoint supports {}",
+            supported.description()
+        ))
+    })
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn invalid_initialize_protocol_version() -> crate::Error {
+    crate::Error::invalid_params()
+        .data("initialize.protocolVersion must be a valid ACP protocol version")
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn send_initialize_error(
+    tx: &futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
+    message: &RawJsonRpcMessage,
+    error: crate::Error,
+) -> Result<(), crate::Error> {
+    let id = match message {
+        RawJsonRpcMessage::Request(request) => request.id.clone(),
+        RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_) => RequestId::Null,
+    };
+    tx.unbounded_send(Ok(RawJsonRpcMessage::response(id, Err(error))))
+        .map_err(crate::util::internal_error)
 }
 
 impl HasPeer<Agent> for Agent {
