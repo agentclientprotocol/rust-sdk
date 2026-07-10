@@ -33,6 +33,8 @@ pub enum LineDirection {
 ///
 /// This is a wrapper around [`crate::schema::v1::McpServer`] that provides convenient parsing
 /// from command-line strings or JSON configurations.
+/// On Unix, dropping an active connection terminates the spawned process group, including agents
+/// started through wrapper commands such as `npx` and `uvx`.
 ///
 /// # Use Cases
 ///
@@ -165,8 +167,11 @@ impl AcpAgent {
         self
     }
 
-    /// Spawn the process and get stdio streams.
-    /// Used internally by the `ConnectTo` trait implementation.
+    /// Spawn the configured process and return its stdio streams and raw child handle.
+    ///
+    /// This is a low-level escape hatch. The caller owns the returned child process and is
+    /// responsible for terminating it. Connections created through [`crate::ConnectTo`] instead
+    /// install a guard that tears down the spawned process group on Unix.
     pub fn spawn_process(
         &self,
     ) -> Result<
@@ -246,10 +251,8 @@ impl ChildGuard {
     async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         self.0.status().await
     }
-}
 
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
+    fn terminate(&mut self) {
         // SIGKILL the child's process group first: the child was spawned as
         // its own group leader, so this reaches grandchildren spawned by
         // wrapper launchers (`npx → node`, `uvx → python`). This also covers
@@ -258,11 +261,17 @@ impl Drop for ChildGuard {
         // group is already gone.
         #[cfg(unix)]
         if let Some(pid) = rustix::process::Pid::from_raw(self.0.id().cast_signed()) {
-            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            let _result = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
         }
         // Fallback for platforms without group semantics (and a no-op double
         // tap on unix).
         drop(self.0.kill());
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        self.terminate();
     }
 }
 
@@ -271,15 +280,17 @@ impl Drop for ChildGuard {
 /// The error message includes any stderr output collected concurrently.
 /// When dropped, the child process is killed.
 async fn monitor_child(
-    child: Child,
+    mut guard: ChildGuard,
     stderr_rx: futures::channel::oneshot::Receiver<String>,
 ) -> Result<(), crate::Error> {
-    let mut guard = ChildGuard(child);
-
     let status = guard
         .wait()
         .await
         .map_err(|e| crate::util::internal_error(format!("Failed to wait for process: {e}")))?;
+
+    // A launcher may exit while a descendant remains alive holding inherited
+    // stdio. Terminate the rest of the group before waiting for stderr EOF.
+    guard.terminate();
 
     if status.success() {
         Ok(())
@@ -338,8 +349,9 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             drop(stderr_tx.send(collected));
         };
 
-        // Create a future that monitors the child process for early exit
-        let child_monitor = monitor_child(child, stderr_rx);
+        // Create the guard eagerly so cancelling this connection before the
+        // monitor is first polled still terminates the whole process group.
+        let child_monitor = monitor_child(ChildGuard(child), stderr_rx);
 
         // Convert stdio to line streams with optional debug inspection
         let incoming_lines: std::pin::Pin<
@@ -522,86 +534,139 @@ impl FromStr for AcpAgent {
 mod tests {
     use super::*;
 
-    /// Dropping the guard must terminate the whole process TREE, not just the
-    /// immediate child. The spawned command is a wrapper chain
-    /// (`bash → bash inner.sh`, mimicking `npx → node` / `uvx → python`): the
-    /// inner process writes its pid to a file, and after the guard drops that
-    /// pid must be gone — killing only the outer wrapper leaves it orphaned
-    /// on pid 1, where it can outlive the client indefinitely.
     #[cfg(unix)]
-    #[test]
-    fn test_child_guard_kills_wrapper_chain_process_group() {
-        let dir = std::env::temp_dir().join(format!(
-            "acp-guard-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let pid_file = dir.join("inner.pid");
-        let inner = dir.join("inner.sh");
-        std::fs::write(
-            &inner,
-            format!("echo $$ > {}\nsleep 30\n", pid_file.display()),
-        )
-        .unwrap();
+    struct KillOnDrop(Option<rustix::process::Pid>);
 
-        // `; :` keeps the outer bash alive as a parent instead of exec-ing the
-        // inner command (which would collapse the chain to one process).
-        let agent = AcpAgent::new(SchemaMcpServer::Stdio(
-            McpServerStdio::new("bash", "bash").args(vec![
-                "-c".to_string(),
-                format!("bash {} ; :", inner.display()),
-            ]),
-        ));
-
-        let (_stdin, _stdout, _stderr, child) = agent.spawn_process().unwrap();
-        let guard = ChildGuard(child);
-
-        // Wait for the inner (grand)child to report its pid.
-        let mut inner_pid = String::new();
-        for _ in 0..200 {
-            if let Ok(raw) = std::fs::read_to_string(&pid_file) {
-                let raw = raw.trim().to_string();
-                if !raw.is_empty() {
-                    inner_pid = raw;
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    #[cfg(unix)]
+    impl KillOnDrop {
+        fn disarm(&mut self) {
+            self.0 = None;
         }
-        assert!(!inner_pid.is_empty(), "inner script never reported its pid");
-        assert!(pid_alive(&inner_pid), "inner process should be alive");
-
-        drop(guard);
-
-        // The grandchild must die with the group rather than linger orphaned.
-        let mut gone = false;
-        for _ in 0..200 {
-            if !pid_alive(&inner_pid) {
-                gone = true;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        std::fs::remove_dir_all(&dir).ok();
-        assert!(
-            gone,
-            "wrapper-chain grandchild (pid {inner_pid}) survived ChildGuard drop"
-        );
     }
 
-    /// `kill -0` liveness probe.
     #[cfg(unix)]
-    fn pid_alive(pid: &str) -> bool {
-        std::process::Command::new("kill")
-            .args(["-0", pid])
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0 {
+                let _result = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn wrapper_agent(script: &str) -> (AcpAgent, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let (pid_tx, pid_rx) = tokio::sync::mpsc::unbounded_channel();
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", script])
+            .unwrap()
+            .with_debug(move |line, direction| {
+                if direction == LineDirection::Stderr {
+                    drop(pid_tx.send(line.to_owned()));
+                }
+            });
+        (agent, pid_rx)
+    }
+
+    #[cfg(unix)]
+    fn process_is_running(pid: rustix::process::Pid) -> bool {
+        if rustix::process::test_kill_process(pid).is_err() {
+            return false;
+        }
+
+        // A killed orphan can remain as a zombie under a container PID 1 that
+        // does not reap promptly. Treat zombies as exited for this test.
+        match std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let state = String::from_utf8_lossy(&output.stdout);
+                !state.trim().is_empty() && !state.trim_start().starts_with('Z')
+            }
+            Ok(_) => false,
+            Err(_) => true,
+        }
+    }
+
+    #[cfg(unix)]
+    async fn reported_descendant_pid(
+        connection: &mut futures::future::BoxFuture<'static, Result<(), crate::Error>>,
+        pid_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> rustix::process::Pid {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                tokio::select! {
+                    biased;
+                    line = pid_rx.recv() => {
+                        let line = line.expect("wrapper stderr should remain open");
+                        if let Some(pid) = line.strip_prefix("ACP_TEST_CHILD_PID=") {
+                            let pid = pid.parse::<i32>().expect("valid descendant PID");
+                            break rustix::process::Pid::from_raw(pid)
+                                .expect("nonzero descendant PID");
+                        }
+                    }
+                    result = &mut *connection => {
+                        panic!("agent connection exited before reporting descendant PID: {result:?}");
+                    }
+                }
+            }
+        })
+        .await
+        .expect("wrapper should report descendant PID")
+    }
+
+    #[cfg(unix)]
+    async fn assert_process_exits(pid: rustix::process::Pid) {
+        let exited = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while process_is_running(pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(exited, "descendant process {pid} remained alive");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_connection_drop_kills_wrapper_descendant() {
+        let (agent, mut pid_rx) = wrapper_agent(
+            "sleep 30 & child=$!; echo ACP_TEST_CHILD_PID=$child >&2; wait \"$child\"",
+        );
+        let (_channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let descendant_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
+        let mut cleanup = KillOnDrop(Some(descendant_pid));
+
+        assert!(process_is_running(descendant_pid));
+        drop(connection);
+        assert_process_exits(descendant_pid).await;
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_launcher_exit_kills_descendant_before_stderr_wait() {
+        let (agent, mut pid_rx) = wrapper_agent(
+            "sh -c 'trap \"\" HUP; exec sleep 30' >/dev/null & child=$!; echo ACP_TEST_CHILD_PID=$child >&2; exit 17",
+        );
+        let (_channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let descendant_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
+        let mut cleanup = KillOnDrop(Some(descendant_pid));
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), &mut connection)
+            .await
+            .expect("connection should observe the launcher exit");
+        let error = result.expect_err("nonzero launcher exit should be an error");
+        let detail = error
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            detail.contains("ACP_TEST_CHILD_PID="),
+            "launcher stderr should be preserved: {error:?}"
+        );
+        assert_process_exits(descendant_pid).await;
+        cleanup.disarm();
     }
 
     #[test]
