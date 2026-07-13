@@ -380,6 +380,64 @@ async fn outgoing_drain_keeps_the_full_duplex_read_half_moving() {
 }
 
 #[tokio::test]
+async fn outgoing_drain_propagates_incoming_read_error() {
+    let (write_started_tx, write_started_rx) = futures::channel::oneshot::channel();
+    let outgoing = futures::sink::unfold(
+        Some(write_started_tx),
+        |mut write_started, _line: String| async move {
+            if let Some(write_started) = write_started.take() {
+                let _ = write_started.send(());
+            }
+            future::pending::<Result<Option<futures::channel::oneshot::Sender<()>>, io::Error>>()
+                .await
+        },
+    );
+    let (incoming_tx, incoming) = futures::channel::mpsc::unbounded::<io::Result<String>>();
+    let (client_started_tx, _client_started_rx) = futures::channel::oneshot::channel();
+    let (escaped_tx, escaped_rx) = futures::channel::oneshot::channel();
+
+    let connection = ConnectTo::<UntypedRole>::connect_to(
+        Lines::new(outgoing, incoming),
+        QueuedClient {
+            started: client_started_tx,
+            escaped: escaped_tx,
+        },
+    );
+    let inject_error = async move {
+        let escaped = escaped_rx
+            .await
+            .expect("client should expose its outgoing sender");
+        write_started_rx
+            .await
+            .expect("queued output should reach the backpressured sink");
+        assert!(
+            escaped.is_closed(),
+            "read error must be injected after the client enters drain mode"
+        );
+        incoming_tx
+            .unbounded_send(Err(io::Error::other("read failed during outgoing drain")))
+            .expect("incoming transport should still be polled during the drain");
+    };
+
+    let error = tokio::time::timeout(TIMEOUT, async move {
+        let (result, ()) = join(connection, inject_error).await;
+        result
+    })
+    .await
+    .expect("incoming read error was swallowed behind the blocked outgoing drain")
+    .expect_err("incoming read error should fail the connection");
+    let detail = error
+        .data
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .unwrap_or_default();
+    assert!(
+        detail.contains("read failed during outgoing drain"),
+        "unexpected transport error: {error:?}"
+    );
+}
+
+#[tokio::test]
 async fn escaped_connection_handle_does_not_retain_the_transport() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (started_tx, started_rx) = futures::channel::oneshot::channel();

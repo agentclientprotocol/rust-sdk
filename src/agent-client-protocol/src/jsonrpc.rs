@@ -4734,13 +4734,17 @@ where
         let Channel { rx, tx } = transport_channel;
 
         // Once the client completes successfully, its incoming channel is
-        // gone. Keep consuming the physical read half without trying to
-        // forward those messages so a full-duplex peer cannot block our
-        // outgoing sink while it is being drained.
+        // gone. Keep consuming successful messages from the physical read
+        // half without forwarding them so a full-duplex peer cannot block our
+        // outgoing sink while it is being drained. Transport errors must still
+        // fail the connection.
         let discard_incoming = Arc::new(AtomicBool::new(false));
         let incoming = incoming.filter_map({
             let discard_incoming = discard_incoming.clone();
-            move |item| future::ready((!discard_incoming.load(Ordering::Acquire)).then_some(item))
+            move |item| {
+                let discard_incoming = discard_incoming.load(Ordering::Acquire);
+                future::ready((!discard_incoming || item.is_err()).then_some(item))
+            }
         });
 
         let outgoing = transport_actor::transport_outgoing_lines_actor(rx, outgoing)
@@ -4765,11 +4769,13 @@ where
 
                 // Drive the read half while waiting for the write half, but do
                 // not require the peer's independent incoming stream to reach
-                // EOF. If incoming processing finishes first, the shared
-                // outgoing future still owns and drains the sink.
+                // EOF. If incoming processing finishes successfully first,
+                // the shared outgoing future still owns and drains the sink.
+                // A successful `serve_self` result includes its shared
+                // outgoing clone, while any error must remain authoritative
+                // instead of being hidden behind the other handle.
                 match future::select(outgoing, serve_self).await {
-                    Either::Left((result, _)) => result,
-                    Either::Right((_, outgoing)) => outgoing.await,
+                    Either::Left((result, _)) | Either::Right((result, _)) => result,
                 }
             }
             Either::Right((result, _)) => result,
