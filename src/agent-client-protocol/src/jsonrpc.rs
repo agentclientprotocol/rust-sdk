@@ -4730,6 +4730,7 @@ where
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let Self { outgoing, incoming } = self;
         let (channel, transport_channel) = Channel::duplex();
+        let shutdown_tx = channel.tx.clone();
         let Channel { rx, tx } = transport_channel;
 
         // Once the client completes successfully, its incoming channel is
@@ -4759,6 +4760,7 @@ where
         match futures::future::select(Box::pin(client.connect_to(channel)), serve_self).await {
             Either::Left((result, serve_self)) => {
                 result?;
+                shutdown_tx.close_channel();
                 discard_incoming.store(true, Ordering::Release);
 
                 // Drive the read half while waiting for the write half, but do

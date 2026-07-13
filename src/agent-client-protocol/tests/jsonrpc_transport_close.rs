@@ -50,6 +50,9 @@ impl<R: Role> ConnectTo<R> for PendingTransport {
 
 struct QueuedClient {
     started: futures::channel::oneshot::Sender<()>,
+    escaped: futures::channel::oneshot::Sender<
+        futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, Error>>,
+    >,
 }
 
 impl ConnectTo<UntypedRole> for QueuedClient {
@@ -63,6 +66,7 @@ impl ConnectTo<UntypedRole> for QueuedClient {
             .tx
             .unbounded_send(Ok(message))
             .map_err(Error::into_internal_error)?;
+        drop(self.escaped.send(channel.tx.clone()));
         let _ = self.started.send(());
         drop(channel);
         transport_future.await
@@ -315,15 +319,18 @@ async fn outgoing_drain_keeps_the_full_duplex_read_half_moving() {
     let (peer_incoming, mut peer_outgoing) = tokio::io::split(peer_stream);
     let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
     let (started_tx, started_rx) = futures::channel::oneshot::channel();
+    let (escaped_tx, escaped_rx) = futures::channel::oneshot::channel();
 
     let connection = ConnectTo::<UntypedRole>::connect_to(
         transport,
         QueuedClient {
             started: started_tx,
+            escaped: escaped_tx,
         },
     );
     let peer = async move {
         started_rx.await.expect("client should queue its message");
+        let escaped = escaped_rx.await.expect("client should expose its sender");
 
         // Write two frames before reading. The first frame proves shutdown no
         // longer tries to forward into the client's closed channel; the second
@@ -349,15 +356,27 @@ async fn outgoing_drain_keeps_the_full_duplex_read_half_moving() {
             serde_json::from_str::<RawJsonRpcMessage>(&line).unwrap(),
             RawJsonRpcMessage::Notification(_)
         ));
+        escaped
     };
 
-    tokio::time::timeout(TIMEOUT, async move {
-        let (result, ()) = join(connection, peer).await;
-        result
+    let escaped = tokio::time::timeout(TIMEOUT, async move {
+        let (result, escaped) = join(connection, peer).await;
+        result.map(|()| escaped)
     })
     .await
     .expect("full-duplex transport deadlocked while draining output")
     .expect("queued output should drain successfully");
+
+    assert!(
+        escaped
+            .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                "too-late".into(),
+                serde_json::json!({}),
+            )
+            .unwrap()))
+            .is_err(),
+        "escaped sender accepted a message after client completion"
+    );
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_process::Child;
 use std::pin::pin;
@@ -19,6 +20,7 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
+const CHILD_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,18 +428,38 @@ async fn drain_stderr(
     }
 }
 
-/// Waits for a child process and returns an error if it exits with non-zero status.
-///
-/// The error message includes a bounded tail of stderr collected concurrently.
-/// When dropped, the child process is killed.
-async fn monitor_child(
+struct ExitedChild {
+    guard: ChildGuard,
+    status: std::process::ExitStatus,
+    stderr_rx: futures::channel::oneshot::Receiver<String>,
+}
+
+/// Waits for the direct child process while retaining its process-group guard
+/// and stderr receiver for exit reporting.
+async fn wait_for_child(
     mut guard: ChildGuard,
     stderr_rx: futures::channel::oneshot::Receiver<String>,
-) -> Result<(), crate::Error> {
+) -> Result<ExitedChild, crate::Error> {
     let status = guard
         .wait()
         .await
         .map_err(|e| crate::util::internal_error(format!("Failed to wait for process: {e}")))?;
+
+    Ok(ExitedChild {
+        guard,
+        status,
+        stderr_rx,
+    })
+}
+
+/// Reports an observed child exit, including a bounded stderr tail for a
+/// nonzero status.
+async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
+    let ExitedChild {
+        mut guard,
+        status,
+        stderr_rx,
+    } = child;
 
     // A launcher may exit while a descendant remains alive holding inherited
     // stdio. Terminate the rest of the group before waiting for stderr EOF.
@@ -499,7 +521,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
 
         // Create the guard eagerly so cancelling this connection before the
         // monitor is first polled still terminates the whole process group.
-        let child_monitor = monitor_child(ChildGuard(child), stderr_rx);
+        let child_wait = wait_for_child(ChildGuard(child), stderr_rx);
 
         // Convert stdio to line streams with optional debug inspection
         let incoming_lines: std::pin::Pin<
@@ -548,21 +570,38 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         );
 
         let stderr_future = pin!(stderr_future);
-        let protocol_future = pin!(protocol_future);
-        let child_monitor = pin!(child_monitor);
+        let protocol_future = Box::pin(protocol_future);
+        let child_wait = Box::pin(child_wait);
 
         // Run stderr reader alongside the main race. Errors still stop the
-        // connection immediately, but success requires both protocol shutdown
-        // and a successful child exit. In particular, stdout EOF must not drop
-        // the child monitor before it can report a later nonzero status.
+        // connection immediately. After protocol shutdown succeeds, give the
+        // child a bounded grace period so delayed failures remain observable
+        // without letting a non-exiting launcher hang shutdown forever.
         let main_race = async {
-            match futures::future::select(protocol_future, child_monitor).await {
-                futures::future::Either::Left((result, child_monitor)) => {
+            match futures::future::select(protocol_future, child_wait).await {
+                futures::future::Either::Left((result, child_wait)) => {
                     result?;
-                    child_monitor.await
+                    match futures::future::select(
+                        child_wait,
+                        async_io::Timer::after(CHILD_EXIT_GRACE_PERIOD),
+                    )
+                    .await
+                    {
+                        futures::future::Either::Left((child, _)) => {
+                            finish_child_exit(child?).await
+                        }
+                        futures::future::Either::Right((_, child_wait)) => {
+                            tracing::debug!(
+                                grace = ?CHILD_EXIT_GRACE_PERIOD,
+                                "Agent process did not exit after protocol shutdown; terminating it"
+                            );
+                            drop(child_wait);
+                            Ok(())
+                        }
+                    }
                 }
-                futures::future::Either::Right((result, protocol_future)) => {
-                    result?;
+                futures::future::Either::Right((child, protocol_future)) => {
+                    finish_child_exit(child?).await?;
                     protocol_future.await
                 }
             }
@@ -960,6 +999,25 @@ mod tests {
         .await
         .is_ok();
         assert!(exited, "descendant process {pid} remained alive");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protocol_eof_terminates_a_child_that_does_not_exit() {
+        let (agent, mut pid_rx) =
+            wrapper_agent("echo ACP_TEST_CHILD_PID=$$ >&2; exec 1>&-; while :; do sleep 30; done");
+        let mut connection: futures::future::BoxFuture<'static, Result<(), crate::Error>> =
+            Box::pin(Client.builder().connect_to(agent));
+        let child_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
+        let mut cleanup = KillOnDrop(Some(child_pid));
+
+        assert!(process_is_running(child_pid));
+        tokio::time::timeout(std::time::Duration::from_secs(5), &mut connection)
+            .await
+            .expect("protocol shutdown should bound its child-exit wait")
+            .expect("clean protocol shutdown should terminate a non-exiting child");
+        assert_process_exits(child_pid).await;
+        cleanup.disarm();
     }
 
     #[cfg(unix)]
