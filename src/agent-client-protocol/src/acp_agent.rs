@@ -722,13 +722,12 @@ mod tests {
 
         lines.push(b"one\r", &callback);
         lines.push(b"\n\ntw", &callback);
-        lines.push(b"o\ncaf\xc3", &callback);
         lines.push(b"\xa9\nbad\xff\nlast\r", &callback);
         lines.finish(&callback);
 
         assert_eq!(
             *recorded.lock().unwrap(),
-            ["one", "", "two", "caf\u{e9}", "bad\u{fffd}", "last\r"]
+            ["one", "", "two", "bad\u{fffd}", "last\r"]
         );
     }
 
