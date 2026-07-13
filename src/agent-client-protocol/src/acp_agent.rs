@@ -515,6 +515,64 @@ where
     }
 }
 
+async fn write_line_with_shutdown_timeout<W>(
+    writer: &mut W,
+    line: String,
+    stdout_eof_rx: &mut Option<futures::channel::oneshot::Receiver<()>>,
+    stdout_eof_seen: &mut bool,
+    grace: Duration,
+) -> std::io::Result<()>
+where
+    W: futures::AsyncWrite + Unpin + ?Sized,
+{
+    let write = Box::pin(crate::jsonrpc::write_line(writer, line));
+
+    if *stdout_eof_seen {
+        return await_write_during_shutdown(write, grace).await;
+    }
+
+    let Some(stdout_eof) = stdout_eof_rx.as_mut() else {
+        return write.await;
+    };
+
+    match futures::future::select(write, stdout_eof).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right((stdout_eof, write)) => {
+            *stdout_eof_rx = None;
+            if stdout_eof.is_err() {
+                // Dropping the incoming stream cancels the signal. Only an
+                // explicit send represents a clean EOF.
+                return write.await;
+            }
+
+            *stdout_eof_seen = true;
+            await_write_during_shutdown(write, grace).await
+        }
+    }
+}
+
+async fn await_write_during_shutdown<F>(write: F, grace: Duration) -> std::io::Result<()>
+where
+    F: std::future::Future<Output = std::io::Result<()>> + Unpin,
+{
+    match futures::future::select(write, async_io::Timer::after(grace)).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right((_, write)) => {
+            tracing::debug!(
+                ?grace,
+                "Pending protocol output did not drain after agent stdout closed"
+            );
+            drop(write);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "Agent closed its protocol output but pending protocol output did not drain within {grace:?}"
+                ),
+            ))
+        }
+    }
+}
+
 /// Roles that an ACP agent executable can potentially serve.
 pub trait AcpAgentCounterpartRole: Role {}
 
@@ -558,7 +616,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         // monitor is first polled still terminates the whole process group.
         let child_wait = wait_for_child(ChildGuard(child), stderr_rx);
 
-        // Convert stdio to line streams with optional debug inspection
+        // Convert stdio to line streams with optional debug inspection.
         let incoming_lines: std::pin::Pin<
             Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
         > = if let Some(callback) = self.debug_callback.clone() {
@@ -571,27 +629,49 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             Box::pin(BufReader::new(child_stdout).lines())
         };
 
+        // The JSON-RPC transport keeps polling stdout while it drains stdin.
+        // Signal physical EOF so a child that half-closes stdout and stops
+        // reading cannot hold a final write open forever. Dropping this stream
+        // merely cancels the signal and is not treated as EOF.
+        let (stdout_eof_tx, stdout_eof_rx) = futures::channel::oneshot::channel();
+        let mut stdout_eof_tx = Some(stdout_eof_tx);
+        let mut incoming_lines = incoming_lines;
+        let incoming_lines = Box::pin(futures::stream::poll_fn(move |cx| {
+            let next = incoming_lines.as_mut().poll_next(cx);
+            if matches!(next, std::task::Poll::Ready(None))
+                && let Some(stdout_eof_tx) = stdout_eof_tx.take()
+            {
+                let _ = stdout_eof_tx.send(());
+            }
+            next
+        }));
+
         // Create a sink that writes lines (with newlines) to stdin with optional debug logging
         let outgoing_sink: std::pin::Pin<
             Box<dyn futures::Sink<String, Error = std::io::Error> + Send>,
-        > = if let Some(callback) = self.debug_callback.clone() {
-            Box::pin(futures::sink::unfold(
-                (child_stdin, callback),
-                async move |(mut writer, callback), line: String| {
-                    callback(&line, LineDirection::Stdin);
-                    crate::jsonrpc::write_line(&mut writer, line).await?;
-                    Ok::<_, std::io::Error>((writer, callback))
-                },
-            ))
-        } else {
-            Box::pin(futures::sink::unfold(
+        > = Box::pin(futures::sink::unfold(
+            (
                 child_stdin,
-                async move |mut writer, line: String| {
-                    crate::jsonrpc::write_line(&mut writer, line).await?;
-                    Ok::<_, std::io::Error>(writer)
-                },
-            ))
-        };
+                self.debug_callback.clone(),
+                Some(stdout_eof_rx),
+                false,
+            ),
+            async move |(mut writer, callback, mut stdout_eof_rx, mut stdout_eof_seen),
+                        line: String| {
+                if let Some(callback) = callback.as_ref() {
+                    callback(&line, LineDirection::Stdin);
+                }
+                write_line_with_shutdown_timeout(
+                    &mut writer,
+                    line,
+                    &mut stdout_eof_rx,
+                    &mut stdout_eof_seen,
+                    SHUTDOWN_GRACE_PERIOD,
+                )
+                .await?;
+                Ok::<_, std::io::Error>((writer, callback, stdout_eof_rx, stdout_eof_seen))
+            },
+        ));
 
         // Race the protocol against child process exit.
         // Also run stderr collection concurrently.
@@ -1073,6 +1153,48 @@ mod tests {
             .await
             .expect("protocol shutdown should bound its child-exit wait")
             .expect("clean protocol shutdown should terminate a non-exiting child");
+        assert_process_exits(child_pid).await;
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protocol_eof_bounds_a_blocked_outgoing_drain() {
+        let (agent, mut pid_rx) = wrapper_agent(
+            "echo ACP_TEST_CHILD_PID=$$ >&2; exec 1>&-; sleep 30 & child=$!; wait \"$child\"",
+        );
+        let (channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let crate::Channel {
+            rx: _incoming,
+            tx: outgoing,
+        } = channel;
+
+        let response = crate::RawJsonRpcMessage::response(
+            crate::schema::v1::RequestId::Number(1),
+            Ok(serde_json::json!({ "payload": "x".repeat(4 * 1024 * 1024) })),
+        );
+        outgoing
+            .unbounded_send(Ok(response))
+            .expect("response should be accepted before the connection starts");
+        outgoing.close_channel();
+
+        let child_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
+        let mut cleanup = KillOnDrop(Some(child_pid));
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), &mut connection)
+            .await
+            .expect("stdout EOF should bound a blocked outgoing drain")
+            .expect_err("an undelivered accepted response must not report success");
+        let detail = error
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            detail.contains("pending protocol output did not drain"),
+            "the error should identify the blocked outgoing drain: {error:?}"
+        );
+
         assert_process_exits(child_pid).await;
         cleanup.disarm();
     }
