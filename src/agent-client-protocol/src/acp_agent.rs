@@ -551,11 +551,20 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let protocol_future = pin!(protocol_future);
         let child_monitor = pin!(child_monitor);
 
-        // Run stderr reader alongside the main race
+        // Run stderr reader alongside the main race. Errors still stop the
+        // connection immediately, but success requires both protocol shutdown
+        // and a successful child exit. In particular, stdout EOF must not drop
+        // the child monitor before it can report a later nonzero status.
         let main_race = async {
             match futures::future::select(protocol_future, child_monitor).await {
-                futures::future::Either::Left((result, _))
-                | futures::future::Either::Right((result, _)) => result,
+                futures::future::Either::Left((result, child_monitor)) => {
+                    result?;
+                    child_monitor.await
+                }
+                futures::future::Either::Right((result, protocol_future)) => {
+                    result?;
+                    protocol_future.await
+                }
             }
         };
 
@@ -826,6 +835,39 @@ mod tests {
         );
         assert_eq!(tail.len(), STDERR_CAPTURE_LIMIT);
         assert!(tail.ends_with("ACP_END"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn protocol_eof_still_reports_nonzero_child_exit() {
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            "exec 1>&-; cat >/dev/null; printf ACP_TEST_FAILURE_AFTER_STDOUT_EOF >&2; exit 17",
+        ])
+        .unwrap();
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            Client.builder().connect_to(agent),
+        )
+        .await
+        .expect("connection should finish after the child exits")
+        .expect_err("nonzero child exit after protocol EOF should be reported");
+        let detail = error
+            .data
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default();
+
+        assert!(
+            detail.contains("exit status: 17"),
+            "child exit status should be preserved: {error:?}"
+        );
+        assert!(
+            detail.contains("ACP_TEST_FAILURE_AFTER_STDOUT_EOF"),
+            "child stderr should be preserved: {error:?}"
+        );
     }
 
     #[cfg(unix)]

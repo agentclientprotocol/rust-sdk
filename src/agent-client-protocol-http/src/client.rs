@@ -102,14 +102,23 @@ impl HttpClient {
 impl ConnectTo<Client> for HttpClient {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), AcpError> {
         let (channel, transport) = ConnectTo::<Client>::into_channel_and_future(self);
+        let shutdown_tx = channel.tx.clone();
         match futures::future::select(
             std::pin::pin!(client.connect_to(channel)),
             std::pin::pin!(transport),
         )
         .await
         {
-            futures::future::Either::Left((result, _))
-            | futures::future::Either::Right((result, _)) => result,
+            futures::future::Either::Left((result, transport)) => {
+                result?;
+
+                // Reject sends from escaped client handles while preserving
+                // messages already accepted into the channel, then let the
+                // physical transport finish those messages.
+                shutdown_tx.close_channel();
+                transport.await
+            }
+            futures::future::Either::Right((result, _)) => result,
         }
     }
 
@@ -139,10 +148,22 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     let mut lifecycle = HttpTransportLifecycle::new(connection);
     let mut ordered_posts = PostQueue::default();
     let mut response_posts = PostQueue::default();
+    let mut outgoing_closed = false;
 
     let result = loop {
+        if outgoing_closed && ordered_posts.is_empty() && response_posts.is_empty() {
+            break Ok(());
+        }
+
         let event = {
-            let outgoing_next = outgoing.next().fuse();
+            let outgoing_next = async {
+                if outgoing_closed {
+                    futures::future::pending().await
+                } else {
+                    outgoing.next().await
+                }
+            }
+            .fuse();
             let sse_event_next = sse_event_rx.next().fuse();
             let sse_failure_next = lifecycle.next_sse_failure().fuse();
             let ordered_post_next = ordered_posts.next_completion().fuse();
@@ -171,7 +192,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                     error!("upstream channel produced error: {e}");
                     break Err(e);
                 }
-                None => break Ok(()),
+                None => {
+                    outgoing_closed = true;
+                    continue;
+                }
             },
             HttpLoopEvent::SseEvent(event) => {
                 let Some(event) = event else {
@@ -491,6 +515,10 @@ impl PostQueue {
             self.in_flight = Some(post.into_completion());
         }
     }
+
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty() && self.in_flight.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -809,6 +837,64 @@ mod tests {
     };
 
     use super::*;
+
+    struct PostsThenExitClient {
+        finish: Arc<Notify>,
+        finished: Arc<Notify>,
+        escaped_tx: futures::channel::oneshot::Sender<
+            futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
+        >,
+    }
+
+    impl ConnectTo<Agent> for PostsThenExitClient {
+        async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), AcpError> {
+            let Self {
+                finish,
+                finished,
+                escaped_tx,
+            } = self;
+            let (mut channel, transport) = agent.into_channel_and_future();
+            let client = async move {
+                escaped_tx.send(channel.tx.clone()).map_err(|_| {
+                    AcpError::internal_error().data("escaped sender observer dropped")
+                })?;
+                channel
+                    .tx
+                    .unbounded_send(Ok(RawJsonRpcMessage::request(
+                        "initialize".to_string(),
+                        json!({}),
+                        RequestId::Number(1),
+                    )
+                    .unwrap()))
+                    .map_err(|e| {
+                        AcpError::internal_error().data(format!("send initialize: {e}"))
+                    })?;
+                channel.rx.next().await.ok_or_else(|| {
+                    AcpError::internal_error().data("initialize response channel closed")
+                })??;
+
+                for method in ["custom/first", "custom/second"] {
+                    channel
+                        .tx
+                        .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                            method.to_string(),
+                            json!({}),
+                        )
+                        .unwrap()))
+                        .map_err(|e| {
+                            AcpError::internal_error().data(format!("send {method}: {e}"))
+                        })?;
+                }
+
+                finish.notified().await;
+                finished.notify_one();
+                Ok(())
+            };
+
+            let ((), ()) = futures::try_join!(transport, client)?;
+            Ok(())
+        }
+    }
 
     #[test]
     fn new_targets_standard_acp_endpoint() {
@@ -1194,10 +1280,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn outbound_posts_are_sent_in_order() {
+    async fn client_completion_drains_ordered_posts_in_order() {
         let first_started = Arc::new(Notify::new());
         let release_first = Arc::new(Notify::new());
         let second_seen = Arc::new(Notify::new());
+        let finish_client = Arc::new(Notify::new());
+        let client_finished = Arc::new(Notify::new());
+        let (escaped_tx, escaped_rx) = futures::channel::oneshot::channel();
         let app = Router::new().route(
             "/acp",
             post({
@@ -1236,40 +1325,14 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let client = HttpClient::new(format!("http://{addr}")).unwrap();
-        let (mut caller, transport) = Channel::duplex();
-        let transport = tokio::spawn(run(client, transport));
-
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
-            .unwrap();
-        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+        let mut connection = tokio::spawn(client.connect_to(PostsThenExitClient {
+            finish: finish_client.clone(),
+            finished: client_finished.clone(),
+            escaped_tx,
+        }));
+        let escaped = timeout(Duration::from_secs(1), escaped_rx)
             .await
             .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
-
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "custom/first".to_string(),
-                json!({}),
-            )
-            .unwrap()))
-            .unwrap();
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "custom/second".to_string(),
-                json!({}),
-            )
-            .unwrap()))
             .unwrap();
 
         timeout(Duration::from_secs(1), first_started.notified())
@@ -1282,13 +1345,33 @@ mod tests {
             "second POST must not be sent while the first POST is pending"
         );
 
+        finish_client.notify_one();
+        timeout(Duration::from_secs(1), client_finished.notified())
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), &mut connection)
+                .await
+                .is_err(),
+            "HTTP transport returned before its accepted POSTs completed"
+        );
+        assert!(
+            escaped
+                .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                    "custom/too-late".to_string(),
+                    json!({}),
+                )
+                .unwrap()))
+                .is_err(),
+            "escaped client sender remained open after client completion"
+        );
+
         release_first.notify_one();
         timeout(Duration::from_secs(1), second_seen.notified())
             .await
             .unwrap();
 
-        drop(caller);
-        timeout(Duration::from_secs(1), transport)
+        timeout(Duration::from_secs(1), connection)
             .await
             .unwrap()
             .unwrap()
