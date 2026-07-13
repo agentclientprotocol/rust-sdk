@@ -3,6 +3,7 @@
 //! This module provides [`AcpAgent`], a convenient wrapper around [`crate::schema::v1::McpServer`]
 //! that can be parsed from either a command string or JSON configuration.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -12,6 +13,12 @@ use std::pin::pin;
 
 use crate::schema::v1::{EnvVariable, McpServer as SchemaMcpServer, McpServerStdio};
 use crate::{Client, Conductor, Role};
+
+type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
+
+const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
+const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
+const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
 
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,7 +67,7 @@ pub enum LineDirection {
 /// ```
 pub struct AcpAgent {
     server: SchemaMcpServer,
-    debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
+    debug_callback: Option<DebugCallback>,
 }
 
 impl std::fmt::Debug for AcpAgent {
@@ -146,6 +153,7 @@ impl AcpAgent {
     ///
     /// The callback receives the line content and the direction (stdin/stdout/stderr).
     /// This is useful for logging, debugging, or monitoring agent communication.
+    /// Exceptionally long stderr lines are truncated to keep memory usage bounded.
     ///
     /// # Example
     ///
@@ -275,9 +283,152 @@ impl Drop for ChildGuard {
     }
 }
 
+#[derive(Default)]
+struct StderrTail {
+    bytes: VecDeque<u8>,
+    truncated: bool,
+}
+
+impl StderrTail {
+    fn push(&mut self, bytes: &[u8]) {
+        if bytes.len() >= STDERR_CAPTURE_LIMIT {
+            self.truncated |= !self.bytes.is_empty() || bytes.len() > STDERR_CAPTURE_LIMIT;
+            self.bytes.clear();
+            self.bytes
+                .extend(bytes[bytes.len() - STDERR_CAPTURE_LIMIT..].iter().copied());
+            return;
+        }
+
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(STDERR_CAPTURE_LIMIT);
+        if overflow > 0 {
+            self.truncated = true;
+            drop(self.bytes.drain(..overflow));
+        }
+        self.bytes.extend(bytes.iter().copied());
+    }
+
+    fn into_string(mut self) -> String {
+        let truncated = self.truncated;
+        let stderr = String::from_utf8_lossy(self.bytes.make_contiguous());
+        if truncated {
+            format!("[stderr truncated; showing last {STDERR_CAPTURE_LIMIT} bytes]\n{stderr}")
+        } else {
+            stderr.into_owned()
+        }
+    }
+}
+
+#[derive(Default)]
+struct StderrDebugLines {
+    current: Vec<u8>,
+    truncated: bool,
+    pending_carriage_return: bool,
+}
+
+impl StderrDebugLines {
+    fn push(&mut self, bytes: &[u8], callback: &DebugCallback) {
+        for &byte in bytes {
+            if self.pending_carriage_return {
+                if byte == b'\n' {
+                    self.pending_carriage_return = false;
+                    self.emit(callback);
+                    continue;
+                }
+
+                self.push_byte(b'\r');
+                self.pending_carriage_return = false;
+            }
+
+            match byte {
+                b'\r' => self.pending_carriage_return = true,
+                b'\n' => self.emit(callback),
+                byte => self.push_byte(byte),
+            }
+        }
+    }
+
+    fn finish(&mut self, callback: &DebugCallback) {
+        if self.pending_carriage_return {
+            self.push_byte(b'\r');
+            self.pending_carriage_return = false;
+        }
+        if !self.current.is_empty() || self.truncated {
+            self.emit(callback);
+        }
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        if self.current.len() < STDERR_CAPTURE_LIMIT {
+            self.current.push(byte);
+        } else {
+            self.truncated = true;
+        }
+    }
+
+    fn emit(&mut self, callback: &DebugCallback) {
+        let line = String::from_utf8_lossy(&self.current);
+
+        if self.truncated {
+            let mut line = line.into_owned();
+            line.push_str(STDERR_LINE_TRUNCATION_MARKER);
+            callback(&line, LineDirection::Stderr);
+        } else {
+            callback(line.as_ref(), LineDirection::Stderr);
+        }
+
+        self.current.clear();
+        self.truncated = false;
+    }
+}
+
+struct StderrDrainResult {
+    captured: String,
+    read_error: Option<std::io::Error>,
+}
+
+async fn drain_stderr(
+    mut stderr: impl futures::AsyncRead + Unpin,
+    debug_callback: Option<DebugCallback>,
+) -> StderrDrainResult {
+    use futures::AsyncReadExt as _;
+
+    let mut tail = StderrTail::default();
+    let mut debug_lines = debug_callback.as_ref().map(|_| StderrDebugLines::default());
+    let mut buffer = [0; STDERR_READ_BUFFER_SIZE];
+
+    let read_error = loop {
+        match stderr.read(&mut buffer).await {
+            Ok(0) => break None,
+            Ok(read) => {
+                let bytes = &buffer[..read];
+                tail.push(bytes);
+                if let (Some(lines), Some(callback)) =
+                    (debug_lines.as_mut(), debug_callback.as_ref())
+                {
+                    lines.push(bytes, callback);
+                }
+            }
+            Err(error) => break Some(error),
+        }
+    };
+
+    if let (Some(lines), Some(callback)) = (debug_lines.as_mut(), debug_callback.as_ref()) {
+        lines.finish(callback);
+    }
+
+    StderrDrainResult {
+        captured: tail.into_string(),
+        read_error,
+    }
+}
+
 /// Waits for a child process and returns an error if it exits with non-zero status.
 ///
-/// The error message includes any stderr output collected concurrently.
+/// The error message includes a bounded tail of stderr collected concurrently.
 /// When dropped, the child process is killed.
 async fn monitor_child(
     mut guard: ChildGuard,
@@ -332,21 +483,18 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         // so this runs as part of the same task — no tokio::spawn needed.
         let debug_callback = self.debug_callback.clone();
         let stderr_future = async move {
-            let stderr_reader = BufReader::new(child_stderr);
-            let mut stderr_lines = stderr_reader.lines();
-            let mut collected = String::new();
-            while let Some(line_result) = stderr_lines.next().await {
-                if let Ok(line) = line_result {
-                    if let Some(ref callback) = debug_callback {
-                        callback(&line, LineDirection::Stderr);
-                    }
-                    if !collected.is_empty() {
-                        collected.push('\n');
-                    }
-                    collected.push_str(&line);
-                }
+            let StderrDrainResult {
+                captured,
+                read_error,
+            } = drain_stderr(child_stderr, debug_callback).await;
+            drop(stderr_tx.send(captured));
+
+            if let Some(error) = read_error {
+                tracing::warn!(
+                    ?error,
+                    "Failed to read process stderr; stderr will no longer be captured"
+                );
             }
-            drop(stderr_tx.send(collected));
         };
 
         // Create the guard eagerly so cancelling this connection before the
@@ -416,7 +564,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let main_race = pin!(main_race);
         match futures::future::select(main_race, stderr_future).await {
             futures::future::Either::Left((result, _)) => result,
-            futures::future::Either::Right(((), protocol)) => protocol.await,
+            futures::future::Either::Right(((), main_race)) => main_race.await,
         }
     }
 }
@@ -533,6 +681,153 @@ impl FromStr for AcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn recording_debug_callback() -> (DebugCallback, Arc<Mutex<Vec<String>>>) {
+        let lines = Arc::new(Mutex::new(Vec::new()));
+        let recorded = lines.clone();
+        let callback = Arc::new(move |line: &str, direction| {
+            assert_eq!(direction, LineDirection::Stderr);
+            recorded.lock().unwrap().push(line.to_owned());
+        });
+        (callback, lines)
+    }
+
+    #[test]
+    fn stderr_tail_keeps_last_bytes() {
+        let initial = vec![b'a'; STDERR_CAPTURE_LIMIT];
+
+        let mut exact = StderrTail::default();
+        exact.push(&initial);
+        assert_eq!(exact.into_string(), String::from_utf8(initial).unwrap());
+
+        let mut truncated = StderrTail::default();
+        truncated.push(&vec![b'a'; STDERR_CAPTURE_LIMIT]);
+        truncated.push(b"the end");
+        let captured = truncated.into_string();
+        let (notice, tail) = captured.split_once('\n').unwrap();
+        assert_eq!(
+            notice,
+            format!("[stderr truncated; showing last {STDERR_CAPTURE_LIMIT} bytes]")
+        );
+        assert_eq!(tail.len(), STDERR_CAPTURE_LIMIT);
+        assert!(tail.ends_with("the end"));
+    }
+
+    #[test]
+    fn stderr_debug_callback_preserves_lines() {
+        let (callback, recorded) = recording_debug_callback();
+        let mut lines = StderrDebugLines::default();
+
+        lines.push(b"one\r", &callback);
+        lines.push(b"\n\ntw", &callback);
+        lines.push(b"o\ncaf\xc3", &callback);
+        lines.push(b"\xa9\nbad\xff\nlast\r", &callback);
+        lines.finish(&callback);
+
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            ["one", "", "two", "caf\u{e9}", "bad\u{fffd}", "last\r"]
+        );
+    }
+
+    #[test]
+    fn stderr_debug_callback_truncates_oversized_lines() {
+        let (callback, recorded) = recording_debug_callback();
+        let mut lines = StderrDebugLines::default();
+        let exact = vec![b'y'; STDERR_CAPTURE_LIMIT];
+        let oversized = vec![b'x'; STDERR_CAPTURE_LIMIT + 1];
+
+        lines.push(&exact, &callback);
+        lines.push(b"\r\n", &callback);
+        lines.push(&oversized, &callback);
+        assert_eq!(lines.current.len(), STDERR_CAPTURE_LIMIT);
+        assert!(lines.truncated);
+        lines.push(b"\nnext\n", &callback);
+
+        let recorded = recorded.lock().unwrap();
+        assert_eq!(recorded.len(), 3);
+        assert_eq!(recorded[0].len(), STDERR_CAPTURE_LIMIT);
+        assert!(!recorded[0].ends_with(STDERR_LINE_TRUNCATION_MARKER));
+        assert_eq!(
+            recorded[1].len(),
+            STDERR_CAPTURE_LIMIT + STDERR_LINE_TRUNCATION_MARKER.len()
+        );
+        assert!(recorded[1].ends_with(STDERR_LINE_TRUNCATION_MARKER));
+        assert_eq!(recorded[2], "next");
+    }
+
+    struct ErrorAfterData {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl futures::AsyncRead for ErrorAfterData {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buffer: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            match self.polls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    buffer[..7].copy_from_slice(b"partial");
+                    std::task::Poll::Ready(Ok(7))
+                }
+                1 => std::task::Poll::Ready(Err(std::io::Error::other("read failed"))),
+                _ => panic!("stderr reader was polled again after an error"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stderr_drain_stops_after_read_error() {
+        let polls = Arc::new(AtomicUsize::new(0));
+        let (callback, recorded) = recording_debug_callback();
+
+        let result = drain_stderr(
+            ErrorAfterData {
+                polls: polls.clone(),
+            },
+            Some(callback),
+        )
+        .await;
+
+        assert_eq!(result.captured, "partial");
+        assert_eq!(result.read_error.unwrap().to_string(), "read failed");
+        assert_eq!(polls.load(Ordering::SeqCst), 2);
+        assert_eq!(*recorded.lock().unwrap(), ["partial"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn large_unterminated_stderr_is_fully_drained() {
+        let agent = AcpAgent::from_args([
+            "/bin/sh",
+            "-c",
+            r#"i=0; while [ "$i" -lt 4096 ]; do printf '%01024d' 0; i=$((i + 1)); done >&2; printf ACP_END >&2; exit 17"#,
+        ])
+        .unwrap();
+        let (child_stdin, child_stdout, child_stderr, child) = agent.spawn_process().unwrap();
+        drop(child_stdin);
+        drop(child_stdout);
+        let mut guard = ChildGuard(child);
+
+        let (drained, status) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            futures::join!(drain_stderr(child_stderr, None), guard.wait())
+        })
+        .await
+        .expect("stderr drain should not block after its retained tail is full");
+
+        assert_eq!(status.unwrap().code(), Some(17));
+        assert!(drained.read_error.is_none());
+        let (notice, tail) = drained.captured.split_once('\n').unwrap();
+        assert_eq!(
+            notice,
+            format!("[stderr truncated; showing last {STDERR_CAPTURE_LIMIT} bytes]")
+        );
+        assert_eq!(tail.len(), STDERR_CAPTURE_LIMIT);
+        assert!(tail.ends_with("ACP_END"));
+    }
 
     #[cfg(unix)]
     struct KillOnDrop(Option<rustix::process::Pid>);
