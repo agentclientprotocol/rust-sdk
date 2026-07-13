@@ -493,7 +493,7 @@ async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
     }
 }
 
-async fn await_protocol_shutdown_after_child_exit<F>(
+async fn await_protocol_shutdown_after_successful_child_exit<F>(
     protocol_future: F,
     grace: Duration,
 ) -> Result<(), crate::Error>
@@ -505,12 +505,10 @@ where
         futures::future::Either::Right((_, protocol_future)) => {
             tracing::debug!(
                 ?grace,
-                "Protocol transport remained open after agent process exit; stopping it"
+                "Protocol transport remained open after successful agent process exit; stopping it"
             );
             drop(protocol_future);
-            Err(crate::util::internal_error(format!(
-                "Agent process exited but the protocol transport did not shut down within {grace:?}"
-            )))
+            Ok(())
         }
     }
 }
@@ -713,8 +711,11 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                 }
                 futures::future::Either::Right((child, protocol_future)) => {
                     finish_child_exit(child?).await?;
-                    await_protocol_shutdown_after_child_exit(protocol_future, SHUTDOWN_GRACE_PERIOD)
-                        .await
+                    await_protocol_shutdown_after_successful_child_exit(
+                        protocol_future,
+                        SHUTDOWN_GRACE_PERIOD,
+                    )
+                    .await
                 }
             }
         };
@@ -958,18 +959,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_exit_bounds_protocol_shutdown() {
+    async fn successful_child_exit_bounds_protocol_shutdown_cleanly() {
         let grace = std::time::Duration::from_millis(10);
-        let error = tokio::time::timeout(
+        tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            await_protocol_shutdown_after_child_exit(
+            await_protocol_shutdown_after_successful_child_exit(
                 futures::future::pending::<Result<(), crate::Error>>(),
                 grace,
             ),
         )
         .await
         .expect("protocol shutdown wait should be bounded")
-        .expect_err("a protocol transport that outlives the grace period should fail");
+        .expect("a successful child exit should stop the pending protocol cleanly");
+    }
+
+    #[tokio::test]
+    async fn successful_child_exit_preserves_ready_protocol_error() {
+        let error = await_protocol_shutdown_after_successful_child_exit(
+            futures::future::ready(Err(crate::util::internal_error(
+                "protocol failed during shutdown",
+            ))),
+            std::time::Duration::from_secs(1),
+        )
+        .await
+        .expect_err("a ready protocol error should remain authoritative");
         let detail = error
             .data
             .as_ref()
@@ -977,8 +990,8 @@ mod tests {
             .unwrap_or_default();
 
         assert!(
-            detail.contains("protocol transport did not shut down"),
-            "timeout should identify the stalled protocol transport: {error:?}"
+            detail.contains("protocol failed during shutdown"),
+            "unexpected protocol error: {error:?}"
         );
     }
 
@@ -1044,6 +1057,64 @@ mod tests {
             detail.contains("ACP_TEST_FAILURE_AFTER_STDOUT_EOF"),
             "child stderr should be preserved: {error:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_child_exit_does_not_cancel_active_foreground() {
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", "exit 0"]).unwrap();
+        let (started_tx, started_rx) = futures::channel::oneshot::channel();
+        let (closed_tx, closed_rx) = futures::channel::oneshot::channel();
+        let (close_release_tx, close_release_rx) = futures::channel::oneshot::channel();
+        let (release_tx, release_rx) = futures::channel::oneshot::channel();
+        let connection = tokio::spawn(
+            Client
+                .builder()
+                .on_close(async move |_cx| {
+                    closed_tx.send(()).map_err(|()| {
+                        crate::Error::internal_error().data("close observer dropped")
+                    })?;
+                    close_release_rx.await.map_err(|_| {
+                        crate::Error::internal_error().data("close callback release dropped")
+                    })
+                })
+                .connect_with(agent, async move |_cx| {
+                    started_tx.send(()).map_err(|()| {
+                        crate::Error::internal_error().data("foreground observer dropped")
+                    })?;
+                    release_rx.await.map_err(|_| {
+                        crate::Error::internal_error().data("foreground release dropped")
+                    })
+                }),
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), started_rx)
+            .await
+            .expect("foreground should start")
+            .expect("foreground should report that it started");
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), closed_rx)
+            .await
+            .expect("successful child exit should close the protocol transport")
+            .expect("successful child exit should invoke close callbacks");
+
+        tokio::time::sleep(SHUTDOWN_GRACE_PERIOD + std::time::Duration::from_millis(250)).await;
+        assert!(
+            !connection.is_finished(),
+            "successful child exit canceled active cleanup"
+        );
+
+        close_release_tx
+            .send(())
+            .expect("clean child exit should preserve close callbacks");
+        release_tx
+            .send(())
+            .expect("clean child exit should preserve the foreground");
+        tokio::time::timeout(std::time::Duration::from_secs(5), connection)
+            .await
+            .expect("released foreground should finish")
+            .expect("connection task should not panic")
+            .expect("successful child exit should remain a clean EOF");
     }
 
     #[cfg(unix)]
