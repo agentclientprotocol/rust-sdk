@@ -722,7 +722,7 @@ mod tests {
 
         lines.push(b"one\r", &callback);
         lines.push(b"\n\ntw", &callback);
-        lines.push(b"\xa9\nbad\xff\nlast\r", &callback);
+        lines.push(b"o\nbad\xff\nlast\r", &callback);
         lines.finish(&callback);
 
         assert_eq!(
