@@ -4863,22 +4863,30 @@ where
         impl futures::Stream<Item = std::io::Result<String>> + Send + 'static,
     > {
         use futures::AsyncBufReadExt;
-        use futures::AsyncWriteExt;
         use futures::io::BufReader;
         let Self { outgoing, incoming } = self;
 
         let incoming_lines = Box::pin(BufReader::new(incoming).lines());
         let outgoing_lines =
             futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
-                let mut bytes = line.into_bytes();
-                bytes.push(b'\n');
-                writer.write_all(&bytes).await?;
-                writer.flush().await?;
+                write_line(&mut writer, line).await?;
                 Ok::<_, std::io::Error>(writer)
             });
 
         Lines::new(outgoing_lines, incoming_lines)
     }
+}
+
+pub(crate) async fn write_line<W>(writer: &mut W, line: String) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    use futures::AsyncWriteExt as _;
+
+    let mut bytes = line.into_bytes();
+    bytes.push(b'\n');
+    writer.write_all(&bytes).await?;
+    writer.flush().await
 }
 
 impl<OB, IB, R: Role> ConnectTo<R> for ByteStreams<OB, IB>
@@ -4994,6 +5002,16 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn write_line_flushes_buffered_writers() {
+        let mut writer =
+            futures::io::BufWriter::with_capacity(4096, futures::io::Cursor::new(Vec::new()));
+
+        write_line(&mut writer, "message".into()).await.unwrap();
+
+        assert_eq!(writer.into_inner().into_inner(), b"message\n");
+    }
 
     #[test]
     fn peel_successor_envelopes_returns_plain_messages_unchanged() {

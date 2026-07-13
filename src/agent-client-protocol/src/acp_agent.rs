@@ -20,7 +20,7 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
-const CHILD_EXIT_GRACE_PERIOD: Duration = Duration::from_secs(1);
+const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -468,7 +468,20 @@ async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
     if status.success() {
         Ok(())
     } else {
-        let stderr = stderr_rx.await.unwrap_or_default();
+        let stderr =
+            match futures::future::select(stderr_rx, async_io::Timer::after(SHUTDOWN_GRACE_PERIOD))
+                .await
+            {
+                futures::future::Either::Left((stderr, _)) => stderr.unwrap_or_default(),
+                futures::future::Either::Right((_, stderr_rx)) => {
+                    tracing::debug!(
+                        grace = ?SHUTDOWN_GRACE_PERIOD,
+                        "Agent stderr remained open after process exit; reporting status without it"
+                    );
+                    drop(stderr_rx);
+                    String::new()
+                }
+            };
 
         let message = if stderr.is_empty() {
             format!("Process exited with {status}")
@@ -477,6 +490,28 @@ async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
         };
 
         Err(crate::util::internal_error(message))
+    }
+}
+
+async fn await_protocol_shutdown_after_child_exit<F>(
+    protocol_future: F,
+    grace: Duration,
+) -> Result<(), crate::Error>
+where
+    F: std::future::Future<Output = Result<(), crate::Error>> + Unpin,
+{
+    match futures::future::select(protocol_future, async_io::Timer::after(grace)).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right((_, protocol_future)) => {
+            tracing::debug!(
+                ?grace,
+                "Protocol transport remained open after agent process exit; stopping it"
+            );
+            drop(protocol_future);
+            Err(crate::util::internal_error(format!(
+                "Agent process exited but the protocol transport did not shut down within {grace:?}"
+            )))
+        }
     }
 }
 
@@ -493,7 +528,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         client: impl crate::ConnectTo<Counterpart::Counterpart>,
     ) -> Result<(), crate::Error> {
         use futures::io::BufReader;
-        use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
+        use futures::{AsyncBufReadExt, StreamExt};
 
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
@@ -544,9 +579,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                 (child_stdin, callback),
                 async move |(mut writer, callback), line: String| {
                     callback(&line, LineDirection::Stdin);
-                    let mut bytes = line.into_bytes();
-                    bytes.push(b'\n');
-                    writer.write_all(&bytes).await?;
+                    crate::jsonrpc::write_line(&mut writer, line).await?;
                     Ok::<_, std::io::Error>((writer, callback))
                 },
             ))
@@ -554,9 +587,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             Box::pin(futures::sink::unfold(
                 child_stdin,
                 async move |mut writer, line: String| {
-                    let mut bytes = line.into_bytes();
-                    bytes.push(b'\n');
-                    writer.write_all(&bytes).await?;
+                    crate::jsonrpc::write_line(&mut writer, line).await?;
                     Ok::<_, std::io::Error>(writer)
                 },
             ))
@@ -583,7 +614,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                     result?;
                     match futures::future::select(
                         child_wait,
-                        async_io::Timer::after(CHILD_EXIT_GRACE_PERIOD),
+                        async_io::Timer::after(SHUTDOWN_GRACE_PERIOD),
                     )
                     .await
                     {
@@ -592,7 +623,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                         }
                         futures::future::Either::Right((_, child_wait)) => {
                             tracing::debug!(
-                                grace = ?CHILD_EXIT_GRACE_PERIOD,
+                                grace = ?SHUTDOWN_GRACE_PERIOD,
                                 "Agent process did not exit after protocol shutdown; terminating it"
                             );
                             drop(child_wait);
@@ -602,7 +633,8 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                 }
                 futures::future::Either::Right((child, protocol_future)) => {
                     finish_child_exit(child?).await?;
-                    protocol_future.await
+                    await_protocol_shutdown_after_child_exit(protocol_future, SHUTDOWN_GRACE_PERIOD)
+                        .await
                 }
             }
         };
@@ -843,6 +875,31 @@ mod tests {
         assert_eq!(result.read_error.unwrap().to_string(), "read failed");
         assert_eq!(polls.load(Ordering::SeqCst), 2);
         assert_eq!(*recorded.lock().unwrap(), ["partial"]);
+    }
+
+    #[tokio::test]
+    async fn child_exit_bounds_protocol_shutdown() {
+        let grace = std::time::Duration::from_millis(10);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            await_protocol_shutdown_after_child_exit(
+                futures::future::pending::<Result<(), crate::Error>>(),
+                grace,
+            ),
+        )
+        .await
+        .expect("protocol shutdown wait should be bounded")
+        .expect_err("a protocol transport that outlives the grace period should fail");
+        let detail = error
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+
+        assert!(
+            detail.contains("protocol transport did not shut down"),
+            "timeout should identify the stalled protocol transport: {error:?}"
+        );
     }
 
     #[cfg(unix)]
