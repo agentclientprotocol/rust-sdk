@@ -648,7 +648,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("2.1.0"),
+                            "version": String("2.2.0"),
                         },
                     },
                 },
@@ -667,7 +667,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         },
                         "serverInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("2.1.0"),
+                            "version": String("2.2.0"),
                         },
                         "instructions": String("A simple test MCP server with an echo tool"),
                     },
