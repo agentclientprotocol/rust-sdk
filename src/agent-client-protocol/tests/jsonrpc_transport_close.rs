@@ -438,6 +438,31 @@ async fn outgoing_drain_propagates_incoming_read_error() {
 }
 
 #[tokio::test]
+async fn clean_outgoing_drain_does_not_hide_ready_incoming_read_error() {
+    let outgoing = futures::sink::unfold((), |(), _line: String| async { Ok::<_, io::Error>(()) });
+    let incoming = stream::iter([Err(io::Error::other(
+        "ready read failed during outgoing drain",
+    ))]);
+
+    let error = tokio::time::timeout(
+        TIMEOUT,
+        ConnectTo::<UntypedRole>::connect_to(Lines::new(outgoing, incoming), ImmediateClient),
+    )
+    .await
+    .expect("connection should resolve when both drain sides are ready")
+    .expect_err("ready incoming read error must win over a clean outgoing drain");
+    let detail = error
+        .data
+        .as_ref()
+        .map(serde_json::Value::to_string)
+        .unwrap_or_default();
+    assert!(
+        detail.contains("ready read failed during outgoing drain"),
+        "unexpected transport error: {error:?}"
+    );
+}
+
+#[tokio::test]
 async fn escaped_connection_handle_does_not_retain_the_transport() {
     let dropped = Arc::new(AtomicBool::new(false));
     let (started_tx, started_rx) = futures::channel::oneshot::channel();

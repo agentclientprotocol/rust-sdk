@@ -4773,8 +4773,10 @@ where
                 // the shared outgoing future still owns and drains the sink.
                 // A successful `serve_self` result includes its shared
                 // outgoing clone, while any error must remain authoritative
-                // instead of being hidden behind the other handle.
-                match future::select(outgoing, serve_self).await {
+                // instead of being hidden behind the other handle. Poll it
+                // first so a ready read error wins over clean outgoing
+                // completion.
+                match future::select(serve_self, outgoing).await {
                     Either::Left((result, _)) | Either::Right((result, _)) => result,
                 }
             }
