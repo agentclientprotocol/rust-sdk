@@ -9,7 +9,7 @@ use agent_client_protocol::{
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
-    StreamExt,
+    Stream, StreamExt,
     channel::mpsc::{self, UnboundedSender},
     future::{BoxFuture, FutureExt},
     pin_mut,
@@ -102,14 +102,23 @@ impl HttpClient {
 impl ConnectTo<Client> for HttpClient {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), AcpError> {
         let (channel, transport) = ConnectTo::<Client>::into_channel_and_future(self);
+        let shutdown_tx = channel.tx.clone();
         match futures::future::select(
             std::pin::pin!(client.connect_to(channel)),
             std::pin::pin!(transport),
         )
         .await
         {
-            futures::future::Either::Left((result, _))
-            | futures::future::Either::Right((result, _)) => result,
+            futures::future::Either::Left((result, transport)) => {
+                result?;
+
+                // Reject sends from escaped client handles while preserving
+                // messages already accepted into the channel, then let the
+                // physical transport finish those messages.
+                shutdown_tx.close_channel();
+                transport.await
+            }
+            futures::future::Either::Right((result, _)) => result,
         }
     }
 
@@ -139,10 +148,22 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     let mut lifecycle = HttpTransportLifecycle::new(connection);
     let mut ordered_posts = PostQueue::default();
     let mut response_posts = PostQueue::default();
+    let mut outgoing_closed = false;
 
     let result = loop {
+        if outgoing_closed && ordered_posts.is_empty() && response_posts.is_empty() {
+            break Ok(());
+        }
+
         let event = {
-            let outgoing_next = outgoing.next().fuse();
+            let outgoing_next = async {
+                if outgoing_closed {
+                    futures::future::pending().await
+                } else {
+                    outgoing.next().await
+                }
+            }
+            .fuse();
             let sse_event_next = sse_event_rx.next().fuse();
             let sse_failure_next = lifecycle.next_sse_failure().fuse();
             let ordered_post_next = ordered_posts.next_completion().fuse();
@@ -171,7 +192,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                     error!("upstream channel produced error: {e}");
                     break Err(e);
                 }
-                None => break Ok(()),
+                None => {
+                    outgoing_closed = true;
+                    continue;
+                }
             },
             HttpLoopEvent::SseEvent(event) => {
                 let Some(event) = event else {
@@ -491,6 +515,10 @@ impl PostQueue {
             self.in_flight = Some(post.into_completion());
         }
     }
+
+    fn is_empty(&self) -> bool {
+        self.queued.is_empty() && self.in_flight.is_none()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -691,10 +719,6 @@ fn pending_request_key(id: &RequestId) -> Option<RequestId> {
 
 async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     let HttpClient { endpoint, .. } = client;
-    let Channel {
-        rx: mut outgoing,
-        tx: incoming,
-    } = channel;
 
     let (ws_stream, response) = async_tungstenite::tokio::connect_async(endpoint.as_str())
         .await
@@ -703,43 +727,85 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         status = %response.status(),
         "WebSocket connection established"
     );
-    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+    let (ws_tx, ws_rx) = ws_stream.split();
 
-    loop {
-        let outgoing_next = outgoing.next().fuse();
-        let frame_next = ws_rx.next().fuse();
-        pin_mut!(outgoing_next, frame_next);
+    drive_ws(ws_tx, ws_rx, channel).await
+}
 
-        futures::select! {
-            msg = outgoing_next => match msg {
-                Some(Ok(msg)) => {
+trait WsSink {
+    fn send(
+        &mut self,
+        message: WsMessage,
+    ) -> impl std::future::Future<Output = Result<(), String>> + Send;
+}
+
+impl<S> WsSink for async_tungstenite::WebSocketSender<S>
+where
+    S: futures::AsyncRead + futures::AsyncWrite + Unpin + Send,
+{
+    async fn send(&mut self, message: WsMessage) -> Result<(), String> {
+        async_tungstenite::WebSocketSender::send(self, message)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+async fn drive_ws<Tx, Rx, RxError>(
+    mut ws_tx: Tx,
+    mut ws_rx: Rx,
+    channel: Channel,
+) -> Result<(), AcpError>
+where
+    Tx: WsSink,
+    Rx: Stream<Item = Result<WsMessage, RxError>> + Unpin,
+    RxError: std::fmt::Display,
+{
+    let Channel {
+        rx: mut outgoing,
+        tx: incoming,
+    } = channel;
+    let writer = async move {
+        while let Some(msg) = outgoing.next().await {
+            match msg {
+                Ok(msg) => {
                     let text = match serde_json::to_string(&msg) {
                         Ok(t) => t,
                         Err(e) => {
                             error!("failed to serialize outbound message: {e}");
-                            return Err(AcpError::internal_error()
-                                .data(format!("serialize: {e}")));
+                            return Err(AcpError::internal_error().data(format!("serialize: {e}")));
                         }
                     };
                     if let Err(e) = ws_tx.send(WsMessage::Text(text.into())).await {
                         error!("WebSocket send failed: {e}");
-                        return Err(AcpError::internal_error()
-                            .data(format!("ws send: {e}")));
+                        return Err(AcpError::internal_error().data(format!("ws send: {e}")));
                     }
                 }
-                Some(Err(e)) => {
+                Err(e) => {
                     error!("upstream channel produced error: {e}");
                     return Err(e);
                 }
-                None => break,
-            },
-            frame = frame_next => match frame {
+            }
+        }
+
+        drop(ws_tx.send(WsMessage::Close(None)).await);
+        Ok(())
+    };
+
+    let reader = async move {
+        let mut discard_incoming = false;
+        loop {
+            match ws_rx.next().await {
                 Some(Ok(WsMessage::Text(text))) => {
+                    if discard_incoming {
+                        continue;
+                    }
                     match serde_json::from_str::<RawJsonRpcMessage>(text.as_str()) {
                         Ok(parsed) => {
                             if incoming.unbounded_send(Ok(parsed)).is_err() {
-                                debug!("upstream channel closed; stopping WS reader");
-                                break;
+                                debug!(
+                                    "upstream channel closed; discarding WS input while draining output"
+                                );
+                                discard_incoming = true;
                             }
                         }
                         Err(e) => {
@@ -749,8 +815,10 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                                 .unbounded_send(Err(AcpError::parse_error().data(message)))
                                 .is_err()
                             {
-                                debug!("upstream channel closed; stopping WS reader");
-                                break;
+                                debug!(
+                                    "upstream channel closed; discarding WS input while draining output"
+                                );
+                                discard_incoming = true;
                             }
                         }
                     }
@@ -758,9 +826,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 Some(Ok(WsMessage::Binary(_))) => {
                     warn!("ignoring binary WebSocket frame (ACP uses text)");
                 }
-                Some(Ok(
-                    WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_),
-                )) => {}
+                Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_))) => {}
                 Some(Ok(WsMessage::Close(frame))) => {
                     debug!("server closed WebSocket: {frame:?}");
                     return Err(AcpError::internal_error()
@@ -768,18 +834,20 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 }
                 Some(Err(e)) => {
                     error!("WebSocket receive error: {e}");
-                    return Err(AcpError::internal_error()
-                        .data(format!("ws recv: {e}")));
+                    return Err(AcpError::internal_error().data(format!("ws recv: {e}")));
                 }
                 None => {
                     return Err(AcpError::internal_error().data("WebSocket stream ended"));
                 }
-            },
+            }
         }
-    }
+    };
 
-    drop(ws_tx.send(WsMessage::Close(None)).await);
-    Ok(())
+    pin_mut!(writer, reader);
+    match futures::future::select(writer, reader).await {
+        futures::future::Either::Left((result, _))
+        | futures::future::Either::Right((result, _)) => result,
+    }
 }
 
 #[cfg(test)]
@@ -809,6 +877,152 @@ mod tests {
     };
 
     use super::*;
+
+    struct PostsThenExitClient {
+        finish: Arc<Notify>,
+        finished: Arc<Notify>,
+        escaped_tx: futures::channel::oneshot::Sender<
+            futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
+        >,
+    }
+
+    struct QueueOutgoingThenText {
+        text: Option<WsMessage>,
+        outgoing: Option<mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>>,
+    }
+
+    struct RecordingWsSink(mpsc::UnboundedSender<WsMessage>);
+
+    struct BackpressuredWsSink {
+        output: mpsc::UnboundedSender<WsMessage>,
+        started: mpsc::UnboundedSender<()>,
+        release: Option<futures::channel::oneshot::Receiver<()>>,
+    }
+
+    struct ReleaseBackpressureOnPoll {
+        started: mpsc::UnboundedReceiver<()>,
+        release: Option<futures::channel::oneshot::Sender<()>>,
+    }
+
+    impl WsSink for RecordingWsSink {
+        async fn send(&mut self, message: WsMessage) -> Result<(), String> {
+            self.0
+                .unbounded_send(message)
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    impl WsSink for BackpressuredWsSink {
+        async fn send(&mut self, message: WsMessage) -> Result<(), String> {
+            self.output
+                .unbounded_send(message)
+                .map_err(|error| error.to_string())?;
+            if let Some(release) = self.release.take() {
+                self.started
+                    .unbounded_send(())
+                    .map_err(|error| error.to_string())?;
+                release
+                    .await
+                    .map_err(|_| "mock WebSocket reader did not release send".to_string())?;
+            }
+            Ok(())
+        }
+    }
+
+    impl Stream for QueueOutgoingThenText {
+        type Item = Result<WsMessage, std::io::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            // Make input ready immediately after queueing output. If the output
+            // branch was polled first it was still empty, so either poll order
+            // deterministically selects this input frame first.
+            if let Some(outgoing) = self.outgoing.take() {
+                for method in ["custom/first", "custom/second"] {
+                    outgoing
+                        .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                            method.to_string(),
+                            json!({}),
+                        )
+                        .unwrap()))
+                        .unwrap();
+                }
+            }
+            if let Some(text) = self.text.take() {
+                return std::task::Poll::Ready(Some(Ok(text)));
+            }
+            std::task::Poll::Pending
+        }
+    }
+
+    impl Stream for ReleaseBackpressureOnPoll {
+        type Item = Result<WsMessage, std::io::Error>;
+
+        fn poll_next(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            if let std::task::Poll::Ready(Some(())) =
+                std::pin::Pin::new(&mut self.started).poll_next(cx)
+                && let Some(release) = self.release.take()
+            {
+                let _result = release.send(());
+            }
+            std::task::Poll::Pending
+        }
+    }
+
+    impl ConnectTo<Agent> for PostsThenExitClient {
+        async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), AcpError> {
+            let Self {
+                finish,
+                finished,
+                escaped_tx,
+            } = self;
+            let (mut channel, transport) = agent.into_channel_and_future();
+            let client = async move {
+                escaped_tx.send(channel.tx.clone()).map_err(|_| {
+                    AcpError::internal_error().data("escaped sender observer dropped")
+                })?;
+                channel
+                    .tx
+                    .unbounded_send(Ok(RawJsonRpcMessage::request(
+                        "initialize".to_string(),
+                        json!({}),
+                        RequestId::Number(1),
+                    )
+                    .unwrap()))
+                    .map_err(|e| {
+                        AcpError::internal_error().data(format!("send initialize: {e}"))
+                    })?;
+                channel.rx.next().await.ok_or_else(|| {
+                    AcpError::internal_error().data("initialize response channel closed")
+                })??;
+
+                for method in ["custom/first", "custom/second"] {
+                    channel
+                        .tx
+                        .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                            method.to_string(),
+                            json!({}),
+                        )
+                        .unwrap()))
+                        .map_err(|e| {
+                            AcpError::internal_error().data(format!("send {method}: {e}"))
+                        })?;
+                }
+
+                finish.notified().await;
+                finished.notify_one();
+                Ok(())
+            };
+
+            let ((), ()) = futures::try_join!(transport, client)?;
+            Ok(())
+        }
+    }
 
     #[test]
     fn new_targets_standard_acp_endpoint() {
@@ -1194,10 +1408,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn outbound_posts_are_sent_in_order() {
+    async fn client_completion_drains_ordered_posts_in_order() {
         let first_started = Arc::new(Notify::new());
         let release_first = Arc::new(Notify::new());
         let second_seen = Arc::new(Notify::new());
+        let finish_client = Arc::new(Notify::new());
+        let client_finished = Arc::new(Notify::new());
+        let (escaped_tx, escaped_rx) = futures::channel::oneshot::channel();
         let app = Router::new().route(
             "/acp",
             post({
@@ -1236,40 +1453,14 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let client = HttpClient::new(format!("http://{addr}")).unwrap();
-        let (mut caller, transport) = Channel::duplex();
-        let transport = tokio::spawn(run(client, transport));
-
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
-            .unwrap();
-        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+        let mut connection = tokio::spawn(client.connect_to(PostsThenExitClient {
+            finish: finish_client.clone(),
+            finished: client_finished.clone(),
+            escaped_tx,
+        }));
+        let escaped = timeout(Duration::from_secs(1), escaped_rx)
             .await
             .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
-
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "custom/first".to_string(),
-                json!({}),
-            )
-            .unwrap()))
-            .unwrap();
-        caller
-            .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "custom/second".to_string(),
-                json!({}),
-            )
-            .unwrap()))
             .unwrap();
 
         timeout(Duration::from_secs(1), first_started.notified())
@@ -1282,13 +1473,33 @@ mod tests {
             "second POST must not be sent while the first POST is pending"
         );
 
+        finish_client.notify_one();
+        timeout(Duration::from_secs(1), client_finished.notified())
+            .await
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), &mut connection)
+                .await
+                .is_err(),
+            "HTTP transport returned before its accepted POSTs completed"
+        );
+        assert!(
+            escaped
+                .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                    "custom/too-late".to_string(),
+                    json!({}),
+                )
+                .unwrap()))
+                .is_err(),
+            "escaped client sender remained open after client completion"
+        );
+
         release_first.notify_one();
         timeout(Duration::from_secs(1), second_seen.notified())
             .await
             .unwrap();
 
-        drop(caller);
-        timeout(Duration::from_secs(1), transport)
+        timeout(Duration::from_secs(1), connection)
             .await
             .unwrap()
             .unwrap()
@@ -1648,6 +1859,97 @@ mod tests {
             .unwrap();
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_drain_discards_incoming_after_receiver_closes() {
+        let (caller, transport) = Channel::duplex();
+        let Channel {
+            tx: outgoing,
+            rx: incoming,
+        } = caller;
+        drop(incoming);
+
+        let inbound =
+            RawJsonRpcMessage::notification("custom/inbound".to_string(), json!({})).unwrap();
+        let inbound = WsMessage::Text(serde_json::to_string(&inbound).unwrap().into());
+        let ws_rx = QueueOutgoingThenText {
+            text: Some(inbound),
+            outgoing: Some(outgoing),
+        };
+        let (ws_output_tx, mut ws_output) = mpsc::unbounded();
+        timeout(
+            Duration::from_secs(1),
+            drive_ws(RecordingWsSink(ws_output_tx), ws_rx, transport),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let mut frames = Vec::new();
+        while let Some(frame) = ws_output.next().await {
+            frames.push(frame);
+        }
+
+        let messages = frames
+            .iter()
+            .filter_map(|frame| match frame {
+                WsMessage::Text(text) => {
+                    Some(serde_json::from_str::<RawJsonRpcMessage>(text.as_str()).unwrap())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let methods = messages
+            .iter()
+            .filter_map(method_for_message)
+            .collect::<Vec<_>>();
+        assert_eq!(methods, ["custom/first", "custom/second"]);
+        assert!(matches!(frames.last(), Some(WsMessage::Close(None))));
+    }
+
+    #[tokio::test]
+    async fn websocket_reader_runs_while_send_is_backpressured() {
+        let (caller, transport) = Channel::duplex();
+        let Channel {
+            tx: outgoing,
+            rx: incoming,
+        } = caller;
+        drop(incoming);
+        outgoing
+            .unbounded_send(Ok(RawJsonRpcMessage::notification(
+                "custom/queued".to_string(),
+                json!({}),
+            )
+            .unwrap()))
+            .unwrap();
+        drop(outgoing);
+
+        let (started_tx, started_rx) = mpsc::unbounded();
+        let (release_tx, release_rx) = futures::channel::oneshot::channel();
+        let (ws_output_tx, mut ws_output) = mpsc::unbounded();
+        let ws_tx = BackpressuredWsSink {
+            output: ws_output_tx,
+            started: started_tx,
+            release: Some(release_rx),
+        };
+        let ws_rx = ReleaseBackpressureOnPoll {
+            started: started_rx,
+            release: Some(release_tx),
+        };
+
+        timeout(Duration::from_secs(1), drive_ws(ws_tx, ws_rx, transport))
+            .await
+            .expect("WebSocket reader was not polled while its writer was backpressured")
+            .unwrap();
+        let frames = ws_output.by_ref().collect::<Vec<_>>().await;
+
+        let WsMessage::Text(text) = &frames[0] else {
+            panic!("queued message was not sent as WebSocket text");
+        };
+        let message = serde_json::from_str::<RawJsonRpcMessage>(text.as_str()).unwrap();
+        assert_eq!(method_for_message(&message), Some("custom/queued"));
+        assert!(matches!(frames.get(1), Some(WsMessage::Close(None))));
+        assert_eq!(frames.len(), 2);
     }
 
     #[tokio::test]

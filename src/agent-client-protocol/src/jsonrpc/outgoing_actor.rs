@@ -2,9 +2,8 @@
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 
-use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
-use crate::jsonrpc::{OutgoingMessage, RawJsonRpcMessage};
+use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage};
 use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
@@ -21,29 +20,42 @@ pub(crate) fn send_raw_message(
 /// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level RawJsonRpcMessage.
 ///
 /// This actor handles JSON-RPC protocol semantics:
-/// - Subscribes to reply_actor for response correlation
+/// - Verifies that outgoing requests still have pending response registrations
 /// - Converts OutgoingMessage variants to RawJsonRpcMessage
 ///
 /// This is the protocol layer - it has no knowledge of how messages are transported.
 pub(super) async fn outgoing_protocol_actor(
     mut outgoing_rx: mpsc::UnboundedReceiver<OutgoingMessage>,
-    reply_tx: mpsc::UnboundedSender<ReplyMessage>,
+    pending_replies: PendingReplies,
     transport_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
+    let mut drain_waiters = Vec::new();
+
     while let Some(message) = outgoing_rx.next().await {
         tracing::debug!(?message, "outgoing_protocol_actor");
 
         // Create the message to be sent over the transport
         let json_rpc_message = match message {
+            OutgoingMessage::CloseAfterDraining { done } => {
+                // Reject later sends while preserving every message that was
+                // already accepted into this receiver's buffer.
+                outgoing_rx.close();
+                drain_waiters.push(done);
+                continue;
+            }
             OutgoingMessage::Request {
                 id,
-                role_id,
                 method,
                 untyped,
-                response_tx,
-                cancellation_disarm,
             } => {
+                // Requests register their response destination synchronously
+                // before entering this queue. EOF removes that registration,
+                // so skip work that can no longer receive a response.
+                if !pending_replies.contains(&id) {
+                    continue;
+                }
+
                 let request = match protocol_compat
                     .outgoing_message(untyped)
                     .and_then(|untyped| untyped.into_raw_jsonrpc_message(Some(id.clone())))
@@ -51,24 +63,25 @@ pub(super) async fn outgoing_protocol_actor(
                     Ok(request) => request,
                     Err(error) => {
                         tracing::warn!(?id, %method, ?error, "Failed to prepare outgoing request");
-                        cancellation_disarm.disarm();
-                        complete_request_with_error(response_tx, error);
+                        if let Some(pending_reply) = pending_replies.remove(&id) {
+                            pending_reply.fail(error);
+                        }
                         continue;
                     }
                 };
 
-                // Record where the reply should be sent once it arrives.
-                reply_tx
-                    .unbounded_send(ReplyMessage::Subscribe {
-                        id: id.clone(),
-                        role_id,
-                        method,
-                        sender: response_tx,
-                        cancellation_disarm,
-                    })
-                    .map_err(crate::Error::into_internal_error)?;
+                if !pending_replies.contains(&id) {
+                    continue;
+                }
 
-                request
+                if let Err(error) = transport_tx.unbounded_send(Ok(request)) {
+                    let error = crate::Error::into_internal_error(error);
+                    if let Some(pending_reply) = pending_replies.remove(&id) {
+                        pending_reply.fail(error.clone());
+                    }
+                    return Err(error);
+                }
+                continue;
             }
             OutgoingMessage::Notification { untyped } => {
                 let messages = match protocol_compat.outgoing_notification(untyped) {
@@ -125,20 +138,13 @@ pub(super) async fn outgoing_protocol_actor(
             .unbounded_send(Ok(json_rpc_message))
             .map_err(crate::Error::into_internal_error)?;
     }
-    Ok(())
-}
 
-fn complete_request_with_error(
-    response_tx: futures::channel::oneshot::Sender<crate::jsonrpc::ResponsePayload>,
-    error: crate::Error,
-) {
-    if response_tx
-        .send(crate::jsonrpc::ResponsePayload {
-            result: Err(error),
-            ack_tx: None,
-        })
-        .is_err()
-    {
-        tracing::debug!("Dropped failed outgoing request because receiver was gone");
+    // Closing the raw queue lets the transport actor finish all buffered
+    // writes. The caller separately awaits that transport future before
+    // treating the drain as complete.
+    drop(transport_tx);
+    for done in drain_waiters {
+        let _ = done.send(());
     }
+    Ok(())
 }

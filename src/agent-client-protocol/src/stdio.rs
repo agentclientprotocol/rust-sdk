@@ -54,7 +54,7 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
 
         if let Some(callback) = self.debug_callback {
             use futures::io::BufReader;
-            use futures::{AsyncBufReadExt, AsyncWriteExt, StreamExt};
+            use futures::{AsyncBufReadExt, StreamExt};
 
             let incoming_callback = callback.clone();
             let incoming_lines = Box::pin(BufReader::new(stdin).lines().inspect(move |result| {
@@ -68,9 +68,7 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
                 (stdout, callback),
                 async move |(mut writer, callback), line: String| {
                     callback(&line, LineDirection::Stdout);
-                    let mut bytes = line.into_bytes();
-                    bytes.push(b'\n');
-                    writer.write_all(&bytes).await?;
+                    crate::jsonrpc::write_line(&mut writer, line).await?;
                     Ok::<_, std::io::Error>((writer, callback))
                 },
             ))

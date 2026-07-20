@@ -120,6 +120,12 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// A future that resolves when the component stops serving, either successfully
     /// or with an error. The future must be `Send`.
+    ///
+    /// A component that buffers outbound messages should not return `Ok(())`
+    /// merely because its client completed: it should first finish messages the
+    /// client already transferred to it. This lets wrappers preserve graceful
+    /// drain guarantees through to the physical transport sink. Errors may
+    /// still terminate the connection immediately.
     fn connect_to(
         self,
         client: impl ConnectTo<R::Counterpart>,

@@ -1,22 +1,20 @@
 // Types re-exported from crate root
-use std::collections::HashMap;
-
 use futures::StreamExt as _;
 use futures::channel::mpsc;
-use futures::channel::oneshot;
+use futures::stream;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::Dispatch;
-use crate::RoleId;
 use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
 use crate::jsonrpc::HandleDispatchFrom;
 use crate::jsonrpc::OutgoingMessage;
+use crate::jsonrpc::PendingReplies;
+use crate::jsonrpc::PendingReply;
 use crate::jsonrpc::RawJsonRpcMessage;
 use crate::jsonrpc::RawJsonRpcParams;
-use crate::jsonrpc::ReplyMessage;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
@@ -29,20 +27,12 @@ use crate::schema::v1::{RequestId, Response};
 
 use super::Handled;
 
-struct PendingReply {
-    method: String,
-    role_id: RoleId,
-    sender: oneshot::Sender<crate::jsonrpc::ResponsePayload>,
-    cancellation_disarm: super::SentRequestCancellationDisarm,
-}
-
 /// Incoming protocol actor: The central dispatch loop for a connection.
 ///
 /// This actor handles JSON-RPC protocol semantics:
 /// - Routes responses to pending request awaiters
 /// - Routes requests/notifications to registered handlers
 /// - Converts RawJsonRpcMessage requests/notifications to UntypedMessage for handlers
-/// - Manages reply subscriptions from outgoing requests
 ///
 /// This is the protocol layer - it has no knowledge of how messages arrived.
 ///
@@ -53,14 +43,19 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     transport_rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
-    reply_rx: mpsc::UnboundedReceiver<ReplyMessage>,
+    pending_replies: PendingReplies,
     mut handler: impl HandleDispatchFrom<Counterpart>,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
-    let mut my_rx = transport_rx
-        .map(IncomingProtocolMsg::Transport)
-        .merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler))
-        .merge(reply_rx.map(IncomingProtocolMsg::Reply));
+    // `merge` does not expose when one of its source streams ends. Preserve
+    // transport EOF as an explicit event so the other, connection-internal
+    // streams cannot hide it.
+    let transport_with_close = futures::StreamExt::chain(
+        transport_rx.map(IncomingProtocolMsg::Transport),
+        stream::iter([IncomingProtocolMsg::TransportClosed]),
+    );
+    let mut my_rx =
+        transport_with_close.merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler));
 
     let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
         FxHashMap::default();
@@ -68,33 +63,30 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
     let request_cancellations = super::RequestCancellationRegistry::new();
 
-    // Map from request ID to (method, sender) for response dispatch.
-    // The method is stored to allow routing responses through typed handlers.
-    let mut pending_replies: HashMap<RequestId, PendingReply> = HashMap::new();
-
     while let Some(message_result) = my_rx.next().await {
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
-            IncomingProtocolMsg::Reply(message) => match message {
-                ReplyMessage::Subscribe {
-                    id,
-                    role_id,
-                    method,
-                    sender,
-                    cancellation_disarm,
-                } => {
-                    tracing::trace!(?id, %method, "incoming_actor: subscribing to response");
-                    pending_replies.insert(
-                        id,
-                        PendingReply {
-                            method,
-                            role_id,
-                            sender,
-                            cancellation_disarm,
-                        },
-                    );
+            IncomingProtocolMsg::TransportClosed => {
+                connection.begin_incoming_close();
+                let pending_reply_count = pending_replies.close_incoming();
+                tracing::debug!(pending_reply_count, "Incoming transport closed");
+
+                let mut callback_error = None;
+                for callback in connection.take_on_close() {
+                    if let Err(error) = callback.run(connection.clone()).await {
+                        tracing::warn!(?error, "Connection close callback failed");
+                        if callback_error.is_none() {
+                            callback_error = Some(error);
+                        }
+                    }
                 }
-            },
+
+                connection.finish_incoming_close();
+
+                if let Some(error) = callback_error {
+                    return Err(error);
+                }
+            }
 
             IncomingProtocolMsg::DynamicHandler(message) => match message {
                 DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
@@ -250,8 +242,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
     Transport(Result<RawJsonRpcMessage, crate::Error>),
+    TransportClosed,
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
-    Reply(ReplyMessage),
 }
 
 /// Dispatches a JSON-RPC request to the handler.

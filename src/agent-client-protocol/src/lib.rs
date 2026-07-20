@@ -96,9 +96,9 @@ pub use capabilities::*;
 
 pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullHandler, RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter, SentRequest,
-    UntypedMessage,
+    INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage, JsonRpcNotification,
+    JsonRpcRequest, JsonRpcResponse, Lines, NullHandler, RawJsonRpcMessage, RawJsonRpcParams,
+    Responder, ResponseRouter, SentRequest, UntypedMessage, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};

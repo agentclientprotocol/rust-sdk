@@ -58,6 +58,53 @@
 //! # }
 //! ```
 //!
+//! # Clean Incoming EOF
+//!
+//! [`Builder::connect_to`](crate::Builder::connect_to) is reactive: it returns
+//! `Ok(())` when the incoming transport reaches clean EOF, after draining
+//! responses and notifications already accepted by its outgoing queue through
+//! the transport sink.
+//! [`Builder::connect_with`](crate::Builder::connect_with) is foreground-owned:
+//! EOF fails pending requests, but does not cancel unrelated work in its
+//! closure. This avoids dropping application futures at an arbitrary await
+//! point.
+//!
+//! Use [`ConnectionTo::incoming_closed`](crate::ConnectionTo::incoming_closed)
+//! to await EOF directly, or [`Builder::on_close`](crate::Builder::on_close)
+//! for cleanup and application-specific shutdown policy:
+//!
+//! ```
+//! # use agent_client_protocol::{Client, ConnectTo, Error};
+//! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
+//! Client.builder()
+//!     .on_close(async |_cx| {
+//!         // Notify application-owned work here. Returning an error also
+//!         // terminates a still-running connect_with foreground.
+//!         Ok(())
+//!     })
+//!     .connect_with(transport, async |cx| {
+//!         cx.incoming_closed().await;
+//!         Ok(())
+//!     })
+//!     .await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Every request still waiting for a response at EOF is completed with an
+//! internal error whose data contains
+//! `{"reason":"incoming_transport_closed","method":"..."}`. Requests made
+//! after EOF fail the same way; use
+//! [`is_incoming_transport_closed`](crate::is_incoming_transport_closed) to
+//! identify this error. In `connect_with`, notification and response sends
+//! remain available so applications can choose their own half-close policy;
+//! reactive `connect_to` stops accepting them when its final drain begins.
+//!
+//! Pending requests are failed before close callbacks begin. The close signal
+//! is published after callbacks finish, so a callback must not await
+//! [`ConnectionTo::incoming_closed`](crate::ConnectionTo::incoming_closed)
+//! itself.
+//!
 //! # Sending Requests
 //!
 //! When you call `send_request()`, you get back a [`SentRequest`] that represents

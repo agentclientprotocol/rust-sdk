@@ -144,9 +144,20 @@ stateDiagram-v2
 
 ### Two Connection Modes
 
-**Reactive mode** (`connect_to`): The connection runs handlers until the transport closes. Used for agents and proxies.
+**Reactive mode** (`connect_to`): The connection runs handlers until the incoming transport reaches clean EOF, drains responses and notifications already accepted by the outgoing queue through the transport sink, then returns `Ok(())`, including when the builder has long-running `with_spawned` work. Used for agents and proxies.
 
-**Active mode** (`connect_with`): Runs a closure with access to the connection, then closes. Used for clients that drive the interaction.
+**Active mode** (`connect_with`): Runs a closure with access to the connection, then closes. Used for clients that drive the interaction. Incoming EOF fails requests that still need responses, but it does not automatically cancel unrelated work in the closure.
+
+### Clean Incoming EOF
+
+Incoming EOF is a connection event and a request-liveness boundary:
+
+- Every pending request is completed with an internal error whose data identifies `incoming_transport_closed` and the request method; `is_incoming_transport_closed()` detects it.
+- A request created after EOF fails immediately with the same error.
+- `ConnectionTo::incoming_closed()` waits for the close event, and `is_incoming_closed()` reports whether it has completed.
+- `Builder::on_close()` runs cleanup callbacks in registration order. Returning an error terminates a still-running `connect_with` foreground; returning `Ok(())` leaves its lifetime under application control.
+
+This keeps request correctness separate from async cancellation policy. Applications can finish cleanup or notify a central dispatcher without having an arbitrary foreground future dropped at an await point. Pending requests are failed before close callbacks begin; the close signal is published after callbacks finish, so a callback must not await `incoming_closed()` itself.
 
 ## Key Source Files
 

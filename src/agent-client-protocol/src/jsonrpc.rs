@@ -12,9 +12,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::panic::Location;
 use std::pin::pin;
-use std::sync::Arc;
 use std::sync::{
-    Mutex,
+    Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
 use uuid::Uuid;
@@ -743,6 +742,38 @@ where
 
     /// Protocol version mode for the public API and wire compatibility layer.
     protocol_mode: ProtocolMode,
+
+    /// Callbacks run when the incoming transport reaches clean EOF.
+    on_close: Vec<OnClose<Host::Counterpart>>,
+}
+
+struct OnClose<Counterpart: Role> {
+    callback: Box<
+        dyn FnOnce(ConnectionTo<Counterpart>) -> BoxFuture<'static, Result<(), crate::Error>>
+            + Send,
+    >,
+}
+
+impl<Counterpart: Role> OnClose<Counterpart> {
+    fn new<F, Fut>(callback: F) -> Self
+    where
+        F: FnOnce(ConnectionTo<Counterpart>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
+    {
+        Self {
+            callback: Box::new(move |connection| callback(connection).boxed()),
+        }
+    }
+
+    async fn run(self, connection: ConnectionTo<Counterpart>) -> Result<(), crate::Error> {
+        (self.callback)(connection).await
+    }
+}
+
+impl<Counterpart: Role> Debug for OnClose<Counterpart> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("OnClose").finish_non_exhaustive()
+    }
 }
 
 fn default_protocol_mode<Host: Role>() -> ProtocolMode {
@@ -768,6 +799,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun> {
             handler: NullHandler,
             responder: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
+            on_close: Vec::new(),
         }
     }
 }
@@ -784,6 +816,7 @@ where
             handler,
             responder: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
+            on_close: Vec::new(),
         }
     }
 }
@@ -843,8 +876,11 @@ impl<
             handler: other_handler,
             responder: other_responder,
             protocol_mode: other_protocol_mode,
+            on_close: other_on_close,
             host: _,
         } = other;
+        let mut on_close = self.on_close;
+        on_close.extend(other_on_close);
         Builder {
             host: self.host,
             name: self.name,
@@ -854,6 +890,7 @@ impl<
             ),
             responder: ChainRun::new(self.responder, other_responder),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
+            on_close,
         }
     }
 
@@ -871,6 +908,7 @@ impl<
             handler: ChainedHandler::new(self.handler, handler),
             responder: self.responder,
             protocol_mode: self.protocol_mode,
+            on_close: self.on_close,
         }
     }
 
@@ -888,6 +926,7 @@ impl<
             handler: self.handler,
             responder: ChainRun::new(self.responder, responder),
             protocol_mode: self.protocol_mode,
+            on_close: self.on_close,
         }
     }
 
@@ -903,6 +942,47 @@ impl<
     {
         let location = Location::caller();
         self.with_responder(SpawnedRun::new(location, task))
+    }
+
+    /// Run a callback when the incoming transport reaches clean EOF.
+    ///
+    /// Each callback runs at most once and receives the connection context. A
+    /// successful callback observes the close without otherwise changing the
+    /// lifetime of [`connect_with`](Self::connect_with). Returning an error
+    /// shuts down the connection and cancels a still-running `connect_with`
+    /// future.
+    ///
+    /// Multiple callbacks run sequentially in registration order. All of them
+    /// run even if an earlier callback fails, after which the first error is
+    /// returned. Pending requests are failed before callbacks begin, while
+    /// [`ConnectionTo::incoming_closed`] completes only after they finish. A
+    /// callback must therefore not await that close future itself.
+    ///
+    /// This separation lets applications choose their cancellation policy. A
+    /// callback can notify application-owned tasks and return `Ok(())` for
+    /// graceful cleanup, or return an error to stop them immediately.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{Client, ConnectTo, Error};
+    /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
+    /// Client.builder()
+    ///     .on_close(async |_cx| {
+    ///         Err(Error::internal_error().data("agent transport closed"))
+    ///     })
+    ///     .connect_with(transport, async |_cx| {
+    ///         std::future::pending().await
+    ///     })
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn on_close<F, Fut>(mut self, callback: F) -> Self
+    where
+        F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
+    {
+        self.on_close.push(OnClose::new(callback));
+        self
     }
 
     /// Register a handler for messages that can be either requests OR notifications.
@@ -1295,6 +1375,10 @@ impl<
     /// - An error occurs
     /// - One of your handlers returns an error
     ///
+    /// On clean EOF, messages already accepted by the outgoing queue—including
+    /// handler responses and close-callback notifications—are drained through
+    /// the transport sink before this returns `Ok(())`.
+    ///
     /// The transport is responsible for serializing and deserializing [`RawJsonRpcMessage`]
     /// values to/from the underlying I/O mechanism (byte streams, channels, etc.).
     ///
@@ -1325,8 +1409,11 @@ impl<
         self,
         transport: impl ConnectTo<Host> + 'static,
     ) -> Result<(), crate::Error> {
-        self.connect_with(transport, async move |_cx| future::pending().await)
-            .await
+        self.connect_with(transport, async move |cx| {
+            cx.incoming_closed().await;
+            cx.drain_outgoing().await
+        })
+        .await
     }
 
     /// Run the connection until the provided closure completes.
@@ -1335,8 +1422,12 @@ impl<
     /// 1. Running your registered handlers in the background to process incoming messages
     /// 2. Executing your `main_fn` closure with a [`ConnectionTo<R>`] for sending requests/notifications
     ///
-    /// The connection stays active until your `main_fn` returns, then shuts down gracefully.
-    /// If the connection closes unexpectedly before `main_fn` completes, this returns an error.
+    /// The connection stays active until your `main_fn` returns, then shuts down.
+    /// Clean incoming EOF fails every pending request and makes future
+    /// requests fail immediately. It does not cancel unrelated work in
+    /// `main_fn`: that future may observe [`ConnectionTo::incoming_closed`], or
+    /// the builder can use [`on_close`](Self::on_close) to notify it or return
+    /// an error and stop it.
     ///
     /// Use this mode when you need to initiate communication (send requests/notifications)
     /// in addition to responding to incoming messages. For server-only mode where you just
@@ -1384,7 +1475,10 @@ impl<
     ///
     /// # Errors
     ///
-    /// Returns an error if the connection closes before `main_fn` completes.
+    /// Returns an error if a handler, background task, transport, or close
+    /// callback fails, or if `main_fn` returns an error. Clean incoming EOF is
+    /// observable through [`ConnectionTo::incoming_closed`] and is not itself
+    /// an error in this mode.
     pub async fn connect_with<R>(
         self,
         transport: impl ConnectTo<Host> + 'static,
@@ -1409,23 +1503,44 @@ impl<
             responder,
             host: me,
             protocol_mode,
+            on_close,
         } = self;
 
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
         let (new_task_tx, new_task_rx) = mpsc::unbounded();
         let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let pending_replies = PendingReplies::default();
+
+        // Convert transport into server - this returns a channel for us to use
+        // and a future that runs the transport.
+        let transport_component = crate::DynConnectTo::new(transport);
+        let (transport_channel, transport_future) = transport_component.into_channel_and_future();
+        let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
+        let transport_completion = transport_completion_rx
+            .map(|result| {
+                result.unwrap_or_else(|error| {
+                    Err(crate::util::internal_error(format!(
+                        "transport task dropped before reporting completion: {error}"
+                    )))
+                })
+            })
+            .boxed()
+            .shared();
+
         let connection = ConnectionTo::new(
             me.counterpart(),
             outgoing_tx,
             new_task_tx,
             dynamic_handler_tx,
+            transport_completion,
+            pending_replies.registrar(),
+            on_close,
         );
-
-        // Convert transport into server - this returns a channel for us to use
-        // and a future that runs the transport
-        let transport_component = crate::DynConnectTo::new(transport);
-        let (transport_channel, transport_future) = transport_component.into_channel_and_future();
-        let spawn_result = connection.spawn(transport_future);
+        let spawn_result = connection.spawn(async move {
+            let result = transport_future.await;
+            drop(transport_completion_tx.send(result.clone()));
+            result
+        });
 
         // Destructure the channel endpoints
         let Channel {
@@ -1433,7 +1548,6 @@ impl<
             tx: transport_outgoing_tx,
         } = transport_channel;
 
-        let (reply_tx, reply_rx) = mpsc::unbounded();
         let protocol_compat = ProtocolCompat::new(protocol_mode);
 
         let future = crate::util::instrument_with_connection_name(name, {
@@ -1442,32 +1556,48 @@ impl<
                 let () = spawn_result?;
 
                 let background = async {
-                    futures::try_join!(
-                        // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
-                        outgoing_actor::outgoing_protocol_actor(
-                            outgoing_rx,
-                            reply_tx.clone(),
-                            transport_outgoing_tx,
-                            protocol_compat.clone(),
-                        ),
-                        // Protocol layer: RawJsonRpcMessage -> handler/reply routing
-                        incoming_actor::incoming_protocol_actor(
-                            me.counterpart(),
-                            &connection,
-                            transport_incoming_rx,
-                            dynamic_handler_rx,
-                            reply_rx,
-                            handler,
-                            protocol_compat,
-                        ),
-                        task_actor::task_actor(new_task_rx, &connection),
-                        responder.run_with_connection_to(connection.clone()),
-                    )?;
-                    Ok(())
+                    let incoming = incoming_actor::incoming_protocol_actor(
+                        me.counterpart(),
+                        &connection,
+                        transport_incoming_rx,
+                        dynamic_handler_rx,
+                        pending_replies.clone(),
+                        handler,
+                        protocol_compat.clone(),
+                    );
+                    let other_actors = async {
+                        futures::try_join!(
+                            // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
+                            outgoing_actor::outgoing_protocol_actor(
+                                outgoing_rx,
+                                pending_replies,
+                                transport_outgoing_tx,
+                                protocol_compat,
+                            ),
+                            task_actor::task_actor(new_task_rx, &connection),
+                            responder.run_with_connection_to(connection.clone()),
+                        )?;
+                        Ok(())
+                    };
+
+                    // EOF can wake a pending request consumer, which may make
+                    // the task actor fail while close callbacks are running.
+                    // Keep the incoming actor alive until those callbacks have
+                    // all finished, just as we do when the foreground wakes.
+                    run_until_connection_close(
+                        incoming,
+                        other_actors,
+                        connection.incoming_closed.clone(),
+                    )
+                    .await
                 };
 
-                crate::util::run_until(Box::pin(background), Box::pin(main_fn(connection.clone())))
-                    .await
+                run_until_connection_close(
+                    background,
+                    main_fn(connection.clone()),
+                    connection.incoming_closed.clone(),
+                )
+                .await
             }
         });
 
@@ -1515,37 +1645,156 @@ impl std::fmt::Debug for ResponsePayload {
     }
 }
 
-/// Message sent to the incoming actor for reply subscription management.
-enum ReplyMessage {
-    /// Subscribe to receive a response for the given request id.
-    /// When a response with this id arrives, it will be sent through the oneshot
-    /// along with an ack channel that must be signaled when processing is complete.
-    /// The method name is stored to allow routing responses through typed handlers.
-    Subscribe {
-        id: RequestId,
-
-        /// id of the peer this request was sent to
-        role_id: RoleId,
-
-        /// (original) method of the request -- the actual request may have been transformed
-        /// to a successor method, but this will reflect the method of the wrapped request
-        method: String,
-
-        sender: oneshot::Sender<ResponsePayload>,
-
-        cancellation_disarm: SentRequestCancellationDisarm,
-    },
+struct PendingReply {
+    method: String,
+    role_id: RoleId,
+    sender: oneshot::Sender<ResponsePayload>,
+    cancellation_disarm: SentRequestCancellationDisarm,
 }
 
-impl std::fmt::Debug for ReplyMessage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ReplyMessage::Subscribe { id, method, .. } => f
-                .debug_struct("Subscribe")
-                .field("id", id)
-                .field("method", method)
-                .finish(),
+impl PendingReply {
+    fn fail(self, error: crate::Error) {
+        self.cancellation_disarm.disarm();
+        if self
+            .sender
+            .send(ResponsePayload {
+                result: Err(error),
+                ack_tx: None,
+            })
+            .is_err()
+        {
+            tracing::trace!(method = %self.method, "Pending request was already dropped");
         }
+    }
+
+    fn fail_incoming_closed(self) {
+        let error = incoming_transport_closed_error(&self.method);
+        self.fail(error);
+    }
+}
+
+#[derive(Default)]
+struct PendingRepliesInner {
+    incoming_closed: bool,
+    replies: HashMap<RequestId, PendingReply>,
+}
+
+#[derive(Clone, Default)]
+struct PendingReplies {
+    inner: Arc<Mutex<PendingRepliesInner>>,
+}
+
+impl PendingReplies {
+    fn registrar(&self) -> PendingRepliesRegistrar {
+        PendingRepliesRegistrar {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    fn contains(&self, id: &RequestId) -> bool {
+        self.inner
+            .lock()
+            .expect("pending replies mutex poisoned")
+            .replies
+            .contains_key(id)
+    }
+
+    fn remove(&self, id: &RequestId) -> Option<PendingReply> {
+        self.inner
+            .lock()
+            .expect("pending replies mutex poisoned")
+            .replies
+            .remove(id)
+    }
+
+    /// Atomically reject new subscriptions and fail every existing one.
+    fn close_incoming(&self) -> usize {
+        let replies = {
+            let mut inner = self.inner.lock().expect("pending replies mutex poisoned");
+            inner.incoming_closed = true;
+            std::mem::take(&mut inner.replies)
+        };
+        let count = replies.len();
+        for (_, reply) in replies {
+            reply.fail_incoming_closed();
+        }
+        count
+    }
+}
+
+/// A non-owning handle used to register a request before it enters the
+/// outgoing queue. Keeping this weak prevents escaped [`ConnectionTo`] clones
+/// from extending the lifetime of response senders after the driver stops.
+#[derive(Clone)]
+struct PendingRepliesRegistrar {
+    inner: Weak<Mutex<PendingRepliesInner>>,
+}
+
+impl PendingRepliesRegistrar {
+    /// Register a response destination before the request becomes observable.
+    ///
+    /// Returns `false` after failing `reply` when EOF has already made a
+    /// response impossible or the connection driver is no longer running.
+    fn subscribe(
+        &self,
+        id: RequestId,
+        reply: PendingReply,
+        incoming_closed: &IncomingClosed,
+    ) -> bool {
+        let Some(inner) = self.inner.upgrade() else {
+            if incoming_closed.is_closing() {
+                reply.fail_incoming_closed();
+            } else {
+                let method = reply.method.clone();
+                reply.fail(crate::util::internal_error(format!(
+                    "failed to send outgoing request `{method}`: connection is no longer running"
+                )));
+            }
+            return false;
+        };
+
+        let result = {
+            let mut inner = inner.lock().expect("pending replies mutex poisoned");
+            if inner.incoming_closed {
+                Err(reply)
+            } else {
+                Ok(inner.replies.insert(id, reply))
+            }
+        };
+
+        match result {
+            Err(rejected) => {
+                rejected.fail_incoming_closed();
+                false
+            }
+            Ok(replaced) => {
+                if let Some(replaced) = replaced {
+                    replaced.fail(
+                        crate::Error::internal_error()
+                            .data("outgoing request ID was reused before its response arrived"),
+                    );
+                }
+                true
+            }
+        }
+    }
+
+    fn remove(&self, id: &RequestId) -> Option<PendingReply> {
+        self.inner
+            .upgrade()?
+            .lock()
+            .expect("pending replies mutex poisoned")
+            .replies
+            .remove(id)
+    }
+}
+
+impl Debug for PendingRepliesRegistrar {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRepliesRegistrar")
+            .field("is_connected", &(self.inner.strong_count() > 0))
+            .finish()
     }
 }
 
@@ -1929,6 +2178,10 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
 /// Messages send to be serialized over the transport.
 #[derive(Debug)]
 enum OutgoingMessage {
+    /// Close the outgoing application queue and acknowledge after every
+    /// already-accepted message has entered the raw transport queue.
+    CloseAfterDraining { done: oneshot::Sender<()> },
+
     /// Send a request to the server.
     Request {
         /// id assigned to this request (generated by sender)
@@ -1937,17 +2190,9 @@ enum OutgoingMessage {
         /// the original method
         method: String,
 
-        /// the peer we sent this to
-        role_id: RoleId,
-
         /// the message to send; this may have a distinct method
         /// depending on the peer
         untyped: UntypedMessage,
-
-        /// where to send the response when it arrives (includes ack channel)
-        response_tx: oneshot::Sender<ResponsePayload>,
-
-        cancellation_disarm: SentRequestCancellationDisarm,
     },
 
     /// Send a notification to the server.
@@ -2047,6 +2292,145 @@ pub struct ConnectionTo<Counterpart: Role> {
     message_tx: OutgoingMessageTx,
     task_tx: TaskTx,
     dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+    transport_completion: SharedTransportCompletion,
+    pending_replies: PendingRepliesRegistrar,
+    incoming_closed: IncomingClosed,
+    on_close: Arc<Mutex<Option<Vec<OnClose<Counterpart>>>>>,
+}
+
+type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
+
+#[derive(Clone)]
+struct IncomingClosed {
+    state: Arc<IncomingClosedState>,
+}
+
+struct IncomingClosedState {
+    closing: AtomicBool,
+    closed: AtomicBool,
+    signal_tx: Mutex<Option<oneshot::Sender<()>>>,
+    signal_rx: future::Shared<BoxFuture<'static, ()>>,
+}
+
+impl IncomingClosed {
+    fn new() -> Self {
+        let (signal_tx, signal_rx) = oneshot::channel();
+        Self {
+            state: Arc::new(IncomingClosedState {
+                closing: AtomicBool::new(false),
+                closed: AtomicBool::new(false),
+                signal_tx: Mutex::new(Some(signal_tx)),
+                signal_rx: signal_rx.map(|_| ()).boxed().shared(),
+            }),
+        }
+    }
+
+    fn begin_close(&self) {
+        self.state.closing.store(true, Ordering::Release);
+    }
+
+    fn finish_close(&self) {
+        self.state.closed.store(true, Ordering::Release);
+        let signal_tx = self
+            .state
+            .signal_tx
+            .lock()
+            .expect("incoming-close signal mutex poisoned")
+            .take();
+
+        if let Some(signal_tx) = signal_tx {
+            let _ = signal_tx.send(());
+        }
+    }
+
+    async fn closed(&self) {
+        self.state.signal_rx.clone().await;
+    }
+
+    fn is_closed(&self) -> bool {
+        self.state.closed.load(Ordering::Acquire)
+    }
+
+    fn is_closing(&self) -> bool {
+        self.state.closing.load(Ordering::Acquire)
+    }
+}
+
+impl Debug for IncomingClosed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IncomingClosed")
+            .field("is_closing", &self.is_closing())
+            .field("is_closed", &self.is_closed())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Stable discriminator stored in the `data.reason` field of errors produced
+/// when the incoming transport reaches clean EOF before a request receives its
+/// response.
+pub const INCOMING_TRANSPORT_CLOSED_REASON: &str = "incoming_transport_closed";
+
+/// Return whether `error` reports that the incoming transport reached clean
+/// EOF before a request received its response.
+#[must_use]
+pub fn is_incoming_transport_closed(error: &crate::Error) -> bool {
+    error
+        .data
+        .as_ref()
+        .and_then(|data| data.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        == Some(INCOMING_TRANSPORT_CLOSED_REASON)
+}
+
+fn incoming_transport_closed_error(method: &str) -> crate::Error {
+    let mut error = crate::Error::internal_error();
+    error.message = "Incoming transport closed".to_string();
+    error.data(serde_json::json!({
+        "reason": INCOMING_TRANSPORT_CLOSED_REASON,
+        "method": method,
+    }))
+}
+
+/// Run the connection background alongside its foreground while ensuring that
+/// a foreground woken by incoming EOF cannot cancel close callbacks midway.
+fn run_until_connection_close<R>(
+    background: impl Future<Output = Result<(), crate::Error>>,
+    foreground: impl Future<Output = Result<R, crate::Error>>,
+    incoming_closed: IncomingClosed,
+) -> impl Future<Output = Result<R, crate::Error>> {
+    // Box these before constructing the returned future. Keeping the generic
+    // connection actors directly in this async state would substantially grow
+    // every `connect_*` future.
+    let background = Box::pin(background);
+    let foreground = Box::pin(foreground);
+
+    async move {
+        match future::select(background, foreground).await {
+            Either::Left((background_result, foreground)) => {
+                background_result?;
+                foreground.await
+            }
+            Either::Right((foreground_result, background)) => {
+                if !incoming_closed.is_closing() {
+                    return foreground_result;
+                }
+
+                match future::select(background, Box::pin(incoming_closed.closed())).await {
+                    Either::Left((background_result, _)) => {
+                        background_result?;
+                        foreground_result
+                    }
+                    Either::Right(((), background)) => {
+                        // Poll the background first once more so an error returned
+                        // by the just-finished close callback wins over the ready
+                        // foreground result.
+                        crate::util::run_until(background, future::ready(foreground_result)).await
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl<Counterpart: Role> ConnectionTo<Counterpart> {
@@ -2055,18 +2439,89 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         message_tx: mpsc::UnboundedSender<OutgoingMessage>,
         task_tx: mpsc::UnboundedSender<Task>,
         dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+        transport_completion: SharedTransportCompletion,
+        pending_replies: PendingRepliesRegistrar,
+        on_close: Vec<OnClose<Counterpart>>,
     ) -> Self {
         Self {
             counterpart,
             message_tx,
             task_tx,
             dynamic_handler_tx,
+            transport_completion,
+            pending_replies,
+            incoming_closed: IncomingClosed::new(),
+            on_close: Arc::new(Mutex::new(Some(on_close))),
         }
     }
 
     /// Return the counterpart role this connection is talking to.
     pub fn counterpart(&self) -> Counterpart {
         self.counterpart.clone()
+    }
+
+    /// Wait until the incoming transport reaches clean EOF.
+    ///
+    /// Transport closure means that no more messages or responses can arrive.
+    /// Pending requests are failed first; this completes after registered
+    /// [`Builder::on_close`] callbacks finish.
+    /// It does not automatically cancel the future passed to
+    /// [`Builder::connect_with`]; use [`Builder::on_close`] when the connection
+    /// should run application-specific cleanup or terminate that future.
+    pub async fn incoming_closed(&self) {
+        self.incoming_closed.closed().await;
+    }
+
+    /// Return whether clean incoming-EOF processing has completed.
+    ///
+    /// This remains `false` while [`Builder::on_close`] callbacks are running.
+    #[must_use]
+    pub fn is_incoming_closed(&self) -> bool {
+        self.incoming_closed.is_closed()
+    }
+
+    /// Stop accepting outgoing messages, drain those already accepted through
+    /// the protocol actor, and wait for the transport sink to finish them.
+    async fn drain_outgoing(&self) -> Result<(), crate::Error> {
+        let (done_tx, done_rx) = oneshot::channel();
+        let marker_result = send_raw_message(
+            &self.message_tx,
+            OutgoingMessage::CloseAfterDraining { done: done_tx },
+        );
+        let marker_result = match marker_result {
+            Ok(()) => done_rx.await.map_err(|error| {
+                crate::util::internal_error(format!(
+                    "outgoing drain marker was dropped before completion: {error}"
+                ))
+            }),
+            Err(error) => Err(error),
+        };
+
+        // The marker only proves that all accepted protocol messages entered
+        // the raw transport queue. Transport completion is the sink-level
+        // barrier that proves a backpressured writer finished them.
+        self.transport_completion.clone().await?;
+        marker_result
+    }
+
+    fn is_incoming_closing(&self) -> bool {
+        self.incoming_closed.is_closing()
+    }
+
+    pub(super) fn begin_incoming_close(&self) {
+        self.incoming_closed.begin_close();
+    }
+
+    pub(super) fn finish_incoming_close(&self) {
+        self.incoming_closed.finish_close();
+    }
+
+    fn take_on_close(&self) -> Vec<OnClose<Counterpart>> {
+        self.on_close
+            .lock()
+            .expect("connection close callback mutex poisoned")
+            .take()
+            .unwrap_or_default()
     }
 
     /// Spawns a task that will run so long as the JSON-RPC connection is being served.
@@ -2309,40 +2764,61 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
             SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
+        if self.is_incoming_closing() {
+            cancellation.disarm();
+            drop(response_tx.send(ResponsePayload {
+                result: Err(incoming_transport_closed_error(&method)),
+                ack_tx: None,
+            }));
+            return SentRequest::new(
+                id,
+                method.clone(),
+                self.task_tx.clone(),
+                response_rx,
+                cancellation,
+            )
+            .map(move |json| <Req::Response>::from_value(&method, json));
+        }
+
         match remote_style.transform_outgoing_message(request) {
             Ok(untyped) => {
-                // Transform the message for the target role
-                let message = OutgoingMessage::Request {
-                    id: id.clone(),
+                // Register before enqueueing so incoming EOF can fail every
+                // observable request before close callbacks begin. The
+                // outgoing actor checks that the registration still exists
+                // before sending the request.
+                let pending_reply = PendingReply {
                     method: method.clone(),
                     role_id,
-                    untyped,
-                    response_tx,
+                    sender: response_tx,
                     cancellation_disarm: cancellation.disarm_handle(),
                 };
 
-                match self.message_tx.unbounded_send(message) {
-                    Ok(()) => (),
-                    Err(error) => {
+                if self
+                    .pending_replies
+                    .subscribe(id.clone(), pending_reply, &self.incoming_closed)
+                {
+                    let message = OutgoingMessage::Request {
+                        id: id.clone(),
+                        method: method.clone(),
+                        untyped,
+                    };
+
+                    if let Err(error) = self.message_tx.unbounded_send(message) {
                         cancellation.disarm();
 
-                        let OutgoingMessage::Request {
-                            method,
-                            response_tx,
-                            ..
-                        } = error.into_inner()
-                        else {
+                        let OutgoingMessage::Request { id, method, .. } = error.into_inner() else {
                             unreachable!();
                         };
 
-                        response_tx
-                            .send(ResponsePayload {
-                                result: Err(crate::util::internal_error(format!(
-                                    "failed to send outgoing request `{method}"
-                                ))),
-                                ack_tx: None,
-                            })
-                            .unwrap();
+                        if let Some(pending_reply) = self.pending_replies.remove(&id) {
+                            if self.is_incoming_closing() {
+                                pending_reply.fail_incoming_closed();
+                            } else {
+                                pending_reply.fail(crate::util::internal_error(format!(
+                                    "failed to send outgoing request `{method}`"
+                                )));
+                            }
+                        }
                     }
                 }
             }
@@ -3504,6 +3980,15 @@ impl JsonRpcNotification for UntypedMessage {}
 /// the request, then discards the response when it arrives. Requests whose
 /// eventual response should be ignored, but which should keep running on the
 /// peer, should use [`detach`](Self::detach) instead.
+///
+/// # Incoming Transport EOF
+///
+/// If the incoming transport reaches clean EOF before the response arrives, every
+/// consumption mode receives an error with the message `Incoming transport
+/// closed` and data containing
+/// `{"reason":"incoming_transport_closed","method":"..."}`. Requests made
+/// after incoming EOF fail immediately with the same error. Use
+/// [`is_incoming_transport_closed`] to identify it.
 #[must_use = "dropping a SentRequest asks the peer to cancel the request and \
               discards the response; consume it with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
@@ -3842,9 +4327,11 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// This is equivalent to calling `on_receiving_result` and manually forwarding
     /// the result, with two proxy-specific additions:
     ///
-    /// - If the pending response is dropped without ever being delivered (for
-    ///   example, the downstream connection closed), the incoming request is
+    /// - If the pending response cannot be delivered, the incoming request is
     ///   answered with an internal error instead of being left unanswered.
+    ///   Known clean incoming EOF is delivered like any other response
+    ///   error; an unexpected response-channel loss is forwarded as an outer
+    ///   consumption error.
     /// - When the peer cancels the incoming request, the cancellation is
     ///   forwarded to the outgoing request, and the downstream response
     ///   (normal data or a cancellation error) is still forwarded back. This is
@@ -3858,9 +4345,8 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         let this = self.forward_cancellation_from(responder.cancellation());
 
         this.consume_with(async move |response| {
-            // A response that was never delivered (outer `Err`, e.g. the
-            // downstream connection closed) is forwarded as an error: the
-            // incoming request must not be left unanswered.
+            // An unexpected response-channel loss (outer `Err`) is forwarded
+            // as an error: the incoming request must not be left unanswered.
             responder.respond_with_result(response.unwrap_or_else(Err))
         })
     }
@@ -3874,9 +4360,10 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// the typed result (`Ok(Result<T, _>)`). The dispatch loop's ack, if any,
     /// is sent after `handle` completes.
     ///
-    /// If the pending response is dropped without ever being delivered (for
-    /// example, the connection closed), `handle` receives the outer `Err`
-    /// describing the loss; there is no ack in that case.
+    /// Clean incoming EOF is delivered as `Ok(Err(error))`, just like
+    /// a peer response error, so callback-style consumers still run. If the
+    /// response channel disappears for another reason, `handle` receives an
+    /// outer `Err` describing that unexpected loss; there is no ack then.
     #[track_caller]
     fn consume_with<F>(
         self,
@@ -4241,9 +4728,59 @@ where
     IncomingStream: futures::Stream<Item = std::io::Result<String>> + Send + 'static,
 {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
-        let (channel, serve_self) = ConnectTo::<R>::into_channel_and_future(self);
+        let Self { outgoing, incoming } = self;
+        let (channel, transport_channel) = Channel::duplex();
+        let shutdown_tx = channel.tx.clone();
+        let Channel { rx, tx } = transport_channel;
+
+        // Once the client completes successfully, its incoming channel is
+        // gone. Keep consuming successful messages from the physical read
+        // half without forwarding them so a full-duplex peer cannot block our
+        // outgoing sink while it is being drained. Transport errors must still
+        // fail the connection.
+        let discard_incoming = Arc::new(AtomicBool::new(false));
+        let incoming = incoming.filter_map({
+            let discard_incoming = discard_incoming.clone();
+            move |item| {
+                let discard_incoming = discard_incoming.load(Ordering::Acquire);
+                future::ready((!discard_incoming || item.is_err()).then_some(item))
+            }
+        });
+
+        let outgoing = transport_actor::transport_outgoing_lines_actor(rx, outgoing)
+            .boxed()
+            .shared();
+        let serve_self = Box::pin({
+            let outgoing = outgoing.clone();
+            async move {
+                futures::try_join!(
+                    outgoing,
+                    transport_actor::transport_incoming_lines_actor(incoming, tx),
+                )?;
+                Ok(())
+            }
+        });
+
         match futures::future::select(Box::pin(client.connect_to(channel)), serve_self).await {
-            Either::Left((result, _)) | Either::Right((result, _)) => result,
+            Either::Left((result, serve_self)) => {
+                result?;
+                shutdown_tx.close_channel();
+                discard_incoming.store(true, Ordering::Release);
+
+                // Drive the read half while waiting for the write half, but do
+                // not require the peer's independent incoming stream to reach
+                // EOF. If incoming processing finishes successfully first,
+                // the shared outgoing future still owns and drains the sink.
+                // A successful `serve_self` result includes its shared
+                // outgoing clone, while any error must remain authoritative
+                // instead of being hidden behind the other handle. Poll it
+                // first so a ready read error wins over clean outgoing
+                // completion.
+                match future::select(serve_self, outgoing).await {
+                    Either::Left((result, _)) | Either::Right((result, _)) => result,
+                }
+            }
+            Either::Right((result, _)) => result,
         }
     }
 
@@ -4326,6 +4863,38 @@ where
     pub fn new(outgoing: OB, incoming: IB) -> Self {
         Self { outgoing, incoming }
     }
+
+    fn into_lines(
+        self,
+    ) -> Lines<
+        impl futures::Sink<String, Error = std::io::Error> + Send + 'static,
+        impl futures::Stream<Item = std::io::Result<String>> + Send + 'static,
+    > {
+        use futures::AsyncBufReadExt;
+        use futures::io::BufReader;
+        let Self { outgoing, incoming } = self;
+
+        let incoming_lines = Box::pin(BufReader::new(incoming).lines());
+        let outgoing_lines =
+            futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
+                write_line(&mut writer, line).await?;
+                Ok::<_, std::io::Error>(writer)
+            });
+
+        Lines::new(outgoing_lines, incoming_lines)
+    }
+}
+
+pub(crate) async fn write_line<W>(writer: &mut W, line: String) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin + ?Sized,
+{
+    use futures::AsyncWriteExt as _;
+
+    let mut bytes = line.into_bytes();
+    bytes.push(b'\n');
+    writer.write_all(&bytes).await?;
+    writer.flush().await
 }
 
 impl<OB, IB, R: Role> ConnectTo<R> for ByteStreams<OB, IB>
@@ -4334,34 +4903,11 @@ where
     IB: AsyncRead + Send + 'static,
 {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
-        let (channel, serve_self) = ConnectTo::<R>::into_channel_and_future(self);
-        match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
-            Either::Left((result, _)) | Either::Right((result, _)) => result,
-        }
+        ConnectTo::<R>::connect_to(self.into_lines(), client).await
     }
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        use futures::AsyncBufReadExt;
-        use futures::AsyncWriteExt;
-        use futures::io::BufReader;
-        let Self { outgoing, incoming } = self;
-
-        // Convert byte streams to line streams
-        // Box both streams to satisfy Unpin requirements
-        let incoming_lines = Box::pin(BufReader::new(incoming).lines());
-
-        // Create a sink that writes lines (with newlines) to the outgoing byte stream
-        // We need to Box the writer since it may not be Unpin
-        let outgoing_sink =
-            futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
-                let mut bytes = line.into_bytes();
-                bytes.push(b'\n');
-                writer.write_all(&bytes).await?;
-                Ok::<_, std::io::Error>(writer)
-            });
-
-        // Delegate to Lines component
-        ConnectTo::<R>::into_channel_and_future(Lines::new(outgoing_sink, incoming_lines))
+        ConnectTo::<R>::into_channel_and_future(self.into_lines())
     }
 }
 
@@ -4464,6 +5010,16 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn write_line_flushes_buffered_writers() {
+        let mut writer =
+            futures::io::BufWriter::with_capacity(4096, futures::io::Cursor::new(Vec::new()));
+
+        write_line(&mut writer, "message".into()).await.unwrap();
+
+        assert_eq!(writer.into_inner().into_inner(), b"message\n");
+    }
 
     #[test]
     fn peel_successor_envelopes_returns_plain_messages_unchanged() {

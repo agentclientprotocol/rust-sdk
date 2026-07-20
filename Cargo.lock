@@ -9,6 +9,7 @@ dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
  "agent-client-protocol-test",
+ "async-io",
  "async-process",
  "blocking",
  "clap",

@@ -204,7 +204,6 @@ async fn test_invalid_json() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "hangs indefinitely - see https://github.com/agentclientprotocol/rust-sdk/issues/64"]
 async fn test_incomplete_line() {
     use futures::io::Cursor;
 
