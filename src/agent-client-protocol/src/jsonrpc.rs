@@ -23,6 +23,7 @@ use futures::channel::{mpsc, oneshot};
 use futures::future::{self, BoxFuture, Either};
 use futures::{AsyncRead, AsyncWrite, StreamExt};
 
+pub(crate) mod close;
 mod dynamic_handler;
 pub(crate) mod handlers;
 mod incoming_actor;
@@ -32,6 +33,8 @@ pub(crate) mod run;
 mod task_actor;
 mod transport_actor;
 
+use crate::jsonrpc::close::{ChainedClose, CloseCallback};
+pub use crate::jsonrpc::close::{HandleConnectionClose, NullClose};
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 pub use crate::jsonrpc::handlers::NullHandler;
 use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
@@ -723,10 +726,11 @@ where
 /// ```
 #[must_use]
 #[derive(Debug)]
-pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun>
+pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose>
 where
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
 {
     /// My role.
     host: Host,
@@ -743,37 +747,8 @@ where
     /// Protocol version mode for the public API and wire compatibility layer.
     protocol_mode: ProtocolMode,
 
-    /// Callbacks run when the incoming transport reaches clean EOF.
-    on_close: Vec<OnClose<Host::Counterpart>>,
-}
-
-struct OnClose<Counterpart: Role> {
-    callback: Box<
-        dyn FnOnce(ConnectionTo<Counterpart>) -> BoxFuture<'static, Result<(), crate::Error>>
-            + Send,
-    >,
-}
-
-impl<Counterpart: Role> OnClose<Counterpart> {
-    fn new<F, Fut>(callback: F) -> Self
-    where
-        F: FnOnce(ConnectionTo<Counterpart>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
-    {
-        Self {
-            callback: Box::new(move |connection| callback(connection).boxed()),
-        }
-    }
-
-    async fn run(self, connection: ConnectionTo<Counterpart>) -> Result<(), crate::Error> {
-        (self.callback)(connection).await
-    }
-}
-
-impl<Counterpart: Role> Debug for OnClose<Counterpart> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("OnClose").finish_non_exhaustive()
-    }
+    /// Handler run when the incoming transport reaches clean EOF.
+    on_close: Close,
 }
 
 fn default_protocol_mode<Host: Role>() -> ProtocolMode {
@@ -788,7 +763,7 @@ fn default_protocol_mode<Host: Role>() -> ProtocolMode {
     }
 }
 
-impl<Host: Role> Builder<Host, NullHandler, NullRun> {
+impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
     /// Create a new connection builder for the given role.
     /// This type follows a builder pattern; use other methods to configure and then invoke
     /// [`Self::connect_to`] (to use as a server) or [`Self::connect_with`] to use as a client.
@@ -799,12 +774,12 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun> {
             handler: NullHandler,
             responder: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
-            on_close: Vec::new(),
+            on_close: NullClose,
         }
     }
 }
 
-impl<Host: Role, Handler> Builder<Host, Handler, NullRun>
+impl<Host: Role, Handler> Builder<Host, Handler, NullRun, NullClose>
 where
     Handler: HandleDispatchFrom<Host::Counterpart>,
 {
@@ -816,7 +791,7 @@ where
             handler,
             responder: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
-            on_close: Vec::new(),
+            on_close: NullClose,
         }
     }
 }
@@ -825,7 +800,8 @@ impl<
     Host: Role,
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
-> Builder<Host, Handler, Runner>
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close>
 {
     /// Set the "name" of this connection -- used only for debugging logs.
     pub fn name(mut self, name: impl ToString) -> Self {
@@ -865,11 +841,13 @@ impl<
             Host,
             impl HandleDispatchFrom<Host::Counterpart>,
             impl RunWithConnectionTo<Host::Counterpart>,
+            impl HandleConnectionClose<Host::Counterpart>,
         >,
     ) -> Builder<
         Host,
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
+        impl HandleConnectionClose<Host::Counterpart>,
     > {
         let Builder {
             name: other_name,
@@ -879,8 +857,6 @@ impl<
             on_close: other_on_close,
             host: _,
         } = other;
-        let mut on_close = self.on_close;
-        on_close.extend(other_on_close);
         Builder {
             host: self.host,
             name: self.name,
@@ -890,7 +866,7 @@ impl<
             ),
             responder: ChainRun::new(self.responder, other_responder),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
-            on_close,
+            on_close: ChainedClose::new(self.on_close, other_on_close),
         }
     }
 
@@ -901,7 +877,7 @@ impl<
     pub fn with_handler(
         self,
         handler: impl HandleDispatchFrom<Host::Counterpart>,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner> {
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close> {
         Builder {
             host: self.host,
             name: self.name,
@@ -916,7 +892,7 @@ impl<
     pub fn with_responder<Run1>(
         self,
         responder: Run1,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
     where
         Run1: RunWithConnectionTo<Host::Counterpart>,
     {
@@ -935,7 +911,7 @@ impl<
     pub fn with_spawned<F, Fut>(
         self,
         task: F,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
     where
         F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
@@ -976,13 +952,22 @@ impl<
     /// # Ok(())
     /// # }
     /// ```
-    pub fn on_close<F, Fut>(mut self, callback: F) -> Self
+    pub fn on_close<F, Fut>(
+        self,
+        callback: F,
+    ) -> Builder<Host, Handler, Runner, impl HandleConnectionClose<Host::Counterpart>>
     where
-        F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
+        F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
-        self.on_close.push(OnClose::new(callback));
-        self
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            responder: self.responder,
+            protocol_mode: self.protocol_mode,
+            on_close: ChainedClose::new(self.on_close, CloseCallback::new(callback)),
+        }
     }
 
     /// Register a handler for messages that can be either requests OR notifications.
@@ -1036,7 +1021,7 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Req: JsonRpcRequest,
@@ -1111,7 +1096,7 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         F: AsyncFnMut(
@@ -1185,7 +1170,7 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Notif: JsonRpcNotification,
@@ -1235,7 +1220,7 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
@@ -1289,7 +1274,7 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
@@ -1332,7 +1317,7 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(Notif, ConnectionTo<Host::Counterpart>) -> Result<T, crate::Error> + Send,
@@ -1359,6 +1344,7 @@ impl<
         Host,
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
+        Close,
     >
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
@@ -1534,7 +1520,6 @@ impl<
             dynamic_handler_tx,
             transport_completion,
             pending_replies.registrar(),
-            on_close,
         );
         let spawn_result = connection.spawn(async move {
             let result = transport_future.await;
@@ -1562,7 +1547,7 @@ impl<
                         transport_incoming_rx,
                         dynamic_handler_rx,
                         pending_replies.clone(),
-                        handler,
+                        incoming_actor::IncomingHandlers::new(handler, on_close),
                         protocol_compat.clone(),
                     );
                     let other_actors = async {
@@ -1605,11 +1590,12 @@ impl<
     }
 }
 
-impl<R, H, Run> ConnectTo<R::Counterpart> for Builder<R, H, Run>
+impl<R, H, Run, Close> ConnectTo<R::Counterpart> for Builder<R, H, Run, Close>
 where
     R: Role,
     H: HandleDispatchFrom<R::Counterpart> + 'static,
     Run: RunWithConnectionTo<R::Counterpart> + 'static,
+    Close: HandleConnectionClose<R::Counterpart> + 'static,
 {
     async fn connect_to(self, client: impl ConnectTo<R>) -> Result<(), crate::Error> {
         Builder::connect_to(self, client).await
@@ -2295,7 +2281,6 @@ pub struct ConnectionTo<Counterpart: Role> {
     transport_completion: SharedTransportCompletion,
     pending_replies: PendingRepliesRegistrar,
     incoming_closed: IncomingClosed,
-    on_close: Arc<Mutex<Option<Vec<OnClose<Counterpart>>>>>,
 }
 
 type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
@@ -2441,7 +2426,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
         transport_completion: SharedTransportCompletion,
         pending_replies: PendingRepliesRegistrar,
-        on_close: Vec<OnClose<Counterpart>>,
     ) -> Self {
         Self {
             counterpart,
@@ -2451,7 +2435,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             transport_completion,
             pending_replies,
             incoming_closed: IncomingClosed::new(),
-            on_close: Arc::new(Mutex::new(Some(on_close))),
         }
     }
 
@@ -2514,14 +2497,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     pub(super) fn finish_incoming_close(&self) {
         self.incoming_closed.finish_close();
-    }
-
-    fn take_on_close(&self) -> Vec<OnClose<Counterpart>> {
-        self.on_close
-            .lock()
-            .expect("connection close callback mutex poisoned")
-            .take()
-            .unwrap_or_default()
     }
 
     /// Spawns a task that will run so long as the JSON-RPC connection is being served.
@@ -2613,6 +2588,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             R,
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
+            impl HandleConnectionClose<R::Counterpart> + 'static,
         >,
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
