@@ -540,8 +540,10 @@ fn rewrite_initialize_params(
     match selected {
         AgentProtocol::V1 => {
             let mut initialize = if requested >= ProtocolVersion::V2 {
-                v2::conversion::v2_to_v1(parse_initialize_params::<v2::InitializeRequest>(params)?)
-                    .map_err(invalid_initialize_params)?
+                v2::conversion::try_v2_to_v1(parse_initialize_params::<v2::InitializeRequest>(
+                    params,
+                )?)
+                .map_err(invalid_initialize_params)?
             } else {
                 parse_initialize_params::<InitializeRequest>(params)?
             };
@@ -552,7 +554,7 @@ fn rewrite_initialize_params(
             let mut initialize = if requested >= ProtocolVersion::V2 {
                 parse_initialize_params::<v2::InitializeRequest>(params)?
             } else {
-                v2::conversion::v1_to_v2(parse_initialize_params::<InitializeRequest>(params)?)
+                v2::conversion::try_v1_to_v2(parse_initialize_params::<InitializeRequest>(params)?)
                     .map_err(invalid_initialize_params)?
             };
             initialize.protocol_version = ProtocolVersion::V2;
