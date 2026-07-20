@@ -25,16 +25,22 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 
 #[test]
 fn builder_auto_traits_follow_the_close_handler() {
+    struct SendOnlyCallbackState {
+        changed: std::cell::Cell<bool>,
+        unwind_sensitive: std::marker::PhantomData<&'static mut ()>,
+    }
+
+    impl SendOnlyCallbackState {
+        fn mark_changed(self) {
+            self.changed.set(true);
+        }
+    }
+
     fn assert_released_auto_traits<T: Send + Sync + UnwindSafe + RefUnwindSafe>(_: &T) {}
     fn assert_send<T: Send>(_: &T) {}
 
     assert_released_auto_traits(&UntypedRole.builder());
     assert_released_auto_traits(&UntypedRole.builder().on_close(|_cx| async { Ok(()) }));
-
-    struct SendOnlyCallbackState {
-        changed: std::cell::Cell<bool>,
-        unwind_sensitive: std::marker::PhantomData<&'static mut ()>,
-    }
 
     // `Cell` keeps the callback from being `Sync` or `RefUnwindSafe`, while
     // the mutable-reference marker keeps it from being `UnwindSafe`. None of
@@ -44,8 +50,7 @@ fn builder_auto_traits_follow_the_close_handler() {
         unwind_sensitive: std::marker::PhantomData,
     };
     let send_only_builder = UntypedRole.builder().on_close(move |_cx| async move {
-        callback_state.changed.set(true);
-        drop(callback_state);
+        callback_state.mark_changed();
         Ok(())
     });
 
