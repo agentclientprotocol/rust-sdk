@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.2.0...v2.0.0) - 2026-07-20
+
+### Added
+
+- *(unstable-v2)* Add routers for supporting both v1 and v2 at once ([#253](https://github.com/agentclientprotocol/rust-sdk/pull/253))
+
+### Fixed
+
+- *(acp)* Handle  incoming EOF correctly ([#261](https://github.com/agentclientprotocol/rust-sdk/pull/261))
+- *(acp)* Bound stderr capture memory ([#255](https://github.com/agentclientprotocol/rust-sdk/pull/255))
+- kill the agent's whole process group when ChildGuard drops ([#251](https://github.com/agentclientprotocol/rust-sdk/pull/251))
+- *(unstable-v2)* Require matching v2 protocol negotiation ([#252](https://github.com/agentclientprotocol/rust-sdk/pull/252))
+
 ## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.1.0...v1.2.0) - 2026-07-07
 
 ### Added
