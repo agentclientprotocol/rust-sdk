@@ -322,7 +322,7 @@ fn v2_agent_with_session(session_id: &'static str) -> impl ConnectTo<Client> {
         )
         .on_receive_request(
             async move |request: v2::NewSessionRequest, responder, _cx| {
-                assert!(request.cwd.is_absolute());
+                assert!(AsRef::<std::path::Path>::as_ref(&request.cwd).is_absolute());
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(session_id)))
             },
             agent_client_protocol::on_receive_request!(),
@@ -821,7 +821,7 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
         )
         .on_receive_request(
             async |request: v2::NewSessionRequest, responder, _cx| {
-                assert!(request.cwd.is_absolute());
+                assert!(AsRef::<std::path::Path>::as_ref(&request.cwd).is_absolute());
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "v2-native-session",
                 )))
@@ -1089,7 +1089,7 @@ async fn protocol_router_routes_v2_client_to_v2_implementation() -> Result<(), E
                 )
                 .on_receive_request(
                     async |request: v2::NewSessionRequest, responder, _cx| {
-                        assert!(request.cwd.is_absolute());
+                        assert!(AsRef::<std::path::Path>::as_ref(&request.cwd).is_absolute());
                         responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                             "v2-protocol-router-session",
                         )))
