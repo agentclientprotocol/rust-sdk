@@ -844,7 +844,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 #[must_use]
 #[derive(Debug)]
 pub struct TypeNotification<R: Role> {
-    cx: ConnectionTo<R>,
+    _cx: ConnectionTo<R>,
     state: Option<TypeNotificationState>,
 }
 
@@ -859,7 +859,7 @@ impl<R: Role> TypeNotification<R> {
     pub fn new(request: UntypedMessage, cx: &ConnectionTo<R>) -> Self {
         let UntypedMessage { method, params } = request;
         Self {
-            cx: cx.clone(),
+            _cx: cx.clone(),
             state: Some(TypeNotificationState::Unhandled(method, params)),
         }
     }
@@ -880,8 +880,13 @@ impl<R: Role> TypeNotification<R> {
                 if N::matches_method(&method) {
                     match N::parse_message(&method, &params) {
                         Ok(request) => TypeNotificationState::Handled(op(request).await),
-                        Err(err) => {
-                            TypeNotificationState::Handled(self.cx.send_error_notification(err))
+                        Err(error) => {
+                            tracing::warn!(
+                                ?error,
+                                method,
+                                "Invalid notification params; ignoring notification without replying"
+                            );
+                            TypeNotificationState::Handled(Ok(()))
                         }
                     }
                 } else {
@@ -907,7 +912,14 @@ impl<R: Role> TypeNotification<R> {
             TypeNotificationState::Unhandled(method, params) => {
                 match UntypedMessage::new(&method, params) {
                     Ok(m) => op(m).await,
-                    Err(err) => self.cx.send_error_notification(err),
+                    Err(error) => {
+                        tracing::warn!(
+                            ?error,
+                            method,
+                            "Invalid untyped notification; ignoring notification without replying"
+                        );
+                        Ok(())
+                    }
                 }
             }
             TypeNotificationState::Handled(r) => r,

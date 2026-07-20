@@ -29,10 +29,14 @@
 //! }
 //! ```
 
-use futures::future::BoxFuture;
+use futures::{
+    FutureExt as _, StreamExt as _,
+    channel::{mpsc, oneshot},
+    future::{self, BoxFuture, Shared},
+};
 use std::{fmt::Debug, future::Future, marker::PhantomData};
 
-use crate::{Channel, Result, role::Role};
+use crate::{Channel, FramedChannel, Result, role::Role};
 
 /// A component that can exchange JSON-RPC messages to an endpoint playing the role `R`
 /// (e.g., an ACP [`Agent`](`crate::role::acp::Agent`) or an MCP [`Server`](`crate::role::mcp::Server`)).
@@ -154,6 +158,82 @@ pub trait ConnectTo<R: Role>: Send + 'static {
         let future = Box::pin(self.connect_to(channel_b));
         (channel_a, future)
     }
+
+    /// Convert this component into the SDK's batch-aware transport channel.
+    ///
+    /// This is an internal extension point used by built-in transports to retain
+    /// JSON-RPC batch boundaries. Implementations normally do not need to
+    /// override it.
+    #[doc(hidden)]
+    fn into_framed_channel_and_future(self) -> (FramedChannel, BoxFuture<'static, Result<()>>)
+    where
+        Self: Sized,
+    {
+        let (channel_for_caller, channel_for_component) = FramedChannel::duplex();
+        let (bridge_tx, mut bridge_rx) = mpsc::unbounded();
+        let (component_done_tx, component_done_rx) = oneshot::channel();
+        let component_done = component_done_rx.map(|_| ()).boxed().shared();
+        let component_channel = DefaultFramedChannel {
+            channel: channel_for_component,
+            bridge_tx,
+            component_done,
+        };
+
+        let future = Box::pin(async move {
+            let component = async move {
+                let result = self.connect_to(component_channel).await;
+                let _ = component_done_tx.send(());
+                result
+            };
+            let bridges = async move {
+                while let Some(bridge) = bridge_rx.next().await {
+                    bridge.await?;
+                }
+                Ok::<(), crate::Error>(())
+            };
+
+            futures::try_join!(component, bridges)?;
+            Ok(())
+        });
+        (channel_for_caller, future)
+    }
+}
+
+/// A negotiating endpoint for the default component adapter.
+///
+/// Transparent components receive its framed channel directly, while legacy
+/// components can still request a [`Channel`]. Legacy bridge work is driven by
+/// the outer component future so their transport future retains the immediate
+/// completion behavior of an in-process `Channel`.
+struct DefaultFramedChannel {
+    channel: FramedChannel,
+    bridge_tx: mpsc::UnboundedSender<BoxFuture<'static, Result<()>>>,
+    component_done: Shared<BoxFuture<'static, ()>>,
+}
+
+impl<R: Role> ConnectTo<R> for DefaultFramedChannel {
+    async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<()> {
+        let Self { channel, .. } = self;
+        ConnectTo::<R>::connect_to(channel, client).await
+    }
+
+    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {
+        let Self {
+            channel,
+            bridge_tx,
+            component_done,
+        } = self;
+        let (channel, bridge) = channel.into_legacy_channel_until(component_done);
+        let registered = bridge_tx
+            .unbounded_send(bridge)
+            .map_err(crate::Error::into_internal_error);
+        (channel, Box::pin(future::ready(registered)))
+    }
+
+    fn into_framed_channel_and_future(self) -> (FramedChannel, BoxFuture<'static, Result<()>>) {
+        let Self { channel, .. } = self;
+        ConnectTo::<R>::into_framed_channel_and_future(channel)
+    }
 }
 
 /// Type-erased connect trait for object-safe dynamic dispatch.
@@ -171,6 +251,10 @@ trait ErasedConnectTo<R: Role>: Send {
 
     fn into_channel_and_future_erased(self: Box<Self>)
     -> (Channel, BoxFuture<'static, Result<()>>);
+
+    fn into_framed_channel_and_future_erased(
+        self: Box<Self>,
+    ) -> (FramedChannel, BoxFuture<'static, Result<()>>);
 }
 
 /// Blanket implementation: any `Serve<R>` can be type-erased.
@@ -197,6 +281,12 @@ impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
         self: Box<Self>,
     ) -> (Channel, BoxFuture<'static, Result<()>>) {
         (*self).into_channel_and_future()
+    }
+
+    fn into_framed_channel_and_future_erased(
+        self: Box<Self>,
+    ) -> (FramedChannel, BoxFuture<'static, Result<()>>) {
+        (*self).into_framed_channel_and_future()
     }
 }
 
@@ -249,6 +339,10 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {
         self.inner.into_channel_and_future_erased()
+    }
+
+    fn into_framed_channel_and_future(self) -> (FramedChannel, BoxFuture<'static, Result<()>>) {
+        self.inner.into_framed_channel_and_future_erased()
     }
 }
 

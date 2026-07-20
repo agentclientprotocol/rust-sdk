@@ -226,6 +226,87 @@ async fn test_incomplete_line() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_standalone_response_is_ignored() {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, client_reader) = tokio::io::duplex(4096);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       _cx: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let server_task = tokio::task::spawn_local(server.connect_to(
+                agent_client_protocol::ByteStreams::new(
+                    server_writer.compat_write(),
+                    server_reader.compat(),
+                ),
+            ));
+
+            for message in [
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 99,
+                    "result": null,
+                    "error": { "code": -32603, "message": "Internal error" }
+                }),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 41,
+                    "method": "simple_method",
+                    "params": { "message": "after malformed response" }
+                }),
+            ] {
+                let mut bytes =
+                    serde_json::to_vec(&message).expect("test message should serialize");
+                bytes.push(b'\n');
+                client_writer
+                    .write_all(&bytes)
+                    .await
+                    .expect("test message should be written");
+            }
+            client_writer
+                .flush()
+                .await
+                .expect("test messages should be flushed");
+
+            let mut client_reader = BufReader::new(client_reader);
+            let mut line = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                client_reader.read_line(&mut line),
+            )
+            .await
+            .expect("timed out waiting for the valid request response")
+            .expect("response read should succeed");
+            let response: serde_json::Value =
+                serde_json::from_str(line.trim()).expect("response should be valid JSON");
+            assert_eq!(response["id"], 41);
+            assert_eq!(
+                response["result"]["result"],
+                "echo: after malformed response"
+            );
+
+            drop(client_writer);
+            drop(client_reader);
+            tokio::time::timeout(std::time::Duration::from_secs(10), server_task)
+                .await
+                .expect("server did not stop after EOF")
+                .expect("server task panicked")
+                .expect("server connection failed");
+        })
+        .await;
+}
+
 // ============================================================================
 // Test 2: Unknown method (no handler claims)
 // ============================================================================
@@ -674,11 +755,11 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
 }
 
 // ============================================================================
-// Test 7: Bad notification params (from Ben's branch)
+// Test 7: Bad notification params
 // ============================================================================
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_bad_notification_params_send_error_notification_and_connection_stays_alive() {
+async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;
 
@@ -723,9 +804,8 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
 
             let mut client_reader = BufReader::new(client_reader);
 
-            // Send a notification with bad params (wrong field name).
-            // Notifications have no "id", so the server sends an error
-            // notification (id: null) and keeps the connection alive.
+            // Send a notification with bad params (wrong field name), followed
+            // by a request that acts as an ordering barrier.
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"wrong_field":"hello"}}
@@ -735,28 +815,6 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
                 .unwrap();
             client_writer.flush().await.unwrap();
 
-            // The server sends an error notification (id: null) for the
-            // malformed notification.
-            let error_notification = read_jsonrpc_response_line(&mut client_reader).await;
-            expect![[r#"
-                {
-                  "jsonrpc": "2.0",
-                  "id": null,
-                  "error": {
-                    "code": -32602,
-                    "message": "Invalid params",
-                    "data": {
-                      "error": "missing field `message`",
-                      "json": {
-                        "wrong_field": "hello"
-                      },
-                      "phase": "deserialization"
-                    }
-                  }
-                }"#]]
-            .assert_eq(&serde_json::to_string_pretty(&error_notification).unwrap());
-
-            // Now send a valid request to prove the connection is still alive.
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","id":10,"method":"simple_method","params":{"message":"after bad notification"}}
@@ -766,6 +824,8 @@ async fn test_bad_notification_params_send_error_notification_and_connection_sta
                 .unwrap();
             client_writer.flush().await.unwrap();
 
+            // The first line must be the request response. Any reply to the
+            // malformed notification would arrive before it.
             let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {

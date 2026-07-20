@@ -10,6 +10,27 @@ agent-client-protocol = { version = "...", features = ["unstable_protocol_v2"] }
 This feature is separate from the broad `unstable` feature because protocol v2
 is a versioning experiment, not just an unstable method family.
 
+## JSON-RPC batches
+
+The standard `Lines`, `ByteStreams`, and `Stdio` transports accept incoming
+JSON-RPC batch arrays. They process each entry independently, preserve valid
+entries when a sibling is invalid, and collect all response-bearing entries
+into one response array after the batch completes. An empty array receives one
+`Invalid Request` response object, while a notification-only batch receives no
+response. Incoming response arrays are routed entry by entry using their request
+IDs; malformed response-like siblings are ignored rather than answered.
+
+This support lives in the shared transport layer and therefore also works in
+v1 mode as a compatibility extension. The SDK does not initiate batches of
+requests or notifications. It only writes a batch array when responding to a
+batch call received from the peer; requests received individually continue to
+receive individual response objects.
+
+ACP peers should still send lifecycle-sensitive calls individually. For
+compatibility, the agent protocol router accepts `initialize` as the first
+entry of an incoming batch and preserves that batch when handing the connection
+to the selected v1 or v2 implementation.
+
 By default, `Client.builder()` and `Agent.builder()` continue to expose the
 stable v1 API and advertise protocol v1. To use the v2 API for a connection,
 construct the builder with `Client.v2()` or `Agent.v2()`:

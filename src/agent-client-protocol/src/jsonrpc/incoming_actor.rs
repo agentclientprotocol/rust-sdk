@@ -16,8 +16,11 @@ use crate::jsonrpc::PendingReplies;
 use crate::jsonrpc::PendingReply;
 use crate::jsonrpc::RawJsonRpcMessage;
 use crate::jsonrpc::RawJsonRpcParams;
+use crate::jsonrpc::RequestReplyTarget;
 use crate::jsonrpc::Responder;
+use crate::jsonrpc::ResponseDestination;
 use crate::jsonrpc::ResponseRouter;
+use crate::jsonrpc::TransportFrame;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
@@ -51,7 +54,7 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
+    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
     handlers: IncomingHandlers<
@@ -107,7 +110,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     let mut new_pending_messages = vec![];
                     for pending_message in pending_messages {
                         tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
-                        let id = pending_message.id();
+                        let reply_target = pending_message.request_reply_target();
                         let method = pending_message.method().to_string();
                         match handler
                             .dyn_handle_dispatch_from(pending_message, connection.clone())
@@ -125,7 +128,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             }
                             Err(err) => {
                                 tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message, reporting back");
-                                report_handler_error(connection, id, method, err)?;
+                                report_handler_error(connection, reply_target, method, err)?;
                             }
                         }
                     }
@@ -139,113 +142,134 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 }
             },
 
-            IncomingProtocolMsg::Transport(message) => match message {
-                Ok(message) => match message {
-                    RawJsonRpcMessage::Request(request) => {
-                        tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
-                        let request_method = request.method.to_string();
-                        let request_id = request.id.clone();
-                        match dispatch_from_message(
-                            connection,
-                            request.method,
-                            request.params,
-                            Some(request.id),
-                            &protocol_compat,
-                            &request_cancellations,
-                        ) {
-                            Ok(dispatches) => {
-                                for dispatch in dispatches {
-                                    dispatch_dispatch(
-                                        counterpart.clone(),
-                                        connection,
-                                        dispatch,
-                                        &mut dynamic_handlers,
-                                        &mut handler,
-                                        &mut pending_messages,
-                                        &request_cancellations,
-                                    )
-                                    .await?;
-                                }
-                            }
-                            Err(error) => {
-                                report_handler_error(
-                                    connection,
-                                    Some(
-                                        serde_json::to_value(request_id)
-                                            .expect("RequestId serializes infallibly"),
-                                    ),
-                                    request_method,
-                                    error,
-                                )?;
-                            }
-                        }
-                    }
-                    RawJsonRpcMessage::Notification(notification) => {
-                        tracing::trace!(method = %notification.method, "Handling notification");
-                        let request_method = notification.method.to_string();
-                        match dispatch_from_message(
-                            connection,
-                            notification.method,
-                            notification.params,
-                            None,
-                            &protocol_compat,
-                            &request_cancellations,
-                        ) {
-                            Ok(dispatches) => {
-                                for dispatch in dispatches {
-                                    dispatch_dispatch(
-                                        counterpart.clone(),
-                                        connection,
-                                        dispatch,
-                                        &mut dynamic_handlers,
-                                        &mut handler,
-                                        &mut pending_messages,
-                                        &request_cancellations,
-                                    )
-                                    .await?;
-                                }
-                            }
-                            Err(error) => {
-                                report_handler_error(connection, None, request_method, error)?;
-                            }
-                        }
-                    }
-                    RawJsonRpcMessage::Response(response) => {
-                        let (id, result) = match response {
-                            Response::Result { id, result } => (id, Ok(result)),
-                            Response::Error { id, error } => (id, Err(error)),
-                        };
-
-                        tracing::trace!(?id, "Handling response");
-                        if let Some(pending_reply) = pending_replies.remove(&id) {
-                            let result =
-                                protocol_compat.incoming_response(&pending_reply.method, result);
-                            // Route the response through the handler chain
-                            let dispatch = dispatch_from_response(id, pending_reply, result);
-                            dispatch_dispatch(
-                                counterpart.clone(),
+            IncomingProtocolMsg::Transport(frame) => {
+                let (entries, batch_completion) = frame_entries(frame);
+                for (message, destination) in entries {
+                    match message {
+                        Ok(RawJsonRpcMessage::Request(request)) => {
+                            tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
+                            let request_method = request.method.to_string();
+                            let request_id = request.id.clone();
+                            let destination = destination
+                                .expect("every incoming request has a response destination");
+                            match dispatch_from_message(
                                 connection,
-                                dispatch,
-                                &mut dynamic_handlers,
-                                &mut handler,
-                                &mut pending_messages,
+                                request.method,
+                                request.params,
+                                Some(request.id),
+                                &protocol_compat,
                                 &request_cancellations,
-                            )
-                            .await?;
-                        } else {
+                                Some(destination.clone()),
+                            ) {
+                                Ok(dispatches) => {
+                                    for dispatch in dispatches {
+                                        dispatch_dispatch(
+                                            counterpart.clone(),
+                                            connection,
+                                            dispatch,
+                                            &mut dynamic_handlers,
+                                            &mut handler,
+                                            &mut pending_messages,
+                                            &request_cancellations,
+                                        )
+                                        .await?;
+                                    }
+                                }
+                                Err(error) => {
+                                    report_handler_error(
+                                        connection,
+                                        Some(RequestReplyTarget {
+                                            id: request_id,
+                                            method: request_method.clone(),
+                                            destination,
+                                        }),
+                                        request_method,
+                                        error,
+                                    )?;
+                                }
+                            }
+                        }
+                        Ok(RawJsonRpcMessage::Notification(notification)) => {
+                            tracing::trace!(method = %notification.method, "Handling notification");
+                            let request_method = notification.method.to_string();
+                            match dispatch_from_message(
+                                connection,
+                                notification.method,
+                                notification.params,
+                                None,
+                                &protocol_compat,
+                                &request_cancellations,
+                                None,
+                            ) {
+                                Ok(dispatches) => {
+                                    for dispatch in dispatches {
+                                        dispatch_dispatch(
+                                            counterpart.clone(),
+                                            connection,
+                                            dispatch,
+                                            &mut dynamic_handlers,
+                                            &mut handler,
+                                            &mut pending_messages,
+                                            &request_cancellations,
+                                        )
+                                        .await?;
+                                    }
+                                }
+                                Err(error) => {
+                                    report_handler_error(connection, None, request_method, error)?;
+                                }
+                            }
+                        }
+                        Ok(RawJsonRpcMessage::Response(response)) => {
+                            let (id, result) = match response {
+                                Response::Result { id, result } => (id, Ok(result)),
+                                Response::Error { id, error } => (id, Err(error)),
+                            };
+
+                            tracing::trace!(?id, "Handling response");
+                            if let Some(pending_reply) = pending_replies.remove(&id) {
+                                let result = protocol_compat
+                                    .incoming_response(&pending_reply.method, result);
+                                let dispatch = dispatch_from_response(id, pending_reply, result);
+                                dispatch_dispatch(
+                                    counterpart.clone(),
+                                    connection,
+                                    dispatch,
+                                    &mut dynamic_handlers,
+                                    &mut handler,
+                                    &mut pending_messages,
+                                    &request_cancellations,
+                                )
+                                .await?;
+                            } else {
+                                tracing::warn!(
+                                    ?id,
+                                    "incoming_actor: received response for unknown id, no subscriber found"
+                                );
+                            }
+                        }
+                        Err(error) => {
                             tracing::warn!(
-                                ?id,
-                                "incoming_actor: received response for unknown id, no subscriber found"
+                                ?error,
+                                "Invalid transport input, sending error response"
                             );
+                            let destination = destination.expect(
+                                "invalid request input outside a response batch has a destination",
+                            );
+                            send_raw_message(
+                                &connection.message_tx,
+                                OutgoingMessage::Error { error, destination },
+                            )?;
                         }
                     }
-                },
-                Err(error) => {
-                    // Parse error from transport - send error notification back to remote
-                    tracing::warn!(?error, "Transport parse error, sending error notification");
-                    connection.send_error_notification(error)?;
                 }
-            },
+                if let Some(completion) = batch_completion {
+                    send_raw_message(
+                        &connection.message_tx,
+                        OutgoingMessage::BatchDispatchComplete { completion },
+                    )?;
+                }
+            }
         }
     }
     Ok(())
@@ -253,9 +277,62 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
-    Transport(Result<RawJsonRpcMessage, crate::Error>),
+    Transport(TransportFrame),
     TransportClosed,
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
+}
+
+fn frame_entries(
+    frame: TransportFrame,
+) -> (
+    Vec<(
+        Result<RawJsonRpcMessage, crate::Error>,
+        Option<ResponseDestination>,
+    )>,
+    Option<super::BatchDispatchCompletion>,
+) {
+    let entries: Vec<Result<RawJsonRpcMessage, crate::Error>> = match frame {
+        TransportFrame::Single(message) => {
+            let destination =
+                message_requires_response(&message).then_some(ResponseDestination::Individual);
+            return (vec![(message, destination)], None);
+        }
+        TransportFrame::InvalidSingle { error, .. } => {
+            return (
+                vec![(Err(error), Some(ResponseDestination::Individual))],
+                None,
+            );
+        }
+        TransportFrame::Batch(batch) => batch.into_results().collect(),
+    };
+
+    let response_count = entries
+        .iter()
+        .filter(|entry| message_requires_response(entry))
+        .count();
+    if response_count == 0 {
+        return (
+            entries.into_iter().map(|entry| (entry, None)).collect(),
+            None,
+        );
+    }
+
+    let (mut destinations, completion) = ResponseDestination::batch(response_count);
+    (
+        entries
+            .into_iter()
+            .map(|entry| {
+                let destination = message_requires_response(&entry)
+                    .then(|| destinations.next().expect("one destination per batch call"));
+                (entry, destination)
+            })
+            .collect(),
+        Some(completion),
+    )
+}
+
+fn message_requires_response(message: &Result<RawJsonRpcMessage, crate::Error>) -> bool {
+    matches!(message, Ok(RawJsonRpcMessage::Request(_)) | Err(_))
 }
 
 /// Dispatches a JSON-RPC request to the handler.
@@ -267,28 +344,32 @@ fn dispatch_from_message<Counterpart: Role>(
     id: Option<RequestId>,
     protocol_compat: &ProtocolCompat,
     request_cancellations: &super::RequestCancellationRegistry,
+    response_destination: Option<ResponseDestination>,
 ) -> Result<Vec<Dispatch>, crate::Error> {
     let message = UntypedMessage::new(&method, crate::jsonrpc::params_from_transport(params))
         .expect("well-formed JSON");
 
-    match id {
-        Some(id) => {
-            let message = protocol_compat.incoming_message(message)?;
-            Ok(vec![Dispatch::Request(
-                message,
-                Responder::new(
-                    connection.message_tx.clone(),
-                    method.to_string(),
-                    id,
-                    request_cancellations,
-                ),
-            )])
-        }
-        None => Ok(protocol_compat
+    if let Some(id) = id {
+        let message = protocol_compat.incoming_message(message)?;
+        let response_destination =
+            response_destination.expect("incoming requests always have a response destination");
+        Ok(vec![Dispatch::Request(
+            message,
+            Responder::new(
+                connection.message_tx.clone(),
+                method.to_string(),
+                id,
+                request_cancellations,
+                response_destination,
+            ),
+        )])
+    } else {
+        debug_assert!(response_destination.is_none());
+        Ok(protocol_compat
             .incoming_notification(message)?
             .into_iter()
             .map(Dispatch::Notification)
-            .collect()),
+            .collect())
     }
 }
 
@@ -340,6 +421,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let id = dispatch.id();
     let method = dispatch.method().to_string();
+    let reply_target = dispatch.request_reply_target();
 
     match request_cancellations.cancel_if_requested(&dispatch) {
         Ok(true) => {
@@ -353,7 +435,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 ?err,
                 "Request cancellation notification errored"
             );
-            return report_handler_error(connection, id, method, err);
+            return report_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -376,7 +458,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
         Err(err) => {
             tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored, reporting back to remote");
-            return report_handler_error(connection, id, method, err);
+            return report_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -400,7 +482,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
             Err(err) => {
                 tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored, reporting back to remote");
-                return report_handler_error(connection, id, method, err);
+                return report_handler_error(connection, reply_target, method, err);
             }
         }
     }
@@ -428,7 +510,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 handler = "default",
                 "Default handler errored, reporting back to remote"
             );
-            return report_handler_error(connection, id, method, err);
+            return report_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -470,31 +552,30 @@ async fn dispatch_dispatch<Counterpart: Role>(
 /// When a handler returns an error, report it back to the remote side instead
 /// of propagating it and tearing down the connection.
 ///
-/// For requests (which have an id), sends a JSON-RPC error response.
-/// For notifications (no id), sends an out-of-band error notification.
-/// For responses, forwards the error to the local awaiter.
+/// For requests, sends a JSON-RPC error response to the request's exact output
+/// destination. For notifications and incoming responses, logs without replying.
 fn report_handler_error<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
-    id: Option<serde_json::Value>,
+    reply_target: Option<RequestReplyTarget>,
     method: String,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
-    match id {
-        Some(id) => {
-            // Request: send error response with the original request id
-            let jsonrpc_id = serde_json::from_value(id).unwrap_or(RequestId::Null);
-            send_raw_message(
-                &connection.message_tx,
-                OutgoingMessage::Response {
-                    id: jsonrpc_id,
-                    method,
-                    response: Err(error),
-                },
-            )
-        }
-        None => {
-            // Notification or response without id: send error notification
-            connection.send_error_notification(error)
-        }
+    if let Some(reply_target) = reply_target {
+        send_raw_message(
+            &connection.message_tx,
+            OutgoingMessage::Response {
+                id: reply_target.id,
+                method: reply_target.method,
+                response: Err(error),
+                destination: reply_target.destination,
+            },
+        )
+    } else {
+        tracing::warn!(
+            %method,
+            ?error,
+            "Non-request handler failed; ignoring error because there is no request to answer"
+        );
+        Ok(())
     }
 }

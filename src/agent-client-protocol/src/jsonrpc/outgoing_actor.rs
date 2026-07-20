@@ -3,7 +3,7 @@ use futures::StreamExt as _;
 use futures::channel::mpsc;
 
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
-use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage};
+use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage, TransportFrame};
 use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
@@ -27,7 +27,7 @@ pub(crate) fn send_raw_message(
 pub(super) async fn outgoing_protocol_actor(
     mut outgoing_rx: mpsc::UnboundedReceiver<OutgoingMessage>,
     pending_replies: PendingReplies,
-    transport_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
+    transport_tx: mpsc::UnboundedSender<TransportFrame>,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
     let mut drain_waiters = Vec::new();
@@ -36,12 +36,20 @@ pub(super) async fn outgoing_protocol_actor(
         tracing::debug!(?message, "outgoing_protocol_actor");
 
         // Create the message to be sent over the transport
-        let json_rpc_message = match message {
+        let (json_rpc_message, destination) = match message {
             OutgoingMessage::CloseAfterDraining { done } => {
                 // Reject later sends while preserving every message that was
                 // already accepted into this receiver's buffer.
                 outgoing_rx.close();
                 drain_waiters.push(done);
+                continue;
+            }
+            OutgoingMessage::BatchDispatchComplete { completion } => {
+                if let Some(frame) = completion.complete() {
+                    transport_tx
+                        .unbounded_send(frame)
+                        .map_err(crate::Error::into_internal_error)?;
+                }
                 continue;
             }
             OutgoingMessage::Request {
@@ -74,7 +82,8 @@ pub(super) async fn outgoing_protocol_actor(
                     continue;
                 }
 
-                if let Err(error) = transport_tx.unbounded_send(Ok(request)) {
+                if let Err(error) = transport_tx.unbounded_send(TransportFrame::Single(Ok(request)))
+                {
                     let error = crate::Error::into_internal_error(error);
                     if let Some(pending_reply) = pending_replies.remove(&id) {
                         pending_reply.fail(error.clone());
@@ -107,7 +116,7 @@ pub(super) async fn outgoing_protocol_actor(
                         }
                     };
                     transport_tx
-                        .unbounded_send(Ok(message))
+                        .unbounded_send(TransportFrame::Single(Ok(message)))
                         .map_err(crate::Error::into_internal_error)?;
                 }
                 continue;
@@ -116,27 +125,32 @@ pub(super) async fn outgoing_protocol_actor(
                 id,
                 method,
                 response,
+                destination,
             } => match protocol_compat.outgoing_response(&method, response) {
                 Ok(value) => {
                     tracing::debug!(?id, "Sending success response");
-                    RawJsonRpcMessage::response(id, Ok(value))
+                    (RawJsonRpcMessage::response(id, Ok(value)), destination)
                 }
                 Err(error) => {
                     tracing::warn!(?id, %method, ?error, "Sending error response");
-                    RawJsonRpcMessage::response(id, Err(error))
+                    (RawJsonRpcMessage::response(id, Err(error)), destination)
                 }
             },
-            OutgoingMessage::Error { error } => {
+            OutgoingMessage::Error { error, destination } => {
                 // JSON-RPC reports parse/invalid-request errors with id null when
                 // they cannot be correlated to a specific request.
-                RawJsonRpcMessage::response(RequestId::Null, Err(error))
+                (
+                    RawJsonRpcMessage::response(RequestId::Null, Err(error)),
+                    destination,
+                )
             }
         };
 
-        // Send to transport layer (wrapped in Ok since transport expects Result)
-        transport_tx
-            .unbounded_send(Ok(json_rpc_message))
-            .map_err(crate::Error::into_internal_error)?;
+        if let Some(frame) = destination.complete(json_rpc_message) {
+            transport_tx
+                .unbounded_send(frame)
+                .map_err(crate::Error::into_internal_error)?;
+        }
     }
 
     // Closing the raw queue lets the transport actor finish all buffered
