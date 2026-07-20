@@ -2,15 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Accept incoming JSON-RPC batch arrays over line and byte-stream transports in both v1 and v2 protocol modes, consolidating response-bearing entries into one response array while continuing to initiate requests and notifications individually.
-
-### Fixed
-
-- Do not send JSON-RPC error responses for notifications with invalid parameters or failing handlers.
-- Reject conflicting JSON-RPC call/response envelope fields instead of misclassifying the message.
-
 ## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.1.0...v1.2.0) - 2026-07-07
 
 ### Added
