@@ -2,6 +2,7 @@
 
 use std::{
     future, io,
+    panic::{RefUnwindSafe, UnwindSafe},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +22,43 @@ use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
+
+#[test]
+fn builder_auto_traits_follow_the_close_handler() {
+    struct SendOnlyCallbackState {
+        changed: std::cell::Cell<bool>,
+        unwind_sensitive: std::marker::PhantomData<&'static mut ()>,
+    }
+
+    impl SendOnlyCallbackState {
+        fn mark_changed(self) {
+            self.changed.set(true);
+        }
+    }
+
+    fn assert_released_auto_traits<T: Send + Sync + UnwindSafe + RefUnwindSafe>(_: &T) {}
+    fn assert_send<T: Send>(_: &T) {}
+
+    assert_released_auto_traits(&UntypedRole.builder());
+    assert_released_auto_traits(&UntypedRole.builder().on_close(|_cx| async { Ok(()) }));
+
+    // `Cell` keeps the callback from being `Sync` or `RefUnwindSafe`, while
+    // the mutable-reference marker keeps it from being `UnwindSafe`. None of
+    // those bounds are necessary because the callback is consumed once.
+    let callback_state = SendOnlyCallbackState {
+        changed: std::cell::Cell::new(false),
+        unwind_sensitive: std::marker::PhantomData,
+    };
+    let send_only_builder = UntypedRole.builder().on_close(move |_cx| async move {
+        callback_state.mark_changed();
+        Ok(())
+    });
+
+    // The callback only needs to be sent to the connection driver. Its other
+    // auto traits are reflected by the builder instead of being required or
+    // hidden behind synchronization.
+    assert_send(&send_only_builder);
+}
 
 struct DelegatingTransport<T>(T);
 struct ImmediateClient;
@@ -633,6 +671,34 @@ async fn connect_with_can_await_incoming_close() {
 }
 
 #[tokio::test]
+async fn on_close_can_borrow_from_the_connect_with_caller() {
+    let (transport, peer) = Channel::duplex();
+    drop(peer);
+
+    let mut observed = false;
+    let observed_by_callback = &mut observed;
+
+    tokio::time::timeout(
+        TIMEOUT,
+        UntypedRole
+            .builder()
+            .on_close(move |_cx| async move {
+                *observed_by_callback = true;
+                Ok(())
+            })
+            .connect_with(transport, async |cx| {
+                cx.incoming_closed().await;
+                Ok(())
+            }),
+    )
+    .await
+    .expect("incoming close callback was not run")
+    .expect("borrowed close callback should succeed");
+
+    assert!(observed);
+}
+
+#[tokio::test]
 async fn on_close_error_stops_a_pending_connect_with_foreground() {
     let (transport, peer) = Channel::duplex();
     drop(peer);
@@ -717,7 +783,7 @@ async fn successful_on_close_does_not_cancel_unrelated_foreground_work() {
 }
 
 #[tokio::test]
-async fn all_on_close_callbacks_run_in_registration_order_after_an_error() {
+async fn all_on_close_callbacks_run_in_order_and_the_first_error_wins() {
     let (transport, peer) = Channel::duplex();
     let order = Arc::new(Mutex::new(Vec::new()));
     let first_order = order.clone();
@@ -731,17 +797,54 @@ async fn all_on_close_callbacks_run_in_registration_order_after_an_error() {
         })
         .on_close(async move |_cx| {
             second_order.lock().unwrap().push(2);
-            Ok(())
+            Err(Error::internal_error().data("second close callback failed"))
         })
         .connect_with(transport, async |_cx| {
             future::pending::<Result<(), Error>>().await
         });
 
     drop(peer);
-    let result = tokio::time::timeout(TIMEOUT, connection)
+    let error = tokio::time::timeout(TIMEOUT, connection)
         .await
-        .expect("close callback error did not stop connection");
-    assert!(result.is_err());
+        .expect("close callback error did not stop connection")
+        .expect_err("close callback error should stop connection");
+    assert_eq!(
+        error.data,
+        Some(serde_json::json!("first close callback failed"))
+    );
+    assert_eq!(*order.lock().unwrap(), vec![1, 2]);
+}
+
+#[tokio::test]
+async fn merged_builders_preserve_close_callback_order() {
+    let (transport, peer) = Channel::duplex();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let first_order = order.clone();
+    let second_order = order.clone();
+
+    let first = UntypedRole.builder().on_close(async move |_cx| {
+        first_order.lock().unwrap().push(1);
+        Err(Error::internal_error().data("first builder close failed"))
+    });
+    let second = UntypedRole.builder().on_close(async move |_cx| {
+        second_order.lock().unwrap().push(2);
+        Ok(())
+    });
+    let connection = first
+        .with_connection_builder(second)
+        .connect_with(transport, async |_cx| {
+            future::pending::<Result<(), Error>>().await
+        });
+
+    drop(peer);
+    let error = tokio::time::timeout(TIMEOUT, connection)
+        .await
+        .expect("merged close callback error did not stop connection")
+        .expect_err("merged close callback error should stop connection");
+    assert_eq!(
+        error.data,
+        Some(serde_json::json!("first builder close failed"))
+    );
     assert_eq!(*order.lock().unwrap(), vec![1, 2]);
 }
 

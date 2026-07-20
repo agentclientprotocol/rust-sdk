@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::Dispatch;
 use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
+use crate::jsonrpc::HandleConnectionClose;
 use crate::jsonrpc::HandleDispatchFrom;
 use crate::jsonrpc::OutgoingMessage;
 use crate::jsonrpc::PendingReplies;
@@ -30,6 +31,18 @@ use crate::schema::v1::{RequestId, Response};
 
 use super::Handled;
 
+/// Handlers owned by the incoming protocol actor.
+pub(super) struct IncomingHandlers<Message, Close> {
+    messages: Message,
+    close: Close,
+}
+
+impl<Message, Close> IncomingHandlers<Message, Close> {
+    pub(super) fn new(messages: Message, close: Close) -> Self {
+        Self { messages, close }
+    }
+}
+
 /// Incoming protocol actor: The central dispatch loop for a connection.
 ///
 /// This actor handles JSON-RPC protocol semantics:
@@ -37,20 +50,24 @@ use super::Handled;
 /// - Routes requests/notifications to registered handlers
 /// - Converts RawJsonRpcMessage requests/notifications to UntypedMessage for handlers
 ///
-/// This layer retains only the batch boundary needed to correlate responses;
-/// wire parsing and serialization remain transport concerns.
-///
-/// The type parameter `MyRole` is the role of this endpoint (e.g., `Agent`).
-/// Messages are received from `MyRole::Counterpart` (e.g., `Client`).
+/// This is the protocol layer - it has no knowledge of how messages arrived.
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
     transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
-    mut handler: impl HandleDispatchFrom<Counterpart>,
+    handlers: IncomingHandlers<
+        impl HandleDispatchFrom<Counterpart>,
+        impl HandleConnectionClose<Counterpart>,
+    >,
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
+    let IncomingHandlers {
+        messages: mut handler,
+        close: on_close,
+    } = handlers;
+
     // `merge` does not expose when one of its source streams ends. Preserve
     // transport EOF as an explicit event so the other, connection-internal
     // streams cannot hide it.
@@ -66,6 +83,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let mut pending_messages: Vec<Dispatch> = vec![];
 
     let request_cancellations = super::RequestCancellationRegistry::new();
+    let mut on_close = Some(on_close);
 
     while let Some(message_result) = my_rx.next().await {
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
@@ -75,21 +93,14 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 let pending_reply_count = pending_replies.close_incoming();
                 tracing::debug!(pending_reply_count, "Incoming transport closed");
 
-                let mut callback_error = None;
-                for callback in connection.take_on_close() {
-                    if let Err(error) = callback.run(connection.clone()).await {
-                        tracing::warn!(?error, "Connection close callback failed");
-                        if callback_error.is_none() {
-                            callback_error = Some(error);
-                        }
-                    }
-                }
+                let callback_result = on_close
+                    .take()
+                    .expect("incoming transport close handled more than once")
+                    .handle_connection_close(connection.clone())
+                    .await;
 
                 connection.finish_incoming_close();
-
-                if let Some(error) = callback_error {
-                    return Err(error);
-                }
+                callback_result?;
             }
 
             IncomingProtocolMsg::DynamicHandler(message) => match message {

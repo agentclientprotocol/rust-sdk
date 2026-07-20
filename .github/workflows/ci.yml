@@ -76,7 +76,7 @@ jobs:
         run: cargo +nightly doc -p agent-client-protocol --all-features --no-deps
 
       - name: Install just
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b
         with:
           tool: just
 
@@ -111,7 +111,7 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@43aecc8d72668fbcfe75c31400bc4f890f1c5853
+        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b
         with:
           tool: cargo-hack
 
