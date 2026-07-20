@@ -127,8 +127,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 new_pending_messages.push(m);
                             }
                             Err(err) => {
-                                tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message, reporting back");
-                                report_handler_error(connection, reply_target, method, err)?;
+                                tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
+                                handle_handler_error(connection, reply_target, method, err)?;
                             }
                         }
                     }
@@ -176,7 +176,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     }
                                 }
                                 Err(error) => {
-                                    report_handler_error(
+                                    handle_handler_error(
                                         connection,
                                         Some(RequestReplyTarget {
                                             id: request_id,
@@ -216,7 +216,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     }
                                 }
                                 Err(error) => {
-                                    report_handler_error(connection, None, request_method, error)?;
+                                    handle_handler_error(connection, None, request_method, error)?;
                                 }
                             }
                         }
@@ -258,7 +258,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             );
                             send_raw_message(
                                 &connection.message_tx,
-                                OutgoingMessage::Error { error, destination },
+                                OutgoingMessage::UncorrelatedErrorResponse { error, destination },
                             )?;
                         }
                     }
@@ -435,7 +435,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 ?err,
                 "Request cancellation notification errored"
             );
-            return report_handler_error(connection, reply_target, method, err);
+            return handle_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -457,8 +457,8 @@ async fn dispatch_dispatch<Counterpart: Role>(
         }
 
         Err(err) => {
-            tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored, reporting back to remote");
-            return report_handler_error(connection, reply_target, method, err);
+            tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored");
+            return handle_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -481,8 +481,8 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
 
             Err(err) => {
-                tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored, reporting back to remote");
-                return report_handler_error(connection, reply_target, method, err);
+                tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
+                return handle_handler_error(connection, reply_target, method, err);
             }
         }
     }
@@ -508,9 +508,9 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 ?id,
                 ?err,
                 handler = "default",
-                "Default handler errored, reporting back to remote"
+                "Default handler errored"
             );
-            return report_handler_error(connection, reply_target, method, err);
+            return handle_handler_error(connection, reply_target, method, err);
         }
     }
 
@@ -536,10 +536,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
             Dispatch::Request(..) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
                 let method = dispatch.method().to_string();
-                dispatch.respond_with_error(
-                    crate::Error::method_not_found().data(method),
-                    connection.clone(),
-                )
+                dispatch.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {
                 tracing::trace!(?method, "Forwarding response");
@@ -549,12 +546,11 @@ async fn dispatch_dispatch<Counterpart: Role>(
     }
 }
 
-/// When a handler returns an error, report it back to the remote side instead
-/// of propagating it and tearing down the connection.
+/// Handle a message-processing error without tearing down the connection.
 ///
 /// For requests, sends a JSON-RPC error response to the request's exact output
 /// destination. For notifications and incoming responses, logs without replying.
-fn report_handler_error<Counterpart: Role>(
+fn handle_handler_error<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     reply_target: Option<RequestReplyTarget>,
     method: String,
@@ -574,7 +570,7 @@ fn report_handler_error<Counterpart: Role>(
         tracing::warn!(
             %method,
             ?error,
-            "Non-request handler failed; ignoring error because there is no request to answer"
+            "Ignoring message-processing error because there is no request to answer"
         );
         Ok(())
     }

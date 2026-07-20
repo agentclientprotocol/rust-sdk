@@ -39,8 +39,8 @@ The requesting side always receives a response to the original request;
 cancellation only changes _which_ response that is. A `$/cancel_request` for
 an unknown or already-completed request ID is silently ignored. A
 `$/cancel_request` with malformed params (for example, a `requestId` that is
-not a string, number, or null) is different: it is reported back with an
-out-of-band error notification, like any other malformed notification.
+not a string, number, or null) is logged and ignored without a reply, like any
+other malformed notification.
 
 ## Interoperability
 

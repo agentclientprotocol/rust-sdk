@@ -751,9 +751,10 @@ where
 ///         // This runs first for PromptRequest
 ///         responder.respond(PromptResponse::make())
 ///     }, agent_client_protocol::on_receive_request!())
-///     .on_receive_dispatch(async |msg: Dispatch, cx| {
-///         // This runs for any message not handled above
-///         msg.respond_with_error(agent_client_protocol::util::internal_error("unknown method"), cx)
+///     .on_receive_dispatch(async |msg: Dispatch, _cx| {
+///         // Reject unhandled requests. Notifications are ignored because they
+///         // cannot receive responses.
+///         msg.respond_with_error(agent_client_protocol::util::internal_error("unknown method"))
 ///     }, agent_client_protocol::on_receive_dispatch!())
 /// # .connect_to(agent_client_protocol_test::MockTransport).await?;
 /// # Ok(())
@@ -2554,8 +2555,8 @@ enum OutgoingMessage {
         destination: ResponseDestination,
     },
 
-    /// Send a generalized error message
-    Error {
+    /// Send an Error Response that cannot be correlated to a request ID.
+    UncorrelatedErrorResponse {
         error: crate::Error,
         destination: ResponseDestination,
     },
@@ -3281,21 +3282,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         )
     }
 
-    /// Send a JSON-RPC error response with a null id.
-    ///
-    /// This low-level method is intended for parse and invalid-request errors when
-    /// the request id cannot be recovered. Despite its historical name, it sends a
-    /// Response object and must not be used to reply to a JSON-RPC notification.
-    pub fn send_error_notification(&self, error: crate::Error) -> Result<(), crate::Error> {
-        send_raw_message(
-            &self.message_tx,
-            OutgoingMessage::Error {
-                error,
-                destination: ResponseDestination::Individual,
-            },
-        )
-    }
-
     /// Register a dynamic message handler, used to intercept messages specific to a particular session
     /// or some similar modal thing.
     ///
@@ -3901,11 +3887,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     /// JSON-RPC notifications cannot be answered.
     ///
     /// If this message is a response, the error is forwarded to the waiting handler.
-    pub fn respond_with_error<R: Role>(
-        self,
-        error: crate::Error,
-        _cx: ConnectionTo<R>,
-    ) -> Result<(), crate::Error> {
+    pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         match self {
             Dispatch::Request(_, responder) => responder.respond_with_error(error),
             Dispatch::Notification(_) => {

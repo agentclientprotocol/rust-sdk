@@ -43,10 +43,8 @@
 //! application needs to report a one-way failure, define a notification method for
 //! that purpose.
 //!
-//! [`send_error_notification`][crate::ConnectionTo::send_error_notification] is a
-//! low-level method for parse and invalid-request errors whose request id cannot be
-//! recovered. Despite its historical name, it sends an Error Response with a null
-//! id; it is not a reply mechanism for notifications.
+//! Malformed JSON and invalid request envelopes are handled at the SDK's transport
+//! boundary. Applications do not need to construct uncorrelated Error Responses.
 //!
 //! # The `into_internal_error` Helper
 //!
@@ -101,8 +99,7 @@
 //!
 //! | Situation | What to do |
 //! |-----------|------------|
-//! | Send error response to request | `responder.respond(Err(error))` then `Ok(())` |
+//! | Send error response to request | `responder.respond_with_error(error)` |
 //! | Handle notification failure | Log or return the error; the SDK sends no reply |
-//! | Send uncorrelated parse/invalid-request error | Low-level `cx.send_error_notification(error)` |
 //! | Fail connection lifecycle work | Return `Err(error)` from a lifecycle callback |
 //! | Convert external error | `.map_err(Error::into_internal_error)?` |

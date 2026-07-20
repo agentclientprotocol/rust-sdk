@@ -803,6 +803,11 @@ async fn notification_only_batch_emits_nothing_before_following_barrier_response
                     },
                     {
                         "jsonrpc": "2.0",
+                        "method": "unknown/notification",
+                        "params": {}
+                    },
+                    {
+                        "jsonrpc": "2.0",
                         "method": "test/notify",
                         "params": { "message": "second" }
                     }
