@@ -83,4 +83,18 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
             ConnectTo::<Counterpart>::connect_to(ByteStreams::new(stdout, stdin), client).await
         }
     }
+
+    fn into_framed_channel_and_future(
+        self,
+    ) -> (
+        crate::FramedChannel,
+        crate::BoxFuture<'static, Result<(), crate::Error>>,
+    ) {
+        let (channel_for_caller, channel_for_stdio) = crate::FramedChannel::duplex();
+        let future = Box::pin(ConnectTo::<Counterpart>::connect_to(
+            self,
+            channel_for_stdio,
+        ));
+        (channel_for_caller, future)
+    }
 }

@@ -8,6 +8,8 @@ use serde::{Serialize, de::DeserializeOwned};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::jsonrpc::{TransportBatch, TransportFrame};
 use crate::role::{HasPeer, RemoteStyle};
 use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
 #[cfg(feature = "unstable_protocol_v2")]
@@ -16,9 +18,9 @@ use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::{FramedChannel, RawJsonRpcMessage, RawJsonRpcParams};
 
 /// The client role - typically an IDE or CLI that controls an agent.
 ///
@@ -370,27 +372,40 @@ impl AgentProtocolRouter {
 impl ConnectTo<Client> for AgentProtocolRouter {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), crate::Error> {
         let client = RunningProtocolPeer::new(client);
-        let Some((mut first_message, client)) = client.next_message().await? else {
+        let Some((mut first_frame, client)) = client.next_frame().await? else {
             return Ok(());
         };
         let supported = SupportedAgentProtocols {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
-        let selected = match select_agent_protocol(&mut first_message, supported) {
+        let selected = match initialize_message_mut(&mut first_frame)
+            .and_then(|message| select_agent_protocol(message, supported))
+        {
             Ok(selected) => selected,
             Err(error) => {
-                return reject_initialize(client, &first_message, error).await;
+                return reject_initialize(client, &first_frame, error).await;
             }
         };
         let Some(agent) = selected.take_agent(self) else {
             let error = selected.unsupported_error(supported);
-            return reject_initialize(client, &first_message, error).await;
+            return reject_initialize(client, &first_frame, error).await;
         };
 
         let agent = RunningProtocolPeer::new(agent);
-        agent.send(first_message)?;
+        agent.send_frame(first_frame)?;
         pipe_protocol_peers_until_closed(client, agent).await
+    }
+
+    fn into_framed_channel_and_future(
+        self,
+    ) -> (
+        FramedChannel,
+        crate::BoxFuture<'static, Result<(), crate::Error>>,
+    ) {
+        let (channel_for_caller, channel_for_router) = FramedChannel::duplex();
+        let future = Box::pin(ConnectTo::<Client>::connect_to(self, channel_for_router));
+        (channel_for_caller, future)
     }
 }
 
@@ -595,31 +610,78 @@ fn invalid_initialize_params(error: impl ToString) -> crate::Error {
 
 #[cfg(feature = "unstable_protocol_v2")]
 fn send_initialize_error(
-    tx: &futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
-    message: &RawJsonRpcMessage,
+    tx: &futures::channel::mpsc::UnboundedSender<TransportFrame>,
+    frame: &TransportFrame,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
-    let id = match message {
-        RawJsonRpcMessage::Request(request) => request.id.clone(),
-        RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_) => RequestId::Null,
+    fn response_for_entry(
+        entry: Result<&RawJsonRpcMessage, &crate::Error>,
+        initialize_error: &crate::Error,
+    ) -> Option<RawJsonRpcMessage> {
+        match entry {
+            Ok(RawJsonRpcMessage::Request(request)) => Some(RawJsonRpcMessage::response(
+                request.id.clone(),
+                Err(initialize_error.clone()),
+            )),
+            Err(error) => Some(RawJsonRpcMessage::response(
+                RequestId::Null,
+                Err(error.clone()),
+            )),
+            Ok(RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_)) => None,
+        }
+    }
+
+    let response = match frame {
+        TransportFrame::Single(entry) => {
+            let Some(response) = response_for_entry(entry.as_ref(), &error) else {
+                return Ok(());
+            };
+            TransportFrame::Single(Ok(response))
+        }
+        TransportFrame::InvalidSingle { error, .. } => TransportFrame::Single(Ok(
+            RawJsonRpcMessage::response(RequestId::Null, Err(error.clone())),
+        )),
+        TransportFrame::Batch(batch) => {
+            let responses = batch
+                .iter_results()
+                .filter_map(|entry| response_for_entry(entry, &error))
+                .collect::<Vec<_>>();
+            let Some(responses) = TransportBatch::from_messages(responses) else {
+                return Ok(());
+            };
+            TransportFrame::Batch(responses)
+        }
     };
-    tx.unbounded_send(Ok(RawJsonRpcMessage::response(id, Err(error))))
+
+    tx.unbounded_send(response)
         .map_err(crate::util::internal_error)
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 async fn reject_initialize(
     client: RunningProtocolPeer,
-    message: &RawJsonRpcMessage,
+    frame: &TransportFrame,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
     let RunningProtocolPeer { mut rx, tx, future } = client;
-    send_initialize_error(&tx, message, error)?;
+    send_initialize_error(&tx, frame, error)?;
     drop(tx);
 
     let drain_incoming = async move {
-        while let Some(message) = rx.next().await {
-            message?;
+        while let Some(frame) = rx.next().await {
+            match frame {
+                TransportFrame::Single(message) => {
+                    message?;
+                }
+                TransportFrame::InvalidSingle { error, .. } => {
+                    return Err(error);
+                }
+                TransportFrame::Batch(batch) => {
+                    for entry in batch.into_results() {
+                        entry?;
+                    }
+                }
+            }
         }
         Ok(())
     };
@@ -630,23 +692,23 @@ async fn reject_initialize(
 
 #[cfg(feature = "unstable_protocol_v2")]
 struct RunningProtocolPeer {
-    rx: futures::channel::mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
-    tx: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
+    rx: futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
+    tx: futures::channel::mpsc::UnboundedSender<TransportFrame>,
     future: crate::BoxFuture<'static, Result<(), crate::Error>>,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl RunningProtocolPeer {
     fn new<R: Role>(component: impl ConnectTo<R>) -> Self {
-        let (Channel { rx, tx }, future) = component.into_channel_and_future();
+        let (FramedChannel { rx, tx }, future) = component.into_framed_channel_and_future();
         Self { rx, tx, future }
     }
 
-    async fn next_message(self) -> Result<Option<(RawJsonRpcMessage, Self)>, crate::Error> {
+    async fn next_frame(self) -> Result<Option<(TransportFrame, Self)>, crate::Error> {
         let Self { mut rx, tx, future } = self;
         match future::select(Box::pin(rx.next()), future).await {
-            future::Either::Left((Some(message), future)) => {
-                Ok(Some((message?, Self { rx, tx, future })))
+            future::Either::Left((Some(frame), future)) => {
+                Ok(Some((frame, Self { rx, tx, future })))
             }
             future::Either::Left((None, future)) => {
                 future.await?;
@@ -655,11 +717,11 @@ impl RunningProtocolPeer {
             future::Either::Right((result, next_message)) => {
                 result?;
                 drop(next_message);
-                let Some(message) = rx.next().await else {
+                let Some(frame) = rx.next().await else {
                     return Ok(None);
                 };
                 Ok(Some((
-                    message?,
+                    frame,
                     Self {
                         rx,
                         tx,
@@ -670,11 +732,44 @@ impl RunningProtocolPeer {
         }
     }
 
+    async fn next_message(self) -> Result<Option<(RawJsonRpcMessage, Self)>, crate::Error> {
+        let Some((frame, peer)) = self.next_frame().await? else {
+            return Ok(None);
+        };
+        Ok(Some((initialize_message(frame)?, peer)))
+    }
+
     fn send(&self, message: RawJsonRpcMessage) -> Result<(), crate::Error> {
+        self.send_frame(TransportFrame::Single(Ok(message)))
+    }
+
+    fn send_frame(&self, frame: TransportFrame) -> Result<(), crate::Error> {
         self.tx
-            .unbounded_send(Ok(message))
+            .unbounded_send(frame)
             .map_err(crate::util::internal_error)
     }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn initialize_message(frame: TransportFrame) -> Result<RawJsonRpcMessage, crate::Error> {
+    match frame {
+        TransportFrame::Single(message) => message,
+        TransportFrame::InvalidSingle { error, .. } => Err(error),
+        TransportFrame::Batch(_) => Err(crate::Error::invalid_request()
+            .data("ACP initialize request and response messages must be sent individually")),
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn initialize_message_mut(
+    frame: &mut TransportFrame,
+) -> Result<&mut RawJsonRpcMessage, crate::Error> {
+    let entry = match frame {
+        TransportFrame::Single(entry) => entry,
+        TransportFrame::InvalidSingle { error, .. } => return Err(error.clone()),
+        TransportFrame::Batch(batch) => return batch.first_result_mut(),
+    };
+    entry.as_mut().map_err(|error| error.clone())
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -685,12 +780,12 @@ async fn pipe_protocol_peers_until_closed(
     let ((), (), (), ()) = futures::try_join!(
         left.future,
         right.future,
-        Channel {
+        FramedChannel {
             rx: left.rx,
             tx: right.tx,
         }
         .copy(),
-        Channel {
+        FramedChannel {
             rx: right.rx,
             tx: left.tx,
         }
@@ -707,12 +802,12 @@ async fn pipe_protocol_peers_until_done(
 ) -> Result<(), crate::Error> {
     let bridge = Box::pin(async move {
         let ((), ()) = futures::try_join!(
-            Channel {
+            FramedChannel {
                 rx: left.rx,
                 tx: right.tx,
             }
             .copy(),
-            Channel {
+            FramedChannel {
                 rx: right.rx,
                 tx: left.tx,
             }

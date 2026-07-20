@@ -62,6 +62,31 @@ fn raw_jsonrpc_message_rejects_scalar_params() {
     );
 }
 
+#[test]
+fn raw_jsonrpc_message_rejects_conflicting_envelope_fields() {
+    for message in [
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "request_with_result",
+            "result": {}
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {},
+            "error": { "code": -32603, "message": "Internal error" }
+        }),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notification_with_error",
+            "error": { "code": -32603, "message": "Internal error" }
+        }),
+    ] {
+        assert!(serde_json::from_value::<RawJsonRpcMessage>(message).is_err());
+    }
+}
+
 /// Test helper to block and wait for a JSON-RPC response.
 async fn recv<T: JsonRpcResponse + Send>(
     response: SentRequest<T>,

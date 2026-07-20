@@ -1,5 +1,4 @@
-use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, RawJsonRpcMessage, Role};
-use futures::StreamExt;
+use agent_client_protocol::{ConnectTo, DynConnectTo, FramedChannel, RawJsonRpcMessage, Role};
 use futures_concurrency::future::TryJoin;
 
 pub struct SnooperComponent<R: Role> {
@@ -34,50 +33,113 @@ impl<R: Role> SnooperComponent<R> {
 
 impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
     async fn connect_to(
-        mut self,
+        self,
         client: impl ConnectTo<R::Counterpart>,
     ) -> Result<(), agent_client_protocol::Error> {
-        let (client_a, mut client_b) = Channel::duplex();
+        let (client_channel, client_future) = client.into_framed_channel_and_future();
+        let (base_channel, base_future) = self.base_component.into_framed_channel_and_future();
+        let snoop = FramedChannel::bridge_with_inspection(
+            client_channel,
+            base_channel,
+            self.incoming_message,
+            self.outgoing_message,
+        );
 
-        let client_future = client.connect_to(client_a);
-
-        let (mut base_channel, base_future) = self.base_component.into_channel_and_future();
-
-        // Read messages send by `client`. These are 'incoming' to our wrapped
-        // component.
-        let snoop_incoming = async {
-            while let Some(msg) = client_b.rx.next().await {
-                if let Ok(msg) = &msg {
-                    (self.incoming_message)(msg)?;
-                }
-
-                base_channel
-                    .tx
-                    .unbounded_send(msg)
-                    .map_err(agent_client_protocol::util::internal_error)?;
-            }
-            Ok(())
-        };
-
-        // Read messages send by `base`. These are 'outgoing' from our wrapped
-        // component.
-        let snoop_outgoing = async {
-            while let Some(msg) = base_channel.rx.next().await {
-                if let Ok(msg) = &msg {
-                    (self.outgoing_message)(msg)?;
-                }
-
-                client_b
-                    .tx
-                    .unbounded_send(msg)
-                    .map_err(agent_client_protocol::util::internal_error)?;
-            }
-            Ok(())
-        };
-
-        (client_future, base_future, snoop_incoming, snoop_outgoing)
-            .try_join()
-            .await?;
+        (client_future, base_future, snoop).try_join().await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+
+    use agent_client_protocol::{ByteStreams, ConnectionTo, Responder, UntypedRole};
+    use agent_client_protocol_test::{MyRequest, MyResponse};
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
+
+    use super::*;
+
+    const TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tracing_preserves_json_rpc_batch_frames() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let incoming_count = Arc::new(AtomicUsize::new(0));
+                let outgoing_count = Arc::new(AtomicUsize::new(0));
+                let observed_incoming = Arc::clone(&incoming_count);
+                let observed_outgoing = Arc::clone(&outgoing_count);
+
+                let (mut peer_writer, component_reader) = tokio::io::duplex(8192);
+                let (component_writer, peer_reader) = tokio::io::duplex(8192);
+                let transport =
+                    ByteStreams::new(component_writer.compat_write(), component_reader.compat());
+                let snooper = SnooperComponent::new(
+                    transport,
+                    move |_| {
+                        observed_incoming.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                    move |_| {
+                        observed_outgoing.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                );
+                let server = UntypedRole.builder().on_receive_request(
+                    async |_request: MyRequest,
+                           responder: Responder<MyResponse>,
+                           _cx: ConnectionTo<UntypedRole>| {
+                        responder.respond(MyResponse {
+                            status: "received".into(),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                );
+                let server_task = tokio::task::spawn_local(server.connect_to(snooper));
+
+                let mut bytes = serde_json::to_vec(&json!([
+                    { "jsonrpc": "2.0", "id": 1, "method": "myRequest", "params": {} },
+                    { "jsonrpc": "2.0", "id": 2, "method": "myRequest", "params": {} }
+                ]))
+                .expect("batch should serialize");
+                bytes.push(b'\n');
+                peer_writer
+                    .write_all(&bytes)
+                    .await
+                    .expect("batch write should succeed");
+
+                let mut peer_reader = BufReader::new(peer_reader);
+                let mut line = String::new();
+                tokio::time::timeout(TIMEOUT, peer_reader.read_line(&mut line))
+                    .await
+                    .expect("timed out waiting for traced batch response")
+                    .expect("batch response read should succeed");
+                let response: Value =
+                    serde_json::from_str(line.trim()).expect("response should be valid JSON");
+                let responses = response
+                    .as_array()
+                    .expect("tracing must preserve one response array");
+                assert_eq!(responses.len(), 2);
+                assert_eq!(incoming_count.load(Ordering::SeqCst), 2);
+                assert_eq!(outgoing_count.load(Ordering::SeqCst), 2);
+
+                drop(peer_writer);
+                drop(peer_reader);
+                tokio::time::timeout(TIMEOUT, server_task)
+                    .await
+                    .expect("traced server did not stop after EOF")
+                    .expect("traced server task panicked")
+                    .expect("traced server connection failed");
+            })
+            .await;
     }
 }

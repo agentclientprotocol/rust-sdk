@@ -267,6 +267,54 @@ async fn connect_to_flushes_response_queued_before_incoming_eof() {
 }
 
 #[tokio::test]
+async fn channel_peer_receives_final_response_after_write_half_closes() {
+    let (transport, peer) = Channel::duplex();
+    let connection = UntypedRole
+        .builder()
+        .on_receive_request(
+            async |_request: MyRequest, responder, _cx: ConnectionTo<UntypedRole>| {
+                responder.respond(MyResponse {
+                    status: "received".into(),
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_to(transport);
+
+    let peer = async move {
+        let Channel { mut rx, tx } = peer;
+        tx.unbounded_send(Ok(RawJsonRpcMessage::request(
+            "myRequest".into(),
+            serde_json::json!({}),
+            RequestId::Number(40),
+        )
+        .unwrap()))
+            .expect("channel should accept the final request");
+        tx.close_channel();
+        drop(tx);
+
+        let Some(Ok(RawJsonRpcMessage::Response(Response::Result { id, result }))) =
+            rx.next().await
+        else {
+            panic!("channel read half closed before the final response");
+        };
+        assert_eq!(id, RequestId::Number(40));
+        assert_eq!(
+            serde_json::from_value::<MyResponse>(result).unwrap().status,
+            "received"
+        );
+    };
+
+    tokio::time::timeout(TIMEOUT, async move {
+        let (result, ()) = join(connection, peer).await;
+        result
+    })
+    .await
+    .expect("channel connection hung while draining its final response")
+    .expect("channel connection failed after a write half-close");
+}
+
+#[tokio::test]
 async fn connect_to_flushes_a_buffered_byte_writer() {
     let (sdk_outgoing, peer_incoming) = tokio::io::duplex(1);
     let (peer_outgoing, sdk_incoming) = tokio::io::duplex(1024);
@@ -275,6 +323,69 @@ async fn connect_to_flushes_a_buffered_byte_writer() {
     let transport = ByteStreams::new(buffered_outgoing, sdk_incoming.compat());
 
     assert_connect_to_flushes_final_response(transport, peer_outgoing, peer_incoming).await;
+}
+
+#[tokio::test]
+async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
+    let (sdk_outgoing, peer_incoming) = tokio::io::duplex(1024);
+    let (mut peer_outgoing, sdk_incoming) = tokio::io::duplex(1024);
+    let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
+    let (channel, transport_future) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
+    let Channel { mut rx, tx } = channel;
+
+    tx.unbounded_send(Ok(RawJsonRpcMessage::request(
+        "myRequest".into(),
+        serde_json::json!({}),
+        RequestId::Number(41),
+    )
+    .unwrap()))
+        .expect("transport channel should accept the request");
+    tx.close_channel();
+    drop(tx);
+
+    let peer = async move {
+        let mut lines = tokio::io::BufReader::new(peer_incoming).lines();
+        let request = lines
+            .next_line()
+            .await
+            .unwrap()
+            .expect("peer should receive the request before write EOF");
+        assert!(matches!(
+            serde_json::from_str::<RawJsonRpcMessage>(&request).unwrap(),
+            RawJsonRpcMessage::Request(_)
+        ));
+        assert!(
+            lines.next_line().await.unwrap().is_none(),
+            "closing Channel.tx should close only the physical write half"
+        );
+
+        let response = RawJsonRpcMessage::response(
+            RequestId::Number(41),
+            Ok(serde_json::json!({ "status": "received" })),
+        );
+        let mut response_bytes = serde_json::to_vec(&response).unwrap();
+        response_bytes.push(b'\n');
+        peer_outgoing.write_all(&response_bytes).await.unwrap();
+        drop(peer_outgoing);
+    };
+
+    let receive_response = async move {
+        let Some(Ok(RawJsonRpcMessage::Response(Response::Result { id, result }))) =
+            rx.next().await
+        else {
+            panic!("read half closed before delivering the peer's final response");
+        };
+        assert_eq!(id, RequestId::Number(41));
+        assert_eq!(result["status"], "received");
+    };
+
+    tokio::time::timeout(TIMEOUT, async move {
+        let (transport_result, (), ()) = tokio::join!(transport_future, receive_response, peer);
+        transport_result
+    })
+    .await
+    .expect("transport channel hung after the peer's final response")
+    .expect("transport channel failed while draining the final response");
 }
 
 #[tokio::test]

@@ -49,8 +49,11 @@ enum RawJsonRpcMessage {
 This type sits between the protocol and transport layers:
 
 - **Above**: Protocol layer works with application types (`OutgoingMessage`, `UntypedMessage`)
-- **Below**: Transport layer works with `RawJsonRpcMessage`
-- **Boundary**: Clean, well-defined interface
+- **Below**: Transport layer parses and serializes `RawJsonRpcMessage`
+- **Boundary**: An internal `TransportFrame` carries either one raw message or
+  the entries retained from one incoming batch
+
+The public `Channel` API remains a single-message `RawJsonRpcMessage` boundary.
 
 ## Actor Architecture
 
@@ -62,7 +65,7 @@ These actors live in `JrConnection` and understand JSON-RPC semantics:
 
 ```
 Input:  mpsc::UnboundedReceiver<OutgoingMessage>
-Output: mpsc::UnboundedSender<RawJsonRpcMessage>
+Output: mpsc::UnboundedSender<TransportFrame>
 ```
 
 Responsibilities:
@@ -74,7 +77,7 @@ Responsibilities:
 #### Incoming Protocol Actor
 
 ```
-Input:  mpsc::UnboundedReceiver<RawJsonRpcMessage>
+Input:  mpsc::UnboundedReceiver<TransportFrame>
 Output: Routes to reply_actor or registered handlers
 ```
 
@@ -83,6 +86,11 @@ Responsibilities:
 - Route responses to reply_actor (matches by ID)
 - Route requests/notifications to registered handlers
 - Convert schema request/notification envelopes to `UntypedMessage` for handlers
+- Retain batch response slots while entries are dispatched
+- Emit one response array only after every response-bearing entry has completed
+  and all entries in the batch have been dispatched
+- Emit nothing for a notification-only batch; answer an empty batch with one
+  standalone `Invalid Request` response
 
 #### Reply Actor
 
@@ -103,13 +111,13 @@ These actors are spawned by `IntoJrConnectionTransport` implementations and have
 #### Transport Outgoing Actor
 
 ```
-Input:  mpsc::UnboundedReceiver<RawJsonRpcMessage>
+Input:  mpsc::UnboundedReceiver<TransportFrame>
 Output: Writes to I/O (byte stream, channel, socket, etc.)
 ```
 
 For byte streams:
 
-- Serialize `RawJsonRpcMessage` to JSON
+- Serialize a single `RawJsonRpcMessage` or one response batch to JSON
 - Write newline-delimited JSON to stream
 
 For in-process channels:
@@ -120,18 +128,27 @@ For in-process channels:
 
 ```
 Input:  Reads from I/O (byte stream, channel, socket, etc.)
-Output: mpsc::UnboundedSender<RawJsonRpcMessage>
+Output: mpsc::UnboundedSender<TransportFrame>
 ```
 
 For byte streams:
 
 - Read newline-delimited JSON from stream
-- Parse to `RawJsonRpcMessage`
-- Send to incoming protocol actor
+- Parse a single message or a non-empty batch array
+- Retain the batch boundary while dispatching each `RawJsonRpcMessage` entry to
+  the incoming protocol actor
+- Report malformed JSON once, and report invalid call-batch entries independently
+- Ignore malformed response-batch entries instead of answering a response
 
 For in-process channels:
 
 - Directly forward `RawJsonRpcMessage` from channel
+
+The public `RawJsonRpcMessage` and `Channel` boundary intentionally remains
+single-message. Batch tracking and response aggregation are internal to the
+line and byte-stream transports. The SDK continues to initiate requests and
+notifications as individual JSON-RPC messages; the only response arrays it
+writes are correlated replies to batch calls received from the peer.
 
 ## Message Flow
 
@@ -147,7 +164,7 @@ Outgoing Protocol Actor
     | - Subscribe to replies
     | - Convert to RawJsonRpcMessage
     v
-    | RawJsonRpcMessage
+    | TransportFrame (single message or batch response)
     |
 Transport Outgoing Actor
     | - Serialize (byte streams)
@@ -165,7 +182,7 @@ Transport Incoming Actor
     | - Parse (byte streams)
     | - Or forward directly (channels)
     v
-    | RawJsonRpcMessage
+    | TransportFrame (single message or incoming batch)
     |
 Incoming Protocol Actor
     | - Route responses → reply_actor

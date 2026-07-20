@@ -94,6 +94,8 @@ pub mod util;
 
 pub use capabilities::*;
 
+#[doc(hidden)]
+pub use jsonrpc::FramedChannel;
 pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
     INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage, JsonRpcNotification,
