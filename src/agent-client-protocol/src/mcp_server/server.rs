@@ -9,7 +9,7 @@ use crate::{
     Agent, Client, ConnectTo, ConnectionTo, Dispatch, DynConnectTo, HandleDispatchFrom, Handled,
     Role,
     jsonrpc::{
-        DynamicHandlerRegistration,
+        DynamicHandlerGuard,
         run::{NullRun, RunWithConnectionTo},
     },
     mcp_server::{McpConnectionTo, McpServerConnect, active_session::McpActiveSession},
@@ -142,16 +142,16 @@ where
     ///
     /// # Return value
     ///
-    /// Returns a [`DynamicHandlerRegistration`] for the handler that intercepts messages
+    /// Returns a [`DynamicHandlerGuard`] for the handler that intercepts messages
     /// related to this MCP server. Once the value is dropped, the MCP server messages
     /// will no longer be received, so you need to keep this value alive as long as the session
-    /// is in use. You can also invoke [`DynamicHandlerRegistration::run_indefinitely`]
-    /// if you want to keep the handler running indefinitely.
+    /// is in use. You can also invoke [`DynamicHandlerGuard::detach`] if you
+    /// want to keep the handler registered for the life of the connection.
     pub fn into_dynamic_handler(
         self,
         request: &mut NewSessionRequest,
         cx: &ConnectionTo<Counterpart>,
-    ) -> Result<DynamicHandlerRegistration<Counterpart>, crate::Error>
+    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error>
     where
         Counterpart: HasPeer<Agent>,
     {

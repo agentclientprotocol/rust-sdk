@@ -2,8 +2,8 @@
 
 Version 2.0 changes the low-level in-process transport boundary so JSON-RPC frames remain intact
 across components and adapters, clarifies the distinction between responding to requests and
-routing responses, and gives `AcpAgent` an SDK-owned process-launch configuration instead of
-reusing an MCP wire-schema type.
+routing responses, makes dynamic handler lifetimes explicit, and gives `AcpAgent` an SDK-owned
+process-launch configuration instead of reusing an MCP wire-schema type.
 
 ## Raw channels carry frames
 
@@ -58,6 +58,14 @@ let id_json = serde_json::to_value(sent_request.id())?;
 let dispatch_id_json = dispatch.id().map(serde_json::to_value).transpose()?;
 # let _ = (id_json, dispatch_id_json);
 ```
+
+## Dynamic handlers use a guard
+
+`DynamicHandlerRegistration` is now `DynamicHandlerGuard` and is exported from the crate root.
+The guard is `must_use` and no longer `Clone`: keep its single owner in the object that owns the
+registration. Dropping it unregisters the handler. To leave a handler registered for the rest of
+the connection, replace `run_indefinitely()` with `detach()`. Detaching no longer leaks an extra
+`ConnectionTo` handle.
 
 ## `AcpAgent` has its own process configuration
 

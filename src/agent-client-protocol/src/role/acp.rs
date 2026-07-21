@@ -1096,7 +1096,7 @@ impl Role for Conductor {
                     async move |result| {
                         if let Ok(NewSessionResponse { session_id, .. }) = &result {
                             cx.add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                                .run_indefinitely();
+                                .detach();
                         }
                         responder.respond_with_result(result)
                     }

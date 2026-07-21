@@ -3312,7 +3312,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn add_dynamic_handler(
         &self,
         handler: impl HandleDispatchFrom<Counterpart> + 'static,
-    ) -> Result<DynamicHandlerRegistration<Counterpart>, crate::Error> {
+    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
         let uuid = Uuid::new_v4();
         self.dynamic_handler_tx
             .unbounded_send(DynamicHandlerMessage::AddDynamicHandler(
@@ -3321,7 +3321,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             ))
             .map_err(crate::util::internal_error)?;
 
-        Ok(DynamicHandlerRegistration::new(uuid, self.clone()))
+        Ok(DynamicHandlerGuard::new(uuid, self.clone()))
     }
 
     fn remove_dynamic_handler(&self, uuid: Uuid) {
@@ -3333,26 +3333,40 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DynamicHandlerRegistration<R: Role> {
-    uuid: Uuid,
+/// A guard that keeps a dynamic message handler registered.
+///
+/// Dropping the guard unregisters the handler. Use [`detach`](Self::detach) to
+/// keep the handler registered for the remaining lifetime of the connection.
+#[must_use = "dropping this guard unregisters the dynamic handler"]
+#[derive(Debug)]
+pub struct DynamicHandlerGuard<R: Role> {
+    uuid: Option<Uuid>,
     cx: ConnectionTo<R>,
 }
 
-impl<R: Role> DynamicHandlerRegistration<R> {
+impl<R: Role> DynamicHandlerGuard<R> {
     fn new(uuid: Uuid, cx: ConnectionTo<R>) -> Self {
-        Self { uuid, cx }
+        Self {
+            uuid: Some(uuid),
+            cx,
+        }
     }
 
-    /// Prevents the dynamic handler from being removed when dropped.
-    pub fn run_indefinitely(self) {
-        std::mem::forget(self);
+    /// Keep the dynamic handler registered after this guard is dropped.
+    ///
+    /// The handler remains registered until the connection itself shuts down.
+    /// Unlike leaking the guard, detaching does not retain an extra
+    /// [`ConnectionTo`] handle.
+    pub fn detach(mut self) {
+        self.uuid = None;
     }
 }
 
-impl<R: Role> Drop for DynamicHandlerRegistration<R> {
+impl<R: Role> Drop for DynamicHandlerGuard<R> {
     fn drop(&mut self) {
-        self.cx.remove_dynamic_handler(self.uuid);
+        if let Some(uuid) = self.uuid {
+            self.cx.remove_dynamic_handler(uuid);
+        }
     }
 }
 
@@ -5419,6 +5433,76 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn connection_with_dynamic_handler_receiver() -> (
+        ConnectionTo<crate::role::UntypedRole>,
+        mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
+    ) {
+        let (message_tx, _message_rx) = mpsc::unbounded();
+        let (task_tx, _task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+
+        (
+            ConnectionTo::new(
+                crate::role::UntypedRole,
+                message_tx,
+                task_tx,
+                dynamic_handler_tx,
+                transport_completion,
+                pending_replies.registrar(),
+            ),
+            dynamic_handler_rx,
+        )
+    }
+
+    fn next_dynamic_handler_message(
+        receiver: &mut mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
+    ) -> Option<DynamicHandlerMessage<crate::role::UntypedRole>> {
+        futures::FutureExt::now_or_never(futures::StreamExt::next(receiver))
+            .expect("dynamic-handler receiver should be ready")
+    }
+
+    #[test]
+    fn dropping_dynamic_handler_guard_unregisters_handler() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let guard = connection.add_dynamic_handler(NullHandler).unwrap();
+
+        let added_uuid = match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _)) => uuid,
+            other => panic!("expected handler registration, got {other:?}"),
+        };
+
+        drop(guard);
+
+        match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::RemoveDynamicHandler(uuid)) => {
+                assert_eq!(uuid, added_uuid);
+            }
+            other => panic!("expected handler removal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detaching_dynamic_handler_guard_does_not_leak_connection() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let guard = connection.add_dynamic_handler(NullHandler).unwrap();
+
+        assert!(matches!(
+            next_dynamic_handler_message(&mut receiver),
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, _))
+        ));
+
+        drop(connection);
+        guard.detach();
+
+        assert!(
+            next_dynamic_handler_message(&mut receiver).is_none(),
+            "detach should retain the handler without retaining a connection sender"
+        );
+    }
 
     #[tokio::test]
     async fn write_line_flushes_buffered_writers() {

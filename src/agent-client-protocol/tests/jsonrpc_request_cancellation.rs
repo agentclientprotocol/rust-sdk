@@ -2105,7 +2105,7 @@ async fn retried_protocol_level_notification_reaches_later_dynamic_handler() {
                                     .add_dynamic_handler(CancelCollector {
                                         tx: collector_tx.clone(),
                                     })?
-                                    .run_indefinitely();
+                                    .detach();
                             }
                             responder.respond(SimpleResponse {
                                 result: format!("echo: {}", request.message),

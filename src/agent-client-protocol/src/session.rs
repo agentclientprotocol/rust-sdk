@@ -5,7 +5,7 @@ use futures::channel::{mpsc, oneshot};
 use crate::{
     Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Responder, Role,
     jsonrpc::{
-        DynamicHandlerRegistration,
+        DynamicHandlerGuard,
         run::{ChainRun, NullRun, RunWithConnectionTo},
     },
     mcp_server::McpServer,
@@ -78,7 +78,7 @@ where
     pub fn attach_session<'responder>(
         &self,
         response: NewSessionResponse,
-        mcp_handler_registrations: Vec<DynamicHandlerRegistration<Counterpart>>,
+        mcp_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     ) -> Result<ActiveSession<'responder, Counterpart>, crate::Error> {
         let NewSessionResponse {
             session_id,
@@ -123,7 +123,7 @@ pub struct SessionBuilder<
 {
     connection: ConnectionTo<Counterpart>,
     request: NewSessionRequest,
-    dynamic_handler_registrations: Vec<DynamicHandlerRegistration<Counterpart>>,
+    dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
     block_state: PhantomData<BlockState>,
 }
@@ -316,13 +316,13 @@ where
                 // Install a dynamic handler to proxy messages from this session
                 connection
                     .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                    .run_indefinitely();
+                    .detach();
 
                 // Spawn off the run and dynamic handlers to run indefinitely
                 connection.spawn(run.run_with_connection_to(connection.clone()))?;
                 dynamic_handler_registrations
                     .into_iter()
-                    .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
+                    .for_each(DynamicHandlerGuard::detach);
 
                 op(session_id).await
             }
@@ -499,12 +499,12 @@ where
     /// Registration for the handler that routes session messages to `update_rx`.
     /// This is separate from MCP handlers so it can be dropped independently
     /// when switching to proxy mode.
-    session_handler_registration: DynamicHandlerRegistration<Link>,
+    session_handler_registration: DynamicHandlerGuard<Link>,
 
     /// Registrations for MCP server handlers.
     /// These will be dropped once the active-session struct is dropped
     /// which will cause them to be deregistered.
-    mcp_handler_registrations: Vec<DynamicHandlerRegistration<Link>>,
+    mcp_handler_registrations: Vec<DynamicHandlerGuard<Link>>,
 
     /// Phantom lifetime representing the responder lifetime.
     _responder: PhantomData<&'responder ()>,
@@ -698,11 +698,11 @@ where
         // can take over. Any new messages will go directly through the proxy.
         connection
             .add_dynamic_handler(ProxySessionMessages::new(session_id))?
-            .run_indefinitely();
+            .detach();
 
         // Keep MCP server handlers alive for the lifetime of the proxy
         for registration in mcp_handler_registrations {
-            registration.run_indefinitely();
+            registration.detach();
         }
 
         Ok(())
