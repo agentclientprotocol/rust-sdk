@@ -724,7 +724,7 @@ where
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
-/// // on_receive_dispatch receives Dispatch which can be either a request or notification
+/// // on_receive_dispatch receives requests, notifications, and responses
 /// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification>, _cx| {
 ///     match msg {
 ///         Dispatch::Request(req, responder) => {
@@ -735,7 +735,7 @@ where
 ///         }
 ///         Dispatch::Response(result, router) => {
 ///             // Forward response to its destination
-///             router.respond_with_result(result)
+///             router.route_with_result(result)
 ///         }
 ///     }
 /// }, agent_client_protocol::on_receive_dispatch!())
@@ -1203,7 +1203,7 @@ impl<
     ///         }
     ///         Dispatch::Response(result, router) => {
     ///             // Forward response to its destination
-    ///             router.respond_with_result(result)
+    ///             router.route_with_result(result)
     ///         }
     ///     }
     /// }, agent_client_protocol::on_receive_dispatch!())
@@ -3036,7 +3036,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
             Dispatch::Response(result, router) => {
                 // Responses are forwarded directly to their destination
-                router.respond_with_result(result)
+                router.route_with_result(result)
             }
         }
     }
@@ -3481,10 +3481,10 @@ impl<T: JsonRpcResponse> Responder<T> {
         &self.method
     }
 
-    /// ID of the incoming request/response as a JSON value
+    /// ID of the incoming request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// Returns the cancellation marker for this request.
@@ -3584,7 +3584,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 ///
 /// # Drop Behavior
 ///
-/// Dropping a `ResponseRouter` without responding (for example, from a
+/// Dropping a `ResponseRouter` without routing the response (for example, from a
 /// dispatch handler that claims a [`Dispatch::Response`]) discards the
 /// response: the local awaiter observes the response as never received. The
 /// request still counts as settled: routing a response this far disarms the
@@ -3619,7 +3619,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
 impl ResponseRouter<serde_json::Value> {
     /// Create a new response context for routing a response to a local awaiter.
     ///
-    /// When `respond_with_result` is called, the response is sent through the oneshot
+    /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
     pub(crate) fn new(
@@ -3677,10 +3677,10 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
         &self.method
     }
 
-    /// ID of the original request as a JSON value
+    /// ID of the original request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// The peer to which the original request was sent.
@@ -3718,29 +3718,26 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
         }
     }
 
-    /// Complete the response by sending the result to the waiting task.
-    pub fn respond_with_result(
-        self,
-        response: Result<T, crate::Error>,
-    ) -> Result<(), crate::Error> {
+    /// Route the response result to the waiting task.
+    pub fn route_with_result(self, response: Result<T, crate::Error>) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "response routed to awaiter");
         (self.send_fn)(response)
     }
 
-    /// Complete the response by sending a value to the waiting task.
-    pub fn respond(self, response: T) -> Result<(), crate::Error> {
-        self.respond_with_result(Ok(response))
+    /// Route a successful response value to the waiting task.
+    pub fn route(self, response: T) -> Result<(), crate::Error> {
+        self.route_with_result(Ok(response))
     }
 
-    /// Complete the response by sending an internal error to the waiting task.
-    pub fn respond_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
-        self.respond_with_error(crate::util::internal_error(message))
+    /// Route an internal error to the waiting task.
+    pub fn route_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
+        self.route_with_error(crate::util::internal_error(message))
     }
 
-    /// Complete the response by sending an error to the waiting task.
-    pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
+    /// Route an error response to the waiting task.
+    pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, ?error, "error routed to awaiter");
-        self.respond_with_result(Err(error))
+        self.route_with_result(Err(error))
     }
 }
 
@@ -3915,7 +3912,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
                 );
                 Ok(())
             }
-            Dispatch::Response(_, responder) => responder.respond_with_error(error),
+            Dispatch::Response(_, router) => router.route_with_error(error),
         }
     }
 
@@ -3973,7 +3970,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     }
 
     /// Returns the request ID if this is a request or response, None if notification.
-    pub fn id(&self) -> Option<serde_json::Value> {
+    pub fn id(&self) -> Option<&RequestId> {
         match self {
             Dispatch::Request(_, cx) => Some(cx.id()),
             Dispatch::Notification(_) => None,
@@ -4625,8 +4622,8 @@ impl<T> SentRequest<T> {
 impl<T: JsonRpcResponse> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// The method of the request this is in response to.

@@ -1,8 +1,9 @@
 # Migrating from `agent-client-protocol` 1.x to 2.0
 
 Version 2.0 changes the low-level in-process transport boundary so JSON-RPC frames remain intact
-across components and adapters. It also gives `AcpAgent` an SDK-owned process-launch
-configuration instead of reusing an MCP wire-schema type.
+across components and adapters, clarifies the distinction between responding to requests and
+routing responses, and gives `AcpAgent` an SDK-owned process-launch configuration instead of
+reusing an MCP wire-schema type.
 
 ## Raw channels carry frames
 
@@ -25,6 +26,38 @@ received frame intact when relaying it so batch response grouping remains correc
 The separate, hidden `FramedChannel` and `into_framed_channel_and_future` compatibility path no
 longer exist. Implement only `ConnectTo::connect_to`, optionally overriding
 `into_channel_and_future` for a direct channel adapter.
+
+## Response routing uses routing terminology
+
+`ResponseRouter` completes a local pending request; it does not send a new JSON-RPC response.
+Its methods have therefore been renamed:
+
+| 1.x | 2.0 |
+| --- | --- |
+| `respond_with_result` | `route_with_result` |
+| `respond` | `route` |
+| `respond_with_error` | `route_with_error` |
+| `respond_with_internal_error` | `route_with_internal_error` |
+
+`Responder` still uses `respond*`, because it sends the response to an incoming request.
+
+## Request IDs remain typed
+
+`Responder::id`, `ResponseRouter::id`, and `SentRequest::id` now return `&RequestId`.
+`Dispatch::id` returns `Option<&RequestId>`. Clone the ID when it must outlive the handle:
+
+```rust
+let id = sent_request.id().clone();
+```
+
+This removes JSON round-trips and lets IDs pass directly to APIs such as request cancellation.
+If an integration still needs an untyped JSON value, serialize the borrowed ID explicitly:
+
+```rust
+let id_json = serde_json::to_value(sent_request.id())?;
+let dispatch_id_json = dispatch.id().map(serde_json::to_value).transpose()?;
+# let _ = (id_json, dispatch_id_json);
+```
 
 ## `AcpAgent` has its own process configuration
 

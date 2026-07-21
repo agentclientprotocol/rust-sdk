@@ -419,7 +419,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let mut retry_any = false;
 
-    let id = dispatch.id();
+    let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
     let reply_target = dispatch.request_reply_target();
 
@@ -540,7 +540,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
             Dispatch::Response(result, router) => {
                 tracing::trace!(?method, "Forwarding response");
-                router.respond_with_result(result)
+                router.route_with_result(result)
             }
         }
     }

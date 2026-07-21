@@ -481,7 +481,7 @@ where
                     notification,
                 )
             }
-            Dispatch::Response(result, router) => router.respond_with_result(result),
+            Dispatch::Response(result, router) => router.route_with_result(result),
         }
     }
 
