@@ -943,8 +943,8 @@ where
     /// Handler for incoming messages.
     handler: Handler,
 
-    /// Responder for background tasks.
-    responder: Runner,
+    /// Runner for background connection tasks.
+    runner: Runner,
 
     /// Protocol version mode for the public API and wire compatibility layer.
     protocol_mode: ProtocolMode,
@@ -974,7 +974,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
             host: role,
             name: None,
             handler: NullHandler,
-            responder: NullRun,
+            runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
         }
@@ -991,7 +991,7 @@ where
             host: role,
             name: None,
             handler,
-            responder: NullRun,
+            runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
         }
@@ -1054,7 +1054,7 @@ impl<
         let Builder {
             name: other_name,
             handler: other_handler,
-            responder: other_responder,
+            runner: other_runner,
             protocol_mode: other_protocol_mode,
             on_close: other_on_close,
             host: _,
@@ -1066,7 +1066,7 @@ impl<
                 self.handler,
                 NamedHandler::new(other_name, other_handler),
             ),
-            responder: ChainRun::new(self.responder, other_responder),
+            runner: ChainRun::new(self.runner, other_runner),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
             on_close: ChainedClose::new(self.on_close, other_on_close),
         }
@@ -1084,16 +1084,16 @@ impl<
             host: self.host,
             name: self.name,
             handler: ChainedHandler::new(self.handler, handler),
-            responder: self.responder,
+            runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
         }
     }
 
     /// Add a new [`RunWithConnectionTo`] to the chain.
-    pub fn with_responder<Run1>(
+    pub fn with_runner<Run1>(
         self,
-        responder: Run1,
+        runner: Run1,
     ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
     where
         Run1: RunWithConnectionTo<Host::Counterpart>,
@@ -1102,7 +1102,7 @@ impl<
             host: self.host,
             name: self.name,
             handler: self.handler,
-            responder: ChainRun::new(self.responder, responder),
+            runner: ChainRun::new(self.runner, runner),
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
         }
@@ -1119,7 +1119,7 @@ impl<
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let location = Location::caller();
-        self.with_responder(SpawnedRun::new(location, task))
+        self.with_runner(SpawnedRun::new(location, task))
     }
 
     /// Run a callback when the incoming transport reaches clean EOF.
@@ -1166,7 +1166,7 @@ impl<
             host: self.host,
             name: self.name,
             handler: self.handler,
-            responder: self.responder,
+            runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: ChainedClose::new(self.on_close, CloseCallback::new(callback)),
         }
@@ -1550,8 +1550,8 @@ impl<
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
     {
-        let (handler, responder) = mcp_server.into_handler_and_responder();
-        self.with_handler(handler).with_responder(responder)
+        let (handler, runner) = mcp_server.into_handler_and_runner();
+        self.with_handler(handler).with_runner(runner)
     }
 
     /// Run in server mode with the provided transport.
@@ -1689,7 +1689,7 @@ impl<
         let Self {
             name,
             handler,
-            responder,
+            runner,
             host: me,
             protocol_mode,
             on_close,
@@ -1763,7 +1763,7 @@ impl<
                                 protocol_compat,
                             ),
                             task_actor::task_actor(new_task_rx, &connection),
-                            responder.run_with_connection_to(connection.clone()),
+                            runner.run_with_connection_to(connection.clone()),
                         )?;
                         Ok(())
                     };

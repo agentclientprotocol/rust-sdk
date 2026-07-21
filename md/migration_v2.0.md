@@ -109,6 +109,15 @@ registration. Dropping it unregisters the handler. To leave a handler registered
 the connection, replace `run_indefinitely()` with `detach()`. Detaching no longer leaks an extra
 `ConnectionTo` handle.
 
+## Background tasks use runner terminology
+
+Builder extensions implementing `RunWithConnectionTo` run alongside the connection; they do not
+respond to an individual JSON-RPC request. The builder method now reflects that distinction:
+
+| 1.x | 2.0 |
+| --- | --- |
+| `Builder::with_responder` | `Builder::with_runner` |
+
 ## `AcpAgent` has its own process configuration
 
 `AcpAgent` now accepts `AcpAgentConfig` instead of the ACP wire-schema `McpServer`. An ACP agent

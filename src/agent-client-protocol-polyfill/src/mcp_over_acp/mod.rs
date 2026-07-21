@@ -144,7 +144,7 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
         Proxy
             .builder()
             .name("mcp-over-acp-polyfill")
-            .with_responder(BridgeResponder {
+            .with_runner(BridgeResponder {
                 bridge_tx: bridge_tx.clone(),
                 bridge_rx,
                 bridge_connections: HashMap::new(),

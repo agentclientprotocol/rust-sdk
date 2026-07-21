@@ -236,7 +236,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             },
         )
         .name(self.name)
-        .with_responder(responder)
+        .with_runner(responder)
         .with_spawned(|_cx| trace_future)
         .connect_to(transport)
         .await

@@ -16,6 +16,9 @@
 - **Breaking:** Replace cloneable dynamic-handler registrations with `DynamicHandlerGuard` and
   use `detach()` to keep handlers registered without leaking a connection handle. See the
   [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Rename `Builder::with_responder` to `with_runner` to describe background
+  connection tasks separately from JSON-RPC response handles. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
   `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
   an object.

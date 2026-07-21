@@ -157,7 +157,7 @@ where
     where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
-        let (handler, mcp_run) = mcp_server.into_handler_and_responder();
+        let (handler, mcp_run) = mcp_server.into_handler_and_runner();
         self.dynamic_handler_registrations
             .push(handler.into_dynamic_handler(&mut self.request, &self.connection)?);
         Ok(SessionBuilder {

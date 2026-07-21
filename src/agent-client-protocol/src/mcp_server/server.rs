@@ -45,13 +45,13 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     /// The "connect" instance
     connect: Arc<dyn McpServerConnect<Counterpart>>,
 
-    /// The "responder" is a task that should be run alongside the message handler.
+    /// The runner is a task that should be run alongside the message handler.
     /// Some futures direct messages back through channels to this future which actually
     /// handles responding to the client.
     ///
     /// Some connector implementations use this to run support tasks alongside
     /// the message handler.
-    responder: Run,
+    runner: Run,
 }
 
 impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
@@ -61,7 +61,7 @@ impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
         f.debug_struct("McpServer")
             .field("phantom", &self.phantom)
             .field("acp_id", &self.acp_id)
-            .field("responder", &self.responder)
+            .field("runner", &self.runner)
             .finish_non_exhaustive()
     }
 }
@@ -76,17 +76,17 @@ where
     ///
     /// See `agent-client-protocol-rmcp` to construct MCP servers from Rust code
     /// with `rmcp`.
-    pub fn new(c: impl McpServerConnect<Counterpart>, responder: Run) -> Self {
+    pub fn new(c: impl McpServerConnect<Counterpart>, runner: Run) -> Self {
         McpServer {
             phantom: PhantomData,
             acp_id: format!("acp:{}", Uuid::new_v4()),
             connect: Arc::new(c),
-            responder,
+            runner,
         }
     }
 
     /// Split this MCP server into the message handler and a future that must be run while the handler is active.
-    pub(crate) fn into_handler_and_responder(self) -> (McpNewSessionHandler<Counterpart>, Run)
+    pub(crate) fn into_handler_and_runner(self) -> (McpNewSessionHandler<Counterpart>, Run)
     where
         Counterpart: HasPeer<Agent>,
     {
@@ -94,9 +94,9 @@ where
             phantom: _,
             acp_id,
             connect,
-            responder,
+            runner,
         } = self;
-        (McpNewSessionHandler::new(acp_id, connect), responder)
+        (McpNewSessionHandler::new(acp_id, connect), runner)
     }
 }
 
@@ -198,7 +198,7 @@ where
         let Self {
             acp_id,
             connect,
-            responder,
+            runner,
             phantom: _,
         } = self;
 
@@ -206,7 +206,7 @@ where
 
         role::mcp::Server
             .builder()
-            .with_responder(responder)
+            .with_runner(runner)
             .on_receive_dispatch(
                 async |message_from_client: Dispatch, _cx| {
                     tx.unbounded_send(message_from_client)
