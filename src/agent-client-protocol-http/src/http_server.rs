@@ -1,6 +1,8 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
-use agent_client_protocol::{RawJsonRpcMessage, schema::v1::Response as RpcResponse};
+use agent_client_protocol::{
+    RawJsonRpcMessage, TransportBatchEntry, TransportFrame, schema::v1::Response as RpcResponse,
+};
 use axum::{
     body::Body,
     extract::State,
@@ -54,22 +56,36 @@ pub(crate) async fn handle_post(
         }
     };
 
-    if matches!(body.first(), Some(&b'[')) {
-        return StatusCode::NOT_IMPLEMENTED.into_response();
-    }
-
-    let mut message = match serde_json::from_slice::<RawJsonRpcMessage>(&body) {
-        Ok(message) => message,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!("Invalid JSON-RPC: {e}")).into_response();
+    let body = match std::str::from_utf8(&body) {
+        Ok(body) => body,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("Invalid JSON-RPC: {error}"),
+            )
+                .into_response();
         }
     };
+    let Some(mut frame) = TransportFrame::parse_json(body) else {
+        // Response-shaped invalid input is deliberately ignored by the JSON-RPC
+        // parser because responses must not themselves receive responses.
+        return StatusCode::ACCEPTED.into_response();
+    };
 
-    if is_initialize_request(&message) {
+    if matches!(
+        &frame,
+        TransportFrame::Single(message) if is_initialize_request(message)
+    ) {
+        let TransportFrame::Single(message) = frame else {
+            unreachable!("initialize was matched as a single frame");
+        };
         let (connection_id, connection) = registry.create_connection().await;
         let initialize_cleanup =
             InitializeCleanup::new(registry.clone(), connection_id.clone(), connection.clone());
-        if connection.send_to_agent(message).is_err() {
+        if connection
+            .send_frame_to_agent(TransportFrame::Single(message))
+            .is_err()
+        {
             initialize_cleanup.cleanup().await;
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -113,38 +129,82 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    if let Some(session_id) = &session_id
-        && method_for_message(&message).is_some()
-        && let Err(error) = apply_session_header_to_message(&mut message, session_id)
-    {
-        return (StatusCode::BAD_REQUEST, error).into_response();
+    let mut session_routes = Vec::new();
+    let mut pending_routes = Vec::new();
+    match &mut frame {
+        TransportFrame::Single(message) => {
+            let route = match prepare_message_route(message, session_id.as_deref()) {
+                Ok(route) => route,
+                Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+            };
+            collect_route(message, route, &mut session_routes, &mut pending_routes);
+            trace!(connection_id = %connection_id, ?message, "POST → agent");
+        }
+        TransportFrame::Batch(batch) => {
+            for entry in batch.entries_mut() {
+                let TransportBatchEntry::Message(message) = entry else {
+                    continue;
+                };
+                let route = match prepare_message_route(message, session_id.as_deref()) {
+                    Ok(route) => route,
+                    Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+                };
+                collect_route(message, route, &mut session_routes, &mut pending_routes);
+            }
+            trace!(connection_id = %connection_id, ?frame, "POST batch → agent");
+        }
+        TransportFrame::Malformed { .. } => {
+            trace!(connection_id = %connection_id, ?frame, "POST malformed frame → agent");
+        }
     }
 
-    let route = match method_for_message(&message) {
-        Some(method) => match session_id_from_message(&message) {
+    for session_id in session_routes {
+        connection.ensure_session(&session_id).await;
+    }
+    for (request_id, route) in pending_routes {
+        connection.record_pending_route(request_id, route).await;
+    }
+
+    if connection.send_frame_to_agent(frame).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    StatusCode::ACCEPTED.into_response()
+}
+
+fn prepare_message_route(
+    message: &mut RawJsonRpcMessage,
+    session_id: Option<&str>,
+) -> Result<Option<ResponseRoute>, &'static str> {
+    if let Some(session_id) = session_id
+        && method_for_message(message).is_some()
+    {
+        apply_session_header_to_message(message, session_id)?;
+    }
+
+    Ok(match method_for_message(message) {
+        Some(method) => match session_id_from_message(message) {
             Some(session_id) => Some(ResponseRoute::Session(session_id)),
             None if method_requires_session_header(method) => {
-                return (StatusCode::BAD_REQUEST, "Acp-Session-Id header required").into_response();
+                return Err("Acp-Session-Id header required");
             }
             None => Some(ResponseRoute::Connection),
         },
         None => None,
-    };
+    })
+}
 
+fn collect_route(
+    message: &RawJsonRpcMessage,
+    route: Option<ResponseRoute>,
+    session_routes: &mut Vec<String>,
+    pending_routes: &mut Vec<(agent_client_protocol::schema::v1::RequestId, ResponseRoute)>,
+) {
     if let Some(ResponseRoute::Session(session_id)) = &route {
-        connection.ensure_session(session_id).await;
+        session_routes.push(session_id.clone());
     }
-    if let (RawJsonRpcMessage::Request(req), Some(route)) = (&message, route) {
-        connection.record_pending_route(req.id.clone(), route).await;
-        trace!(connection_id = %connection_id, method = %req.method, "POST → agent");
-    } else {
-        trace!(connection_id = %connection_id, ?message, "POST → agent");
+    if let (RawJsonRpcMessage::Request(request), Some(route)) = (message, route) {
+        pending_routes.push((request.id.clone(), route));
     }
-
-    if connection.send_to_agent(message).is_err() {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-    StatusCode::ACCEPTED.into_response()
 }
 
 struct InitializeCleanup {
@@ -336,7 +396,10 @@ fn post_body_too_large_response() -> Response {
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::v1::RequestId};
+    use agent_client_protocol::{
+        Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
+        schema::v1::RequestId,
+    };
     use futures::{StreamExt, future::BoxFuture};
     use serde_json::json;
     use tokio::{
@@ -365,8 +428,11 @@ mod tests {
                     rx: mut incoming,
                     tx: _,
                 } = agent;
-                while let Some(message) = incoming.next().await {
-                    if forwarded.send(message?).is_err() {
+                while let Some(frame) = incoming.next().await {
+                    let TransportFrame::Single(message) = frame else {
+                        panic!("expected a single JSON-RPC frame");
+                    };
+                    if forwarded.send(message).is_err() {
                         break;
                     }
                 }
@@ -388,10 +454,12 @@ mod tests {
         ) {
             let (mut agent, transport) = Channel::duplex();
             let future = Box::pin(async move {
-                if let Some(Ok(RawJsonRpcMessage::Request(request))) = agent.rx.next().await {
+                if let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+                    agent.rx.next().await
+                {
                     agent
                         .tx
-                        .unbounded_send(Ok(RawJsonRpcMessage::response(
+                        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
                             request.id,
                             Err(agent_client_protocol::Error::invalid_request()
                                 .data("initialize rejected")),
@@ -428,6 +496,56 @@ mod tests {
         }
     }
 
+    struct BatchAgentFactory {
+        forwarded: mpsc::UnboundedSender<Vec<(String, Option<String>)>>,
+    }
+
+    impl AgentFactory for BatchAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (mut agent, transport) = Channel::duplex();
+            let forwarded = self.forwarded.clone();
+            let future = Box::pin(async move {
+                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
+                    panic!("expected one batch frame");
+                };
+                let mut methods = Vec::new();
+                let mut responses = Vec::new();
+                for entry in batch.entries() {
+                    let TransportBatchEntry::Message(RawJsonRpcMessage::Request(request)) = entry
+                    else {
+                        panic!("expected a request batch entry");
+                    };
+                    methods.push((
+                        request.method.to_string(),
+                        request
+                            .params
+                            .as_ref()
+                            .and_then(crate::protocol::session_id_from_params),
+                    ));
+                    responses.push(RawJsonRpcMessage::response(
+                        request.id.clone(),
+                        Ok(json!({ "ok": true })),
+                    ));
+                }
+                forwarded.send(methods).unwrap();
+                let responses =
+                    TransportBatch::from_messages(responses).expect("responses are non-empty");
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Batch(responses))
+                    .unwrap();
+                std::future::pending::<agent_client_protocol::Result<()>>().await
+            });
+
+            (transport, future)
+        }
+    }
+
     #[tokio::test]
     async fn post_rejects_declared_body_larger_than_limit() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
@@ -448,6 +566,142 @@ mod tests {
         let response = handle_post(State(registry), request).await;
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn post_applies_session_header_to_batch_and_routes_grouped_response() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(BatchAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let (_connection_replay, mut connection_outbound) =
+            connection.subscribe_connection_stream().await;
+        let (_session_replay, mut session_outbound) =
+            connection.subscribe_session_stream("session-1").await;
+        connection.start_router().await;
+
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "custom/first",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "custom/second",
+                "params": {}
+            }
+        ])
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .header(HEADER_SESSION_ID, "session-1")
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry.clone()), request).await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let methods = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            methods,
+            [
+                ("custom/first".to_string(), Some("session-1".to_string())),
+                ("custom/second".to_string(), Some("session-1".to_string())),
+            ]
+        );
+        let response = timeout(Duration::from_secs(1), session_outbound.recv())
+            .await
+            .unwrap()
+            .expect("batch response should be emitted");
+        let response = serde_json::from_str::<serde_json::Value>(&response).unwrap();
+        let entries = response.as_array().expect("response should remain a batch");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], 1);
+        assert_eq!(entries[1]["id"], 2);
+        assert!(session_outbound.try_recv().is_err());
+        assert!(connection_outbound.try_recv().is_err());
+
+        registry.remove(&connection_id).await;
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn mixed_batch_routes_fall_back_to_connection_stream() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(BatchAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let (_connection_replay, mut connection_outbound) =
+            connection.subscribe_connection_stream().await;
+        let (_session_replay, mut session_outbound) =
+            connection.subscribe_session_stream("session-1").await;
+        connection.start_router().await;
+
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "custom/session",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "$/connection",
+                "params": {}
+            }
+        ])
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .header(HEADER_SESSION_ID, "session-1")
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry.clone()), request).await;
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let methods = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            methods,
+            [
+                ("custom/session".to_string(), Some("session-1".to_string())),
+                ("$/connection".to_string(), None),
+            ]
+        );
+        let response = timeout(Duration::from_secs(1), connection_outbound.recv())
+            .await
+            .unwrap()
+            .expect("mixed-route batch should use the connection stream");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(session_outbound.try_recv().is_err());
+
+        registry.remove(&connection_id).await;
+        connection.shutdown().await;
     }
 
     #[tokio::test]
@@ -685,6 +939,47 @@ mod tests {
             assert_eq!(body.as_ref(), b"Acp-Session-Id header required", "{method}");
             assert!(forwarded_rx.try_recv().is_err(), "{method}");
         }
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn post_rejects_batch_session_scoped_method_without_session_id() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let body = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "custom/valid",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/delete",
+                "params": {}
+            }
+        ])
+        .to_string();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/acp")
+            .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id.as_str())
+            .body(Body::from(body))
+            .unwrap();
+
+        let response = handle_post(State(registry), request).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), b"Acp-Session-Id header required");
+        assert!(forwarded_rx.try_recv().is_err());
         connection.shutdown().await;
     }
 }

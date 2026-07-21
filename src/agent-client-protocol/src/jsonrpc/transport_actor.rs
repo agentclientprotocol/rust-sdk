@@ -9,8 +9,8 @@ use serde::Deserialize as _;
 
 enum ParsedIncomingLine {
     Ignored,
-    Single(Result<RawJsonRpcMessage, crate::Error>),
-    InvalidSingle { raw: String, error: crate::Error },
+    Single(RawJsonRpcMessage),
+    Malformed { raw: String, error: crate::Error },
     Batch(TransportBatch),
 }
 
@@ -28,7 +28,7 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
         Ok(value) => value,
         Err(error) => {
             tracing::debug!(?error, "Failed to parse incoming JSON-RPC JSON");
-            return ParsedIncomingLine::InvalidSingle {
+            return ParsedIncomingLine::Malformed {
                 raw: line.to_owned(),
                 error: crate::Error::parse_error().data(serde_json::json!({ "line": line })),
             };
@@ -36,12 +36,10 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
     };
 
     match value {
-        serde_json::Value::Array(entries) if entries.is_empty() => {
-            ParsedIncomingLine::InvalidSingle {
-                raw: line.to_owned(),
-                error: crate::Error::invalid_request(),
-            }
-        }
+        serde_json::Value::Array(entries) if entries.is_empty() => ParsedIncomingLine::Malformed {
+            raw: line.to_owned(),
+            error: crate::Error::invalid_request(),
+        },
         serde_json::Value::Array(entries) => {
             let mut has_response_entry = false;
             let mut has_call_entry = false;
@@ -68,7 +66,10 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
                             // mixed batch. Keep ambiguous call-shaped entries
                             // so invalid requests still receive an error.
                             (!looks_like_response || looks_like_call).then(|| {
-                                TransportBatchEntry::invalid(entry, crate::Error::invalid_request())
+                                TransportBatchEntry::malformed(
+                                    entry,
+                                    crate::Error::invalid_request(),
+                                )
                             })
                         }
                     }
@@ -89,18 +90,53 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
         value => {
             let (looks_like_call, looks_like_response) = message_shape(&value);
             match serde_json::from_value(value) {
-                Ok(message) => ParsedIncomingLine::Single(Ok(message)),
+                Ok(message) => ParsedIncomingLine::Single(message),
                 Err(error) => {
                     tracing::debug!(?error, "Invalid JSON-RPC message");
                     if looks_like_response && !looks_like_call {
                         ParsedIncomingLine::Ignored
                     } else {
-                        ParsedIncomingLine::InvalidSingle {
+                        ParsedIncomingLine::Malformed {
                             raw: line.to_owned(),
                             error: crate::Error::invalid_request(),
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+impl TransportFrame {
+    /// Parse one JSON-RPC wire value while preserving batch boundaries.
+    ///
+    /// Malformed calls are returned as explicit malformed frames or batch
+    /// entries. Malformed response-shaped input is ignored, yielding `None`,
+    /// because JSON-RPC responses must not themselves receive responses.
+    #[must_use]
+    pub fn parse_json(input: &str) -> Option<Self> {
+        match parse_incoming_line(input) {
+            ParsedIncomingLine::Ignored => None,
+            ParsedIncomingLine::Single(message) => Some(Self::Single(message)),
+            ParsedIncomingLine::Malformed { raw, error } => Some(Self::Malformed { raw, error }),
+            ParsedIncomingLine::Batch(batch) => Some(Self::Batch(batch)),
+        }
+    }
+
+    /// Serialize this frame to its JSON-RPC wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal error if a valid message or batch cannot be
+    /// serialized. Malformed frames return their original wire text unchanged.
+    pub fn to_json(&self) -> Result<String, crate::Error> {
+        match self {
+            Self::Single(message) => {
+                serde_json::to_string(message).map_err(crate::Error::into_internal_error)
+            }
+            Self::Malformed { raw, .. } => Ok(raw.clone()),
+            Self::Batch(batch) => {
+                serde_json::to_string(batch).map_err(crate::Error::into_internal_error)
             }
         }
     }
@@ -113,7 +149,6 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
 /// written to the underlying transport.
 ///
 /// This actor handles transport mechanics:
-/// - Unwraps Result<Message> from the channel
 /// - Serializes RawJsonRpcMessage to JSON strings
 /// - Yields newline-terminated strings
 /// - Handles serialization errors
@@ -128,10 +163,11 @@ async fn transport_outgoing_frames_actor(
     let mut outgoing_lines = pin!(outgoing_lines);
 
     while let Some(frame) = transport_rx.next().await {
-        let message_result = match frame {
+        let json_rpc_message = match frame {
             TransportFrame::Single(message) => message,
-            TransportFrame::InvalidSingle { raw, .. } => {
-                tracing::trace!(message = %raw, "Relaying invalid JSON-RPC value");
+            TransportFrame::Malformed { raw, .. } => {
+                let raw = malformed_line_value(raw)?;
+                tracing::trace!(message = ?raw, "Relaying invalid JSON-RPC value");
                 outgoing_lines
                     .send(raw)
                     .await
@@ -149,7 +185,6 @@ async fn transport_outgoing_frames_actor(
                 continue;
             }
         };
-        let json_rpc_message = message_result?;
         match serde_json::to_string(&json_rpc_message) {
             Ok(line) => {
                 tracing::trace!(message = %line, "Sending JSON-RPC message");
@@ -199,18 +234,23 @@ async fn transport_outgoing_frames_actor(
     Ok(())
 }
 
+fn malformed_line_value(raw: String) -> Result<String, crate::Error> {
+    if !raw.contains('\r') && !raw.contains('\n') {
+        return Ok(raw);
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => serde_json::to_string(&value),
+        Err(_) => serde_json::to_string(&raw),
+    }
+    .map_err(crate::Error::into_internal_error)
+}
+
 pub(super) async fn transport_outgoing_lines_actor(
     transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
     outgoing_lines: impl futures::Sink<String, Error = std::io::Error>,
 ) -> Result<(), crate::Error> {
     transport_outgoing_frames_actor(transport_rx, outgoing_lines).await
-}
-
-pub(super) async fn transport_outgoing_legacy_lines_actor(
-    transport_rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
-    outgoing_lines: impl futures::Sink<String, Error = std::io::Error>,
-) -> Result<(), crate::Error> {
-    transport_outgoing_frames_actor(transport_rx.map(TransportFrame::Single), outgoing_lines).await
 }
 
 /// Transport incoming actor for line streams: Parses lines into RawJsonRpcMessage values.
@@ -241,9 +281,9 @@ pub(super) async fn transport_incoming_lines_actor(
                     .unbounded_send(TransportFrame::Single(message))
                     .map_err(crate::Error::into_internal_error)?;
             }
-            ParsedIncomingLine::InvalidSingle { raw, error } => {
+            ParsedIncomingLine::Malformed { raw, error } => {
                 transport_tx
-                    .unbounded_send(TransportFrame::InvalidSingle { raw, error })
+                    .unbounded_send(TransportFrame::Malformed { raw, error })
                     .map_err(crate::Error::into_internal_error)?;
             }
             ParsedIncomingLine::Batch(entries) => {
@@ -256,32 +296,10 @@ pub(super) async fn transport_incoming_lines_actor(
     Ok(())
 }
 
-pub(super) async fn transport_incoming_legacy_lines_actor(
-    incoming_lines: impl futures::Stream<Item = std::io::Result<String>>,
-    transport_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
-) -> Result<(), crate::Error> {
-    let mut incoming_lines = pin!(incoming_lines);
-    while let Some(line_result) = incoming_lines.next().await {
-        let line = line_result.map_err(crate::Error::into_internal_error)?;
-        tracing::trace!(message = %line, "Received JSON-RPC message");
-
-        let entries = match parse_incoming_line(&line) {
-            ParsedIncomingLine::Ignored => Vec::new(),
-            ParsedIncomingLine::Single(message) => vec![message],
-            ParsedIncomingLine::InvalidSingle { error, .. } => vec![Err(error)],
-            ParsedIncomingLine::Batch(batch) => batch.into_results().collect(),
-        };
-        for entry in entries {
-            transport_tx
-                .unbounded_send(entry)
-                .map_err(crate::Error::into_internal_error)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
     use crate::ErrorCode;
 
@@ -382,7 +400,7 @@ mod tests {
 
     #[test]
     fn preserves_malformed_call_shaped_standalone_message() {
-        let ParsedIncomingLine::InvalidSingle { error, .. } =
+        let ParsedIncomingLine::Malformed { error, .. } =
             parse_incoming_line(r#"{"jsonrpc":"2.0","id":1,"method":"one","result":null}"#)
         else {
             panic!("expected one invalid-request error");
@@ -395,7 +413,7 @@ mod tests {
     fn parses_valid_standalone_response() {
         assert!(matches!(
             parse_incoming_line(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#),
-            ParsedIncomingLine::Single(Ok(RawJsonRpcMessage::Response(_)))
+            ParsedIncomingLine::Single(RawJsonRpcMessage::Response(_))
         ));
     }
 
@@ -415,7 +433,7 @@ mod tests {
 
     #[test]
     fn empty_batch_is_an_invalid_request() {
-        let ParsedIncomingLine::InvalidSingle { raw, error } = parse_incoming_line("[]") else {
+        let ParsedIncomingLine::Malformed { raw, error } = parse_incoming_line("[]") else {
             panic!("expected one invalid-request error");
         };
 
@@ -425,7 +443,7 @@ mod tests {
 
     #[test]
     fn malformed_json_is_a_parse_error() {
-        let ParsedIncomingLine::InvalidSingle { raw, error } = parse_incoming_line("[") else {
+        let ParsedIncomingLine::Malformed { raw, error } = parse_incoming_line("[") else {
             panic!("expected one parse error");
         };
 
@@ -435,11 +453,49 @@ mod tests {
 
     #[test]
     fn valid_json_with_an_invalid_envelope_is_an_invalid_request() {
-        let ParsedIncomingLine::InvalidSingle { raw, error } = parse_incoming_line("17") else {
+        let ParsedIncomingLine::Malformed { raw, error } = parse_incoming_line("17") else {
             panic!("expected one invalid-request error");
         };
 
         assert_eq!(raw, "17");
         assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
+
+    #[tokio::test]
+    async fn multiline_malformed_frame_is_written_as_one_line_value() {
+        let raw = "not json\r\n{\"jsonrpc\":\"2.0\",\"method\":\"injected\"}".to_string();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let outgoing = futures::sink::unfold(captured.clone(), |captured, line| async move {
+            captured.lock().unwrap().push(line);
+            Ok::<_, std::io::Error>(captured)
+        });
+
+        transport_outgoing_frames_actor(
+            futures::stream::iter([TransportFrame::Malformed {
+                raw: raw.clone(),
+                error: crate::Error::parse_error(),
+            }]),
+            outgoing,
+        )
+        .await
+        .unwrap();
+
+        let lines = captured.lock().unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].contains('\r') && !lines[0].contains('\n'));
+        assert_eq!(serde_json::from_str::<String>(&lines[0]).unwrap(), raw);
+    }
+
+    #[test]
+    fn multiline_invalid_json_rpc_value_is_compacted_without_changing_value() {
+        let raw = "{\n  \"jsonrpc\": \"2.0\",\n  \"method\": 1\n}".to_string();
+        let expected = serde_json::from_str::<serde_json::Value>(&raw).unwrap();
+        let line = malformed_line_value(raw).unwrap();
+
+        assert!(!line.contains('\r') && !line.contains('\n'));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+            expected
+        );
     }
 }

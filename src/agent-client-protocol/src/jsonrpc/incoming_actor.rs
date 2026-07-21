@@ -293,11 +293,11 @@ fn frame_entries(
 ) {
     let entries: Vec<Result<RawJsonRpcMessage, crate::Error>> = match frame {
         TransportFrame::Single(message) => {
-            let destination =
-                message_requires_response(&message).then_some(ResponseDestination::Individual);
-            return (vec![(message, destination)], None);
+            let destination = matches!(&message, RawJsonRpcMessage::Request(_))
+                .then_some(ResponseDestination::Individual);
+            return (vec![(Ok(message), destination)], None);
         }
-        TransportFrame::InvalidSingle { error, .. } => {
+        TransportFrame::Malformed { error, .. } => {
             return (
                 vec![(Err(error), Some(ResponseDestination::Individual))],
                 None,

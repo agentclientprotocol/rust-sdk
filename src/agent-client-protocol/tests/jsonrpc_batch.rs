@@ -1,9 +1,9 @@
 //! Wire-level regressions for receiving JSON-RPC batch arrays.
 //!
-//! Batch parsing is a transport concern: the public channel boundary continues
-//! to carry individual JSON-RPC messages. Calls received in one batch are
-//! answered with one consolidated response array, while requests and
-//! notifications initiated by the SDK remain individual messages.
+//! Batch parsing is a transport concern: the public channel boundary carries
+//! batch-aware transport frames. Calls received in one batch are answered with
+//! one consolidated response array, while requests and notifications initiated
+//! by the SDK remain individual messages.
 
 use std::sync::{
     Arc,

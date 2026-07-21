@@ -84,13 +84,13 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
         }
     }
 
-    fn into_framed_channel_and_future(
+    fn into_channel_and_future(
         self,
     ) -> (
-        crate::FramedChannel,
+        crate::Channel,
         crate::BoxFuture<'static, Result<(), crate::Error>>,
     ) {
-        let (channel_for_caller, channel_for_stdio) = crate::FramedChannel::duplex();
+        let (channel_for_caller, channel_for_stdio) = crate::Channel::duplex();
         let future = Box::pin(ConnectTo::<Counterpart>::connect_to(
             self,
             channel_for_stdio,

@@ -4,7 +4,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
+    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage, TransportFrame,
     schema::v1::{RequestId, Response as RpcResponse},
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
@@ -185,24 +185,23 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
         };
 
-        let msg = match event {
-            HttpLoopEvent::Outgoing(msg) => match msg {
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
-                    error!("upstream channel produced error: {e}");
-                    break Err(e);
-                }
-                None => {
+        let frame = match event {
+            HttpLoopEvent::Outgoing(msg) => {
+                let Some(frame) = msg else {
                     outgoing_closed = true;
                     continue;
-                }
-            },
+                };
+                frame
+            }
             HttpLoopEvent::SseEvent(event) => {
                 let Some(event) = event else {
                     continue;
                 };
-                let open_session_id = state.session_to_open_for_response(&event.message);
-                state.deliver(event.message);
+                let open_session_id = match &event.frame {
+                    TransportFrame::Single(message) => state.session_to_open_for_response(message),
+                    TransportFrame::Malformed { .. } | TransportFrame::Batch(_) => None,
+                };
+                state.deliver_frame(event.frame);
                 if let Some(session_id) = open_session_id {
                     lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
                 }
@@ -223,6 +222,24 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                     state.remove_pending_request(pending_request.as_ref());
                     error!("POST failed: {e}");
                     break Err(AcpError::internal_error().data(format!("POST: {e}")));
+                }
+                continue;
+            }
+        };
+
+        let msg = match frame {
+            TransportFrame::Single(message) => message,
+            frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
+                if state.connection.connection_id().is_none() {
+                    break Err(AcpError::invalid_request()
+                        .data("ACP HTTP transport: first message must be `initialize`"));
+                }
+                match state.prepare_frame_post(frame) {
+                    Ok(post) => response_posts.push(post),
+                    Err(error) => {
+                        error!("POST failed: {error}");
+                        break Err(AcpError::internal_error().data(format!("POST: {error}")));
+                    }
                 }
                 continue;
             }
@@ -270,7 +287,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 }
 
 enum HttpLoopEvent {
-    Outgoing(Option<Result<RawJsonRpcMessage, AcpError>>),
+    Outgoing(Option<TransportFrame>),
     SseEvent(Option<SseMessage>),
     SseFailure(SseFailure),
     Post(CompletedPost),
@@ -284,7 +301,7 @@ struct SseFailure {
 
 #[derive(Debug)]
 struct SseMessage {
-    message: RawJsonRpcMessage,
+    frame: TransportFrame,
 }
 
 #[derive(Clone, Debug)]
@@ -454,7 +471,7 @@ struct ClientState {
     connection: HttpConnection,
     open_session_streams: HashSet<String>,
     pending_requests: HashMap<RequestId, String>,
-    incoming: futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
+    incoming: futures::channel::mpsc::UnboundedSender<TransportFrame>,
 }
 
 struct PendingPost {
@@ -554,10 +571,17 @@ impl ClientState {
             return Err(format!("HTTP {status}: {body}"));
         }
 
-        let message = response
-            .json::<RawJsonRpcMessage>()
-            .await
-            .map_err(|e| e.to_string())?;
+        let body = response.text().await.map_err(|error| error.to_string())?;
+        let message = match TransportFrame::parse_json(&body) {
+            Some(TransportFrame::Single(message)) => message,
+            Some(TransportFrame::Malformed { error, .. }) => {
+                return Err(format!("invalid initialize response: {error}"));
+            }
+            Some(TransportFrame::Batch(_)) => {
+                return Err("initialize response must not be a JSON-RPC batch".to_string());
+            }
+            None => return Err("initialize response was ignored as malformed".to_string()),
+        };
 
         if matches!(
             message,
@@ -619,6 +643,34 @@ impl ClientState {
         })
     }
 
+    fn prepare_frame_post(&self, frame: TransportFrame) -> Result<PendingPost, String> {
+        let connection_id = self
+            .connection
+            .connection_id()
+            .ok_or_else(|| "POST attempted before initialize".to_string())?;
+        let body = frame.to_json().map_err(|error| error.to_string())?;
+        let request = self
+            .connection
+            .post()
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json")
+            .header(HEADER_CONNECTION_ID, connection_id)
+            .body(body);
+        let response = async move {
+            let response = request.send().await.map_err(|error| error.to_string())?;
+            if response.status().as_u16() != 202 && !response.status().is_success() {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("HTTP {status}: {body}"));
+            }
+            Ok(())
+        };
+        Ok(PendingPost {
+            pending_request: None,
+            response: response.boxed(),
+        })
+    }
+
     fn remove_pending_request(&mut self, pending_request: Option<&(RequestId, String)>) {
         if let Some((id, _)) = pending_request {
             self.pending_requests.remove(id);
@@ -651,7 +703,11 @@ impl ClientState {
     }
 
     fn deliver(&self, msg: RawJsonRpcMessage) {
-        if self.incoming.unbounded_send(Ok(msg)).is_err() {
+        self.deliver_frame(TransportFrame::Single(msg));
+    }
+
+    fn deliver_frame(&self, frame: TransportFrame) {
+        if self.incoming.unbounded_send(frame).is_err() {
             debug!("upstream channel closed; dropping inbound message");
         }
     }
@@ -690,13 +746,12 @@ async fn read_sse(
         if payload.is_empty() {
             continue;
         }
-        let msg = serde_json::from_str::<RawJsonRpcMessage>(&payload)
-            .map_err(|e| format!("malformed JSON-RPC payload: {e}"))?;
+        let Some(frame) = TransportFrame::parse_json(&payload) else {
+            debug!("ignoring malformed response-shaped SSE payload");
+            continue;
+        };
 
-        if event_tx
-            .unbounded_send(SseMessage { message: msg })
-            .is_err()
-        {
+        if event_tx.unbounded_send(SseMessage { frame }).is_err() {
             return Err("upstream channel closed".to_string());
         }
     }
@@ -765,25 +820,17 @@ where
         tx: incoming,
     } = channel;
     let writer = async move {
-        while let Some(msg) = outgoing.next().await {
-            match msg {
-                Ok(msg) => {
-                    let text = match serde_json::to_string(&msg) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!("failed to serialize outbound message: {e}");
-                            return Err(AcpError::internal_error().data(format!("serialize: {e}")));
-                        }
-                    };
-                    if let Err(e) = ws_tx.send(WsMessage::Text(text.into())).await {
-                        error!("WebSocket send failed: {e}");
-                        return Err(AcpError::internal_error().data(format!("ws send: {e}")));
-                    }
+        while let Some(frame) = outgoing.next().await {
+            let text = match frame.to_json() {
+                Ok(text) => text,
+                Err(error) => {
+                    error!("failed to serialize outbound frame: {error}");
+                    return Err(AcpError::internal_error().data(format!("serialize: {error}")));
                 }
-                Err(e) => {
-                    error!("upstream channel produced error: {e}");
-                    return Err(e);
-                }
+            };
+            if let Err(error) = ws_tx.send(WsMessage::Text(text.into())).await {
+                error!("WebSocket send failed: {error}");
+                return Err(AcpError::internal_error().data(format!("ws send: {error}")));
             }
         }
 
@@ -799,28 +846,15 @@ where
                     if discard_incoming {
                         continue;
                     }
-                    match serde_json::from_str::<RawJsonRpcMessage>(text.as_str()) {
-                        Ok(parsed) => {
-                            if incoming.unbounded_send(Ok(parsed)).is_err() {
-                                debug!(
-                                    "upstream channel closed; discarding WS input while draining output"
-                                );
-                                discard_incoming = true;
-                            }
-                        }
-                        Err(e) => {
-                            let message = format!("malformed JSON-RPC payload: {e}");
-                            warn!("WS: {message}");
-                            if incoming
-                                .unbounded_send(Err(AcpError::parse_error().data(message)))
-                                .is_err()
-                            {
-                                debug!(
-                                    "upstream channel closed; discarding WS input while draining output"
-                                );
-                                discard_incoming = true;
-                            }
-                        }
+                    let Some(frame) = TransportFrame::parse_json(text.as_str()) else {
+                        debug!("ignoring malformed response-shaped WebSocket payload");
+                        continue;
+                    };
+                    if incoming.unbounded_send(frame).is_err() {
+                        debug!(
+                            "upstream channel closed; discarding WS input while draining output"
+                        );
+                        discard_incoming = true;
                     }
                 }
                 Some(Ok(WsMessage::Binary(_))) => {
@@ -861,7 +895,7 @@ mod tests {
         time::Duration,
     };
 
-    use agent_client_protocol::schema::v1::RequestId;
+    use agent_client_protocol::{TransportBatch, schema::v1::RequestId};
     use axum::{
         Json, Router,
         extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},
@@ -882,13 +916,13 @@ mod tests {
         finish: Arc<Notify>,
         finished: Arc<Notify>,
         escaped_tx: futures::channel::oneshot::Sender<
-            futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>,
+            futures::channel::mpsc::UnboundedSender<TransportFrame>,
         >,
     }
 
     struct QueueOutgoingThenText {
         text: Option<WsMessage>,
-        outgoing: Option<mpsc::UnboundedSender<Result<RawJsonRpcMessage, AcpError>>>,
+        outgoing: Option<mpsc::UnboundedSender<TransportFrame>>,
     }
 
     struct RecordingWsSink(mpsc::UnboundedSender<WsMessage>);
@@ -902,6 +936,30 @@ mod tests {
     struct ReleaseBackpressureOnPoll {
         started: mpsc::UnboundedReceiver<()>,
         release: Option<futures::channel::oneshot::Sender<()>>,
+    }
+
+    fn single_frame(message: RawJsonRpcMessage) -> TransportFrame {
+        TransportFrame::Single(message)
+    }
+
+    fn into_single_message(frame: TransportFrame) -> Result<RawJsonRpcMessage, AcpError> {
+        match frame {
+            TransportFrame::Single(message) => Ok(message),
+            TransportFrame::Malformed { error, .. } => Err(error),
+            TransportFrame::Batch(_) => {
+                Err(AcpError::internal_error().data("expected one JSON-RPC message"))
+            }
+        }
+    }
+
+    trait TransportFrameTestExt {
+        fn unwrap(self) -> RawJsonRpcMessage;
+    }
+
+    impl TransportFrameTestExt for TransportFrame {
+        fn unwrap(self) -> RawJsonRpcMessage {
+            into_single_message(self).unwrap()
+        }
     }
 
     impl WsSink for RecordingWsSink {
@@ -942,11 +1000,9 @@ mod tests {
             if let Some(outgoing) = self.outgoing.take() {
                 for method in ["custom/first", "custom/second"] {
                     outgoing
-                        .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                            method.to_string(),
-                            json!({}),
-                        )
-                        .unwrap()))
+                        .unbounded_send(single_frame(
+                            RawJsonRpcMessage::notification(method.to_string(), json!({})).unwrap(),
+                        ))
                         .unwrap();
                 }
             }
@@ -988,27 +1044,27 @@ mod tests {
                 })?;
                 channel
                     .tx
-                    .unbounded_send(Ok(RawJsonRpcMessage::request(
-                        "initialize".to_string(),
-                        json!({}),
-                        RequestId::Number(1),
-                    )
-                    .unwrap()))
+                    .unbounded_send(single_frame(
+                        RawJsonRpcMessage::request(
+                            "initialize".to_string(),
+                            json!({}),
+                            RequestId::Number(1),
+                        )
+                        .unwrap(),
+                    ))
                     .map_err(|e| {
                         AcpError::internal_error().data(format!("send initialize: {e}"))
                     })?;
-                channel.rx.next().await.ok_or_else(|| {
+                into_single_message(channel.rx.next().await.ok_or_else(|| {
                     AcpError::internal_error().data("initialize response channel closed")
-                })??;
+                })?)?;
 
                 for method in ["custom/first", "custom/second"] {
                     channel
                         .tx
-                        .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                            method.to_string(),
-                            json!({}),
-                        )
-                        .unwrap()))
+                        .unbounded_send(single_frame(
+                            RawJsonRpcMessage::notification(method.to_string(), json!({})).unwrap(),
+                        ))
                         .map_err(|e| {
                             AcpError::internal_error().data(format!("send {method}: {e}"))
                         })?;
@@ -1108,12 +1164,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1124,14 +1182,16 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "$/cancel_request".to_string(),
-                json!({
-                    "requestId": 2,
-                    "sessionId": "session-1"
-                }),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::notification(
+                    "$/cancel_request".to_string(),
+                    json!({
+                        "requestId": 2,
+                        "sessionId": "session-1"
+                    }),
+                )
+                .unwrap(),
+            ))
             .unwrap();
 
         let (session_header, message) = timeout(Duration::from_secs(1), capture_rx.recv())
@@ -1144,6 +1204,141 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "$/cancel_request"
         ));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn http_preserves_batch_frames_across_post_and_sse() {
+        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let post_count = Arc::new(AtomicUsize::new(0));
+        let emit_sse = Arc::new(Notify::new());
+        let inbound_batch = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "custom/inbound-one",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "custom/inbound-two",
+                "params": {}
+            }
+        ]);
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let post_count = post_count.clone();
+                move |body: String| {
+                    let post_count = post_count.clone();
+                    let post_tx = post_tx.clone();
+                    async move {
+                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return initialize_response().await.into_response();
+                        }
+
+                        post_tx
+                            .send(serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                            .unwrap();
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get({
+                let emit_sse = emit_sse.clone();
+                let inbound_batch = inbound_batch.clone();
+                move || {
+                    let emit_sse = emit_sse.clone();
+                    let inbound_batch = inbound_batch.clone();
+                    async move {
+                        let stream = async_stream::stream! {
+                            emit_sse.notified().await;
+                            yield Ok::<_, Infallible>(
+                                Event::default().data(inbound_batch.to_string()),
+                            );
+                            futures::future::pending::<()>().await;
+                        };
+                        Sse::new(stream)
+                    }
+                }
+            })
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
+
+        let outbound_batch = json!([
+            {
+                "jsonrpc": "2.0",
+                "method": "custom/outbound-one",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "custom/outbound-two",
+                "params": {}
+            }
+        ]);
+        caller
+            .tx
+            .unbounded_send(TransportFrame::Batch(
+                TransportBatch::from_messages([
+                    RawJsonRpcMessage::notification("custom/outbound-one".to_string(), json!({}))
+                        .unwrap(),
+                    RawJsonRpcMessage::notification("custom/outbound-two".to_string(), json!({}))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let posted = timeout(Duration::from_secs(1), post_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(posted, outbound_batch);
+
+        emit_sse.notify_one();
+        let inbound = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&inbound, TransportFrame::Batch(_)));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&inbound.to_json().unwrap()).unwrap(),
+            inbound_batch
+        );
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -1218,12 +1413,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1240,12 +1437,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "custom/sessionish".to_string(),
-                json!({}),
-                RequestId::Number(2),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "custom/sessionish".to_string(),
+                    json!({}),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1343,12 +1542,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1365,12 +1566,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "session/fork".to_string(),
-                json!({ "sessionId": "source-session" }),
-                RequestId::Number(2),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "session/fork".to_string(),
+                    json!({ "sessionId": "source-session" }),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let source_sse_header = timeout(Duration::from_secs(1), get_rx.recv())
             .await
@@ -1485,11 +1688,10 @@ mod tests {
         );
         assert!(
             escaped
-                .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                    "custom/too-late".to_string(),
-                    json!({}),
-                )
-                .unwrap()))
+                .unbounded_send(single_frame(
+                    RawJsonRpcMessage::notification("custom/too-late".to_string(), json!({}),)
+                        .unwrap()
+                ))
                 .is_err(),
             "escaped client sender remained open after client completion"
         );
@@ -1593,12 +1795,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1612,12 +1816,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "custom/slow".to_string(),
-                json!({}),
-                RequestId::Number(2),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "custom/slow".to_string(),
+                    json!({}),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ))
             .unwrap();
 
         let callback = timeout(Duration::from_secs(1), caller.rx.next())
@@ -1634,7 +1840,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::response(
+            .unbounded_send(single_frame(RawJsonRpcMessage::response(
                 RequestId::Number(99),
                 Ok(json!({})),
             )))
@@ -1686,12 +1892,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1702,12 +1910,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "session/prompt".to_string(),
-                json!({}),
-                RequestId::Number(2),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "session/prompt".to_string(),
+                    json!({}),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let error = timeout(Duration::from_secs(1), transport)
             .await
@@ -1746,12 +1956,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1773,7 +1985,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_sse_json_fails_transport() {
+    async fn malformed_sse_json_is_delivered_and_transport_continues() {
         let delete_count = Arc::new(AtomicUsize::new(0));
         let delete_count_for_handler = delete_count.clone();
         let app = Router::new().route(
@@ -1799,12 +2011,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1813,13 +2027,22 @@ mod tests {
             .unwrap();
         assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
 
-        let error = timeout(Duration::from_secs(1), transport)
+        let frame = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let TransportFrame::Malformed { raw, error } = frame else {
+            panic!("expected malformed frame, got {frame:?}");
+        };
+        assert_eq!(raw, "{not json");
+        assert_eq!(error.code, AcpError::parse_error().code);
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
             .await
             .unwrap()
             .unwrap()
-            .unwrap_err();
-
-        assert!(error.to_string().contains("malformed JSON-RPC payload"));
+            .unwrap();
         assert_eq!(delete_count.load(Ordering::SeqCst), 1);
 
         server.abort();
@@ -1837,12 +2060,15 @@ mod tests {
         let (mut caller, transport) = Channel::duplex();
         let transport = tokio::spawn(run(client, transport));
 
-        let error = timeout(Duration::from_secs(1), caller.rx.next())
+        let frame = timeout(Duration::from_secs(1), caller.rx.next())
             .await
             .unwrap()
-            .unwrap()
-            .unwrap_err();
-        assert!(error.to_string().contains("malformed JSON-RPC payload"));
+            .unwrap();
+        let TransportFrame::Malformed { raw, error } = frame else {
+            panic!("expected malformed frame, got {frame:?}");
+        };
+        assert_eq!(raw, "{not json");
+        assert_eq!(error.code, AcpError::parse_error().code);
 
         let message = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -1859,6 +2085,52 @@ mod tests {
             .unwrap();
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_serializes_batch_as_one_text_frame() {
+        let (caller, transport) = Channel::duplex();
+        let Channel {
+            tx: outgoing,
+            rx: incoming,
+        } = caller;
+        drop(incoming);
+        outgoing
+            .unbounded_send(TransportFrame::Batch(
+                TransportBatch::from_messages([
+                    RawJsonRpcMessage::notification("custom/first".to_string(), json!({})).unwrap(),
+                    RawJsonRpcMessage::notification("custom/second".to_string(), json!({}))
+                        .unwrap(),
+                ])
+                .unwrap(),
+            ))
+            .unwrap();
+        drop(outgoing);
+
+        let (ws_output_tx, mut ws_output) = mpsc::unbounded();
+        timeout(
+            Duration::from_secs(1),
+            drive_ws(
+                RecordingWsSink(ws_output_tx),
+                futures::stream::pending::<Result<WsMessage, std::io::Error>>(),
+                transport,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let frames = ws_output.by_ref().collect::<Vec<_>>().await;
+
+        let WsMessage::Text(text) = &frames[0] else {
+            panic!("batch was not sent as WebSocket text");
+        };
+        let batch = serde_json::from_str::<serde_json::Value>(text.as_str()).unwrap();
+        let entries = batch.as_array().expect("batch should remain an array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["method"], "custom/first");
+        assert_eq!(entries[1]["method"], "custom/second");
+        assert!(matches!(frames.get(1), Some(WsMessage::Close(None))));
+        assert_eq!(frames.len(), 2);
     }
 
     #[tokio::test]
@@ -1916,11 +2188,9 @@ mod tests {
         } = caller;
         drop(incoming);
         outgoing
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "custom/queued".to_string(),
-                json!({}),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::notification("custom/queued".to_string(), json!({})).unwrap(),
+            ))
             .unwrap();
         drop(outgoing);
 
@@ -1999,12 +2269,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), async {
             tokio::select! {
@@ -2055,12 +2327,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -2104,12 +2378,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let init_response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -2161,12 +2437,14 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(Ok(RawJsonRpcMessage::request(
-                "initialize".to_string(),
-                json!({}),
-                RequestId::Number(1),
-            )
-            .unwrap()))
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
             .unwrap();
         let error = timeout(Duration::from_secs(1), transport)
             .await

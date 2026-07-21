@@ -64,64 +64,79 @@ pub enum RawJsonRpcMessage {
     Response(RpcResponse<serde_json::Value>),
 }
 
-/// A batch-aware packet exchanged between the SDK's protocol and transport actors.
+/// A JSON-RPC frame exchanged between protocol components and transports.
 ///
-/// This is an internal extension point. Use [`Channel`] when exchanging individual
-/// raw JSON-RPC messages with application code.
-#[doc(hidden)]
+/// A frame preserves the boundary between a single JSON-RPC value and a batch.
+/// Malformed wire input is represented explicitly; transport failures are
+/// reported by the future that drives the transport rather than sent through a
+/// [`Channel`].
 #[derive(Debug)]
-pub(crate) enum TransportFrame {
-    /// One JSON-RPC message or an opaque component error.
-    Single(Result<RawJsonRpcMessage, crate::Error>),
-    /// One malformed or invalid wire value retained for framed relays.
-    InvalidSingle { raw: String, error: crate::Error },
+pub enum TransportFrame {
+    /// One valid JSON-RPC message.
+    Single(RawJsonRpcMessage),
+    /// One malformed or invalid wire value retained for relays.
+    Malformed {
+        /// The original wire representation.
+        raw: String,
+        /// The JSON-RPC error associated with the malformed value.
+        error: crate::Error,
+    },
     /// Entries retained from one non-empty JSON-RPC batch, kept in source order.
     Batch(TransportBatch),
 }
 
 /// A structurally non-empty JSON-RPC batch retained across framed relays.
 #[derive(Debug)]
-pub(crate) struct TransportBatch {
+pub struct TransportBatch {
     first: TransportBatchEntry,
     rest: Vec<TransportBatchEntry>,
 }
 
+/// One entry in a [`TransportBatch`].
 #[derive(Debug)]
-enum TransportBatchEntry {
+pub enum TransportBatchEntry {
+    /// A valid JSON-RPC message.
     Message(RawJsonRpcMessage),
-    Invalid {
+    /// A malformed or invalid JSON-RPC value retained for relays.
+    Malformed {
+        /// The original JSON value.
         raw: serde_json::Value,
+        /// The JSON-RPC error associated with the malformed value.
         error: crate::Error,
     },
 }
 
 impl TransportBatchEntry {
-    fn message(message: RawJsonRpcMessage) -> Self {
+    /// Create a valid batch entry.
+    #[must_use]
+    pub fn message(message: RawJsonRpcMessage) -> Self {
         Self::Message(message)
     }
 
-    fn invalid(raw: serde_json::Value, error: crate::Error) -> Self {
-        Self::Invalid { raw, error }
+    /// Create a malformed batch entry.
+    #[must_use]
+    pub fn malformed(raw: serde_json::Value, error: crate::Error) -> Self {
+        Self::Malformed { raw, error }
     }
 
     fn as_result(&self) -> Result<&RawJsonRpcMessage, &crate::Error> {
         match self {
             Self::Message(message) => Ok(message),
-            Self::Invalid { error, .. } => Err(error),
+            Self::Malformed { error, .. } => Err(error),
         }
     }
 
     fn into_result(self) -> Result<RawJsonRpcMessage, crate::Error> {
         match self {
             Self::Message(message) => Ok(message),
-            Self::Invalid { error, .. } => Err(error),
+            Self::Malformed { error, .. } => Err(error),
         }
     }
 
     fn message_ref(&self) -> Option<&RawJsonRpcMessage> {
         match self {
             Self::Message(message) => Some(message),
-            Self::Invalid { .. } => None,
+            Self::Malformed { .. } => None,
         }
     }
 }
@@ -133,13 +148,16 @@ impl Serialize for TransportBatchEntry {
     {
         match self {
             Self::Message(message) => message.serialize(serializer),
-            Self::Invalid { raw, .. } => raw.serialize(serializer),
+            Self::Malformed { raw, .. } => raw.serialize(serializer),
         }
     }
 }
 
 impl TransportBatch {
-    fn from_entries(entries: Vec<TransportBatchEntry>) -> Option<Self> {
+    /// Create a non-empty batch from entries.
+    ///
+    /// Returns `None` when the iterator is empty.
+    pub fn from_entries(entries: impl IntoIterator<Item = TransportBatchEntry>) -> Option<Self> {
         let mut entries = entries.into_iter();
         Some(Self {
             first: entries.next()?,
@@ -147,19 +165,36 @@ impl TransportBatch {
         })
     }
 
-    pub(crate) fn from_messages(
-        messages: impl IntoIterator<Item = RawJsonRpcMessage>,
-    ) -> Option<Self> {
-        Self::from_entries(
-            messages
-                .into_iter()
-                .map(TransportBatchEntry::message)
-                .collect(),
-        )
+    /// Create a non-empty batch from valid messages.
+    ///
+    /// Returns `None` when the iterator is empty.
+    pub fn from_messages(messages: impl IntoIterator<Item = RawJsonRpcMessage>) -> Option<Self> {
+        Self::from_entries(messages.into_iter().map(TransportBatchEntry::message))
     }
 
-    fn entries(&self) -> impl Iterator<Item = &TransportBatchEntry> {
+    /// Iterate over entries in source order.
+    pub fn entries(&self) -> impl Iterator<Item = &TransportBatchEntry> {
         std::iter::once(&self.first).chain(&self.rest)
+    }
+
+    /// Iterate mutably over entries in source order.
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut TransportBatchEntry> {
+        std::iter::once(&mut self.first).chain(&mut self.rest)
+    }
+
+    /// Return the number of entries in this non-empty batch.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        1 + self.rest.len()
+    }
+
+    /// Return whether this batch is empty.
+    ///
+    /// A `TransportBatch` is structurally non-empty, so this always returns
+    /// `false`.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        false
     }
 
     #[cfg(any(feature = "unstable_protocol_v2", test))]
@@ -181,17 +216,12 @@ impl TransportBatch {
     pub(crate) fn first_result_mut(&mut self) -> Result<&mut RawJsonRpcMessage, crate::Error> {
         match &mut self.first {
             TransportBatchEntry::Message(message) => Ok(message),
-            TransportBatchEntry::Invalid { error, .. } => Err(error.clone()),
+            TransportBatchEntry::Malformed { error, .. } => Err(error.clone()),
         }
     }
 
     fn messages(&self) -> impl Iterator<Item = &RawJsonRpcMessage> {
         self.entries().filter_map(TransportBatchEntry::message_ref)
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        1 + self.rest.len()
     }
 }
 
@@ -210,21 +240,13 @@ impl Serialize for TransportBatch {
 }
 
 impl TransportFrame {
-    fn into_messages(self) -> impl Iterator<Item = Result<RawJsonRpcMessage, crate::Error>> {
-        match self {
-            Self::Single(message) => vec![message].into_iter(),
-            Self::InvalidSingle { error, .. } => vec![Err(error)].into_iter(),
-            Self::Batch(batch) => batch.into_results().collect::<Vec<_>>().into_iter(),
-        }
-    }
-
     fn inspect_messages(
         &self,
         observer: &mut impl FnMut(&RawJsonRpcMessage) -> Result<(), crate::Error>,
     ) -> Result<(), crate::Error> {
         match self {
-            Self::Single(Ok(message)) => observer(message),
-            Self::Single(Err(_)) | Self::InvalidSingle { .. } => Ok(()),
+            Self::Single(message) => observer(message),
+            Self::Malformed { .. } => Ok(()),
             Self::Batch(batch) => {
                 for message in batch.messages() {
                     observer(message)?;
@@ -1682,8 +1704,7 @@ impl<
         // Convert transport into server - this returns a channel for us to use
         // and a future that runs the transport.
         let transport_component = crate::DynConnectTo::new(transport);
-        let (transport_channel, transport_future) =
-            transport_component.into_framed_channel_and_future();
+        let (transport_channel, transport_future) = transport_component.into_channel_and_future();
         let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
         let transport_completion = transport_completion_rx
             .map(|result| {
@@ -1711,7 +1732,7 @@ impl<
         });
 
         // Destructure the channel endpoints
-        let FramedChannel {
+        let Channel {
             rx: transport_incoming_rx,
             tx: transport_outgoing_tx,
         } = transport_channel;
@@ -1784,10 +1805,8 @@ where
         Builder::connect_to(self, client).await
     }
 
-    fn into_framed_channel_and_future(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_builder) = FramedChannel::duplex();
+    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
+        let (channel_for_caller, channel_for_builder) = Channel::duplex();
         let future = Box::pin(Builder::connect_to(self, channel_for_builder));
         (channel_for_caller, future)
     }
@@ -2393,7 +2412,7 @@ impl ResponseDestination {
 
     fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
         match self {
-            Self::Individual => Some(TransportFrame::Single(Ok(response))),
+            Self::Individual => Some(TransportFrame::Single(response)),
             Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
         }
     }
@@ -5082,14 +5101,12 @@ where
         Self { outgoing, incoming }
     }
 
-    fn into_framed_transport(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
+    fn into_channel_transport(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
         let Self { outgoing, incoming } = self;
-        let (channel_for_caller, channel_for_lines) = FramedChannel::duplex();
+        let (channel_for_caller, channel_for_lines) = Channel::duplex();
 
         let server_future = Box::pin(async move {
-            let FramedChannel { rx, tx } = channel_for_lines;
+            let Channel { rx, tx } = channel_for_lines;
             let outgoing_future = transport_actor::transport_outgoing_lines_actor(rx, outgoing);
             let incoming_future = transport_actor::transport_incoming_lines_actor(incoming, tx);
             futures::try_join!(outgoing_future, incoming_future)?;
@@ -5107,7 +5124,13 @@ where
 {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let Self { outgoing, incoming } = self;
-        let (FramedChannel { rx, tx }, client_future) = client.into_framed_channel_and_future();
+        let (Channel { rx, tx }, client_channel) = Channel::duplex();
+        let close_client_output = client_channel.tx.clone();
+        let client_future = Box::pin(async move {
+            let result = client.connect_to(client_channel).await;
+            close_client_output.close_channel();
+            result
+        });
 
         // Once the client completes successfully, its incoming channel is
         // gone. Keep consuming successful messages from the physical read
@@ -5160,25 +5183,7 @@ where
     }
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let Self { outgoing, incoming } = self;
-        let (channel_for_caller, channel_for_lines) = Channel::duplex();
-        let Channel { rx, tx } = channel_for_lines;
-
-        let future = Box::pin(async move {
-            futures::try_join!(
-                transport_actor::transport_outgoing_legacy_lines_actor(rx, outgoing),
-                transport_actor::transport_incoming_legacy_lines_actor(incoming, tx),
-            )?;
-            Ok(())
-        });
-
-        (channel_for_caller, future)
-    }
-
-    fn into_framed_channel_and_future(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
-        self.into_framed_transport()
+        self.into_channel_transport()
     }
 }
 
@@ -5283,28 +5288,42 @@ where
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
         ConnectTo::<R>::into_channel_and_future(self.into_lines())
     }
-
-    fn into_framed_channel_and_future(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
-        ConnectTo::<R>::into_framed_channel_and_future(self.into_lines())
-    }
 }
 
-/// A batch-aware channel used internally between protocol and transport components.
+/// A channel endpoint representing one side of a bidirectional JSON-RPC transport.
 ///
-/// This internal extension point preserves whether messages arrived in one JSON-RPC
-/// batch. Application code should normally use [`Channel`].
-#[doc(hidden)]
+/// A channel carries complete TransportFrame values, preserving batch boundaries
+/// across in-process components and transport adapters. Malformed wire input is an
+/// explicit frame; failures while driving a physical transport are returned by that
+/// transport's future.
+///
+/// # Example
+///
+/// ```no_run
+/// # use agent_client_protocol::UntypedRole;
+/// # use agent_client_protocol::Channel;
+/// # async fn example() -> Result<(), agent_client_protocol::Error> {
+/// let (channel_a, _channel_b) = Channel::duplex();
+///
+/// UntypedRole.builder()
+///     .name("connection-a")
+///     .connect_to(channel_a)
+///     .await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
-pub struct FramedChannel {
-    pub(crate) rx: mpsc::UnboundedReceiver<TransportFrame>,
-    pub(crate) tx: mpsc::UnboundedSender<TransportFrame>,
+pub struct Channel {
+    /// Receives frames from the counterpart.
+    pub rx: mpsc::UnboundedReceiver<TransportFrame>,
+    /// Sends frames to the counterpart.
+    pub tx: mpsc::UnboundedSender<TransportFrame>,
 }
 
-impl FramedChannel {
-    /// Create a connected pair of batch-aware channel endpoints.
-    #[doc(hidden)]
+impl Channel {
+    /// Create a pair of connected channel endpoints.
+    ///
+    /// Frames sent through either endpoint are received by the other endpoint.
     #[must_use]
     pub fn duplex() -> (Self, Self) {
         let (a_tx, b_rx) = mpsc::unbounded();
@@ -5313,124 +5332,12 @@ impl FramedChannel {
         (Self { rx: a_rx, tx: a_tx }, Self { rx: b_rx, tx: b_tx })
     }
 
-    pub(crate) fn from_legacy_channel(
-        channel: Channel,
-        component_future: Option<BoxFuture<'static, Result<(), crate::Error>>>,
-    ) -> (Self, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_bridge) = Self::duplex();
-        let Channel {
-            rx: legacy_rx,
-            tx: legacy_tx,
-        } = channel;
-        let FramedChannel {
-            rx: framed_rx,
-            tx: framed_tx,
-        } = channel_for_bridge;
-        let future: BoxFuture<'static, Result<(), crate::Error>> =
-            if let Some(component_future) = component_future {
-                Box::pin(async move {
-                    let (component_done_tx, component_done_rx) = oneshot::channel();
-                    let component_done = component_done_rx.map(|_| ()).boxed().shared();
-                    let component = async move {
-                        let result = component_future.await;
-                        let _ = component_done_tx.send(());
-                        result
-                    };
-                    let component_to_caller = {
-                        let component_done = component_done.clone();
-                        async move {
-                            let mut legacy_rx = legacy_rx;
-                            loop {
-                                match future::select(
-                                    Box::pin(legacy_rx.next()),
-                                    Box::pin(component_done.clone()),
-                                )
-                                .await
-                                {
-                                    Either::Left((Some(message), _)) => {
-                                        if framed_tx
-                                            .unbounded_send(TransportFrame::Single(message))
-                                            .is_err()
-                                        {
-                                            return Ok(());
-                                        }
-                                    }
-                                    Either::Left((None, _)) => return Ok(()),
-                                    Either::Right(((), _)) => {
-                                        legacy_rx.close();
-                                        while let Some(message) = legacy_rx.next().await {
-                                            if framed_tx
-                                                .unbounded_send(TransportFrame::Single(message))
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                        return Ok(());
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    let caller_to_component = async move {
-                        let mut framed_rx = framed_rx;
-                        loop {
-                            match future::select(
-                                Box::pin(framed_rx.next()),
-                                Box::pin(component_done.clone()),
-                            )
-                            .await
-                            {
-                                Either::Left((Some(frame), _)) => {
-                                    for message in frame.into_messages() {
-                                        if legacy_tx.unbounded_send(message).is_err() {
-                                            return Ok(());
-                                        }
-                                    }
-                                }
-                                Either::Left((None, _)) | Either::Right(((), _)) => return Ok(()),
-                            }
-                        }
-                    };
-
-                    futures::try_join!(component, component_to_caller, caller_to_component)?;
-                    Ok::<(), crate::Error>(())
-                })
-            } else {
-                Box::pin(async move {
-                    let component_to_caller = async move {
-                        let mut legacy_rx = legacy_rx;
-                        while let Some(message) = legacy_rx.next().await {
-                            if framed_tx
-                                .unbounded_send(TransportFrame::Single(message))
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                        Ok::<(), crate::Error>(())
-                    };
-                    let caller_to_component = async move {
-                        let mut framed_rx = framed_rx;
-                        while let Some(frame) = framed_rx.next().await {
-                            for message in frame.into_messages() {
-                                if legacy_tx.unbounded_send(message).is_err() {
-                                    return Ok::<(), crate::Error>(());
-                                }
-                            }
-                        }
-                        Ok::<(), crate::Error>(())
-                    };
-
-                    futures::try_join!(component_to_caller, caller_to_component)?;
-                    Ok::<(), crate::Error>(())
-                })
-            };
-
-        (channel_for_caller, future)
-    }
-
-    pub(crate) async fn copy(mut self) -> Result<(), crate::Error> {
+    /// Copy frames from `rx` to `tx` until the input closes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the receiving endpoint closes before the input.
+    pub async fn copy(mut self) -> Result<(), crate::Error> {
         while let Some(frame) = self.rx.next().await {
             self.tx
                 .unbounded_send(frame)
@@ -5439,17 +5346,15 @@ impl FramedChannel {
         Ok(())
     }
 
-    /// Bridge two internal framed endpoints while inspecting valid messages.
+    /// Bridge two endpoints while inspecting every valid message.
     ///
-    /// Observers are invoked for each message in source order, including each
-    /// valid member of a batch. The original frame is then forwarded unchanged,
-    /// preserving batch boundaries across instrumentation layers.
+    /// Observers are invoked in source order, including for each valid member of
+    /// a batch. The original frame is forwarded unchanged after inspection.
     ///
     /// # Errors
     ///
-    /// Returns an error from either observer or when a destination closes
-    /// before its source.
-    #[doc(hidden)]
+    /// Returns an observer error or an error if a destination closes before its
+    /// source.
     pub async fn bridge_with_inspection(
         left: Self,
         right: Self,
@@ -5487,155 +5392,19 @@ impl FramedChannel {
         futures::try_join!(left_to_right, right_to_left)?;
         Ok(())
     }
-
-    pub(crate) fn into_legacy_channel_until(
-        self,
-        component_done: futures::future::Shared<BoxFuture<'static, ()>>,
-    ) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_component, channel_for_bridge) = Channel::duplex();
-        let FramedChannel {
-            rx: framed_rx,
-            tx: framed_tx,
-        } = self;
-        let Channel {
-            rx: legacy_rx,
-            tx: legacy_tx,
-        } = channel_for_bridge;
-        let future = Box::pin(async move {
-            let component_to_transport = {
-                let component_done = component_done.clone();
-                async move {
-                    let mut legacy_rx = legacy_rx;
-                    loop {
-                        match future::select(
-                            Box::pin(legacy_rx.next()),
-                            Box::pin(component_done.clone()),
-                        )
-                        .await
-                        {
-                            Either::Left((Some(message), _)) => {
-                                if framed_tx
-                                    .unbounded_send(TransportFrame::Single(message))
-                                    .is_err()
-                                {
-                                    return Ok::<(), crate::Error>(());
-                                }
-                            }
-                            Either::Left((None, _)) => return Ok::<(), crate::Error>(()),
-                            Either::Right(((), _)) => {
-                                legacy_rx.close();
-                                while let Some(message) = legacy_rx.next().await {
-                                    if framed_tx
-                                        .unbounded_send(TransportFrame::Single(message))
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                return Ok::<(), crate::Error>(());
-                            }
-                        }
-                    }
-                }
-            };
-            let transport_to_component = async move {
-                let mut framed_rx = framed_rx;
-                loop {
-                    match future::select(
-                        Box::pin(framed_rx.next()),
-                        Box::pin(component_done.clone()),
-                    )
-                    .await
-                    {
-                        Either::Left((Some(frame), _)) => {
-                            for message in frame.into_messages() {
-                                if legacy_tx.unbounded_send(message).is_err() {
-                                    return Ok::<(), crate::Error>(());
-                                }
-                            }
-                        }
-                        Either::Left((None, _)) | Either::Right(((), _)) => {
-                            return Ok::<(), crate::Error>(());
-                        }
-                    }
-                }
-            };
-
-            futures::try_join!(component_to_transport, transport_to_component)?;
-            Ok(())
-        });
-
-        (channel_for_component, future)
-    }
-
-    fn into_legacy_channel(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_bridge) = Channel::duplex();
-        let FramedChannel {
-            rx: framed_rx,
-            tx: framed_tx,
-        } = self;
-        let Channel {
-            rx: legacy_rx,
-            tx: legacy_tx,
-        } = channel_for_bridge;
-        let future = Box::pin(async move {
-            let legacy_to_framed = async move {
-                let mut legacy_rx = legacy_rx;
-                while let Some(message) = legacy_rx.next().await {
-                    if framed_tx
-                        .unbounded_send(TransportFrame::Single(message))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Ok::<(), crate::Error>(())
-            };
-            let framed_to_legacy = async move {
-                let mut framed_rx = framed_rx;
-                while let Some(frame) = framed_rx.next().await {
-                    match frame {
-                        TransportFrame::Single(message) => {
-                            if legacy_tx.unbounded_send(message).is_err() {
-                                return Ok::<(), crate::Error>(());
-                            }
-                        }
-                        TransportFrame::InvalidSingle { error, .. } => {
-                            if legacy_tx.unbounded_send(Err(error)).is_err() {
-                                return Ok::<(), crate::Error>(());
-                            }
-                        }
-                        TransportFrame::Batch(batch) => {
-                            for entry in batch.into_results() {
-                                if legacy_tx.unbounded_send(entry).is_err() {
-                                    return Ok::<(), crate::Error>(());
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok::<(), crate::Error>(())
-            };
-
-            futures::try_join!(legacy_to_framed, framed_to_legacy)?;
-            Ok::<(), crate::Error>(())
-        });
-
-        (channel_for_caller, future)
-    }
 }
 
-impl<R: Role> ConnectTo<R> for FramedChannel {
+impl<R: Role> ConnectTo<R> for Channel {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
-        let (client_channel, client_future) = client.into_framed_channel_and_future();
+        let (client_channel, client_future) = client.into_channel_and_future();
 
         let ((), (), ()) = futures::try_join!(
-            FramedChannel {
+            Channel {
                 rx: client_channel.rx,
                 tx: self.tx,
             }
             .copy(),
-            FramedChannel {
+            Channel {
                 rx: self.rx,
                 tx: client_channel.tx,
             }
@@ -5646,131 +5415,7 @@ impl<R: Role> ConnectTo<R> for FramedChannel {
     }
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        self.into_legacy_channel()
-    }
-
-    fn into_framed_channel_and_future(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_bridge) = FramedChannel::duplex();
-        let future = Box::pin(async move {
-            let ((), ()) = futures::try_join!(
-                FramedChannel {
-                    rx: channel_for_bridge.rx,
-                    tx: self.tx,
-                }
-                .copy(),
-                FramedChannel {
-                    rx: self.rx,
-                    tx: channel_for_bridge.tx,
-                }
-                .copy(),
-            )?;
-            Ok(())
-        });
-        (channel_for_caller, future)
-    }
-}
-
-/// A channel endpoint representing one side of a bidirectional message channel.
-///
-/// `Channel` represents a single endpoint's view of a bidirectional communication channel.
-/// Each endpoint has:
-/// - `rx`: A receiver for incoming messages (or errors) from the counterpart
-/// - `tx`: A sender for outgoing messages (or errors) to the counterpart
-///
-/// # Example
-///
-/// ```no_run
-/// # use agent_client_protocol::UntypedRole;
-/// # use agent_client_protocol::{Channel, Builder};
-/// # async fn example() -> Result<(), agent_client_protocol::Error> {
-/// // Create a pair of connected channels
-/// let (channel_a, channel_b) = Channel::duplex();
-///
-/// // Each channel can be used by a different component
-/// UntypedRole.builder()
-///     .name("connection-a")
-///     .connect_to(channel_a)
-///     .await?;
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Debug)]
-pub struct Channel {
-    /// Receives messages (or errors) from the counterpart.
-    pub rx: mpsc::UnboundedReceiver<Result<RawJsonRpcMessage, crate::Error>>,
-    /// Sends messages (or errors) to the counterpart.
-    pub tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, crate::Error>>,
-}
-
-impl Channel {
-    /// Create a pair of connected channel endpoints.
-    ///
-    /// Returns two `Channel` instances that are connected to each other:
-    /// - Messages sent via `channel_a.tx` are received on `channel_b.rx`
-    /// - Messages sent via `channel_b.tx` are received on `channel_a.rx`
-    ///
-    /// # Returns
-    ///
-    /// A tuple `(channel_a, channel_b)` of connected channel endpoints.
-    #[must_use]
-    pub fn duplex() -> (Self, Self) {
-        // Create channels: A sends Result<Message> which B receives as Message
-        let (a_tx, b_rx) = mpsc::unbounded();
-        let (b_tx, a_rx) = mpsc::unbounded();
-
-        let channel_a = Self { rx: a_rx, tx: a_tx };
-        let channel_b = Self { rx: b_rx, tx: b_tx };
-
-        (channel_a, channel_b)
-    }
-
-    /// Copy messages from `rx` to `tx`.
-    ///
-    /// # Returns
-    ///
-    /// A `Result` indicating success or failure.
-    pub async fn copy(mut self) -> Result<(), crate::Error> {
-        while let Some(msg) = self.rx.next().await {
-            self.tx
-                .unbounded_send(msg)
-                .map_err(crate::util::internal_error)?;
-        }
-        Ok(())
-    }
-}
-
-impl<R: Role> ConnectTo<R> for Channel {
-    async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
-        let (client_channel, client_serve) = client.into_channel_and_future();
-
-        match futures::try_join!(
-            Channel {
-                rx: client_channel.rx,
-                tx: self.tx
-            }
-            .copy(),
-            Channel {
-                rx: self.rx,
-                tx: client_channel.tx
-            }
-            .copy(),
-            client_serve
-        ) {
-            Ok(((), (), ())) => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
         (self, Box::pin(future::ready(Ok(()))))
-    }
-
-    fn into_framed_channel_and_future(
-        self,
-    ) -> (FramedChannel, BoxFuture<'static, Result<(), crate::Error>>) {
-        FramedChannel::from_legacy_channel(self, None)
     }
 }
 

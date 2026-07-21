@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use agent_client_protocol::{Error as AcpError, RawJsonRpcMessage, schema::v1::RequestId};
+use agent_client_protocol::{RawJsonRpcMessage, TransportFrame};
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     http::HeaderValue,
@@ -75,35 +75,20 @@ async fn run_ws(
                     Some(Ok(WsMessage::Text(text))) => {
                         let text_str = text.to_string();
                         trace!(connection_id = %connection_id, payload = %text_str, "Client → Agent: {} bytes", text_str.len());
-                        match serde_json::from_str::<RawJsonRpcMessage>(&text_str) {
-                            Ok(parsed) => {
-                                if let Some(sid) = session_id_from_message(&parsed)
-                                    && let RawJsonRpcMessage::Request(req) = &parsed {
+                        match TransportFrame::parse_json(&text_str) {
+                            Some(frame) => {
+                                if let TransportFrame::Single(parsed) = &frame
+                                    && let Some(sid) = session_id_from_message(parsed)
+                                    && let RawJsonRpcMessage::Request(req) = parsed {
                                         trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
                                     }
-                                if connection.send_to_agent(parsed).is_err() {
+                                if connection.send_frame_to_agent(frame).is_err() {
                                     error!(connection_id = %connection_id, "Agent channel closed");
                                     break;
                                 }
                             }
-                            Err(e) => {
-                                let message = format!("malformed JSON-RPC payload: {e}");
-                                warn!(connection_id = %connection_id, "Returning parse error for malformed JSON-RPC frame: {e}");
-                                let response = RawJsonRpcMessage::response(
-                                    RequestId::Null,
-                                    Err(AcpError::parse_error().data(message)),
-                                );
-                                let text = match serde_json::to_string(&response) {
-                                    Ok(text) => text,
-                                    Err(e) => {
-                                        error!(connection_id = %connection_id, "Failed to serialize parse error response: {e}");
-                                        break;
-                                    }
-                                };
-                                if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
-                                    error!(connection_id = %connection_id, "WebSocket send failed");
-                                    break;
-                                }
+                            None => {
+                                trace!(connection_id = %connection_id, "Ignoring malformed response-shaped JSON-RPC frame");
                             }
                         }
                     }
@@ -153,7 +138,7 @@ async fn run_ws(
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{
-        Channel,
+        Channel, TransportBatch, TransportBatchEntry, TransportFrame,
         schema::v1::{RequestId, Response as RpcResponse},
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
@@ -186,14 +171,70 @@ mod tests {
             let future = Box::pin(async move {
                 let Channel {
                     rx: mut incoming,
-                    tx: _,
+                    tx: outgoing,
                 } = agent;
-                while let Some(message) = incoming.next().await {
-                    if forwarded.send(message?).is_err() {
-                        break;
+                while let Some(frame) = incoming.next().await {
+                    match frame {
+                        TransportFrame::Single(message) => {
+                            if forwarded.send(message).is_err() {
+                                break;
+                            }
+                        }
+                        TransportFrame::Malformed { error, .. } => {
+                            outgoing
+                                .unbounded_send(TransportFrame::Single(
+                                    RawJsonRpcMessage::response(RequestId::Null, Err(error)),
+                                ))
+                                .unwrap();
+                        }
+                        TransportFrame::Batch(_) => panic!("expected a single JSON-RPC frame"),
                     }
                 }
                 Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    struct BatchAgentFactory {
+        forwarded: mpsc::UnboundedSender<Vec<String>>,
+    }
+
+    impl AgentFactory for BatchAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (mut agent, transport) = Channel::duplex();
+            let forwarded = self.forwarded.clone();
+            let future = Box::pin(async move {
+                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
+                    panic!("expected one batch frame");
+                };
+                let mut methods = Vec::new();
+                let mut responses = Vec::new();
+                for entry in batch.entries() {
+                    let TransportBatchEntry::Message(RawJsonRpcMessage::Request(request)) = entry
+                    else {
+                        panic!("expected a request batch entry");
+                    };
+                    methods.push(request.method.to_string());
+                    responses.push(RawJsonRpcMessage::response(
+                        request.id.clone(),
+                        Ok(json!({ "ok": true })),
+                    ));
+                }
+                forwarded.send(methods).unwrap();
+                let responses =
+                    TransportBatch::from_messages(responses).expect("responses are non-empty");
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Batch(responses))
+                    .unwrap();
+                std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
             (transport, future)
@@ -239,12 +280,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["id"], serde_json::Value::Null);
         assert_eq!(value["error"]["code"], -32700);
-        assert!(
-            value["error"]["data"]
-                .as_str()
-                .unwrap()
-                .contains("malformed JSON-RPC payload")
-        );
+        assert_eq!(value["error"]["data"]["line"], "{not json");
 
         let parsed = serde_json::from_value::<RawJsonRpcMessage>(value).unwrap();
         assert!(matches!(
@@ -273,6 +309,70 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "test/method"
         ));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_forwards_batch_as_one_frame_and_emits_grouped_response() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(BatchAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    async move { handle_ws_upgrade(registry, ws) }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+        let batch = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "custom/first",
+                "params": {}
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "custom/second",
+                "params": {}
+            }
+        ]);
+
+        client
+            .send(ClientWsMessage::Text(batch.to_string().into()))
+            .await
+            .unwrap();
+
+        let methods = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(methods, ["custom/first", "custom/second"]);
+        let frame = timeout(Duration::from_secs(1), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let ClientWsMessage::Text(text) = frame else {
+            panic!("expected text frame: {frame:?}");
+        };
+        let response = serde_json::from_str::<serde_json::Value>(&text).unwrap();
+        let entries = response.as_array().expect("response should remain a batch");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], 1);
+        assert_eq!(entries[1]["id"], 2);
 
         server.abort();
     }
