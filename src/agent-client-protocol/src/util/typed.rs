@@ -22,6 +22,19 @@ use crate::{
     role::{HasPeer, Role, handle_incoming_dispatch},
 };
 
+fn preserve_retry(
+    state: Result<Handled<Dispatch>, crate::Error>,
+    prior_retry: bool,
+) -> Result<Handled<Dispatch>, crate::Error> {
+    state.map(|state| match state {
+        Handled::Yes => Handled::Yes,
+        Handled::No { message, retry } => Handled::No {
+            message,
+            retry: prior_retry | retry,
+        },
+    })
+}
+
 /// Role-agnostic helper for pattern-matching on untyped JSON-RPC messages.
 ///
 /// Use this when you already have an unwrapped message and just need to parse it,
@@ -513,8 +526,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         Counterpart: HasPeer<Peer>,
         H: crate::IntoHandled<(Req, Responder<Req::Response>)>,
     {
-        if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = handle_incoming_dispatch(
+        if let Ok(Handled::No { message, retry }) = self.state {
+            let state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
@@ -525,6 +538,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 },
             )
             .await;
+            self.state = preserve_retry(state, retry);
         }
         self
     }
@@ -570,8 +584,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         Counterpart: HasPeer<Peer>,
         H: crate::IntoHandled<N>,
     {
-        if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = handle_incoming_dispatch(
+        if let Ok(Handled::No { message, retry }) = self.state {
+            let state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
@@ -585,6 +599,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 },
             )
             .await;
+            self.state = preserve_retry(state, retry);
         }
         self
     }
@@ -607,8 +622,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         Counterpart: HasPeer<Peer>,
         H: crate::IntoHandled<Dispatch<Req, N>>,
     {
-        if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = handle_incoming_dispatch(
+        if let Ok(Handled::No { message, retry }) = self.state {
+            let state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
@@ -619,6 +634,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 },
             )
             .await;
+            self.state = preserve_retry(state, retry);
         }
         self
     }
@@ -644,11 +660,12 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 ResponseRouter<Req::Response>,
             )>,
     {
-        if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = MatchDispatch::new(message)
+        if let Ok(Handled::No { message, retry }) = self.state {
+            let state = MatchDispatch::new(message)
                 .if_response_to::<Req, H>(op)
                 .await
                 .done();
+            self.state = preserve_retry(state, retry);
         }
         self
     }
@@ -695,8 +712,8 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 ResponseRouter<Req::Response>,
             )>,
     {
-        if let Ok(Handled::No { message, retry: _ }) = self.state {
-            self.state = handle_incoming_dispatch(
+        if let Ok(Handled::No { message, retry }) = self.state {
+            let state = handle_incoming_dispatch(
                 self.connection.counterpart(),
                 peer,
                 message,
@@ -710,6 +727,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 },
             )
             .await;
+            self.state = preserve_retry(state, retry);
         }
         self
     }
