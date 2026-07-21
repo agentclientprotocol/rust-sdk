@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve `MatchDispatchFrom` retry state across chained matchers.
+
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.2.0...v1.3.0) - 2026-07-20
 
 ### Added
