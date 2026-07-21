@@ -729,13 +729,13 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         }
     }
 
-    fn into_framed_channel_and_future(
+    fn into_channel_and_future(
         self,
     ) -> (
-        crate::FramedChannel,
+        crate::Channel,
         crate::BoxFuture<'static, Result<(), crate::Error>>,
     ) {
-        let (channel_for_caller, channel_for_agent) = crate::FramedChannel::duplex();
+        let (channel_for_caller, channel_for_agent) = crate::Channel::duplex();
         let future = Box::pin(crate::ConnectTo::<Counterpart>::connect_to(
             self,
             channel_for_agent,
@@ -1259,7 +1259,7 @@ mod tests {
             Ok(serde_json::json!({ "payload": "x".repeat(4 * 1024 * 1024) })),
         );
         outgoing
-            .unbounded_send(Ok(response))
+            .unbounded_send(crate::TransportFrame::Single(response))
             .expect("response should be accepted before the connection starts");
         outgoing.close_channel();
 

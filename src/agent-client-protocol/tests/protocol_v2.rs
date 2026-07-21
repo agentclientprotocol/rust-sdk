@@ -12,7 +12,7 @@ use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, ConnectTo,
     Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role,
-    UntypedRole,
+    TransportFrame, UntypedRole,
 };
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
@@ -341,7 +341,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
 
     channel
         .tx
-        .unbounded_send(Ok(RawJsonRpcMessage::request(
+        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             Value::Object(params),
             v1::RequestId::Number(1),
@@ -349,7 +349,9 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let message = message?;
+        let TransportFrame::Single(message) = message else {
+            continue;
+        };
         let RawJsonRpcMessage::Response(response) = message else {
             continue;
         };
@@ -1264,7 +1266,7 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
 
     channel
         .tx
-        .unbounded_send(Ok(RawJsonRpcMessage::request(
+        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             json_value(v1_initialize_request(ProtocolVersion::V1))?,
             v1::RequestId::Number(1),
@@ -1272,7 +1274,9 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let message = message?;
+        let TransportFrame::Single(message) = message else {
+            continue;
+        };
         let RawJsonRpcMessage::Response(v1::Response::Error { error, .. }) = message else {
             continue;
         };
@@ -1709,7 +1713,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
 
     channel
         .tx
-        .unbounded_send(Ok(RawJsonRpcMessage::request(
+        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             json_value(v2_initialize_request(ProtocolVersion::from(3_u16)))?,
             v1::RequestId::Number(1),
@@ -1717,7 +1721,9 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let message = message?;
+        let TransportFrame::Single(message) = message else {
+            continue;
+        };
         let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
             continue;
         };

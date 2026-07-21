@@ -25,6 +25,7 @@
 
 # Reference
 
+- [Migrating to v2.0](./migration_v2.0.md)
 - [Migrating to v0.11](./migration_v0.11.x.md)
 - [P/ACP Specification](./proxying-acp.md)
 

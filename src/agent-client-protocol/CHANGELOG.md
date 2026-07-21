@@ -2,8 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary and remove the hidden
+  `FramedChannel` compatibility path. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+
 ### Fixed
 
+- Preserve JSON-RPC batch framing across component adapters, and suppress replies
+  to malformed response-shaped input.
 - Preserve `MatchDispatchFrom` retry state across chained matchers.
 
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.2.0...v1.3.0) - 2026-07-20

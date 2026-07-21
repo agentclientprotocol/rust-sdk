@@ -12,7 +12,8 @@ use std::{
 
 use agent_client_protocol::{
     ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, Handled, JsonRpcMessage,
-    JsonRpcRequest, Lines, RawJsonRpcMessage, UntypedMessage, is_incoming_transport_closed,
+    JsonRpcRequest, Lines, RawJsonRpcMessage, TransportFrame, UntypedMessage,
+    is_incoming_transport_closed,
     role::{Role, UntypedRole},
     schema::v1::{RequestId, Response},
 };
@@ -88,9 +89,8 @@ impl<R: Role> ConnectTo<R> for PendingTransport {
 
 struct QueuedClient {
     started: futures::channel::oneshot::Sender<()>,
-    escaped: futures::channel::oneshot::Sender<
-        futures::channel::mpsc::UnboundedSender<Result<RawJsonRpcMessage, Error>>,
-    >,
+    escaped:
+        futures::channel::oneshot::Sender<futures::channel::mpsc::UnboundedSender<TransportFrame>>,
 }
 
 impl ConnectTo<UntypedRole> for QueuedClient {
@@ -102,7 +102,7 @@ impl ConnectTo<UntypedRole> for QueuedClient {
         )?;
         channel
             .tx
-            .unbounded_send(Ok(message))
+            .unbounded_send(TransportFrame::Single(message))
             .map_err(Error::into_internal_error)?;
         drop(self.escaped.send(channel.tx.clone()));
         let _ = self.started.send(());
@@ -177,18 +177,19 @@ async fn receive_requests_then_close(mut peer: Channel, count: usize) {
     for _ in 0..count {
         assert!(matches!(
             peer.rx.next().await,
-            Some(Ok(RawJsonRpcMessage::Request(_)))
+            Some(TransportFrame::Single(RawJsonRpcMessage::Request(_)))
         ));
     }
     drop(peer);
 }
 
 async fn respond_then_close(mut peer: Channel) {
-    let Some(Ok(RawJsonRpcMessage::Request(request))) = peer.rx.next().await else {
+    let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) = peer.rx.next().await
+    else {
         panic!("expected outgoing request");
     };
     peer.tx
-        .send(Ok(RawJsonRpcMessage::response(
+        .send(TransportFrame::Single(RawJsonRpcMessage::response(
             request.id,
             Ok(serde_json::to_value(MyResponse {
                 status: "received".into(),
@@ -321,18 +322,22 @@ async fn channel_peer_receives_final_response_after_write_half_closes() {
 
     let peer = async move {
         let Channel { mut rx, tx } = peer;
-        tx.unbounded_send(Ok(RawJsonRpcMessage::request(
-            "myRequest".into(),
-            serde_json::json!({}),
-            RequestId::Number(40),
-        )
-        .unwrap()))
-            .expect("channel should accept the final request");
+        tx.unbounded_send(TransportFrame::Single(
+            RawJsonRpcMessage::request(
+                "myRequest".into(),
+                serde_json::json!({}),
+                RequestId::Number(40),
+            )
+            .unwrap(),
+        ))
+        .expect("channel should accept the final request");
         tx.close_channel();
         drop(tx);
 
-        let Some(Ok(RawJsonRpcMessage::Response(Response::Result { id, result }))) =
-            rx.next().await
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Response(Response::Result {
+            id,
+            result,
+        }))) = rx.next().await
         else {
             panic!("channel read half closed before the final response");
         };
@@ -371,13 +376,15 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
     let (channel, transport_future) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
     let Channel { mut rx, tx } = channel;
 
-    tx.unbounded_send(Ok(RawJsonRpcMessage::request(
-        "myRequest".into(),
-        serde_json::json!({}),
-        RequestId::Number(41),
-    )
-    .unwrap()))
-        .expect("transport channel should accept the request");
+    tx.unbounded_send(TransportFrame::Single(
+        RawJsonRpcMessage::request(
+            "myRequest".into(),
+            serde_json::json!({}),
+            RequestId::Number(41),
+        )
+        .unwrap(),
+    ))
+    .expect("transport channel should accept the request");
     tx.close_channel();
     drop(tx);
 
@@ -408,8 +415,10 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
     };
 
     let receive_response = async move {
-        let Some(Ok(RawJsonRpcMessage::Response(Response::Result { id, result }))) =
-            rx.next().await
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Response(Response::Result {
+            id,
+            result,
+        }))) = rx.next().await
         else {
             panic!("read half closed before delivering the peer's final response");
         };
@@ -518,11 +527,9 @@ async fn outgoing_drain_keeps_the_full_duplex_read_half_moving() {
 
     assert!(
         escaped
-            .unbounded_send(Ok(RawJsonRpcMessage::notification(
-                "too-late".into(),
-                serde_json::json!({}),
-            )
-            .unwrap()))
+            .unbounded_send(TransportFrame::Single(
+                RawJsonRpcMessage::notification("too-late".into(), serde_json::json!({}),).unwrap()
+            ))
             .is_err(),
         "escaped sender accepted a message after client completion"
     );
@@ -1066,12 +1073,14 @@ async fn request_finishing_conversion_after_eof_keeps_the_eof_cause() {
     let connection = tokio::spawn(connection);
 
     peer.tx
-        .send(Ok(RawJsonRpcMessage::request(
-            "myRequest".into(),
-            serde_json::json!({}),
-            RequestId::Number(1),
-        )
-        .unwrap()))
+        .send(TransportFrame::Single(
+            RawJsonRpcMessage::request(
+                "myRequest".into(),
+                serde_json::json!({}),
+                RequestId::Number(1),
+            )
+            .unwrap(),
+        ))
         .await
         .expect("send request that exposes the connection handle");
     let cx = tokio::time::timeout(TIMEOUT, connection_rx)
@@ -1082,7 +1091,7 @@ async fn request_finishing_conversion_after_eof_keeps_the_eof_cause() {
         tokio::time::timeout(TIMEOUT, peer.rx.next())
             .await
             .expect("handler response was not sent"),
-        Some(Ok(RawJsonRpcMessage::Response(_)))
+        Some(TransportFrame::Single(RawJsonRpcMessage::Response(_)))
     ));
 
     let (entered_tx, entered_rx) = futures::channel::oneshot::channel();
@@ -1219,11 +1228,13 @@ async fn response_buffered_before_eof_is_delivered() {
         Ok(())
     });
     let respond_then_close = async move {
-        let Some(Ok(RawJsonRpcMessage::Request(request))) = peer.rx.next().await else {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+            peer.rx.next().await
+        else {
             panic!("expected outgoing request");
         };
         peer.tx
-            .send(Ok(RawJsonRpcMessage::response(
+            .send(TransportFrame::Single(RawJsonRpcMessage::response(
                 request.id,
                 Ok(serde_json::to_value(MyResponse {
                     status: "received".into(),

@@ -1,12 +1,13 @@
 # Transport Architecture
 
-> **Note**: This document describes internal architecture and uses older terminology (e.g., `JrConnection` instead of the current API). For the user-facing API, see the [Core Library Design](./design.md) and the [`agent-client-protocol` rustdoc](https://docs.rs/agent-client-protocol).
+For the broader user-facing API, see the [Core Library Design](./design.md) and
+the [`agent-client-protocol` rustdoc](https://docs.rs/agent-client-protocol).
 
 This chapter explains how the connection layer separates protocol semantics from transport mechanisms, enabling flexible deployment patterns including in-process message passing.
 
 ## Overview
 
-`JrConnection` provides the core JSON-RPC connection abstraction used by all ACP components. Originally designed around byte streams, it has been refactored to support **pluggable transports** that work with different I/O mechanisms while maintaining consistent protocol semantics.
+The SDK's connection core provides the JSON-RPC abstraction used by ACP components. It supports **pluggable transports** that work with different I/O mechanisms while maintaining consistent protocol semantics.
 
 ## Design Principles
 
@@ -32,7 +33,7 @@ This separation enables:
 - **Testability**: Mock transports for unit testing
 - **Clarity**: Clear boundaries between protocol and I/O concerns
 
-### The `RawJsonRpcMessage` Boundary
+### The `TransportFrame` Boundary
 
 The key insight is that `agent_client_protocol::RawJsonRpcMessage` provides a natural,
 transport-neutral boundary backed by the JSON-RPC envelope types from
@@ -46,20 +47,22 @@ enum RawJsonRpcMessage {
 }
 ```
 
-This type sits between the protocol and transport layers:
+`RawJsonRpcMessage` sits inside the transport-neutral public frame type:
 
 - **Above**: Protocol layer works with application types (`OutgoingMessage`, `UntypedMessage`)
 - **Below**: Transport layer parses and serializes `RawJsonRpcMessage`
-- **Boundary**: An internal `TransportFrame` carries either one raw message or
-  the entries retained from one incoming batch
-
-The public `Channel` API remains a single-message `RawJsonRpcMessage` boundary.
+- **Boundary**: `TransportFrame` carries one raw message, a structurally
+  non-empty batch, or a malformed wire value retained for a relay
+- **In-process API**: `Channel::rx` and `Channel::tx` carry `TransportFrame`
+  directly, so adapters cannot accidentally flatten a batch
+- **Failures**: I/O and connection failures are returned by the future driving
+  a transport; they are not sent as channel entries
 
 ## Actor Architecture
 
-### Protocol Actors (Core JrConnection)
+### Protocol Actors
 
-These actors live in `JrConnection` and understand JSON-RPC semantics:
+These actors live in the protocol connection core and understand JSON-RPC semantics:
 
 #### Outgoing Protocol Actor
 
@@ -104,9 +107,9 @@ Manages request/response correlation:
 
 Runs user-spawned concurrent tasks via `cx.spawn()`. Unchanged from original design.
 
-### Transport Actors (Provided by Trait)
+### Transport Actors
 
-These actors are spawned by `IntoJrConnectionTransport` implementations and have **zero knowledge** of protocol semantics:
+These actors are driven by physical transport components and have **zero knowledge** of protocol semantics:
 
 #### Transport Outgoing Actor
 
@@ -117,12 +120,12 @@ Output: Writes to I/O (byte stream, channel, socket, etc.)
 
 For byte streams:
 
-- Serialize a single `RawJsonRpcMessage` or one response batch to JSON
+- Serialize a single `RawJsonRpcMessage` or one non-empty batch to JSON
 - Write newline-delimited JSON to stream
 
 For in-process channels:
 
-- Directly forward `RawJsonRpcMessage` to channel
+- Directly forward `TransportFrame` to the channel
 
 #### Transport Incoming Actor
 
@@ -142,13 +145,13 @@ For byte streams:
 
 For in-process channels:
 
-- Directly forward `RawJsonRpcMessage` from channel
+- Directly forward `TransportFrame` from the channel
 
-The public `RawJsonRpcMessage` and `Channel` boundary intentionally remains
-single-message. Batch tracking and response aggregation are internal to the
-line and byte-stream transports. The SDK continues to initiate requests and
-notifications as individual JSON-RPC messages; the only response arrays it
-writes are correlated replies to batch calls received from the peer.
+The public `Channel` boundary preserves complete frames. The SDK continues to
+initiate requests and notifications as individual JSON-RPC messages; response
+arrays are correlated replies to batch calls received from the peer. Relays and
+instrumentation must forward frames intact so they do not change those wire
+semantics.
 
 ## Message Flow
 
@@ -199,63 +202,31 @@ When the conductor forwards messages between components, it must preserve send o
 
 Without this serialization, responses could overtake notifications when both are forwarded through proxy chains, causing the client to receive messages out of order. See [Conductor Implementation](./conductor.md#message-ordering-invariant) for details.
 
-## Transport Trait
+## Component Boundary
 
-The `IntoJrConnectionTransport` trait defines how to bridge internal channels with I/O:
+[`ConnectTo`](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/trait.ConnectTo.html)
+is the common component and transport abstraction. `connect_to` joins a
+component to its counterpart and drives the connection until completion.
+`into_channel_and_future` exposes the canonical low-level boundary as a
+`Channel` plus the future that drives the component:
 
-```rust
-pub trait IntoJrConnectionTransport {
-    fn setup_transport(
-        self,
-        cx: &JrConnectionCx,
-        outgoing_rx: mpsc::UnboundedReceiver<RawJsonRpcMessage>,
-        incoming_tx: mpsc::UnboundedSender<RawJsonRpcMessage>,
-    ) -> Result<(), Error>;
-}
+```rust,ignore
+fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>);
 ```
 
-Key points:
-
-- **Consumed** (`self`): Implementations move owned resources into spawned actors
-- **Spawns via `cx.spawn()`**: Uses connection context to spawn transport actors
-- **Channels only**: No knowledge of `OutgoingMessage` or response correlation
-- **Returns quickly**: Just spawns actors, doesn't block
+The returned future owns transport failures and lifecycle completion. The
+channel carries only `TransportFrame` wire events. Most components implement
+only `connect_to`; direct transports override `into_channel_and_future` to avoid
+an intermediate copy.
 
 ## Transport Implementations
 
 ### Byte Stream Transport
 
-The default implementation works with any `AsyncRead` + `AsyncWrite` pair:
-
-```rust
-impl<OB: AsyncWrite, IB: AsyncRead> IntoJrConnectionTransport for (OB, IB) {
-    fn setup_transport(self, cx, outgoing_rx, incoming_tx) -> Result<(), Error> {
-        let (outgoing_bytes, incoming_bytes) = self;
-
-        // Spawn incoming: read bytes → parse JSON → send Message
-        cx.spawn(async move {
-            let mut lines = BufReader::new(incoming_bytes).lines();
-            while let Some(line) = lines.next().await {
-                let message: RawJsonRpcMessage = serde_json::from_str(&line?)?;
-                incoming_tx.unbounded_send(message)?;
-            }
-            Ok(())
-        });
-
-        // Spawn outgoing: receive Message → serialize → write bytes
-        cx.spawn(async move {
-            while let Some(message) = outgoing_rx.next().await {
-                let json = serde_json::to_vec(&message)?;
-                outgoing_bytes.write_all(&json).await?;
-                outgoing_bytes.write_all(b"\n").await?;
-            }
-            Ok(())
-        });
-
-        Ok(())
-    }
-}
-```
+`ByteStreams<Outgoing, Incoming>` works with `futures::io::AsyncWrite` and
+`AsyncRead`. It adapts them to `Lines`, parses each incoming JSON value into one
+frame, and serializes each outgoing frame to one newline-delimited JSON value.
+`Stdio` and `AcpAgent` build on this transport.
 
 Use cases:
 
@@ -264,37 +235,12 @@ Use cases:
 - Unix domain sockets
 - Any stream-based I/O
 
-### In-Process Channel Transport
+### In-Process Channel
 
-For components in the same process, skip serialization entirely:
-
-```rust
-pub struct ChannelTransport {
-    outgoing: mpsc::UnboundedSender<RawJsonRpcMessage>,
-    incoming: mpsc::UnboundedReceiver<RawJsonRpcMessage>,
-}
-
-impl IntoJrConnectionTransport for ChannelTransport {
-    fn setup_transport(self, cx, outgoing_rx, incoming_tx) -> Result<(), Error> {
-        // Just forward messages, no serialization
-        cx.spawn(async move {
-            while let Some(message) = self.incoming.next().await {
-                incoming_tx.unbounded_send(message)?;
-            }
-            Ok(())
-        });
-
-        cx.spawn(async move {
-            while let Some(message) = outgoing_rx.next().await {
-                self.outgoing.unbounded_send(message)?;
-            }
-            Ok(())
-        });
-
-        Ok(())
-    }
-}
-```
+For components in the same process, `Channel::duplex()` creates paired
+endpoints and skips serialization entirely. Relays forward each received
+`TransportFrame` without unpacking it; this preserves batch boundaries and the
+original representation of malformed wire input.
 
 Benefits:
 
@@ -302,122 +248,27 @@ Benefits:
 - **Same-process efficiency**: Ideal for conductor with in-process proxies
 - **Full type safety**: No parsing errors possible
 
-## Construction API
-
-### Flexible Construction
-
-The refactored API separates handler setup from transport selection:
-
-```rust
-// Build connection with handlers
-let connection = JrConnection::new()
-    .name("my-component")
-    .on_receive_request(|req: InitializeRequest, cx| {
-        cx.respond(InitializeResponse::make())
-    })
-    .on_receive_notification(|notif: SessionNotification, _cx| {
-        Ok(())
-    });
-
-// Provide transport at the end
-connection.serve_with(transport).await?;
-```
-
-### Byte Stream Convenience
-
-For the common case of byte streams, use the convenience constructor:
-
-```rust
-JrConnection::from_streams(stdout, stdin)
-    .on_receive_request(...)
-    .serve()
-    .await?;
-```
-
-This is equivalent to:
-
-```rust
-JrConnection::new()
-    .on_receive_request(...)
-    .serve_with((stdout, stdin))
-    .await?;
-```
-
 ## Use Cases
 
 ### 1. Standard Agent (Stdio)
 
-Traditional subprocess agent with stdio communication:
-
-```rust
-JrConnection::from_streams(
-    tokio::io::stdout().compat_write(),
-    tokio::io::stdin().compat()
-)
-    .name("my-agent")
-    .on_receive_request(handle_prompt)
-    .serve()
-    .await?;
-```
+Use `Stdio` for the current process or `AcpAgent` for a child process. Both use
+the same frame-aware line transport underneath.
 
 ### 2. In-Process Proxy Chain
 
-Conductor with proxies in the same process for maximum efficiency:
-
-```rust
-// Create paired channel transports
-let (transport_a, transport_b) = create_paired_transports();
-
-// Spawn proxy in background
-tokio::spawn(async move {
-    JrConnection::new()
-        .on_receive_message(proxy_handler)
-        .serve_with(transport_a)
-        .await
-});
-
-// Connect to proxy
-JrConnection::new()
-    .on_receive_request(agent_handler)
-    .serve_with(transport_b)
-    .await?;
-```
-
-No serialization overhead between components!
+Connect builders, proxies, and conductor components directly. Their default
+`ConnectTo` adapter uses `Channel`, so complete frames cross each wrapper with
+no serialization.
 
 ### 3. Network-Based Components
 
-TCP socket connections between components:
-
-```rust
-let stream = TcpStream::connect("localhost:8080").await?;
-let (read, write) = stream.split();
-
-JrConnection::new()
-    .on_receive_request(handler)
-    .serve_with((write.compat_write(), read.compat()))
-    .await?;
-```
+Split the socket and pass compatible read/write halves to `ByteStreams::new`.
 
 ### 4. Testing with Mock Transport
 
-Unit tests without real I/O:
-
-```rust
-let (transport, mock) = create_mock_transport();
-
-tokio::spawn(async move {
-    JrConnection::new()
-        .on_receive_request(my_handler)
-        .serve_with(transport)
-        .await
-});
-
-// Test by sending messages directly
-mock.send_request("initialize", params).await?;
-let response = mock.receive_response().await?;
-assert_eq!(response.method, "initialized");
-```
+Use `Channel::duplex()` to inject and inspect `TransportFrame` values without
+real I/O.
 
 ## Benefits
 
@@ -444,14 +295,6 @@ assert_eq!(response.method, "initialized");
 - **Clear boundaries**: Protocol semantics vs transport mechanics
 - **Focused implementations**: Each layer has single responsibility
 - **Maintainability**: Changes to transport don't affect protocol logic
-
-## Implementation Status
-
-- ✅ **Phase 1**: Documentation complete
-- 🚧 **Phase 2**: Actor splitting in progress
-- 📋 **Phase 3**: Trait introduction planned
-- 📋 **Phase 4**: In-process transport planned
-- 📋 **Phase 5**: Conductor integration planned
 
 ## Related Documentation
 

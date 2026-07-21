@@ -3,14 +3,17 @@ use std::{
     sync::{Arc, Weak},
 };
 
-use agent_client_protocol::{Channel, RawJsonRpcMessage, schema::v1::RequestId};
+use agent_client_protocol::{
+    Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
+    schema::v1::RequestId,
+};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
 
 use crate::protocol::session_id_from_message;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResponseRoute {
     Connection,
     Session(String),
@@ -24,7 +27,7 @@ enum OutboundTransport {
 struct HttpOutbound {
     connection_stream: Arc<OutboundStream>,
     session_streams: RwLock<HashMap<String, Arc<OutboundStream>>>,
-    pending_routes: Mutex<HashMap<RequestId, ResponseRoute>>,
+    pending_routes: Mutex<HashMap<RequestId, VecDeque<ResponseRoute>>>,
 }
 
 struct WebSocketOutbound {
@@ -85,8 +88,8 @@ impl OutboundStream {
 pub(crate) const OUTBOUND_STREAM_CAPACITY: usize = 1024;
 
 pub(crate) struct Connection {
-    inbound_tx: mpsc::UnboundedSender<Result<RawJsonRpcMessage, agent_client_protocol::Error>>,
-    outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<RawJsonRpcMessage>>>,
+    inbound_tx: mpsc::UnboundedSender<TransportFrame>,
+    outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<TransportFrame>>>,
     agent_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     router_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     closed_tx: watch::Sender<bool>,
@@ -94,9 +97,9 @@ pub(crate) struct Connection {
 }
 
 impl Connection {
-    pub(crate) fn send_to_agent(&self, msg: RawJsonRpcMessage) -> Result<(), &'static str> {
+    pub(crate) fn send_frame_to_agent(&self, frame: TransportFrame) -> Result<(), &'static str> {
         self.inbound_tx
-            .send(Ok(msg))
+            .send(frame)
             .map_err(|_| "agent channel closed")
     }
 
@@ -153,14 +156,24 @@ impl Connection {
         }));
     }
 
-    async fn route_outbound(&self, msg: RawJsonRpcMessage) {
-        self.outbound_transport.route_outbound(msg).await;
+    async fn route_outbound(&self, frame: TransportFrame) {
+        self.outbound_transport.route_outbound(frame).await;
     }
 
     pub(crate) async fn recv_initial(&self) -> Option<RawJsonRpcMessage> {
         let mut guard = self.outbound_rx.lock().await;
         let rx = guard.as_mut()?;
-        rx.recv().await
+        match rx.recv().await? {
+            TransportFrame::Single(message) => Some(message),
+            TransportFrame::Malformed { error, .. } => {
+                error!(?error, "agent emitted malformed initial JSON-RPC input");
+                None
+            }
+            TransportFrame::Batch(_) => {
+                error!("agent emitted an invalid batched initial JSON-RPC message");
+                None
+            }
+        }
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -236,18 +249,38 @@ impl OutboundTransport {
         http.connection_stream.push(msg).await;
     }
 
-    async fn route_outbound(&self, msg: RawJsonRpcMessage) {
-        let serialized = match serde_json::to_string(&msg) {
-            Ok(s) => s,
-            Err(e) => {
-                error!("failed to serialize outbound JSON-RPC message: {e}");
-                return;
+    async fn route_outbound(&self, frame: TransportFrame) {
+        match frame {
+            TransportFrame::Single(message) => {
+                let serialized = match serde_json::to_string(&message) {
+                    Ok(serialized) => serialized,
+                    Err(error) => {
+                        error!("failed to serialize outbound JSON-RPC message: {error}");
+                        return;
+                    }
+                };
+                match self {
+                    Self::Http(http) => http.route_outbound(&message, serialized).await,
+                    Self::WebSocket(websocket) => websocket.all_outbound.push(serialized).await,
+                }
             }
-        };
-
-        match self {
-            Self::Http(http) => http.route_outbound(&msg, serialized).await,
-            Self::WebSocket(websocket) => websocket.all_outbound.push(serialized).await,
+            TransportFrame::Malformed { raw, .. } => match self {
+                Self::Http(http) => http.connection_stream.push(raw).await,
+                Self::WebSocket(websocket) => websocket.all_outbound.push(raw).await,
+            },
+            TransportFrame::Batch(batch) => {
+                let serialized = match serde_json::to_string(&batch) {
+                    Ok(serialized) => serialized,
+                    Err(error) => {
+                        error!("failed to serialize outbound JSON-RPC batch: {error}");
+                        return;
+                    }
+                };
+                match self {
+                    Self::Http(http) => http.route_outbound_batch(&batch, serialized).await,
+                    Self::WebSocket(websocket) => websocket.all_outbound.push(serialized).await,
+                }
+            }
         }
     }
 }
@@ -263,7 +296,12 @@ impl HttpOutbound {
 
     async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
         if let Some(key) = pending_route_key(&id) {
-            self.pending_routes.lock().await.insert(key, route);
+            self.pending_routes
+                .lock()
+                .await
+                .entry(key)
+                .or_default()
+                .push_back(route);
         }
     }
 
@@ -292,7 +330,10 @@ impl HttpOutbound {
             }
             RawJsonRpcMessage::Response(_) => {
                 let route = match msg.response_id().and_then(pending_route_key) {
-                    Some(key) => self.pending_routes.lock().await.remove(&key),
+                    Some(key) => {
+                        let mut pending_routes = self.pending_routes.lock().await;
+                        take_pending_route(&mut pending_routes, &key)
+                    }
                     None => None,
                 };
                 route.unwrap_or(ResponseRoute::Connection)
@@ -307,6 +348,47 @@ impl HttpOutbound {
             ResponseRoute::Session(sid) => {
                 trace!(target = %sid, "→ session-scoped stream");
                 self.session_stream(&sid).await.push(serialized).await;
+            }
+        }
+    }
+
+    async fn route_outbound_batch(&self, batch: &TransportBatch, serialized: String) {
+        let mut pending_routes = self.pending_routes.lock().await;
+        let mut common_route = None;
+        let mut routes_disagree = false;
+        for entry in batch.entries() {
+            let route = match entry {
+                TransportBatchEntry::Message(message) => message
+                    .response_id()
+                    .and_then(pending_route_key)
+                    .and_then(|key| take_pending_route(&mut pending_routes, &key))
+                    .unwrap_or(ResponseRoute::Connection),
+                TransportBatchEntry::Malformed { .. } => ResponseRoute::Connection,
+            };
+            match &common_route {
+                None => common_route = Some(route),
+                Some(common_route) if common_route == &route => {}
+                Some(_) => routes_disagree = true,
+            }
+        }
+        drop(pending_routes);
+
+        let route = if routes_disagree {
+            ResponseRoute::Connection
+        } else {
+            common_route.unwrap_or(ResponseRoute::Connection)
+        };
+        match route {
+            ResponseRoute::Connection => {
+                trace!(target = "connection", "→ connection-scoped batch stream");
+                self.connection_stream.push(serialized).await;
+            }
+            ResponseRoute::Session(session_id) => {
+                trace!(target = %session_id, "→ session-scoped batch stream");
+                self.session_stream(&session_id)
+                    .await
+                    .push(serialized)
+                    .await;
             }
         }
     }
@@ -391,9 +473,8 @@ impl ConnectionRegistry {
         outbound_transport: OutboundTransport,
     ) -> Arc<Connection> {
         let (channel, agent_future) = self.factory.spawn_agent();
-        let (inbound_tx, mut inbound_rx) =
-            mpsc::unbounded_channel::<Result<RawJsonRpcMessage, agent_client_protocol::Error>>();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<RawJsonRpcMessage>();
+        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<TransportFrame>();
+        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<TransportFrame>();
         let (closed_tx, _) = watch::channel(false);
 
         let Channel {
@@ -413,17 +494,9 @@ impl ConnectionRegistry {
         let inbound_abort_for_outbound = inbound_abort.clone();
         let outbound = async move {
             while let Some(msg) = agent_rx.next().await {
-                match msg {
-                    Ok(m) => {
-                        if outbound_tx.send(m).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("agent emitted error: {e}");
-                        inbound_abort_for_outbound.abort();
-                        break;
-                    }
+                if outbound_tx.send(msg).is_err() {
+                    inbound_abort_for_outbound.abort();
+                    break;
                 }
             }
         };
@@ -505,10 +578,24 @@ fn pending_route_key(id: &RequestId) -> Option<RequestId> {
     }
 }
 
+fn take_pending_route(
+    pending_routes: &mut HashMap<RequestId, VecDeque<ResponseRoute>>,
+    key: &RequestId,
+) -> Option<ResponseRoute> {
+    let routes = pending_routes.get_mut(key)?;
+    let route = routes.pop_front();
+    let remove_entry = routes.is_empty();
+    if remove_entry {
+        pending_routes.remove(key);
+    }
+    route
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
+    use agent_client_protocol::TransportBatch;
     use futures::future::BoxFuture;
     use tokio::{
         sync::Notify,
@@ -553,7 +640,7 @@ mod tests {
             let future = Box::pin(async move {
                 agent
                     .tx
-                    .unbounded_send(Ok(RawJsonRpcMessage::response(
+                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
                         RequestId::Number(1),
                         Ok(serde_json::json!({ "done": true })),
                     )))
@@ -565,11 +652,11 @@ mod tests {
         }
     }
 
-    struct ErrorThenWaitAgentFactory {
+    struct MalformedThenWaitAgentFactory {
         emit: Arc<Notify>,
     }
 
-    impl AgentFactory for ErrorThenWaitAgentFactory {
+    impl AgentFactory for MalformedThenWaitAgentFactory {
         fn spawn_agent(
             &self,
         ) -> (
@@ -582,9 +669,11 @@ mod tests {
                 emit.notified().await;
                 agent
                     .tx
-                    .unbounded_send(Err(
-                        agent_client_protocol::Error::parse_error().data("transport parse error")
-                    ))
+                    .unbounded_send(TransportFrame::Malformed {
+                        raw: "{not json".to_string(),
+                        error: agent_client_protocol::Error::parse_error()
+                            .data("transport parse error"),
+                    })
                     .unwrap();
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
@@ -609,7 +698,49 @@ mod tests {
             let message = self.message.clone();
             let exit = self.exit.clone();
             let future = Box::pin(async move {
-                agent.tx.unbounded_send(Ok(message)).unwrap();
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Single(message))
+                    .unwrap();
+                exit.notified().await;
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    struct BatchThenWaitAgentFactory {
+        exit: Arc<Notify>,
+    }
+
+    impl AgentFactory for BatchThenWaitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let exit = self.exit.clone();
+            let future = Box::pin(async move {
+                let batch = TransportBatch::from_messages([
+                    RawJsonRpcMessage::notification(
+                        "test/first".to_string(),
+                        serde_json::json!({}),
+                    )
+                    .unwrap(),
+                    RawJsonRpcMessage::notification(
+                        "test/second".to_string(),
+                        serde_json::json!({}),
+                    )
+                    .unwrap(),
+                ])
+                .expect("test batch is non-empty");
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Batch(batch))
+                    .unwrap();
                 exit.notified().await;
                 Ok(())
             });
@@ -643,30 +774,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_error_removes_connection_and_closes_streams() {
+    async fn malformed_frame_is_relayed_without_closing_connection() {
         let emit = Arc::new(Notify::new());
-        let registry =
-            ConnectionRegistry::new(Arc::new(ErrorThenWaitAgentFactory { emit: emit.clone() }));
+        let registry = ConnectionRegistry::new(Arc::new(MalformedThenWaitAgentFactory {
+            emit: emit.clone(),
+        }));
         let (connection_id, connection) = registry.create_connection().await;
-        let mut closed = connection.subscribe_closed();
+        let (_replay, mut outbound) = connection.subscribe_connection_stream().await;
 
         assert!(registry.get(&connection_id).await.is_some());
 
         connection.start_router().await;
         emit.notify_one();
 
-        timeout(Duration::from_secs(1), async {
-            loop {
-                if *closed.borrow() {
-                    break;
-                }
-                closed.changed().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
+        let raw = timeout(Duration::from_secs(1), outbound.recv())
+            .await
+            .unwrap()
+            .expect("malformed frame should be relayed");
+        assert_eq!(raw, "{not json");
+        assert!(registry.get(&connection_id).await.is_some());
+        assert!(!*connection.subscribe_closed().borrow());
 
-        assert!(registry.get(&connection_id).await.is_none());
+        registry.remove(&connection_id).await;
+        connection.shutdown().await;
     }
 
     #[tokio::test]
@@ -736,6 +866,65 @@ mod tests {
 
         exit.notify_one();
         connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn batch_is_relayed_as_one_connection_stream_frame() {
+        let exit = Arc::new(Notify::new());
+        let registry =
+            ConnectionRegistry::new(Arc::new(BatchThenWaitAgentFactory { exit: exit.clone() }));
+        let (_connection_id, connection) = registry.create_connection().await;
+        let (_replay, mut connection_rx) = connection.subscribe_connection_stream().await;
+
+        connection.start_router().await;
+
+        let text = timeout(Duration::from_secs(1), connection_rx.recv())
+            .await
+            .unwrap()
+            .expect("batch should reach the connection stream");
+        let batch = serde_json::from_str::<serde_json::Value>(&text).unwrap();
+        let entries = batch.as_array().expect("batch should remain an array");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["method"], "test/first");
+        assert_eq!(entries[1]["method"], "test/second");
+        assert!(connection_rx.try_recv().is_err());
+
+        exit.notify_one();
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn duplicate_batch_response_ids_consume_each_pending_route() {
+        let outbound = HttpOutbound::new();
+        let (_connection_replay, mut connection_rx) = outbound.connection_stream.subscribe().await;
+        let (_session_replay, mut session_rx) =
+            outbound.session_stream("session-1").await.subscribe().await;
+
+        let id = RequestId::Number(21);
+        let route = ResponseRoute::Session("session-1".to_string());
+        outbound
+            .record_pending_route(id.clone(), route.clone())
+            .await;
+        outbound.record_pending_route(id.clone(), route).await;
+
+        let batch = TransportBatch::from_messages([
+            RawJsonRpcMessage::response(id.clone(), Ok(serde_json::json!({ "slot": 1 }))),
+            RawJsonRpcMessage::response(id, Ok(serde_json::json!({ "slot": 2 }))),
+        ])
+        .expect("duplicate-ID response batch is non-empty");
+        let serialized = serde_json::to_string(&batch).unwrap();
+
+        outbound
+            .route_outbound_batch(&batch, serialized.clone())
+            .await;
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), session_rx.recv())
+                .await
+                .unwrap(),
+            Some(serialized)
+        );
+        assert!(connection_rx.try_recv().is_err());
     }
 
     #[tokio::test]

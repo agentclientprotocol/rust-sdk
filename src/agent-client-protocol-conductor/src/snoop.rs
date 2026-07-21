@@ -1,4 +1,4 @@
-use agent_client_protocol::{ConnectTo, DynConnectTo, FramedChannel, RawJsonRpcMessage, Role};
+use agent_client_protocol::{Channel, ConnectTo, DynConnectTo, RawJsonRpcMessage, Role};
 use futures_concurrency::future::TryJoin;
 
 pub struct SnooperComponent<R: Role> {
@@ -36,9 +36,9 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
         self,
         client: impl ConnectTo<R::Counterpart>,
     ) -> Result<(), agent_client_protocol::Error> {
-        let (client_channel, client_future) = client.into_framed_channel_and_future();
-        let (base_channel, base_future) = self.base_component.into_framed_channel_and_future();
-        let snoop = FramedChannel::bridge_with_inspection(
+        let (client_channel, client_future) = client.into_channel_and_future();
+        let (base_channel, base_future) = self.base_component.into_channel_and_future();
+        let snoop = Channel::bridge_with_inspection(
             client_channel,
             base_channel,
             self.incoming_message,

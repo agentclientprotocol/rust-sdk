@@ -82,8 +82,7 @@ pub(super) async fn outgoing_protocol_actor(
                     continue;
                 }
 
-                if let Err(error) = transport_tx.unbounded_send(TransportFrame::Single(Ok(request)))
-                {
+                if let Err(error) = transport_tx.unbounded_send(TransportFrame::Single(request)) {
                     let error = crate::Error::into_internal_error(error);
                     if let Some(pending_reply) = pending_replies.remove(&id) {
                         pending_reply.fail(error.clone());
@@ -116,7 +115,7 @@ pub(super) async fn outgoing_protocol_actor(
                         }
                     };
                     transport_tx
-                        .unbounded_send(TransportFrame::Single(Ok(message)))
+                        .unbounded_send(TransportFrame::Single(message))
                         .map_err(crate::Error::into_internal_error)?;
                 }
                 continue;
