@@ -37,8 +37,8 @@
 //! ```
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{DeriveInput, LitStr, Path, Type, parse_macro_input};
+use quote::{format_ident, quote};
+use syn::{DeriveInput, GenericParam, Generics, Ident, LitStr, Path, Type, parse_macro_input};
 
 /// Derive macro for implementing `JsonRpcRequest` and `JsonRpcMessage` traits.
 ///
@@ -61,7 +61,8 @@ use syn::{DeriveInput, LitStr, Path, Type, parse_macro_input};
 pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let method_arg = fresh_ident(&input, "method");
+    let params_arg = fresh_ident(&input, "params");
 
     // Parse attributes
     let (method, response_type, krate) = match parse_request_attrs(&input) {
@@ -69,11 +70,17 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
+    let message_generics = message_generics(&input.generics, &krate);
+    let (message_impl_generics, type_generics, message_where_clause) =
+        message_generics.split_for_impl();
+    let request_generics = request_generics(&input.generics, &response_type, &krate);
+    let (request_impl_generics, _, request_where_clause) = request_generics.split_for_impl();
+
     let expanded = quote! {
         #[automatically_derived]
-        impl #impl_generics #krate::JsonRpcMessage for #name #type_generics #where_clause {
-            fn matches_method(method: &str) -> bool {
-                method == #method
+        impl #message_impl_generics #krate::JsonRpcMessage for #name #type_generics #message_where_clause {
+            fn matches_method(#method_arg: &str) -> bool {
+                #method_arg == #method
             }
 
             fn method(&self) -> &str {
@@ -85,18 +92,18 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
             }
 
             fn parse_message(
-                method: &str,
-                params: &impl ::serde::Serialize,
+                #method_arg: &str,
+                #params_arg: &impl #krate::__private::serde::Serialize,
             ) -> ::core::result::Result<Self, #krate::Error> {
-                if method != #method {
+                if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast_params(params)
+                #krate::util::json_cast_params(#params_arg)
             }
         }
 
         #[automatically_derived]
-        impl #impl_generics #krate::JsonRpcRequest for #name #type_generics #where_clause {
+        impl #request_impl_generics #krate::JsonRpcRequest for #name #type_generics #request_where_clause {
             type Response = #response_type;
         }
     };
@@ -124,7 +131,8 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
 pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let method_arg = fresh_ident(&input, "method");
+    let params_arg = fresh_ident(&input, "params");
 
     // Parse attributes
     let (method, krate) = match parse_notification_attrs(&input) {
@@ -132,11 +140,17 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
+    let message_generics = message_generics(&input.generics, &krate);
+    let (message_impl_generics, type_generics, message_where_clause) =
+        message_generics.split_for_impl();
+    let marker_generics = marker_generics(&input.generics, &krate);
+    let (marker_impl_generics, _, marker_where_clause) = marker_generics.split_for_impl();
+
     let expanded = quote! {
         #[automatically_derived]
-        impl #impl_generics #krate::JsonRpcMessage for #name #type_generics #where_clause {
-            fn matches_method(method: &str) -> bool {
-                method == #method
+        impl #message_impl_generics #krate::JsonRpcMessage for #name #type_generics #message_where_clause {
+            fn matches_method(#method_arg: &str) -> bool {
+                #method_arg == #method
             }
 
             fn method(&self) -> &str {
@@ -148,18 +162,18 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
             }
 
             fn parse_message(
-                method: &str,
-                params: &impl ::serde::Serialize,
+                #method_arg: &str,
+                #params_arg: &impl #krate::__private::serde::Serialize,
             ) -> ::core::result::Result<Self, #krate::Error> {
-                if method != #method {
+                if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast_params(params)
+                #krate::util::json_cast_params(#params_arg)
             }
         }
 
         #[automatically_derived]
-        impl #impl_generics #krate::JsonRpcNotification for #name #type_generics #where_clause {}
+        impl #marker_impl_generics #krate::JsonRpcNotification for #name #type_generics #marker_where_clause {}
     };
 
     TokenStream::from(expanded)
@@ -183,22 +197,26 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
 pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
-    let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
+    let method_arg = fresh_ident(&input, "method");
+    let value_arg = fresh_ident(&input, "value");
 
     let krate = match parse_response_attrs(&input) {
         Ok(attrs) => attrs,
         Err(e) => return e.to_compile_error().into(),
     };
 
+    let response_generics = response_payload_generics(&input.generics, &krate);
+    let (impl_generics, type_generics, where_clause) = response_generics.split_for_impl();
+
     let expanded = quote! {
         #[automatically_derived]
         impl #impl_generics #krate::JsonRpcResponse for #name #type_generics #where_clause {
-            fn into_json(self, _method: &str) -> ::core::result::Result<::serde_json::Value, #krate::Error> {
-                ::serde_json::to_value(self).map_err(#krate::Error::into_internal_error)
+            fn into_json(self, #method_arg: &str) -> ::core::result::Result<#krate::__private::serde_json::Value, #krate::Error> {
+                #krate::__private::serde_json::to_value(self).map_err(#krate::Error::into_internal_error)
             }
 
-            fn from_value(_method: &str, value: ::serde_json::Value) -> ::core::result::Result<Self, #krate::Error> {
-                #krate::util::json_cast(value)
+            fn from_value(#method_arg: &str, #value_arg: #krate::__private::serde_json::Value) -> ::core::result::Result<Self, #krate::Error> {
+                #krate::util::json_cast(#value_arg)
             }
         }
     };
@@ -207,7 +225,77 @@ pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
 }
 
 fn default_crate_path() -> Path {
-    syn::parse_quote!(::agent_client_protocol)
+    syn::parse_quote!(agent_client_protocol)
+}
+
+fn fresh_ident(input: &DeriveInput, role: &str) -> Ident {
+    let mut suffix = 0;
+    loop {
+        let candidate = if suffix == 0 {
+            format_ident!("__acp_{role}")
+        } else {
+            format_ident!("__acp_{role}_{suffix}")
+        };
+        let collides = input.generics.params.iter().any(|param| match param {
+            GenericParam::Lifetime(param) => param.lifetime.ident == candidate,
+            GenericParam::Type(param) => param.ident == candidate,
+            GenericParam::Const(param) => param.ident == candidate,
+        });
+        if !collides {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+fn message_generics(generics: &Generics, krate: &Path) -> Generics {
+    let mut generics = generics.clone();
+    generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote! {
+            Self: ::core::fmt::Debug
+                + ::core::clone::Clone
+                + ::core::marker::Send
+                + #krate::__private::serde::Serialize
+                + #krate::__private::serde::de::DeserializeOwned
+                + 'static
+        });
+    generics
+}
+
+fn marker_generics(generics: &Generics, krate: &Path) -> Generics {
+    let mut generics = generics.clone();
+    generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote!(Self: #krate::JsonRpcMessage));
+    generics
+}
+
+fn request_generics(generics: &Generics, response: &Type, krate: &Path) -> Generics {
+    let mut generics = marker_generics(generics, krate);
+    generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote!(#response: #krate::JsonRpcResponse));
+    generics
+}
+
+fn response_payload_generics(generics: &Generics, krate: &Path) -> Generics {
+    let mut generics = generics.clone();
+    generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote! {
+            Self: ::core::fmt::Debug
+                + ::core::clone::Clone
+                + ::core::marker::Send
+                + #krate::__private::serde::Serialize
+                + #krate::__private::serde::de::DeserializeOwned
+                + 'static
+        });
+    generics
 }
 
 fn parse_request_attrs(input: &DeriveInput) -> syn::Result<(LitStr, Type, Path)> {
@@ -368,6 +456,18 @@ mod tests {
             "Result < Option < Response > , Error >"
         );
         assert_eq!(quote!(#krate).to_string(), "crate :: protocol");
+    }
+
+    #[test]
+    fn request_attributes_use_a_relative_default_crate_path() {
+        let input = parse_quote! {
+            #[request(method = "test/method", response = Response)]
+            struct Request;
+        };
+
+        let (_, _, krate) = parse_request_attrs(&input).unwrap();
+
+        assert_eq!(quote!(#krate).to_string(), "agent_client_protocol");
     }
 
     #[test]

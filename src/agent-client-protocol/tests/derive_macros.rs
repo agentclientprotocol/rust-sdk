@@ -1,5 +1,7 @@
 //! Tests for the JsonRpcRequest, JsonRpcNotification, and JsonRpcResponse derive macros.
 
+#![allow(non_upper_case_globals)]
+
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use serde::{Deserialize, Serialize};
 
@@ -25,24 +27,29 @@ struct PingNotification {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
-#[serde(bound = "")]
-struct GenericResponse<T>(std::marker::PhantomData<T>)
-where
-    T: std::fmt::Debug + Clone + Send + 'static;
+struct GenericResponse<T>(T);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
-#[serde(bound = "")]
 #[request(method = "_test/generic", response = GenericResponse<T>)]
-struct GenericRequest<T>(std::marker::PhantomData<T>)
-where
-    T: std::fmt::Debug + Clone + Send + 'static;
+struct GenericRequest<T>(T);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
-#[serde(bound = "")]
 #[notification(method = "_test/generic-notification")]
-struct GenericNotification<T>(std::marker::PhantomData<T>)
-where
-    T: std::fmt::Debug + Clone + Send + 'static;
+struct GenericNotification<T>(T);
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct ConstGenericResponse<const value: usize>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(
+    method = "_test/const-generic",
+    response = ConstGenericResponse<method>
+)]
+struct ConstGenericRequest<const method: usize, const params: usize>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
+#[notification(method = "_test/const-generic-notification")]
+struct ConstGenericNotification<const __acp_method: usize, const __acp_params: usize>;
 
 // ============================================================================
 // Tests
@@ -95,12 +102,16 @@ fn test_jr_request_response_type() {
 }
 
 #[test]
-fn test_generic_derives_preserve_generics_and_where_clauses() {
+fn test_generic_derives_add_conditional_bounds() {
     fn assert_request<R: JsonRpcRequest<Response = GenericResponse<u64>>>() {}
+    fn assert_any_request<R: JsonRpcRequest>() {}
     fn assert_notification<N: JsonRpcNotification>() {}
 
     assert_request::<GenericRequest<u64>>();
     assert_notification::<GenericNotification<u64>>();
+
+    assert_any_request::<ConstGenericRequest<1, 2>>();
+    assert_notification::<ConstGenericNotification<1, 2>>();
 }
 
 #[test]
