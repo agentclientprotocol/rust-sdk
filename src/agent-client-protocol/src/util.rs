@@ -87,16 +87,6 @@ pub(crate) async fn instrument_with_connection_name<R>(
     }
 }
 
-/// Run two fallible futures concurrently, returning when both complete successfully
-/// or when either fails.
-pub async fn both<E>(
-    a: impl Future<Output = Result<(), E>>,
-    b: impl Future<Output = Result<(), E>>,
-) -> Result<(), E> {
-    let ((), ()) = futures::future::try_join(a, b).await?;
-    Ok(())
-}
-
 /// Run `background` until `foreground` completes.
 ///
 /// Returns the result of `foreground`. If `background` errors before
@@ -132,7 +122,7 @@ pub fn run_until<T, E>(
 ///
 /// This is useful for patterns where you receive work items from a channel
 /// and want to process them concurrently while respecting backpressure.
-pub async fn process_stream_concurrently<T, F>(
+pub(crate) async fn process_stream_concurrently<T, F>(
     stream: impl Stream<Item = T>,
     process_fn: F,
     process_fn_hack: impl for<'a> Fn(&'a F, T) -> BoxFuture<'a, Result<(), crate::Error>>,

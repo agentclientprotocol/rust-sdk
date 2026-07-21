@@ -5054,10 +5054,8 @@ impl<T: JsonRpcResponse> SentRequest<T> {
 /// [`ConnectTo`]: crate::ConnectTo
 #[derive(Debug)]
 pub struct Lines<OutgoingSink, IncomingStream> {
-    /// Outgoing line sink (where we write serialized JSON-RPC messages)
-    pub outgoing: OutgoingSink,
-    /// Incoming line stream (where we read and parse JSON-RPC messages)
-    pub incoming: IncomingStream,
+    outgoing: OutgoingSink,
+    incoming: IncomingStream,
 }
 
 impl<OutgoingSink, IncomingStream> Lines<OutgoingSink, IncomingStream>
@@ -5196,10 +5194,8 @@ where
 /// [`ConnectTo`]: crate::ConnectTo
 #[derive(Debug)]
 pub struct ByteStreams<OB, IB> {
-    /// Outgoing byte stream (where we write serialized messages)
-    pub outgoing: OB,
-    /// Incoming byte stream (where we read and parse messages)
-    pub incoming: IB,
+    outgoing: OB,
+    incoming: IB,
 }
 
 impl<OB, IB> ByteStreams<OB, IB>

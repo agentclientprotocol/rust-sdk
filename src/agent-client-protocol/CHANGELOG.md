@@ -25,6 +25,9 @@
 - **Breaking:** Return borrowed identifiers, connection handles, modes, and metadata from
   `McpConnectionTo` and `ActiveSession`; remove `acp_url` and rename `connection_to` to
   `connection`. See the [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
+  fields and session/stream internals, and removing `util::both`. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
   `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
   an object.

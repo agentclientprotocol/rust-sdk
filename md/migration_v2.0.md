@@ -141,6 +141,37 @@ These accessors avoid implicit allocation and handle cloning. Call `.to_owned()`
 `.cloned()` on `modes` or `meta`, and `.clone()` on either connection accessor when an owned value
 is required.
 
+## Low-level helpers have a narrower surface
+
+`DynConnectTo::type_name` now returns `&'static str` without allocating. Call `.to_owned()` when
+an owned type name is required.
+
+The generic `util::both` helper was removed. Replace `util::both(a, b).await` with
+`futures::future::try_join(a, b).await.map(|((), ())| ())`.
+
+`util::process_stream_concurrently` is no longer public. An equivalent unbounded fallible loop can
+be written with `futures::{StreamExt, TryStreamExt}`:
+
+```rust,ignore
+stream
+    .map(Ok::<_, agent_client_protocol::Error>)
+    .try_for_each_concurrent(None, |item| process_fn(item))
+    .await
+```
+
+Pass a finite limit instead of `None` to bound concurrency.
+
+`ConnectionTo::attach_session` is no longer public. Create sessions through
+`ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Use
+`SessionBuilder::on_session_start` to start without blocking the calling task, or call
+`block_task()` followed by `run_until` or `start_session`. Proxy handlers can use
+`on_proxy_session_start`, or `block_task().start_session_proxy(...)`. Directly attaching an
+already-returned `NewSessionResponse` is no longer supported, so move request customization into
+`build_session_from` before the builder sends `session/new`.
+
+Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
+`ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.
+
 ## `AcpAgent` has its own process configuration
 
 `AcpAgent` now accepts `AcpAgentConfig` instead of the ACP wire-schema `McpServer`. An ACP agent

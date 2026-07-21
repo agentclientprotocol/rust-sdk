@@ -166,7 +166,7 @@ pub trait ConnectTo<R: Role>: Send + 'static {
 /// [`ConnectTo`] instead, which is automatically converted to `ErasedConnectTo`
 /// via a blanket implementation.
 trait ErasedConnectTo<R: Role>: Send {
-    fn type_name(&self) -> String;
+    fn type_name(&self) -> &'static str;
 
     fn connect_to_erased(
         self: Box<Self>,
@@ -179,8 +179,8 @@ trait ErasedConnectTo<R: Role>: Send {
 
 /// Blanket implementation: any `Serve<R>` can be type-erased.
 impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
-    fn type_name(&self) -> String {
-        std::any::type_name::<C>().to_string()
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<C>()
     }
 
     fn connect_to_erased(
@@ -239,7 +239,7 @@ impl<R: Role> DynConnectTo<R> {
 
     /// Returns the type name of the wrapped component.
     #[must_use]
-    pub fn type_name(&self) -> String {
+    pub fn type_name(&self) -> &'static str {
         self.inner.type_name()
     }
 }
@@ -258,8 +258,27 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
 
 impl<R: Role> Debug for DynConnectTo<R> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DynServe")
+        f.debug_struct("DynConnectTo")
             .field("type_name", &self.type_name())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::role::UntypedRole;
+
+    #[test]
+    fn dyn_connect_to_reports_static_type_name_and_correct_debug_label() {
+        let (channel, _other) = Channel::duplex();
+        let component = DynConnectTo::<UntypedRole>::new(channel);
+
+        let type_name: &'static str = component.type_name();
+        assert_eq!(type_name, std::any::type_name::<Channel>());
+        assert_eq!(
+            format!("{component:?}"),
+            format!("DynConnectTo {{ type_name: {type_name:?} }}")
+        );
     }
 }
