@@ -28,7 +28,7 @@ impl SessionBlockState for Blocking {}
 pub struct NonBlocking;
 impl SessionBlockState for NonBlocking {}
 
-/// Trait for marker types that indicate blocking vs blocking API.
+/// Trait for marker types that indicate blocking vs non-blocking API.
 /// See [`SessionBuilder::block_task`].
 pub trait SessionBlockState: Send + 'static + Sync + std::fmt::Debug {}
 

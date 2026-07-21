@@ -87,13 +87,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mcp_server = McpServer::from_rmcp("example", ExampleMcpServer::new);
 
     // Set up the proxy connection with our MCP server
-    // ProxyToConductor already has proxy behavior built into its default_message_handler
     Proxy
         .builder()
         .name("mcp-server-proxy")
         // Register the MCP server as a handler
         .with_mcp_server(mcp_server)
-        // Start serving
+        // Connect the proxy to the conductor over stdio
         .connect_to(agent_client_protocol::ByteStreams::new(
             tokio::io::stdout().compat_write(),
             tokio::io::stdin().compat(),

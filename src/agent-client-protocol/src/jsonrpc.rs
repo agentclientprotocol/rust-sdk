@@ -3975,9 +3975,9 @@ impl Dispatch {
     ///
     /// # Returns
     ///
-    /// * `Ok(Ok(typed))` if this is a request/notification of the given types
-    /// * `Ok(Err(self))` if not
-    /// * `Err` if has the correct method for the given types but parsing fails
+    /// * `Ok(Ok(typed))` if this dispatch matches the requested type for its variant
+    /// * `Ok(Err(self))` if it does not match the requested type for its variant
+    /// * `Err` if its method matches the requested type but parsing fails
     #[tracing::instrument(skip(self), fields(Request = ?std::any::type_name::<Req>(), Notif = ?std::any::type_name::<Notif>()), level = "trace", ret)]
     pub(crate) fn into_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
         self,
@@ -4089,9 +4089,9 @@ impl Dispatch {
     ///
     /// # Returns
     ///
-    /// * `Ok(Ok(typed))` if this is a request/notification of the given types
-    /// * `Ok(Err(self))` if not
-    /// * `Err` if has the correct method for the given types but parsing fails
+    /// * `Ok(Ok(typed))` if this is a notification of the requested type
+    /// * `Ok(Err(self))` if this is not a matching notification
+    /// * `Err` if its method matches the requested type but parsing fails
     pub fn into_notification<N: JsonRpcNotification>(
         self,
     ) -> Result<Result<N, Dispatch>, crate::Error> {
@@ -4113,9 +4113,9 @@ impl Dispatch {
     ///
     /// # Returns
     ///
-    /// * `Ok(Ok(typed))` if this is a request/notification of the given types
-    /// * `Ok(Err(self))` if not
-    /// * `Err` if has the correct method for the given types but parsing fails
+    /// * `Ok(Ok(typed))` if this is a request of the requested type
+    /// * `Ok(Err(self))` if this is not a matching request
+    /// * `Err` if its method matches the requested type but parsing fails
     pub fn into_request<Req: JsonRpcRequest>(
         self,
     ) -> Result<Result<(Req, Responder<Req::Response>), Dispatch>, crate::Error> {
