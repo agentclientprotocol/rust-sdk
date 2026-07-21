@@ -281,7 +281,7 @@ impl Role for Agent {
         connection: ConnectionTo<Agent>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
         MatchDispatchFrom::new(message, &connection)
-            .if_message_from(Agent, async |message: Dispatch| {
+            .if_dispatch_from(Agent, async |message: Dispatch| {
                 // Subtle: messages that have a session-id field
                 // should be captured by a dynamic message handler
                 // for that session -- but there is a race condition
@@ -1096,7 +1096,7 @@ impl Role for Conductor {
                     async move |result| {
                         if let Ok(NewSessionResponse { session_id, .. }) = &result {
                             cx.add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                                .run_indefinitely();
+                                .detach();
                         }
                         responder.respond_with_result(result)
                     }
@@ -1104,12 +1104,12 @@ impl Role for Conductor {
             })
             .await
             // Incoming message from the client -- forward to the agent
-            .if_message_from(Client, async |message: Dispatch| {
+            .if_dispatch_from(Client, async |message: Dispatch| {
                 cx.send_proxied_message_to(Agent, message)
             })
             .await
             // Incoming message from the agent -- forward to the client
-            .if_message_from(Agent, async |message: Dispatch| {
+            .if_dispatch_from(Agent, async |message: Dispatch| {
                 cx.send_proxied_message_to(Client, message)
             })
             .await
@@ -1161,7 +1161,7 @@ where
         connection: ConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
         MatchDispatchFrom::new(message, &connection)
-            .if_message_from(Agent, async |message| {
+            .if_dispatch_from(Agent, async |message| {
                 // If this is for our session-id, proxy it to the client.
                 if let Some(session_id) = message.get_session_id()?
                     && session_id == self.session_id

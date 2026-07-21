@@ -217,7 +217,7 @@ impl MatchDispatch {
     ///
     /// This attempts to parse the message as either request type `R` or notification type `N`,
     /// providing a typed `Dispatch` to the handler if successful.
-    pub async fn if_message<R: JsonRpcRequest, N: JsonRpcNotification, H>(
+    pub async fn if_dispatch<R: JsonRpcRequest, N: JsonRpcNotification, H>(
         mut self,
         op: impl AsyncFnOnce(Dispatch<R, N>) -> Result<H, crate::Error>,
     ) -> Self
@@ -606,14 +606,14 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 
     /// Try to handle the message as a typed `Dispatch<Req, N>` from a specific peer.
     ///
-    /// This is similar to [`MatchDispatch::if_message`], but first applies peer-specific
+    /// This is similar to [`MatchDispatch::if_dispatch`], but first applies peer-specific
     /// message transformation (e.g., unwrapping `SuccessorMessage` envelopes).
     ///
     /// # Parameters
     ///
     /// * `peer` - The peer the message is expected to come from
     /// * `op` - The handler to call if the message matches
-    pub async fn if_message_from<Peer: Role, Req: JsonRpcRequest, N: JsonRpcNotification, H>(
+    pub async fn if_dispatch_from<Peer: Role, Req: JsonRpcRequest, N: JsonRpcNotification, H>(
         mut self,
         peer: Peer,
         op: impl AsyncFnOnce(Dispatch<Req, N>) -> Result<H, crate::Error>,
@@ -630,7 +630,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 self.connection.clone(),
                 async |dispatch, _connection| {
                     // Delegate to MatchDispatch for parsing
-                    MatchDispatch::new(dispatch).if_message(op).await.done()
+                    MatchDispatch::new(dispatch).if_dispatch(op).await.done()
                 },
             )
             .await;

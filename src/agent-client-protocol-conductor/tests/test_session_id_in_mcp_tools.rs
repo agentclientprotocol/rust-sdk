@@ -38,7 +38,7 @@ fn create_echo_proxy() -> DynConnectTo<Conductor> {
             "Returns the current session_id",
             async |_input: EchoInput, context| {
                 Ok(EchoOutput {
-                    acp_id: context.acp_id(),
+                    acp_id: context.acp_id().to_owned(),
                 })
             },
             agent_client_protocol::tool_fn_mut!(),

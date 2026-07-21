@@ -67,11 +67,6 @@ pub fn parse_error(message: impl ToString) -> crate::Error {
     crate::Error::parse_error().data(message.to_string())
 }
 
-/// Convert a JSON-RPC id to a serde_json::Value.
-pub(crate) fn id_to_json(id: &crate::schema::v1::RequestId) -> serde_json::Value {
-    serde_json::to_value(id).expect("RequestId serializes infallibly")
-}
-
 pub(crate) fn instrumented_with_connection_name<F>(
     name: String,
     task: F,
@@ -90,16 +85,6 @@ pub(crate) async fn instrument_with_connection_name<R>(
     } else {
         task.await
     }
-}
-
-/// Run two fallible futures concurrently, returning when both complete successfully
-/// or when either fails.
-pub async fn both<E>(
-    a: impl Future<Output = Result<(), E>>,
-    b: impl Future<Output = Result<(), E>>,
-) -> Result<(), E> {
-    let ((), ()) = futures::future::try_join(a, b).await?;
-    Ok(())
 }
 
 /// Run `background` until `foreground` completes.
@@ -137,7 +122,7 @@ pub fn run_until<T, E>(
 ///
 /// This is useful for patterns where you receive work items from a channel
 /// and want to process them concurrently while respecting backpressure.
-pub async fn process_stream_concurrently<T, F>(
+pub(crate) async fn process_stream_concurrently<T, F>(
     stream: impl Stream<Item = T>,
     process_fn: F,
     process_fn_hack: impl for<'a> Fn(&'a F, T) -> BoxFuture<'a, Result<(), crate::Error>>,

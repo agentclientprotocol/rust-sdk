@@ -5,7 +5,7 @@ use futures::channel::{mpsc, oneshot};
 use crate::{
     Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Responder, Role,
     jsonrpc::{
-        DynamicHandlerRegistration,
+        DynamicHandlerGuard,
         run::{ChainRun, NullRun, RunWithConnectionTo},
     },
     mcp_server::McpServer,
@@ -75,10 +75,10 @@ where
     /// The vector `dynamic_handler_registrations` contains any dynamic
     /// handle registrations associated with this session (e.g., from MCP servers).
     /// You can simply pass `Default::default()` if not applicable.
-    pub fn attach_session<'responder>(
+    pub(crate) fn attach_session<'responder>(
         &self,
         response: NewSessionResponse,
-        mcp_handler_registrations: Vec<DynamicHandlerRegistration<Counterpart>>,
+        mcp_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     ) -> Result<ActiveSession<'responder, Counterpart>, crate::Error> {
         let NewSessionResponse {
             session_id,
@@ -123,7 +123,7 @@ pub struct SessionBuilder<
 {
     connection: ConnectionTo<Counterpart>,
     request: NewSessionRequest,
-    dynamic_handler_registrations: Vec<DynamicHandlerRegistration<Counterpart>>,
+    dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
     block_state: PhantomData<BlockState>,
 }
@@ -157,7 +157,7 @@ where
     where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
-        let (handler, mcp_run) = mcp_server.into_handler_and_responder();
+        let (handler, mcp_run) = mcp_server.into_handler_and_runner();
         self.dynamic_handler_registrations
             .push(handler.into_dynamic_handler(&mut self.request, &self.connection)?);
         Ok(SessionBuilder {
@@ -316,13 +316,13 @@ where
                 // Install a dynamic handler to proxy messages from this session
                 connection
                     .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                    .run_indefinitely();
+                    .detach();
 
                 // Spawn off the run and dynamic handlers to run indefinitely
                 connection.spawn(run.run_with_connection_to(connection.clone()))?;
                 dynamic_handler_registrations
                     .into_iter()
-                    .for_each(super::jsonrpc::DynamicHandlerRegistration::run_indefinitely);
+                    .for_each(DynamicHandlerGuard::detach);
 
                 op(session_id).await
             }
@@ -499,12 +499,12 @@ where
     /// Registration for the handler that routes session messages to `update_rx`.
     /// This is separate from MCP handlers so it can be dropped independently
     /// when switching to proxy mode.
-    session_handler_registration: DynamicHandlerRegistration<Link>,
+    session_handler_registration: DynamicHandlerGuard<Link>,
 
     /// Registrations for MCP server handlers.
     /// These will be dropped once the active-session struct is dropped
     /// which will cause them to be deregistered.
-    mcp_handler_registrations: Vec<DynamicHandlerRegistration<Link>>,
+    mcp_handler_registrations: Vec<DynamicHandlerGuard<Link>>,
 
     /// Phantom lifetime representing the responder lifetime.
     _responder: PhantomData<&'responder ()>,
@@ -536,13 +536,13 @@ where
     }
 
     /// Access modes available in this session.
-    pub fn modes(&self) -> &Option<SessionModeState> {
-        &self.modes
+    pub fn modes(&self) -> Option<&SessionModeState> {
+        self.modes.as_ref()
     }
 
     /// Access meta data from session response.
-    pub fn meta(&self) -> &Option<serde_json::Map<String, serde_json::Value>> {
-        &self.meta
+    pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.meta.as_ref()
     }
 
     /// Build a `NewSessionResponse` from the session information.
@@ -556,8 +556,8 @@ where
     }
 
     /// Access the underlying connection context used to communicate with the agent.
-    pub fn connection(&self) -> ConnectionTo<Link> {
-        self.connection.clone()
+    pub fn connection(&self) -> &ConnectionTo<Link> {
+        &self.connection
     }
 
     /// Send a prompt to the agent. You can then read messages sent in response.
@@ -698,11 +698,11 @@ where
         // can take over. Any new messages will go directly through the proxy.
         connection
             .add_dynamic_handler(ProxySessionMessages::new(session_id))?
-            .run_indefinitely();
+            .detach();
 
         // Keep MCP server handlers alive for the lifetime of the proxy
         for registration in mcp_handler_registrations {
-            registration.run_indefinitely();
+            registration.detach();
         }
 
         Ok(())
@@ -739,7 +739,7 @@ where
             "ActiveSessionHandler::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &cx)
-            .if_message_from(Agent, async |message| {
+            .if_dispatch_from(Agent, async |message| {
                 if let Some(session_id) = message.get_session_id()? {
                     tracing::trace!(
                         message_session_id = ?session_id,

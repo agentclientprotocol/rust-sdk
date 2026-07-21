@@ -7,6 +7,27 @@
 - **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary and remove the hidden
   `FramedChannel` compatibility path. See the
   [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Rename `ResponseRouter` response methods to use routing terminology and return
+  borrowed `RequestId` values from response and request handles. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Remove ambiguous JSON-RPC error-response and dispatch-conversion helpers, and
+  require `Dispatch` notification types to implement `JsonRpcNotification`. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Replace cloneable dynamic-handler registrations with `DynamicHandlerGuard` and
+  use `detach()` to keep handlers registered without leaking a connection handle. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Rename `Builder::with_responder` to `with_runner` to describe background
+  connection tasks separately from JSON-RPC response handles. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Rename `MatchDispatch::if_message` to `if_dispatch` and
+  `MatchDispatchFrom::if_message_from` to `if_dispatch_from`. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Return borrowed identifiers, connection handles, modes, and metadata from
+  `McpConnectionTo` and `ActiveSession`; remove `acp_url` and rename `connection_to` to
+  `connection`. See the [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
+  fields and session/stream internals, and removing `util::both`. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
   `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
   an object.

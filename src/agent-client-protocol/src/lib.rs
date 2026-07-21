@@ -95,11 +95,12 @@ pub mod util;
 pub use capabilities::*;
 
 pub use jsonrpc::{
-    Builder, ByteStreams, Channel, ConnectionTo, Dispatch, HandleConnectionClose,
-    HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler,
-    RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter, SentRequest, TransportBatch,
-    TransportBatchEntry, TransportFrame, UntypedMessage, is_incoming_transport_closed,
+    Builder, ByteStreams, Channel, ConnectionTo, Dispatch, DynamicHandlerGuard,
+    HandleConnectionClose, HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON,
+    IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
+    NullClose, NullHandler, RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter,
+    SentRequest, TransportBatch, TransportBatchEntry, TransportFrame, UntypedMessage,
+    is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};

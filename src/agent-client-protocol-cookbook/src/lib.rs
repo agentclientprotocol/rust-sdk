@@ -219,7 +219,7 @@ pub mod building_an_agent {
     //! # Minimal Example
     //!
     //! ```
-    //! use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, ConnectionTo};
+    //! use agent_client_protocol::{Agent, ConnectTo};
     //! use agent_client_protocol::schema::v1::{
     //!     InitializeRequest, InitializeResponse, AgentCapabilities,
     //!     NewSessionRequest, NewSessionResponse, SessionId,
@@ -248,11 +248,8 @@ pub mod building_an_agent {
     //!             // Return final response
     //!             responder.respond(PromptResponse::new(StopReason::EndTurn))
     //!         }, agent_client_protocol::on_receive_request!())
-    //!         // Reject unknown requests. Notifications are ignored because
-    //!         // they cannot receive responses.
-    //!         .on_receive_dispatch(async |message: Dispatch, _connection: ConnectionTo<Client>| {
-    //!             message.respond_with_error(agent_client_protocol::Error::method_not_found())
-    //!         }, agent_client_protocol::on_receive_dispatch!())
+    //!         // Unknown requests receive Method not found automatically;
+    //!         // unhandled notifications are ignored.
     //!         .connect_to(transport)
     //!         .await
     //! }

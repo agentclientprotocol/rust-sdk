@@ -585,7 +585,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// For an agent handler, `R = Agent` (I handle messages as an agent).
 /// For a client handler, `R = Client` (I handle messages as a client).
 pub trait HandleDispatchFrom<Counterpart: Role>: Send {
-    /// Attempt to claim an incoming message (request or notification).
+    /// Attempt to claim an incoming dispatch (request, notification, or response).
     ///
     /// # Important: do not block
     ///
@@ -602,7 +602,8 @@ pub trait HandleDispatchFrom<Counterpart: Role>: Send {
     ///
     /// * `Ok(Handled::Yes)` if the message was claimed. It will not be propagated further.
     /// * `Ok(Handled::No(message))` if not; the (possibly changed) message will be passed to the remaining handlers.
-    /// * `Err` if an internal error occurs (this will bring down the server).
+    /// * `Err` if processing fails. Requests receive an Error Response; notification
+    ///   and response errors are logged without a wire reply.
     fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -716,7 +717,8 @@ where
 ///
 /// ## Mixed Message Types
 ///
-/// For enums containing both requests AND notifications, use [`on_receive_dispatch`](Self::on_receive_dispatch):
+/// To handle requests, notifications, and responses in one callback, use
+/// [`on_receive_dispatch`](Self::on_receive_dispatch):
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
@@ -724,7 +726,7 @@ where
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
-/// // on_receive_dispatch receives Dispatch which can be either a request or notification
+/// // on_receive_dispatch receives requests, notifications, and responses
 /// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification>, _cx| {
 ///     match msg {
 ///         Dispatch::Request(req, responder) => {
@@ -735,7 +737,7 @@ where
 ///         }
 ///         Dispatch::Response(result, router) => {
 ///             // Forward response to its destination
-///             router.respond_with_result(result)
+///             router.route_with_result(result)
 ///         }
 ///     }
 /// }, agent_client_protocol::on_receive_dispatch!())
@@ -750,7 +752,7 @@ where
 ///
 /// * [`on_receive_request`](Self::on_receive_request) - Handle JSON-RPC requests (messages expecting responses)
 /// * [`on_receive_notification`](Self::on_receive_notification) - Handle JSON-RPC notifications (fire-and-forget)
-/// * [`on_receive_dispatch`](Self::on_receive_dispatch) - Handle enums containing both requests and notifications
+/// * [`on_receive_dispatch`](Self::on_receive_dispatch) - Handle requests, notifications, and responses in one callback
 /// * [`with_handler`](Self::with_handler) - Low-level primitive for maximum flexibility
 ///
 /// ## Handler Ordering
@@ -760,7 +762,6 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::{Dispatch, UntypedMessage};
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
@@ -773,11 +774,8 @@ where
 ///         // This runs first for PromptRequest
 ///         responder.respond(PromptResponse::make())
 ///     }, agent_client_protocol::on_receive_request!())
-///     .on_receive_dispatch(async |msg: Dispatch, _cx| {
-///         // Reject unhandled requests. Notifications are ignored because they
-///         // cannot receive responses.
-///         msg.respond_with_error(agent_client_protocol::util::internal_error("unknown method"))
-///     }, agent_client_protocol::on_receive_dispatch!())
+///     // Unknown requests receive Method not found automatically; unhandled
+///     // notifications are ignored.
 /// # .connect_to(agent_client_protocol_test::MockTransport).await?;
 /// # Ok(())
 /// # }
@@ -945,8 +943,8 @@ where
     /// Handler for incoming messages.
     handler: Handler,
 
-    /// Responder for background tasks.
-    responder: Runner,
+    /// Runner for background connection tasks.
+    runner: Runner,
 
     /// Protocol version mode for the public API and wire compatibility layer.
     protocol_mode: ProtocolMode,
@@ -976,7 +974,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
             host: role,
             name: None,
             handler: NullHandler,
-            responder: NullRun,
+            runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
         }
@@ -993,7 +991,7 @@ where
             host: role,
             name: None,
             handler,
-            responder: NullRun,
+            runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
         }
@@ -1056,7 +1054,7 @@ impl<
         let Builder {
             name: other_name,
             handler: other_handler,
-            responder: other_responder,
+            runner: other_runner,
             protocol_mode: other_protocol_mode,
             on_close: other_on_close,
             host: _,
@@ -1068,7 +1066,7 @@ impl<
                 self.handler,
                 NamedHandler::new(other_name, other_handler),
             ),
-            responder: ChainRun::new(self.responder, other_responder),
+            runner: ChainRun::new(self.runner, other_runner),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
             on_close: ChainedClose::new(self.on_close, other_on_close),
         }
@@ -1086,16 +1084,16 @@ impl<
             host: self.host,
             name: self.name,
             handler: ChainedHandler::new(self.handler, handler),
-            responder: self.responder,
+            runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
         }
     }
 
     /// Add a new [`RunWithConnectionTo`] to the chain.
-    pub fn with_responder<Run1>(
+    pub fn with_runner<Run1>(
         self,
-        responder: Run1,
+        runner: Run1,
     ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
     where
         Run1: RunWithConnectionTo<Host::Counterpart>,
@@ -1104,7 +1102,7 @@ impl<
             host: self.host,
             name: self.name,
             handler: self.handler,
-            responder: ChainRun::new(self.responder, responder),
+            runner: ChainRun::new(self.runner, runner),
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
         }
@@ -1121,7 +1119,7 @@ impl<
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let location = Location::caller();
-        self.with_responder(SpawnedRun::new(location, task))
+        self.with_runner(SpawnedRun::new(location, task))
     }
 
     /// Run a callback when the incoming transport reaches clean EOF.
@@ -1168,17 +1166,16 @@ impl<
             host: self.host,
             name: self.name,
             handler: self.handler,
-            responder: self.responder,
+            runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: ChainedClose::new(self.on_close, CloseCallback::new(callback)),
         }
     }
 
-    /// Register a handler for messages that can be either requests OR notifications.
+    /// Register a handler for requests, notifications, and responses.
     ///
-    /// Use this when you want to handle an enum type that contains both request and
-    /// notification variants. Your handler receives a [`Dispatch<Req, Notif>`] which
-    /// is an enum with two variants:
+    /// Use this when you want to handle all JSON-RPC message kinds in one callback.
+    /// Your handler receives a [`Dispatch<Req, Notif>`] with three variants:
     ///
     /// - `Dispatch::Request(request, responder)` - A request with its response context
     /// - `Dispatch::Notification(notification)` - A notification
@@ -1203,7 +1200,7 @@ impl<
     ///         }
     ///         Dispatch::Response(result, router) => {
     ///             // Forward response to its destination
-    ///             router.respond_with_result(result)
+    ///             router.route_with_result(result)
     ///         }
     ///     }
     /// }, agent_client_protocol::on_receive_dispatch!())
@@ -1553,8 +1550,8 @@ impl<
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
     {
-        let (handler, responder) = mcp_server.into_handler_and_responder();
-        self.with_handler(handler).with_responder(responder)
+        let (handler, runner) = mcp_server.into_handler_and_runner();
+        self.with_handler(handler).with_runner(runner)
     }
 
     /// Run in server mode with the provided transport.
@@ -1563,7 +1560,9 @@ impl<
     /// and dispatching them to your registered handlers. The connection will run until:
     /// - The transport closes (e.g., EOF on byte streams)
     /// - An error occurs
-    /// - One of your handlers returns an error
+    ///
+    /// Handler errors are normally contained: requests receive an Error Response,
+    /// while notification and response errors are logged without a wire reply.
     ///
     /// On clean EOF, messages already accepted by the outgoing queue—including
     /// handler responses and close-callback notifications—are drained through
@@ -1690,7 +1689,7 @@ impl<
         let Self {
             name,
             handler,
-            responder,
+            runner,
             host: me,
             protocol_mode,
             on_close,
@@ -1764,7 +1763,7 @@ impl<
                                 protocol_compat,
                             ),
                             task_actor::task_actor(new_task_rx, &connection),
-                            responder.run_with_connection_to(connection.clone()),
+                            runner.run_with_connection_to(connection.clone()),
                         )?;
                         Ok(())
                     };
@@ -3036,7 +3035,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             }
             Dispatch::Response(result, router) => {
                 // Responses are forwarded directly to their destination
-                router.respond_with_result(result)
+                router.route_with_result(result)
             }
         }
     }
@@ -3312,7 +3311,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn add_dynamic_handler(
         &self,
         handler: impl HandleDispatchFrom<Counterpart> + 'static,
-    ) -> Result<DynamicHandlerRegistration<Counterpart>, crate::Error> {
+    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
         let uuid = Uuid::new_v4();
         self.dynamic_handler_tx
             .unbounded_send(DynamicHandlerMessage::AddDynamicHandler(
@@ -3321,7 +3320,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             ))
             .map_err(crate::util::internal_error)?;
 
-        Ok(DynamicHandlerRegistration::new(uuid, self.clone()))
+        Ok(DynamicHandlerGuard::new(uuid, self.clone()))
     }
 
     fn remove_dynamic_handler(&self, uuid: Uuid) {
@@ -3333,26 +3332,40 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct DynamicHandlerRegistration<R: Role> {
-    uuid: Uuid,
+/// A guard that keeps a dynamic message handler registered.
+///
+/// Dropping the guard unregisters the handler. Use [`detach`](Self::detach) to
+/// keep the handler registered for the remaining lifetime of the connection.
+#[must_use = "dropping this guard unregisters the dynamic handler"]
+#[derive(Debug)]
+pub struct DynamicHandlerGuard<R: Role> {
+    uuid: Option<Uuid>,
     cx: ConnectionTo<R>,
 }
 
-impl<R: Role> DynamicHandlerRegistration<R> {
+impl<R: Role> DynamicHandlerGuard<R> {
     fn new(uuid: Uuid, cx: ConnectionTo<R>) -> Self {
-        Self { uuid, cx }
+        Self {
+            uuid: Some(uuid),
+            cx,
+        }
     }
 
-    /// Prevents the dynamic handler from being removed when dropped.
-    pub fn run_indefinitely(self) {
-        std::mem::forget(self);
+    /// Keep the dynamic handler registered after this guard is dropped.
+    ///
+    /// The handler remains registered until the connection itself shuts down.
+    /// Unlike leaking the guard, detaching does not retain an extra
+    /// [`ConnectionTo`] handle.
+    pub fn detach(mut self) {
+        self.uuid = None;
     }
 }
 
-impl<R: Role> Drop for DynamicHandlerRegistration<R> {
+impl<R: Role> Drop for DynamicHandlerGuard<R> {
     fn drop(&mut self) {
-        self.cx.remove_dynamic_handler(self.uuid);
+        if let Some(uuid) = self.uuid {
+            self.cx.remove_dynamic_handler(uuid);
+        }
     }
 }
 
@@ -3481,10 +3494,10 @@ impl<T: JsonRpcResponse> Responder<T> {
         &self.method
     }
 
-    /// ID of the incoming request/response as a JSON value
+    /// ID of the incoming request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// Returns the cancellation marker for this request.
@@ -3584,7 +3597,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 ///
 /// # Drop Behavior
 ///
-/// Dropping a `ResponseRouter` without responding (for example, from a
+/// Dropping a `ResponseRouter` without routing the response (for example, from a
 /// dispatch handler that claims a [`Dispatch::Response`]) discards the
 /// response: the local awaiter observes the response as never received. The
 /// request still counts as settled: routing a response this far disarms the
@@ -3619,7 +3632,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
 impl ResponseRouter<serde_json::Value> {
     /// Create a new response context for routing a response to a local awaiter.
     ///
-    /// When `respond_with_result` is called, the response is sent through the oneshot
+    /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
     pub(crate) fn new(
@@ -3677,10 +3690,10 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
         &self.method
     }
 
-    /// ID of the original request as a JSON value
+    /// ID of the original request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// The peer to which the original request was sent.
@@ -3718,29 +3731,26 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
         }
     }
 
-    /// Complete the response by sending the result to the waiting task.
-    pub fn respond_with_result(
-        self,
-        response: Result<T, crate::Error>,
-    ) -> Result<(), crate::Error> {
+    /// Route the response result to the waiting task.
+    pub fn route_with_result(self, response: Result<T, crate::Error>) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "response routed to awaiter");
         (self.send_fn)(response)
     }
 
-    /// Complete the response by sending a value to the waiting task.
-    pub fn respond(self, response: T) -> Result<(), crate::Error> {
-        self.respond_with_result(Ok(response))
+    /// Route a successful response value to the waiting task.
+    pub fn route(self, response: T) -> Result<(), crate::Error> {
+        self.route_with_result(Ok(response))
     }
 
-    /// Complete the response by sending an internal error to the waiting task.
-    pub fn respond_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
-        self.respond_with_error(crate::util::internal_error(message))
+    /// Route an internal error to the waiting task.
+    pub fn route_with_internal_error(self, message: impl ToString) -> Result<(), crate::Error> {
+        self.route_with_error(crate::util::internal_error(message))
     }
 
-    /// Complete the response by sending an error to the waiting task.
-    pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
+    /// Route an error response to the waiting task.
+    pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, ?error, "error routed to awaiter");
-        self.respond_with_result(Err(error))
+        self.route_with_result(Err(error))
     }
 }
 
@@ -3845,14 +3855,16 @@ pub trait JsonRpcRequest: JsonRpcMessage {
     type Response: JsonRpcResponse;
 }
 
-/// An enum capturing an in-flight request or notification.
-/// In the case of a request, also includes the context used to respond to the request.
+/// An incoming request, notification, or response being dispatched through handlers.
+/// Requests include the context used to answer them; responses include the context
+/// used to route them to the local requester.
 ///
 /// Type parameters allow specifying the concrete request and notification types.
 /// By default, both are `UntypedMessage` for dynamic dispatch.
 /// The request context's response type matches the request's response type.
 #[derive(Debug)]
-pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcMessage = UntypedMessage> {
+pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcNotification = UntypedMessage>
+{
     /// Incoming request and the context where the response should be sent.
     Request(Req, Responder<Req::Response>),
 
@@ -3870,7 +3882,7 @@ pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcMessage = 
     ),
 }
 
-impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
+impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     /// Map the request and notification types to new types.
     ///
     /// Note: Response variants are passed through unchanged since they don't
@@ -3882,7 +3894,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     ) -> Dispatch<Req1, Notif1>
     where
         Req1: JsonRpcRequest<Response = Req::Response>,
-        Notif1: JsonRpcMessage,
+        Notif1: JsonRpcNotification,
     {
         match self {
             Dispatch::Request(request, responder) => {
@@ -3894,49 +3906,6 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
                 Dispatch::Notification(new_notification)
             }
             Dispatch::Response(result, router) => Dispatch::Response(result, router),
-        }
-    }
-
-    /// Respond to the message with an error.
-    ///
-    /// If this message is a request, this error becomes the reply to the request.
-    ///
-    /// If this message is a notification, the error is logged and ignored because
-    /// JSON-RPC notifications cannot be answered.
-    ///
-    /// If this message is a response, the error is forwarded to the waiting handler.
-    pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        match self {
-            Dispatch::Request(_, responder) => responder.respond_with_error(error),
-            Dispatch::Notification(_) => {
-                tracing::warn!(
-                    ?error,
-                    "Ignoring attempted error response to a JSON-RPC notification"
-                );
-                Ok(())
-            }
-            Dispatch::Response(_, responder) => responder.respond_with_error(error),
-        }
-    }
-
-    /// Convert to a `Responder` that expects a JSON value
-    /// and which checks (dynamically) that the JSON value it receives
-    /// can be converted to `T`.
-    ///
-    /// Note: Response variants cannot be erased since their payload is already
-    /// parsed. This returns an error for Response variants.
-    pub fn erase_to_json(self) -> Result<Dispatch, crate::Error> {
-        match self {
-            Dispatch::Request(response, responder) => Ok(Dispatch::Request(
-                response.to_untyped_message()?,
-                responder.erase_to_json(),
-            )),
-            Dispatch::Notification(notification) => {
-                Ok(Dispatch::Notification(notification.to_untyped_message()?))
-            }
-            Dispatch::Response(_, _) => Err(crate::util::internal_error(
-                "cannot erase Response variant to JSON",
-            )),
         }
     }
 
@@ -3973,7 +3942,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     }
 
     /// Returns the request ID if this is a request or response, None if notification.
-    pub fn id(&self) -> Option<serde_json::Value> {
+    pub fn id(&self) -> Option<&RequestId> {
         match self {
             Dispatch::Request(_, cx) => Some(cx.id()),
             Dispatch::Notification(_) => None,
@@ -4625,8 +4594,8 @@ impl<T> SentRequest<T> {
 impl<T: JsonRpcResponse> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
-    pub fn id(&self) -> serde_json::Value {
-        crate::util::id_to_json(&self.id)
+    pub fn id(&self) -> &RequestId {
+        &self.id
     }
 
     /// The method of the request this is in response to.
@@ -5085,10 +5054,8 @@ impl<T: JsonRpcResponse> SentRequest<T> {
 /// [`ConnectTo`]: crate::ConnectTo
 #[derive(Debug)]
 pub struct Lines<OutgoingSink, IncomingStream> {
-    /// Outgoing line sink (where we write serialized JSON-RPC messages)
-    pub outgoing: OutgoingSink,
-    /// Incoming line stream (where we read and parse JSON-RPC messages)
-    pub incoming: IncomingStream,
+    outgoing: OutgoingSink,
+    incoming: IncomingStream,
 }
 
 impl<OutgoingSink, IncomingStream> Lines<OutgoingSink, IncomingStream>
@@ -5227,10 +5194,8 @@ where
 /// [`ConnectTo`]: crate::ConnectTo
 #[derive(Debug)]
 pub struct ByteStreams<OB, IB> {
-    /// Outgoing byte stream (where we write serialized messages)
-    pub outgoing: OB,
-    /// Incoming byte stream (where we read and parse messages)
-    pub incoming: IB,
+    outgoing: OB,
+    incoming: IB,
 }
 
 impl<OB, IB> ByteStreams<OB, IB>
@@ -5422,6 +5387,76 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn connection_with_dynamic_handler_receiver() -> (
+        ConnectionTo<crate::role::UntypedRole>,
+        mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
+    ) {
+        let (message_tx, _message_rx) = mpsc::unbounded();
+        let (task_tx, _task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+
+        (
+            ConnectionTo::new(
+                crate::role::UntypedRole,
+                message_tx,
+                task_tx,
+                dynamic_handler_tx,
+                transport_completion,
+                pending_replies.registrar(),
+            ),
+            dynamic_handler_rx,
+        )
+    }
+
+    fn next_dynamic_handler_message(
+        receiver: &mut mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
+    ) -> Option<DynamicHandlerMessage<crate::role::UntypedRole>> {
+        futures::FutureExt::now_or_never(futures::StreamExt::next(receiver))
+            .expect("dynamic-handler receiver should be ready")
+    }
+
+    #[test]
+    fn dropping_dynamic_handler_guard_unregisters_handler() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let guard = connection.add_dynamic_handler(NullHandler).unwrap();
+
+        let added_uuid = match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _)) => uuid,
+            other => panic!("expected handler registration, got {other:?}"),
+        };
+
+        drop(guard);
+
+        match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::RemoveDynamicHandler(uuid)) => {
+                assert_eq!(uuid, added_uuid);
+            }
+            other => panic!("expected handler removal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn detaching_dynamic_handler_guard_does_not_leak_connection() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let guard = connection.add_dynamic_handler(NullHandler).unwrap();
+
+        assert!(matches!(
+            next_dynamic_handler_message(&mut receiver),
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, _))
+        ));
+
+        drop(connection);
+        guard.detach();
+
+        assert!(
+            next_dynamic_handler_message(&mut receiver).is_none(),
+            "detach should retain the handler without retaining a connection sender"
+        );
+    }
 
     #[tokio::test]
     async fn write_line_flushes_buffered_writers() {

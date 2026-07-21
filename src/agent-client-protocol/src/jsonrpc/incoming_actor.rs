@@ -419,7 +419,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let mut retry_any = false;
 
-    let id = dispatch.id();
+    let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
     let reply_target = dispatch.request_reply_target();
 
@@ -533,14 +533,13 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 tracing::debug!(?method, "Ignoring unhandled notification");
                 Ok(())
             }
-            Dispatch::Request(..) => {
+            Dispatch::Request(_, responder) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
-                let method = dispatch.method().to_string();
-                dispatch.respond_with_error(crate::Error::method_not_found().data(method))
+                responder.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {
                 tracing::trace!(?method, "Forwarding response");
-                router.respond_with_result(result)
+                router.route_with_result(result)
             }
         }
     }

@@ -236,7 +236,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             },
         )
         .name(self.name)
-        .with_responder(responder)
+        .with_runner(responder)
         .with_spawned(|_cx| trace_future)
         .connect_to(transport)
         .await
@@ -481,7 +481,7 @@ where
                     notification,
                 )
             }
-            Dispatch::Response(result, router) => router.respond_with_result(result),
+            Dispatch::Response(result, router) => router.route_with_result(result),
         }
     }
 
@@ -695,7 +695,7 @@ where
             .on_receive_dispatch(
                 async move |dispatch: Dispatch, _connection| {
                     MatchDispatch::new(dispatch)
-                        .if_message(async |dispatch: SuccessorDispatch| {
+                        .if_dispatch(async |dispatch: SuccessorDispatch| {
                             //                         ------------------
                             // SuccessorMessages sent by the proxy go to its successor.
                             //
@@ -1158,7 +1158,9 @@ impl ConductorHostRole for Agent {
         // Not yet initialized - expect an initialize request.
         // Error if we get anything else.
         let Dispatch::Request(request, init_responder) = message else {
-            message.respond_with_error(invalid_request())?;
+            if let Dispatch::Response(_, router) = message {
+                router.route_with_error(invalid_request())?;
+            }
             return Err(invalid_request());
         };
         if !InitializeRequest::matches_method(request.method()) {
@@ -1228,7 +1230,7 @@ impl ConductorHostRole for Agent {
         );
         MatchDispatchFrom::new(message, &client_connection)
             // Any incoming messages from the client are client-to-agent messages targeting the first component.
-            .if_message_from(Client, async move |message: Dispatch| {
+            .if_dispatch_from(Client, async move |message: Dispatch| {
                 tracing::debug!(
                     method = ?message.method(),
                     "ConductorToClient::handle_dispatch - matched Client"
@@ -1256,7 +1258,9 @@ impl ConductorHostRole for Proxy {
         // Not yet initialized - expect an InitializeProxy request.
         // Error if we get anything else.
         let Dispatch::Request(request, init_responder) = message else {
-            message.respond_with_error(invalid_request())?;
+            if let Dispatch::Response(_, router) = message {
+                router.route_with_error(invalid_request())?;
+            }
             return Err(invalid_request());
         };
         if !InitializeProxyRequest::matches_method(request.method()) {
@@ -1302,7 +1306,7 @@ impl ConductorHostRole for Proxy {
             "ConductorToConductor::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &client_connection)
-            .if_message_from(Agent, {
+            .if_dispatch_from(Agent, {
                 // Messages from our successor arrive already unwrapped
                 // (RemoteRoleStyle::Successor strips the SuccessorMessage envelope).
                 async |message: Dispatch| {
@@ -1317,7 +1321,7 @@ impl ConductorHostRole for Proxy {
             })
             .await
             // Any incoming messages from the client are client-to-agent messages targeting the first component.
-            .if_message_from(Client, async |message: Dispatch| {
+            .if_dispatch_from(Client, async |message: Dispatch| {
                 tracing::debug!(
                     method = ?message.method(),
                     "ConductorToConductor::handle_dispatch - matched Client"
