@@ -4342,7 +4342,7 @@ pub struct SentRequest<T> {
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
-    to_result: Box<dyn Fn(serde_json::Value) -> Result<T, crate::Error> + Send>,
+    to_result: Box<dyn FnOnce(serde_json::Value) -> Result<T, crate::Error> + Send>,
     cancellation: SentRequestCancellation,
     /// Cancellation markers of other (incoming) requests whose cancellation
     /// should be forwarded to this request. See
@@ -4591,7 +4591,7 @@ impl<T> SentRequest<T> {
     }
 }
 
-impl<T: JsonRpcResponse> SentRequest<T> {
+impl<T: 'static> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
     pub fn id(&self) -> &RequestId {
@@ -4604,10 +4604,14 @@ impl<T: JsonRpcResponse> SentRequest<T> {
         &self.method
     }
 
-    /// Create a new response that maps the result of the response to a new type.
+    /// Map a successful JSON-RPC response into an application type.
+    ///
+    /// The mapped type does not need to implement [`JsonRpcResponse`]. The
+    /// mapper runs at most once and may consume captured state. JSON-RPC error
+    /// responses bypass the mapper.
     pub fn map<U>(
         self,
-        map_fn: impl Fn(T) -> Result<U, crate::Error> + 'static + Send,
+        map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
     ) -> SentRequest<U> {
         SentRequest {
             id: self.id,
@@ -4685,7 +4689,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     #[track_caller]
     pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
     where
-        T: Send,
+        T: JsonRpcResponse,
     {
         let this = self.forward_cancellation_from(responder.cancellation());
 
@@ -4716,7 +4720,6 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     ) -> Result<(), crate::Error>
     where
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
-        T: Send,
     {
         let task_tx = self.task_tx.clone();
         let method = self.method;
@@ -4826,10 +4829,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     /// - Linear control flow is more natural than callbacks
     ///
     /// For handler callbacks, use [`on_receiving_result`](Self::on_receiving_result) instead.
-    pub async fn block_task(self) -> Result<T, crate::Error>
-    where
-        T: Send,
-    {
+    pub async fn block_task(self) -> Result<T, crate::Error> {
         let response = await_response_forwarding_cancellation(
             self.response_rx,
             &self.cancellation,
@@ -4928,7 +4928,7 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     ) -> Result<(), crate::Error>
     where
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
-        T: Send,
+        T: JsonRpcResponse,
     {
         self.on_receiving_result(async move |result| match result {
             Ok(value) => task(value, responder).await,
@@ -5008,16 +5008,14 @@ impl<T: JsonRpcResponse> SentRequest<T> {
     ) -> Result<(), crate::Error>
     where
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
-        T: Send,
     {
-        self.consume_with(async move |response| {
-            match response {
-                // Run the user's callback on the peer's result.
-                Ok(result) => task(result).await,
-                // A response that was never delivered fails the consuming
-                // task instead of invoking the callback.
-                Err(err) => Err(err),
-            }
+        self.consume_with(move |response| match response {
+            // Invoke the callback before constructing its future so the
+            // response value does not need to be `Send` across an await.
+            Ok(result) => Either::Left(task(result)),
+            // A response that was never delivered fails the consuming
+            // task instead of invoking the callback.
+            Err(err) => Either::Right(future::ready(Err(err))),
         })
     }
 }

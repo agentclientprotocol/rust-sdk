@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to block and wait for a JSON-RPC response.
-async fn recv<T: JsonRpcResponse + Send>(
+async fn recv<T: Send + 'static>(
     response: SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -205,6 +205,68 @@ async fn test_bidirectional_communication() {
                         if let Ok(resp) = response {
                             assert_eq!(resp.value, 11);
                         }
+                        Ok(())
+                    },
+                )
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_map_response_to_application_types() {
+    use std::rc::Rc;
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
+
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(PongResponse {
+                        value: request.value + 1,
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                server.connect_to(server_transport).await.ok();
+            });
+
+            let client_transport =
+                agent_client_protocol::ByteStreams::new(client_writer, client_reader);
+            let mapper_state = String::from("consumed by the mapper");
+
+            let result = UntypedRole
+                .builder()
+                .connect_with(
+                    client_transport,
+                    async |cx| -> Result<(), agent_client_protocol::Error> {
+                        let response = recv(cx.send_request(PingRequest { value: 10 }).map(
+                            move |response| {
+                                let mapper_state = mapper_state;
+                                assert_eq!(mapper_state, "consumed by the mapper");
+                                Ok(response.value)
+                            },
+                        ))
+                        .await?;
+
+                        assert_eq!(response, 11_u32);
+                        let non_send_response = cx
+                            .send_request(PingRequest { value: 20 })
+                            .map(|response| Ok(Rc::new(response.value)))
+                            .block_task()
+                            .await?;
+
+                        assert_eq!(*non_send_response, 21_u32);
                         Ok(())
                     },
                 )

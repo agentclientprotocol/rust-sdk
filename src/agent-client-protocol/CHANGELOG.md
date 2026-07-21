@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Allow mapped `SentRequest` values to be consumed without implementing `JsonRpcResponse`, and
+  accept one-shot mappers.
+
 ### Changed
 
 - **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary and remove the hidden
