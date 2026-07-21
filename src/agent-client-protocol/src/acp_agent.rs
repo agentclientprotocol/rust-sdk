@@ -1,18 +1,19 @@
 //! Utilities for connecting to ACP agents and proxies.
 //!
-//! This module provides [`AcpAgent`], a convenient wrapper around [`crate::schema::v1::McpServer`]
-//! that can be parsed from either a command string or JSON configuration.
+//! This module provides [`AcpAgent`], a convenient component for launching an
+//! ACP agent subprocess from an [`AcpAgentConfig`], command string, or JSON
+//! configuration.
 
-use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_process::Child;
+use serde::{Deserialize, Serialize};
 use std::pin::pin;
 
-use crate::schema::v1::{EnvVariable, McpServer as SchemaMcpServer, McpServerStdio};
 use crate::{Client, Conductor, Role};
 
 type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
@@ -33,6 +34,100 @@ pub enum LineDirection {
     Stderr,
 }
 
+/// Configuration for launching an ACP agent subprocess.
+///
+/// This is local SDK configuration, not an ACP wire-protocol type. It contains
+/// only the values used to launch the child process.
+///
+/// ```
+/// use agent_client_protocol::{AcpAgent, AcpAgentConfig};
+///
+/// let agent = AcpAgent::new(
+///     AcpAgentConfig::new("python")
+///         .arg("agent.py")
+///         .env("RUST_LOG", "debug"),
+/// );
+/// ```
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AcpAgentConfig {
+    command: PathBuf,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, String>,
+}
+
+impl AcpAgentConfig {
+    /// Create a configuration for the given executable or command name.
+    #[must_use]
+    pub fn new(command: impl Into<PathBuf>) -> Self {
+        Self {
+            command: command.into(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// Append one command-line argument.
+    #[must_use]
+    pub fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// Append command-line arguments.
+    #[must_use]
+    pub fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    /// Set one environment variable for the child process.
+    #[must_use]
+    pub fn env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(name.into(), value.into());
+        self
+    }
+
+    /// Set environment variables for the child process.
+    #[must_use]
+    pub fn envs<I, K, V>(mut self, env: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        self.env.extend(
+            env.into_iter()
+                .map(|(name, value)| (name.into(), value.into())),
+        );
+        self
+    }
+
+    /// The executable path or command name.
+    #[must_use]
+    pub fn command(&self) -> &Path {
+        &self.command
+    }
+
+    /// Command-line arguments passed to the executable.
+    #[must_use]
+    pub fn arguments(&self) -> &[String] {
+        &self.args
+    }
+
+    /// Environment variables set for the child process.
+    #[must_use]
+    pub fn environment(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+}
+
 /// A component representing an external ACP agent running in a separate process.
 ///
 /// `AcpAgent` implements the [`ConnectTo`](`crate::ConnectTo`) trait for spawning and communicating with
@@ -40,8 +135,8 @@ pub enum LineDirection {
 /// byte stream serialization automatically. This is the primary way to connect to agents
 /// that run as separate executables.
 ///
-/// This is a wrapper around [`crate::schema::v1::McpServer`] that provides convenient parsing
-/// from command-line strings or JSON configurations.
+/// The launch configuration is independent from ACP wire-schema types and can
+/// be parsed from command-line strings or JSON configurations.
 /// On Unix, dropping an active connection terminates the spawned process group, including agents
 /// started through wrapper commands such as `npx` and `uvx`.
 ///
@@ -65,17 +160,17 @@ pub enum LineDirection {
 /// ```
 /// # use agent_client_protocol::AcpAgent;
 /// # use std::str::FromStr;
-/// let agent = AcpAgent::from_str(r#"{"type": "stdio", "name": "my-agent", "command": "python", "args": ["my_agent.py"], "env": []}"#).unwrap();
+/// let agent = AcpAgent::from_str(r#"{"command": "python", "args": ["my_agent.py"], "env": {"RUST_LOG": "info"}}"#).unwrap();
 /// ```
 pub struct AcpAgent {
-    server: SchemaMcpServer,
+    config: AcpAgentConfig,
     debug_callback: Option<DebugCallback>,
 }
 
 impl std::fmt::Debug for AcpAgent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcpAgent")
-            .field("server", &self.server)
+            .field("config", &self.config)
             .field(
                 "debug_callback",
                 &self.debug_callback.as_ref().map(|_| "..."),
@@ -85,11 +180,11 @@ impl std::fmt::Debug for AcpAgent {
 }
 
 impl AcpAgent {
-    /// Create a new `AcpAgent` from an [`crate::schema::v1::McpServer`] configuration.
+    /// Create an ACP agent from its process-launch configuration.
     #[must_use]
-    pub fn new(server: SchemaMcpServer) -> Self {
+    pub fn new(config: AcpAgentConfig) -> Self {
         Self {
-            server,
+            config,
             debug_callback: None,
         }
     }
@@ -109,46 +204,16 @@ impl AcpAgent {
         Self::from_str("npx -y @agentclientprotocol/codex-acp@latest").expect("valid bash command")
     }
 
-    /// Create an ACP agent for Zed Industries' Claude Code tool.
-    /// Just runs `npx -y @zed-industries/claude-code-acp@latest`.
-    #[deprecated(
-        since = "1.2.0",
-        note = "the package moved to @agentclientprotocol/claude-agent-acp; use `AcpAgent::claude_agent()` instead"
-    )]
+    /// Get the process-launch configuration.
     #[must_use]
-    pub fn zed_claude_code() -> Self {
-        Self::from_str("npx -y @zed-industries/claude-code-acp@latest").expect("valid bash command")
+    pub fn config(&self) -> &AcpAgentConfig {
+        &self.config
     }
 
-    /// Create an ACP agent for Zed Industries' Codex tool.
-    /// Just runs `npx -y @zed-industries/codex-acp@latest`.
-    #[deprecated(
-        since = "1.2.0",
-        note = "the package moved to @agentclientprotocol/codex-acp; use `AcpAgent::codex()` instead"
-    )]
+    /// Convert into the process-launch configuration.
     #[must_use]
-    pub fn zed_codex() -> Self {
-        Self::from_str("npx -y @zed-industries/codex-acp@latest").expect("valid bash command")
-    }
-
-    /// Create an ACP agent for Google's Gemini CLI.
-    /// Just runs `npx -y -- @google/gemini-cli@latest --experimental-acp`.
-    #[must_use]
-    pub fn google_gemini() -> Self {
-        Self::from_str("npx -y -- @google/gemini-cli@latest --experimental-acp")
-            .expect("valid bash command")
-    }
-
-    /// Get the underlying [`crate::schema::v1::McpServer`] configuration.
-    #[must_use]
-    pub fn server(&self) -> &SchemaMcpServer {
-        &self.server
-    }
-
-    /// Convert into the underlying [`crate::schema::v1::McpServer`] configuration.
-    #[must_use]
-    pub fn into_server(self) -> SchemaMcpServer {
-        self.server
+    pub fn into_config(self) -> AcpAgentConfig {
+        self.config
     }
 
     /// Add a debug callback that will be invoked for each line sent/received.
@@ -193,63 +258,48 @@ impl AcpAgent {
         ),
         crate::Error,
     > {
-        match &self.server {
-            SchemaMcpServer::Stdio(stdio) => {
-                let mut std_cmd = std::process::Command::new(&stdio.command);
-                std_cmd.args(&stdio.args);
-                for env_var in &stdio.env {
-                    std_cmd.env(&env_var.name, &env_var.value);
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::process::CommandExt as _;
+        let mut std_cmd = std::process::Command::new(&self.config.command);
+        std_cmd.args(&self.config.args);
+        std_cmd.envs(&self.config.env);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
 
-                    // Make the child the leader of its own process group so
-                    // `ChildGuard` can terminate the entire process tree.
-                    // Agents are commonly distributed behind wrapper launchers
-                    // (`npx …`, `uvx …`): killing only the immediate child
-                    // orphans the real agent, which re-parents to pid 1 and
-                    // does not reliably exit on stdin EOF.
-                    std_cmd.process_group(0);
-                }
-                let mut cmd = async_process::Command::from(std_cmd);
-                #[cfg(windows)]
-                {
-                    use async_process::windows::CommandExt as _;
-
-                    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
-                }
-                cmd.stdin(std::process::Stdio::piped())
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-
-                let mut child = cmd.spawn().map_err(crate::Error::into_internal_error)?;
-
-                let child_stdin = child
-                    .stdin
-                    .take()
-                    .ok_or_else(|| crate::util::internal_error("Failed to open stdin"))?;
-                let child_stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| crate::util::internal_error("Failed to open stdout"))?;
-                let child_stderr = child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| crate::util::internal_error("Failed to open stderr"))?;
-
-                Ok((child_stdin, child_stdout, child_stderr, child))
-            }
-            SchemaMcpServer::Http(_) => Err(crate::util::internal_error(
-                "HTTP transport not yet supported by AcpAgent",
-            )),
-            SchemaMcpServer::Sse(_) => Err(crate::util::internal_error(
-                "SSE transport not yet supported by AcpAgent",
-            )),
-            _ => Err(crate::util::internal_error(
-                "Unknown MCP server transport type",
-            )),
+            // Make the child the leader of its own process group so
+            // `ChildGuard` can terminate the entire process tree.
+            // Agents are commonly distributed behind wrapper launchers
+            // (`npx …`, `uvx …`): killing only the immediate child
+            // orphans the real agent, which re-parents to pid 1 and
+            // does not reliably exit on stdin EOF.
+            std_cmd.process_group(0);
         }
+        let mut cmd = async_process::Command::from(std_cmd);
+        #[cfg(windows)]
+        {
+            use async_process::windows::CommandExt as _;
+
+            cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        }
+        cmd.stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(crate::Error::into_internal_error)?;
+
+        let child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| crate::util::internal_error("Failed to open stdin"))?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| crate::util::internal_error("Failed to open stdout"))?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| crate::util::internal_error("Failed to open stderr"))?;
+
+        Ok((child_stdin, child_stdout, child_stderr, child))
     }
 }
 
@@ -773,12 +823,12 @@ impl AcpAgent {
             return Err(crate::util::internal_error("Arguments cannot be empty"));
         }
 
-        let mut env = vec![];
+        let mut env = BTreeMap::new();
         let mut command_idx = 0;
 
         for (i, arg) in args.iter().enumerate() {
             if let Some((name, value)) = parse_env_var(arg) {
-                env.push(EnvVariable::new(name, value));
+                env.insert(name, value);
                 command_idx = i + 1;
             } else {
                 break;
@@ -794,18 +844,9 @@ impl AcpAgent {
         let command = PathBuf::from(&args[command_idx]);
         let cmd_args = args[command_idx + 1..].to_vec();
 
-        let name = command
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("agent")
-            .to_string();
-
-        Ok(AcpAgent {
-            server: SchemaMcpServer::Stdio(
-                McpServerStdio::new(name, command).args(cmd_args).env(env),
-            ),
-            debug_callback: None,
-        })
+        Ok(Self::new(
+            AcpAgentConfig::new(command).args(cmd_args).envs(env),
+        ))
     }
 }
 
@@ -838,12 +879,9 @@ impl FromStr for AcpAgent {
         let trimmed = s.trim();
 
         if trimmed.starts_with('{') {
-            let server: SchemaMcpServer = serde_json::from_str(trimmed)
+            let config = serde_json::from_str(trimmed)
                 .map_err(|e| crate::util::internal_error(format!("Failed to parse JSON: {e}")))?;
-            return Ok(Self {
-                server,
-                debug_callback: None,
-            });
+            return Ok(Self::new(config));
         }
 
         let parts = shell_words::split(trimmed)
@@ -1330,82 +1368,133 @@ mod tests {
     #[test]
     fn test_parse_simple_command() {
         let agent = AcpAgent::from_str("python agent.py").unwrap();
-        match agent.server {
-            SchemaMcpServer::Stdio(stdio) => {
-                assert_eq!(stdio.name, "python");
-                assert_eq!(stdio.command, PathBuf::from("python"));
-                assert_eq!(stdio.args, vec!["agent.py"]);
-                assert!(stdio.env.is_empty());
-            }
-            _ => panic!("Expected Stdio variant"),
-        }
+        let config = agent.config();
+        assert_eq!(config.command(), Path::new("python"));
+        assert_eq!(config.arguments(), ["agent.py"]);
+        assert!(config.environment().is_empty());
+    }
+
+    #[test]
+    fn test_parse_environment_from_args() {
+        let agent =
+            AcpAgent::from_args(["RUST_LOG=debug", "NO_COLOR=1", "python", "agent.py"]).unwrap();
+        let config = agent.config();
+
+        assert_eq!(config.command(), Path::new("python"));
+        assert_eq!(config.arguments(), ["agent.py"]);
+        assert_eq!(
+            config.environment(),
+            &BTreeMap::from([
+                ("NO_COLOR".to_owned(), "1".to_owned()),
+                ("RUST_LOG".to_owned(), "debug".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn test_new_accepts_agent_configuration() {
+        let config = AcpAgentConfig::new("/usr/bin/agent")
+            .arg("--verbose")
+            .env("RUST_LOG", "debug");
+        let agent = AcpAgent::new(config.clone());
+
+        assert_eq!(agent.into_config(), config);
     }
 
     #[test]
     fn test_parse_command_with_args() {
         let agent = AcpAgent::from_str("node server.js --port 8080 --verbose").unwrap();
-        match agent.server {
-            SchemaMcpServer::Stdio(stdio) => {
-                assert_eq!(stdio.name, "node");
-                assert_eq!(stdio.command, PathBuf::from("node"));
-                assert_eq!(stdio.args, vec!["server.js", "--port", "8080", "--verbose"]);
-                assert!(stdio.env.is_empty());
-            }
-            _ => panic!("Expected Stdio variant"),
-        }
+        let config = agent.config();
+        assert_eq!(config.command(), Path::new("node"));
+        assert_eq!(
+            config.arguments(),
+            ["server.js", "--port", "8080", "--verbose"]
+        );
+        assert!(config.environment().is_empty());
     }
 
     #[test]
     fn test_parse_command_with_quotes() {
         let agent = AcpAgent::from_str(r#"python "my agent.py" --name "Test Agent""#).unwrap();
-        match agent.server {
-            SchemaMcpServer::Stdio(stdio) => {
-                assert_eq!(stdio.name, "python");
-                assert_eq!(stdio.command, PathBuf::from("python"));
-                assert_eq!(stdio.args, vec!["my agent.py", "--name", "Test Agent"]);
-                assert!(stdio.env.is_empty());
-            }
-            _ => panic!("Expected Stdio variant"),
-        }
+        let config = agent.into_config();
+        assert_eq!(config.command(), Path::new("python"));
+        assert_eq!(config.arguments(), ["my agent.py", "--name", "Test Agent"]);
+        assert!(config.environment().is_empty());
     }
 
     #[test]
-    fn test_parse_json_stdio() {
+    fn test_parse_json_config() {
+        let json = r#"{
+            "command": "/usr/bin/python",
+            "args": ["agent.py", "--verbose"],
+            "env": {"RUST_LOG": "debug"}
+        }"#;
+        let agent = AcpAgent::from_str(json).unwrap();
+        let config = agent.config();
+        assert_eq!(config.command(), Path::new("/usr/bin/python"));
+        assert_eq!(config.arguments(), ["agent.py", "--verbose"]);
+        assert_eq!(
+            config.environment().get("RUST_LOG").map(String::as_str),
+            Some("debug")
+        );
+    }
+
+    #[test]
+    fn test_config_json_round_trip() {
+        let config = AcpAgentConfig::new("agent")
+            .args(["--mode", "fast"])
+            .envs([("RUST_LOG", "debug"), ("NO_COLOR", "1")]);
+
+        let json = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "command": "agent",
+                "args": ["--mode", "fast"],
+                "env": {
+                    "NO_COLOR": "1",
+                    "RUST_LOG": "debug"
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<AcpAgentConfig>(json).unwrap(),
+            config
+        );
+    }
+
+    #[test]
+    fn test_config_json_defaults_and_omits_empty_collections() {
+        let config = serde_json::from_value::<AcpAgentConfig>(serde_json::json!({
+            "command": "agent"
+        }))
+        .unwrap();
+
+        assert!(config.arguments().is_empty());
+        assert!(config.environment().is_empty());
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::json!({ "command": "agent" })
+        );
+    }
+
+    #[test]
+    fn test_reject_mcp_server_json() {
         let json = r#"{
             "type": "stdio",
             "name": "my-agent",
             "command": "/usr/bin/python",
-            "args": ["agent.py", "--verbose"],
+            "args": ["agent.py"],
             "env": []
         }"#;
-        let agent = AcpAgent::from_str(json).unwrap();
-        match agent.server {
-            SchemaMcpServer::Stdio(stdio) => {
-                assert_eq!(stdio.name, "my-agent");
-                assert_eq!(stdio.command, PathBuf::from("/usr/bin/python"));
-                assert_eq!(stdio.args, vec!["agent.py", "--verbose"]);
-                assert!(stdio.env.is_empty());
-            }
-            _ => panic!("Expected Stdio variant"),
-        }
-    }
-
-    #[test]
-    fn test_parse_json_http() {
-        let json = r#"{
-            "type": "http",
-            "name": "remote-agent",
-            "url": "https://example.com/agent",
-            "headers": []
-        }"#;
-        let agent = AcpAgent::from_str(json).unwrap();
-        match agent.server {
-            SchemaMcpServer::Http(http) => {
-                assert_eq!(http.name, "remote-agent");
-                assert_eq!(http.url, "https://example.com/agent");
-                assert!(http.headers.is_empty());
-            }
-            _ => panic!("Expected Http variant"),
-        }
+        let error = AcpAgent::from_str(json).unwrap_err();
+        assert!(
+            error
+                .data
+                .as_ref()
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|message| message.contains("unknown field")),
+            "unexpected error: {error:?}"
+        );
     }
 }

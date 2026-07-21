@@ -7,6 +7,11 @@
 - **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary and remove the hidden
   `FramedChannel` compatibility path. See the
   [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
+  `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
+  an object.
+- **Breaking:** Remove the deprecated `zed_claude_code` and `zed_codex` constructors and the
+  `google_gemini` convenience constructor from `AcpAgent`.
 
 ### Fixed
 

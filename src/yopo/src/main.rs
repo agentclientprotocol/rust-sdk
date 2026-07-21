@@ -10,15 +10,15 @@
 //!
 //! # Usage
 //!
-//! With a command (arguments are concatenated):
+//! With command arguments:
 //! ```bash
 //! yopo "What is 2+2?" python my_agent.py
-//! yopo "Hello!" cargo run --release
+//! yopo "Hello!" -- cargo run --release
 //! ```
 //!
 //! With JSON config:
 //! ```bash
-//! yopo "Hello!" '{"type":"stdio","name":"my-agent","command":"python","args":["agent.py"],"env":[]}'
+//! yopo "Hello!" '{"command":"python","args":["agent.py"],"env":{}}'
 //! ```
 
 use agent_client_protocol::AcpAgent;
@@ -31,7 +31,7 @@ struct Args {
     /// The prompt to send to the agent
     prompt: String,
 
-    /// Agent command (multiple arguments are joined with spaces) or JSON config
+    /// Agent command and arguments, or a single JSON configuration
     #[arg(required = true, num_args = 1..)]
     agent_args: Vec<String>,
 
@@ -62,8 +62,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let prompt = &args.prompt;
 
-    // Parse the agent configuration from args
-    let agent = AcpAgent::from_args(args.agent_args)?;
+    // Parse a single JSON value as configuration. Otherwise, preserve the
+    // argument boundaries already established by the invoking shell.
+    let agent = parse_agent_args(&args.agent_args)?;
 
     eprintln!("🚀 Spawning agent and running prompt...");
 
@@ -77,4 +78,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("✅ Agent completed!");
 
     Ok(())
+}
+
+fn parse_agent_args(agent_args: &[String]) -> Result<AcpAgent, agent_client_protocol::Error> {
+    match agent_args {
+        [configuration] if configuration.trim_start().starts_with('{') => configuration.parse(),
+        arguments => AcpAgent::from_args(arguments),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn parses_json_agent_configuration() {
+        let agent = parse_agent_args(&[
+            r#"{"command":"python","args":["agent.py"],"env":{"RUST_LOG":"debug"}}"#.to_owned(),
+        ])
+        .unwrap();
+
+        assert_eq!(agent.config().command(), Path::new("python"));
+        assert_eq!(agent.config().arguments(), ["agent.py"]);
+        assert_eq!(
+            agent
+                .config()
+                .environment()
+                .get("RUST_LOG")
+                .map(String::as_str),
+            Some("debug")
+        );
+    }
+
+    #[test]
+    fn preserves_single_executable_path_with_spaces() {
+        let agent = parse_agent_args(&["/Applications/My Agent".to_owned()]).unwrap();
+
+        assert_eq!(
+            agent.config().command(),
+            Path::new("/Applications/My Agent")
+        );
+        assert!(agent.config().arguments().is_empty());
+    }
+
+    #[test]
+    fn accepts_agent_flags_after_argument_separator() {
+        let args =
+            Args::try_parse_from(["yopo", "Hello!", "--", "cargo", "run", "--release"]).unwrap();
+
+        assert_eq!(args.agent_args, ["cargo", "run", "--release"]);
+    }
 }

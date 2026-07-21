@@ -135,7 +135,7 @@ mod session;
 pub use session::*;
 
 mod acp_agent;
-pub use acp_agent::{AcpAgent, LineDirection};
+pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
 
 mod stdio;
 pub use stdio::Stdio;
