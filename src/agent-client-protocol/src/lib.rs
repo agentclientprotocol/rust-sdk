@@ -117,6 +117,13 @@ pub use role::{
 
 pub use component::{ConnectTo, DynConnectTo};
 
+/// Implementation details used by the derive macros.
+#[doc(hidden)]
+pub mod __private {
+    pub use serde;
+    pub use serde_json;
+}
+
 // Re-export BoxFuture for implementing Component traits
 pub use futures::future::BoxFuture;
 

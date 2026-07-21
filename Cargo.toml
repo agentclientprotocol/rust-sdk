@@ -89,7 +89,7 @@ windows-sys = "0.61"
 
 # Proc macros
 quote = "1"
-syn = { version = "2", features = ["full", "extra-traits"] }
+syn = "3"
 
 # Testing
 expect-test = "1.5"
