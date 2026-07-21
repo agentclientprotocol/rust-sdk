@@ -24,6 +24,26 @@ struct PingNotification {
     timestamp: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+#[serde(bound = "")]
+struct GenericResponse<T>(std::marker::PhantomData<T>)
+where
+    T: std::fmt::Debug + Clone + Send + 'static;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[serde(bound = "")]
+#[request(method = "_test/generic", response = GenericResponse<T>)]
+struct GenericRequest<T>(std::marker::PhantomData<T>)
+where
+    T: std::fmt::Debug + Clone + Send + 'static;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
+#[serde(bound = "")]
+#[notification(method = "_test/generic-notification")]
+struct GenericNotification<T>(std::marker::PhantomData<T>)
+where
+    T: std::fmt::Debug + Clone + Send + 'static;
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -72,6 +92,15 @@ fn test_jr_request_response_type() {
     // This is a compile-time check that the Response type is correctly set
     fn assert_response_type<R: JsonRpcRequest<Response = HelloResponse>>() {}
     assert_response_type::<HelloRequest>();
+}
+
+#[test]
+fn test_generic_derives_preserve_generics_and_where_clauses() {
+    fn assert_request<R: JsonRpcRequest<Response = GenericResponse<u64>>>() {}
+    fn assert_notification<N: JsonRpcNotification>() {}
+
+    assert_request::<GenericRequest<u64>>();
+    assert_notification::<GenericNotification<u64>>();
 }
 
 #[test]

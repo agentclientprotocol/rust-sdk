@@ -3773,8 +3773,7 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
 /// use agent_client_protocol::JsonRpcResponse;
 /// use serde::{Serialize, Deserialize};
 ///
-/// #[derive(Debug, Serialize, Deserialize, JsonRpcResponse)]
-/// #[response(method = "_hello")]
+/// #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
 /// struct HelloResponse {
 ///     greeting: String,
 /// }
@@ -3831,7 +3830,7 @@ pub trait JsonRpcNotification: JsonRpcMessage {}
 ///     name: String,
 /// }
 ///
-/// #[derive(Debug, Serialize, Deserialize, JsonRpcResponse)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
 /// struct HelloResponse {
 ///     greeting: String,
 /// }
