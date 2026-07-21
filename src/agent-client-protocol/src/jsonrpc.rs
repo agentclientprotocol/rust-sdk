@@ -585,7 +585,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// For an agent handler, `R = Agent` (I handle messages as an agent).
 /// For a client handler, `R = Client` (I handle messages as a client).
 pub trait HandleDispatchFrom<Counterpart: Role>: Send {
-    /// Attempt to claim an incoming message (request or notification).
+    /// Attempt to claim an incoming dispatch (request, notification, or response).
     ///
     /// # Important: do not block
     ///
@@ -602,7 +602,8 @@ pub trait HandleDispatchFrom<Counterpart: Role>: Send {
     ///
     /// * `Ok(Handled::Yes)` if the message was claimed. It will not be propagated further.
     /// * `Ok(Handled::No(message))` if not; the (possibly changed) message will be passed to the remaining handlers.
-    /// * `Err` if an internal error occurs (this will bring down the server).
+    /// * `Err` if processing fails. Requests receive an Error Response; notification
+    ///   and response errors are logged without a wire reply.
     fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -716,7 +717,8 @@ where
 ///
 /// ## Mixed Message Types
 ///
-/// For enums containing both requests AND notifications, use [`on_receive_dispatch`](Self::on_receive_dispatch):
+/// To handle requests, notifications, and responses in one callback, use
+/// [`on_receive_dispatch`](Self::on_receive_dispatch):
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
@@ -750,7 +752,7 @@ where
 ///
 /// * [`on_receive_request`](Self::on_receive_request) - Handle JSON-RPC requests (messages expecting responses)
 /// * [`on_receive_notification`](Self::on_receive_notification) - Handle JSON-RPC notifications (fire-and-forget)
-/// * [`on_receive_dispatch`](Self::on_receive_dispatch) - Handle enums containing both requests and notifications
+/// * [`on_receive_dispatch`](Self::on_receive_dispatch) - Handle requests, notifications, and responses in one callback
 /// * [`with_handler`](Self::with_handler) - Low-level primitive for maximum flexibility
 ///
 /// ## Handler Ordering
@@ -760,7 +762,6 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::{Dispatch, UntypedMessage};
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
@@ -773,11 +774,8 @@ where
 ///         // This runs first for PromptRequest
 ///         responder.respond(PromptResponse::make())
 ///     }, agent_client_protocol::on_receive_request!())
-///     .on_receive_dispatch(async |msg: Dispatch, _cx| {
-///         // Reject unhandled requests. Notifications are ignored because they
-///         // cannot receive responses.
-///         msg.respond_with_error(agent_client_protocol::util::internal_error("unknown method"))
-///     }, agent_client_protocol::on_receive_dispatch!())
+///     // Unknown requests receive Method not found automatically; unhandled
+///     // notifications are ignored.
 /// # .connect_to(agent_client_protocol_test::MockTransport).await?;
 /// # Ok(())
 /// # }
@@ -1174,11 +1172,10 @@ impl<
         }
     }
 
-    /// Register a handler for messages that can be either requests OR notifications.
+    /// Register a handler for requests, notifications, and responses.
     ///
-    /// Use this when you want to handle an enum type that contains both request and
-    /// notification variants. Your handler receives a [`Dispatch<Req, Notif>`] which
-    /// is an enum with two variants:
+    /// Use this when you want to handle all JSON-RPC message kinds in one callback.
+    /// Your handler receives a [`Dispatch<Req, Notif>`] with three variants:
     ///
     /// - `Dispatch::Request(request, responder)` - A request with its response context
     /// - `Dispatch::Notification(notification)` - A notification
@@ -1563,7 +1560,9 @@ impl<
     /// and dispatching them to your registered handlers. The connection will run until:
     /// - The transport closes (e.g., EOF on byte streams)
     /// - An error occurs
-    /// - One of your handlers returns an error
+    ///
+    /// Handler errors are normally contained: requests receive an Error Response,
+    /// while notification and response errors are logged without a wire reply.
     ///
     /// On clean EOF, messages already accepted by the outgoing queue—including
     /// handler responses and close-callback notifications—are drained through
@@ -3856,14 +3855,16 @@ pub trait JsonRpcRequest: JsonRpcMessage {
     type Response: JsonRpcResponse;
 }
 
-/// An enum capturing an in-flight request or notification.
-/// In the case of a request, also includes the context used to respond to the request.
+/// An incoming request, notification, or response being dispatched through handlers.
+/// Requests include the context used to answer them; responses include the context
+/// used to route them to the local requester.
 ///
 /// Type parameters allow specifying the concrete request and notification types.
 /// By default, both are `UntypedMessage` for dynamic dispatch.
 /// The request context's response type matches the request's response type.
 #[derive(Debug)]
-pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcMessage = UntypedMessage> {
+pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcNotification = UntypedMessage>
+{
     /// Incoming request and the context where the response should be sent.
     Request(Req, Responder<Req::Response>),
 
@@ -3881,7 +3882,7 @@ pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcMessage = 
     ),
 }
 
-impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
+impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     /// Map the request and notification types to new types.
     ///
     /// Note: Response variants are passed through unchanged since they don't
@@ -3893,7 +3894,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
     ) -> Dispatch<Req1, Notif1>
     where
         Req1: JsonRpcRequest<Response = Req::Response>,
-        Notif1: JsonRpcMessage,
+        Notif1: JsonRpcNotification,
     {
         match self {
             Dispatch::Request(request, responder) => {
@@ -3905,49 +3906,6 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcMessage> Dispatch<Req, Notif> {
                 Dispatch::Notification(new_notification)
             }
             Dispatch::Response(result, router) => Dispatch::Response(result, router),
-        }
-    }
-
-    /// Respond to the message with an error.
-    ///
-    /// If this message is a request, this error becomes the reply to the request.
-    ///
-    /// If this message is a notification, the error is logged and ignored because
-    /// JSON-RPC notifications cannot be answered.
-    ///
-    /// If this message is a response, the error is forwarded to the waiting handler.
-    pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        match self {
-            Dispatch::Request(_, responder) => responder.respond_with_error(error),
-            Dispatch::Notification(_) => {
-                tracing::warn!(
-                    ?error,
-                    "Ignoring attempted error response to a JSON-RPC notification"
-                );
-                Ok(())
-            }
-            Dispatch::Response(_, router) => router.route_with_error(error),
-        }
-    }
-
-    /// Convert to a `Responder` that expects a JSON value
-    /// and which checks (dynamically) that the JSON value it receives
-    /// can be converted to `T`.
-    ///
-    /// Note: Response variants cannot be erased since their payload is already
-    /// parsed. This returns an error for Response variants.
-    pub fn erase_to_json(self) -> Result<Dispatch, crate::Error> {
-        match self {
-            Dispatch::Request(response, responder) => Ok(Dispatch::Request(
-                response.to_untyped_message()?,
-                responder.erase_to_json(),
-            )),
-            Dispatch::Notification(notification) => {
-                Ok(Dispatch::Notification(notification.to_untyped_message()?))
-            }
-            Dispatch::Response(_, _) => Err(crate::util::internal_error(
-                "cannot erase Response variant to JSON",
-            )),
         }
     }
 

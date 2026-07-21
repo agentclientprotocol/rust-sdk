@@ -1,9 +1,51 @@
 # Migrating from `agent-client-protocol` 1.x to 2.0
 
-Version 2.0 changes the low-level in-process transport boundary so JSON-RPC frames remain intact
-across components and adapters, clarifies the distinction between responding to requests and
-routing responses, makes dynamic handler lifetimes explicit, and gives `AcpAgent` an SDK-owned
-process-launch configuration instead of reusing an MCP wire-schema type.
+Version 2.0 makes JSON-RPC notification semantics explicit, changes the low-level in-process
+transport boundary so frames remain intact across components and adapters, clarifies the
+distinction between responding to requests and routing responses, makes dynamic handler lifetimes
+explicit, and gives `AcpAgent` an SDK-owned process-launch configuration instead of reusing an MCP
+wire-schema type.
+
+## Notifications cannot receive error responses
+
+The SDK no longer exposes `ConnectionTo::send_error_notification`, and
+`Dispatch::respond_with_error` has been removed. Match the dispatch variant when a catch-all
+handler needs different behavior:
+
+```rust
+use agent_client_protocol::{Dispatch, Error};
+
+# fn handle(message: Dispatch) -> Result<(), Error> {
+match message {
+    Dispatch::Request(_, responder) => {
+        responder.respond_with_error(Error::method_not_found())
+    }
+    Dispatch::Notification(_) => Ok(()),
+    Dispatch::Response(result, router) => router.route_with_result(result),
+}
+# }
+```
+
+In most applications, omit the catch-all handler entirely. The built-in fallback responds to
+unknown requests with `Method not found`, ignores unhandled notifications, and routes responses
+to their pending requests.
+
+`TypeNotification` no longer has a role parameter or takes a connection:
+
+```rust
+use agent_client_protocol::util::TypeNotification;
+
+// 1.x
+// TypeNotification::<Peer>::new(message, &connection)
+
+// 2.0
+TypeNotification::new(message)
+# ;
+```
+
+The notification type parameter of `Dispatch<Req, Notif>` now requires
+`Notif: JsonRpcNotification`, matching the variant it can contain. The duplicate
+`Dispatch::erase_to_json` method was removed; use `into_untyped_dispatch`.
 
 ## Raw channels carry frames
 

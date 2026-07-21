@@ -848,7 +848,7 @@ async fn test_notification_errors_are_ignored_and_connection_stays_alive() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dispatch_error_for_notification_is_ignored_and_connection_stays_alive() {
+async fn dispatch_handler_can_ignore_notification_and_connection_stays_alive() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;
 
@@ -873,8 +873,12 @@ async fn dispatch_error_for_notification_is_ignored_and_connection_stays_alive()
                     agent_client_protocol::on_receive_request!(),
                 )
                 .on_receive_dispatch(
-                    async |message: Dispatch, _connection: ConnectionTo<UntypedRole>| {
-                        message.respond_with_error(agent_client_protocol::Error::internal_error())
+                    async |message: Dispatch, _connection: ConnectionTo<UntypedRole>| match message
+                    {
+                        Dispatch::Request(_, responder) => responder
+                            .respond_with_error(agent_client_protocol::Error::method_not_found()),
+                        Dispatch::Notification(_) => Ok(()),
+                        Dispatch::Response(result, router) => router.route_with_result(result),
                     },
                     agent_client_protocol::on_receive_dispatch!(),
                 );
@@ -888,7 +892,7 @@ async fn dispatch_error_for_notification_is_ignored_and_connection_stays_alive()
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","method":"unknown/notification","params":{}}
-{"jsonrpc":"2.0","id":11,"method":"simple_method","params":{"message":"after dispatch error"}}
+{"jsonrpc":"2.0","id":11,"method":"simple_method","params":{"message":"after ignored notification"}}
 "#,
                 )
                 .await
@@ -898,7 +902,10 @@ async fn dispatch_error_for_notification_is_ignored_and_connection_stays_alive()
             let mut client_reader = BufReader::new(client_reader);
             let response = read_jsonrpc_response_line(&mut client_reader).await;
             assert_eq!(response["id"], 11);
-            assert_eq!(response["result"]["result"], "echo: after dispatch error");
+            assert_eq!(
+                response["result"]["result"],
+                "echo: after ignored notification"
+            );
         })
         .await;
 }

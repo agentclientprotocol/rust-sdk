@@ -533,10 +533,9 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 tracing::debug!(?method, "Ignoring unhandled notification");
                 Ok(())
             }
-            Dispatch::Request(..) => {
+            Dispatch::Request(_, responder) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
-                let method = dispatch.method().to_string();
-                dispatch.respond_with_error(crate::Error::method_not_found().data(method))
+                responder.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {
                 tracing::trace!(?method, "Forwarding response");

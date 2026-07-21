@@ -10,6 +10,9 @@
 - **Breaking:** Rename `ResponseRouter` response methods to use routing terminology and return
   borrowed `RequestId` values from response and request handles. See the
   [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Remove ambiguous JSON-RPC error-response and dispatch-conversion helpers, and
+  require `Dispatch` notification types to implement `JsonRpcNotification`. See the
+  [2.0 migration guide](../../md/migration_v2.0.md).
 - **Breaking:** Replace cloneable dynamic-handler registrations with `DynamicHandlerGuard` and
   use `detach()` to keep handlers registered without leaking a connection handle. See the
   [2.0 migration guide](../../md/migration_v2.0.md).

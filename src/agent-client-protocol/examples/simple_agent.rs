@@ -1,5 +1,5 @@
 use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
-use agent_client_protocol::{Agent, Client, ConnectionTo, Dispatch, Result, Stdio};
+use agent_client_protocol::{Agent, Result, Stdio};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,16 +15,6 @@ async fn main() -> Result<()> {
                 )
             },
             agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_dispatch(
-            async move |message: Dispatch, _cx: ConnectionTo<Client>| {
-                // Reject unhandled requests. Notifications are ignored because
-                // JSON-RPC notifications cannot receive responses.
-                message.respond_with_error(agent_client_protocol::util::internal_error(
-                    "unhandled message",
-                ))
-            },
-            agent_client_protocol::on_receive_dispatch!(),
         )
         .connect_to(Stdio::new())
         .await

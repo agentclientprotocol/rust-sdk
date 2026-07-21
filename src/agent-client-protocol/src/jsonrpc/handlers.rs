@@ -298,7 +298,7 @@ where
     }
 }
 
-/// Handler that handles both requests and notifications of specific types.
+/// Handler for typed requests, notifications, and matching responses.
 pub struct MessageHandler<
     Counterpart: Role,
     Peer: Role,
