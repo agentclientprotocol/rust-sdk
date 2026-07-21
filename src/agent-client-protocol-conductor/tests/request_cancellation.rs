@@ -62,7 +62,9 @@ impl<Counterpart: Role> McpServerConnect<Counterpart> for TrackingMcpServer {
     }
 
     fn connect(&self, cx: McpConnectionTo<Counterpart>) -> DynConnectTo<role::mcp::Client> {
-        self.connect_tx.unbounded_send(cx.acp_id()).unwrap();
+        self.connect_tx
+            .unbounded_send(cx.acp_id().to_owned())
+            .unwrap();
         DynConnectTo::new(EmptyMcpServerComponent)
     }
 }

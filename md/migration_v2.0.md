@@ -128,6 +128,19 @@ or responses. Their method names now reflect that input:
 | `MatchDispatch::if_message` | `MatchDispatch::if_dispatch` |
 | `MatchDispatchFrom::if_message_from` | `MatchDispatchFrom::if_dispatch_from` |
 
+## Connection and session accessors borrow
+
+`McpConnectionTo::acp_id` now returns `&str`. The deprecated `acp_url` alias was removed; use
+`acp_id` instead. `McpConnectionTo::connection_to` is now `connection` and returns
+`&ConnectionTo<_>`.
+
+`ActiveSession::modes` and `ActiveSession::meta` now return `Option<&T>` instead of `&Option<T>`,
+and `ActiveSession::connection` returns `&ConnectionTo<_>`.
+
+These accessors avoid implicit allocation and handle cloning. Call `.to_owned()` on `acp_id`,
+`.cloned()` on `modes` or `meta`, and `.clone()` on either connection accessor when an owned value
+is required.
+
 ## `AcpAgent` has its own process configuration
 
 `AcpAgent` now accepts `AcpAgentConfig` instead of the ACP wire-schema `McpServer`. An ACP agent

@@ -536,13 +536,13 @@ where
     }
 
     /// Access modes available in this session.
-    pub fn modes(&self) -> &Option<SessionModeState> {
-        &self.modes
+    pub fn modes(&self) -> Option<&SessionModeState> {
+        self.modes.as_ref()
     }
 
     /// Access meta data from session response.
-    pub fn meta(&self) -> &Option<serde_json::Map<String, serde_json::Value>> {
-        &self.meta
+    pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.meta.as_ref()
     }
 
     /// Build a `NewSessionResponse` from the session information.
@@ -556,8 +556,8 @@ where
     }
 
     /// Access the underlying connection context used to communicate with the agent.
-    pub fn connection(&self) -> ConnectionTo<Link> {
-        self.connection.clone()
+    pub fn connection(&self) -> &ConnectionTo<Link> {
+        &self.connection
     }
 
     /// Send a prompt to the agent. You can then read messages sent in response.
