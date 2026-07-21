@@ -695,7 +695,7 @@ where
             .on_receive_dispatch(
                 async move |dispatch: Dispatch, _connection| {
                     MatchDispatch::new(dispatch)
-                        .if_message(async |dispatch: SuccessorDispatch| {
+                        .if_dispatch(async |dispatch: SuccessorDispatch| {
                             //                         ------------------
                             // SuccessorMessages sent by the proxy go to its successor.
                             //
@@ -1230,7 +1230,7 @@ impl ConductorHostRole for Agent {
         );
         MatchDispatchFrom::new(message, &client_connection)
             // Any incoming messages from the client are client-to-agent messages targeting the first component.
-            .if_message_from(Client, async move |message: Dispatch| {
+            .if_dispatch_from(Client, async move |message: Dispatch| {
                 tracing::debug!(
                     method = ?message.method(),
                     "ConductorToClient::handle_dispatch - matched Client"
@@ -1306,7 +1306,7 @@ impl ConductorHostRole for Proxy {
             "ConductorToConductor::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &client_connection)
-            .if_message_from(Agent, {
+            .if_dispatch_from(Agent, {
                 // Messages from our successor arrive already unwrapped
                 // (RemoteRoleStyle::Successor strips the SuccessorMessage envelope).
                 async |message: Dispatch| {
@@ -1321,7 +1321,7 @@ impl ConductorHostRole for Proxy {
             })
             .await
             // Any incoming messages from the client are client-to-agent messages targeting the first component.
-            .if_message_from(Client, async |message: Dispatch| {
+            .if_dispatch_from(Client, async |message: Dispatch| {
                 tracing::debug!(
                     method = ?message.method(),
                     "ConductorToConductor::handle_dispatch - matched Client"

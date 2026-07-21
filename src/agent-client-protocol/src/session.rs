@@ -739,7 +739,7 @@ where
             "ActiveSessionHandler::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &cx)
-            .if_message_from(Agent, async |message| {
+            .if_dispatch_from(Agent, async |message| {
                 if let Some(session_id) = message.get_session_id()? {
                     tracing::trace!(
                         message_session_id = ?session_id,

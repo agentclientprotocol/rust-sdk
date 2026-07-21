@@ -146,7 +146,7 @@ async fn match_dispatch_from_preserves_retry_across_chained_matches()
                     })
                 })
                 .await
-                .if_message_from(UntypedRole, async |message: Dispatch| {
+                .if_dispatch_from(UntypedRole, async |message: Dispatch| {
                     Ok(Handled::No {
                         message,
                         retry: false,

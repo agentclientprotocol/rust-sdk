@@ -118,6 +118,16 @@ respond to an individual JSON-RPC request. The builder method now reflects that 
 | --- | --- |
 | `Builder::with_responder` | `Builder::with_runner` |
 
+## Matchers use dispatch terminology
+
+The combined matchers operate on `Dispatch` values, which can represent requests, notifications,
+or responses. Their method names now reflect that input:
+
+| 1.x | 2.0 |
+| --- | --- |
+| `MatchDispatch::if_message` | `MatchDispatch::if_dispatch` |
+| `MatchDispatchFrom::if_message_from` | `MatchDispatchFrom::if_dispatch_from` |
+
 ## `AcpAgent` has its own process configuration
 
 `AcpAgent` now accepts `AcpAgentConfig` instead of the ACP wire-schema `McpServer`. An ACP agent

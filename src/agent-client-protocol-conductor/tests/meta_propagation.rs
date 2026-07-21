@@ -75,12 +75,12 @@ impl HandleDispatchFrom<Conductor> for ForwardMessages {
         connection: ConnectionTo<Conductor>,
     ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         MatchDispatchFrom::new(message, &connection)
-            .if_message_from(Client, async |message: Dispatch| {
+            .if_dispatch_from(Client, async |message: Dispatch| {
                 connection.send_proxied_message_to(Agent, message)?;
                 Ok(Handled::Yes)
             })
             .await
-            .if_message_from(Agent, async |message: Dispatch| {
+            .if_dispatch_from(Agent, async |message: Dispatch| {
                 connection.send_proxied_message_to(Client, message)?;
                 Ok(Handled::Yes)
             })
