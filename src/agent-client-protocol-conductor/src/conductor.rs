@@ -1158,7 +1158,7 @@ impl ConductorHostRole for Agent {
         // Not yet initialized - expect an initialize request.
         // Error if we get anything else.
         let Dispatch::Request(request, init_responder) = message else {
-            message.respond_with_error(invalid_request(), client_connection.clone())?;
+            message.respond_with_error(invalid_request())?;
             return Err(invalid_request());
         };
         if !InitializeRequest::matches_method(request.method()) {
@@ -1256,7 +1256,7 @@ impl ConductorHostRole for Proxy {
         // Not yet initialized - expect an InitializeProxy request.
         // Error if we get anything else.
         let Dispatch::Request(request, init_responder) = message else {
-            message.respond_with_error(invalid_request(), client_connection.clone())?;
+            message.respond_with_error(invalid_request())?;
             return Err(invalid_request());
         };
         if !InitializeProxyRequest::matches_method(request.method()) {

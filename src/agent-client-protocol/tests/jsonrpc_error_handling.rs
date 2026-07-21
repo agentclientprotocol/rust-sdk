@@ -8,8 +8,8 @@
 //! - Missing/invalid parameters
 
 use agent_client_protocol::{
-    ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder, SentRequest,
-    role::UntypedRole,
+    ConnectionTo, Dispatch, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder,
+    SentRequest, role::UntypedRole,
 };
 use expect_test::expect;
 use futures::{AsyncRead, AsyncWrite};
@@ -755,11 +755,11 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
 }
 
 // ============================================================================
-// Test 7: Bad notification params
+// Test 7: Notification errors
 // ============================================================================
 
 #[tokio::test(flavor = "current_thread")]
-async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
+async fn test_notification_errors_are_ignored_and_connection_stays_alive() {
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::task::LocalSet;
 
@@ -778,10 +778,10 @@ async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
             let server = UntypedRole
                 .builder()
                 .on_receive_notification(
-                    async |_notif: SimpleNotification,
+                    async |notif: SimpleNotification,
                            _connection: ConnectionTo<UntypedRole>| {
-                        // If we get here, the notification parsed successfully.
-                        Ok(())
+                        assert_eq!(notif.message, "handler error");
+                        Err::<(), _>(agent_client_protocol::Error::internal_error())
                     },
                     agent_client_protocol::on_receive_notification!(),
                 )
@@ -804,11 +804,18 @@ async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
 
             let mut client_reader = BufReader::new(client_reader);
 
-            // Send a notification with bad params (wrong field name), followed
-            // by a request that acts as an ordering barrier.
+            // Send notifications that fail during parsing and inside the handler,
+            // followed by a request that acts as an ordering barrier.
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"wrong_field":"hello"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"simple_notification","params":{"message":"handler error"}}
 "#,
                 )
                 .await
@@ -824,8 +831,8 @@ async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
                 .unwrap();
             client_writer.flush().await.unwrap();
 
-            // The first line must be the request response. Any reply to the
-            // malformed notification would arrive before it.
+            // The first line must be the request response. Any reply to either
+            // failing notification would arrive before it.
             let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
             expect![[r#"
                 {
@@ -836,6 +843,62 @@ async fn test_bad_notification_params_are_ignored_and_connection_stays_alive() {
                   }
                 }"#]]
             .assert_eq(&serde_json::to_string_pretty(&ok_response).unwrap());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_error_for_notification_is_ignored_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    LocalSet::new()
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+            let server_transport = agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            );
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: SimpleRequest,
+                           responder: Responder<SimpleResponse>,
+                           _connection: ConnectionTo<UntypedRole>| {
+                        responder.respond(SimpleResponse {
+                            result: format!("echo: {}", request.message),
+                        })
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_dispatch(
+                    async |message: Dispatch, _connection: ConnectionTo<UntypedRole>| {
+                        message.respond_with_error(agent_client_protocol::Error::internal_error())
+                    },
+                    agent_client_protocol::on_receive_dispatch!(),
+                );
+
+            tokio::task::spawn_local(async move {
+                if let Err(error) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {error:?}");
+                }
+            });
+
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","method":"unknown/notification","params":{}}
+{"jsonrpc":"2.0","id":11,"method":"simple_method","params":{"message":"after dispatch error"}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let mut client_reader = BufReader::new(client_reader);
+            let response = read_jsonrpc_response_line(&mut client_reader).await;
+            assert_eq!(response["id"], 11);
+            assert_eq!(response["result"]["result"], "echo: after dispatch error");
         })
         .await;
 }

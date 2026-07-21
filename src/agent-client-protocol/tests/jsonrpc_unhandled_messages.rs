@@ -154,6 +154,13 @@ async fn unhandled_notifications_are_ignored() {
                 .unwrap();
             client_writer
                 .write_all(
+                    br#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":true}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer
+                .write_all(
                     br#"{"jsonrpc":"2.0","method":"_x.ai/settings/update","params":{"theme":"auto"}}
 "#,
                 )
@@ -169,8 +176,8 @@ async fn unhandled_notifications_are_ignored() {
             client_writer.flush().await.unwrap();
 
             // The server processes messages in order: a response to this
-            // request proves the unknown notifications sent before it were
-            // ignored without erroring or closing the connection.
+            // request proves the unknown and malformed notifications sent
+            // before it were ignored without replying or closing the connection.
             client_writer
                 .write_all(
                     br#"{"jsonrpc":"2.0","id":2,"method":"simple_method","params":{"message":"after notifications"}}

@@ -248,9 +248,10 @@ pub mod building_an_agent {
     //!             // Return final response
     //!             responder.respond(PromptResponse::new(StopReason::EndTurn))
     //!         }, agent_client_protocol::on_receive_request!())
-    //!         // Reject unknown messages
-    //!         .on_receive_dispatch(async |message: Dispatch, connection: ConnectionTo<Client>| {
-    //!             message.respond_with_error(agent_client_protocol::Error::method_not_found(), connection)
+    //!         // Reject unknown requests. Notifications are ignored because
+    //!         // they cannot receive responses.
+    //!         .on_receive_dispatch(async |message: Dispatch, _connection: ConnectionTo<Client>| {
+    //!             message.respond_with_error(agent_client_protocol::Error::method_not_found())
     //!         }, agent_client_protocol::on_receive_dispatch!())
     //!         .connect_to(transport)
     //!         .await

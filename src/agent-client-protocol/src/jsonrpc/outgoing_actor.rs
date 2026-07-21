@@ -136,7 +136,7 @@ pub(super) async fn outgoing_protocol_actor(
                     (RawJsonRpcMessage::response(id, Err(error)), destination)
                 }
             },
-            OutgoingMessage::Error { error, destination } => {
+            OutgoingMessage::UncorrelatedErrorResponse { error, destination } => {
                 // JSON-RPC reports parse/invalid-request errors with id null when
                 // they cannot be correlated to a specific request.
                 (
