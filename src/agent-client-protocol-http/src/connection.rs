@@ -156,24 +156,14 @@ impl Connection {
         }));
     }
 
-    async fn route_outbound(&self, frame: TransportFrame) {
+    pub(crate) async fn route_outbound(&self, frame: TransportFrame) {
         self.outbound_transport.route_outbound(frame).await;
     }
 
-    pub(crate) async fn recv_initial(&self) -> Option<RawJsonRpcMessage> {
+    pub(crate) async fn recv_initial(&self) -> Option<TransportFrame> {
         let mut guard = self.outbound_rx.lock().await;
         let rx = guard.as_mut()?;
-        match rx.recv().await? {
-            TransportFrame::Single(message) => Some(message),
-            TransportFrame::Malformed { error, .. } => {
-                error!(?error, "agent emitted malformed initial JSON-RPC input");
-                None
-            }
-            TransportFrame::Batch(_) => {
-                error!("agent emitted an invalid batched initial JSON-RPC message");
-                None
-            }
-        }
+        rx.recv().await
     }
 
     pub(crate) async fn shutdown(&self) {
@@ -804,17 +794,19 @@ mod tests {
         let registry = ConnectionRegistry::new(Arc::new(RespondThenExitAgentFactory));
         let (connection_id, connection) = registry.create_connection().await;
 
-        let message = timeout(Duration::from_secs(1), connection.recv_initial())
+        let frame = timeout(Duration::from_secs(1), connection.recv_initial())
             .await
             .unwrap()
             .expect("buffered response should be forwarded before teardown");
 
         assert!(matches!(
-            message,
-            RawJsonRpcMessage::Response(agent_client_protocol::schema::v1::Response::Result {
-                id: RequestId::Number(1),
-                ..
-            })
+            frame,
+            TransportFrame::Single(RawJsonRpcMessage::Response(
+                agent_client_protocol::schema::v1::Response::Result {
+                    id: RequestId::Number(1),
+                    ..
+                }
+            ))
         ));
         timeout(Duration::from_secs(1), async {
             loop {

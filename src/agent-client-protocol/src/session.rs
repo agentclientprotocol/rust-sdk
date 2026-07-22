@@ -75,11 +75,11 @@ where
     /// The vector `dynamic_handler_registrations` contains any dynamic
     /// handle registrations associated with this session (e.g., from MCP servers).
     /// You can simply pass `Default::default()` if not applicable.
-    pub(crate) fn attach_session<'responder>(
+    pub(crate) fn attach_session<'runner>(
         &self,
         response: NewSessionResponse,
         mcp_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
-    ) -> Result<ActiveSession<'responder, Counterpart>, crate::Error> {
+    ) -> Result<ActiveSession<'runner, Counterpart>, crate::Error> {
         let NewSessionResponse {
             session_id,
             modes,
@@ -100,7 +100,7 @@ where
             connection: self.clone(),
             session_handler_registration,
             mcp_handler_registrations,
-            _responder: PhantomData,
+            _runner: PhantomData,
         })
     }
 }
@@ -366,13 +366,13 @@ where
     ///
     /// The `ActiveSession` passed to `op` has a non-`'static` lifetime, which
     /// prevents calling [`ActiveSession::proxy_remaining_messages`] (since the
-    /// responders would terminate when `op` returns).
+    /// session's background runners would terminate when `op` returns).
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn run_until<T>(
         self,
-        op: impl for<'responder> AsyncFnOnce(
-            ActiveSession<'responder, Counterpart>,
+        op: impl for<'runner> AsyncFnOnce(
+            ActiveSession<'runner, Counterpart>,
         ) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
         let Self {
@@ -402,8 +402,8 @@ where
     /// drift but at the cost of requiring MCP servers that are `Send` and
     /// don't access data from the surrounding scope.
     ///
-    /// Returns an `ActiveSession<'static, _>` because responders are spawned
-    /// into background tasks that live for the connection lifetime.
+    /// Returns an `ActiveSession<'static, _>` because the session's runners are spawned into
+    /// background tasks that live for the connection lifetime.
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn start_session(self) -> Result<ActiveSession<'static, Counterpart>, crate::Error>
@@ -478,14 +478,14 @@ where
 
 /// Active session struct that lets you send prompts and receive updates.
 ///
-/// The `'responder` lifetime represents the span during which responders
-/// (e.g., MCP server handlers) are active. When created via [`SessionBuilder::start_session`],
-/// this is `'static` because responders are spawned into background tasks.
+/// The `'runner` lifetime represents the span during which session support runners
+/// (such as MCP servers) are active. When created via [`SessionBuilder::start_session`],
+/// this is `'static` because the runners are spawned into background tasks.
 /// When created via [`SessionBuilder::run_until`], this is tied to the
 /// closure scope, preventing [`Self::proxy_remaining_messages`] from being called
-/// (since the responders would die when the closure returns).
+/// (since the runners would stop when the closure returns).
 #[derive(Debug)]
-pub struct ActiveSession<'responder, Link>
+pub struct ActiveSession<'runner, Link>
 where
     Link: HasPeer<Agent>,
 {
@@ -506,8 +506,8 @@ where
     /// which will cause them to be deregistered.
     mcp_handler_registrations: Vec<DynamicHandlerGuard<Link>>,
 
-    /// Phantom lifetime representing the responder lifetime.
-    _responder: PhantomData<&'responder ()>,
+    /// Phantom lifetime representing the session-runner lifetime.
+    _runner: PhantomData<&'runner ()>,
 }
 
 /// Incoming message from the agent
@@ -631,8 +631,8 @@ where
     /// This consumes the `ActiveSession` since you're giving up active control.
     ///
     /// This method is only available on `ActiveSession<'static, _>` (from
-    /// [`SessionBuilder::start_session`]) because it requires responders to
-    /// outlive the method call.
+    /// [`SessionBuilder::start_session`]) because it requires the session's runners to outlive
+    /// the method call.
     ///
     /// # Message Ordering Guarantees
     ///
@@ -665,7 +665,7 @@ where
             // These fields are not needed for proxying
             modes: _,
             meta: _,
-            _responder,
+            _runner,
         } = self;
 
         // Step 1: Drop the session handler registration.

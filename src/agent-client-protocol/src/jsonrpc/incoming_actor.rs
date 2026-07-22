@@ -11,6 +11,7 @@ use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
 use crate::jsonrpc::HandleConnectionClose;
 use crate::jsonrpc::HandleDispatchFrom;
+use crate::jsonrpc::HandlerErrorTarget;
 use crate::jsonrpc::OutgoingMessage;
 use crate::jsonrpc::PendingReplies;
 use crate::jsonrpc::PendingReply;
@@ -20,11 +21,13 @@ use crate::jsonrpc::RequestReplyTarget;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseDestination;
 use crate::jsonrpc::ResponseRouter;
+use crate::jsonrpc::TransportBatchEntry;
 use crate::jsonrpc::TransportFrame;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
+use crate::jsonrpc::{is_response_only_shape, raw_is_response_only_shape};
 
 use crate::role::Role;
 use crate::schema::v1::{RequestId, Response};
@@ -110,7 +113,10 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                     let mut new_pending_messages = vec![];
                     for pending_message in pending_messages {
                         tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
-                        let reply_target = pending_message.request_reply_target();
+                        let reply_target = pending_message.handler_error_target();
+                        let handler_attempt = reply_target.as_ref().and_then(|target| {
+                            target.begin_handler_attempt(&connection.message_tx)
+                        });
                         let method = pending_message.method().to_string();
                         match handler
                             .dyn_handle_dispatch_from(pending_message, connection.clone())
@@ -131,6 +137,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 handle_handler_error(connection, reply_target, method, err)?;
                             }
                         }
+                        drop(handler_attempt);
                     }
                     pending_messages = new_pending_messages;
 
@@ -178,11 +185,11 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 Err(error) => {
                                     handle_handler_error(
                                         connection,
-                                        Some(RequestReplyTarget {
+                                        Some(HandlerErrorTarget::Request(RequestReplyTarget {
                                             id: request_id,
                                             method: request_method.clone(),
                                             destination,
-                                        }),
+                                        })),
                                         request_method,
                                         error,
                                     )?;
@@ -297,13 +304,24 @@ fn frame_entries(
                 .then_some(ResponseDestination::Individual);
             return (vec![(Ok(message), destination)], None);
         }
-        TransportFrame::Malformed { error, .. } => {
+        TransportFrame::Malformed { raw, error } => {
+            if raw_is_response_only_shape(&raw) {
+                return (Vec::new(), None);
+            }
             return (
                 vec![(Err(error), Some(ResponseDestination::Individual))],
                 None,
             );
         }
-        TransportFrame::Batch(batch) => batch.into_results().collect(),
+        TransportFrame::Batch(batch) => batch
+            .into_entries()
+            .filter_map(|entry| match entry {
+                TransportBatchEntry::Message(message) => Some(Ok(message)),
+                TransportBatchEntry::Malformed { raw, error } => {
+                    (!is_response_only_shape(&raw)).then_some(Err(error))
+                }
+            })
+            .collect(),
     };
 
     let response_count = entries
@@ -421,7 +439,10 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
     let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
-    let reply_target = dispatch.request_reply_target();
+    let error_target = dispatch.handler_error_target();
+    let _handler_attempt = error_target
+        .as_ref()
+        .and_then(|target| target.begin_handler_attempt(&connection.message_tx));
 
     match request_cancellations.cancel_if_requested(&dispatch) {
         Ok(true) => {
@@ -435,7 +456,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 ?err,
                 "Request cancellation notification errored"
             );
-            return handle_handler_error(connection, reply_target, method, err);
+            return handle_handler_error(connection, error_target, method, err);
         }
     }
 
@@ -458,7 +479,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
         Err(err) => {
             tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored");
-            return handle_handler_error(connection, reply_target, method, err);
+            return handle_handler_error(connection, error_target, method, err);
         }
     }
 
@@ -482,7 +503,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
 
             Err(err) => {
                 tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
-                return handle_handler_error(connection, reply_target, method, err);
+                return handle_handler_error(connection, error_target, method, err);
             }
         }
     }
@@ -510,7 +531,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
                 handler = "default",
                 "Default handler errored"
             );
-            return handle_handler_error(connection, reply_target, method, err);
+            return handle_handler_error(connection, error_target, method, err);
         }
     }
 
@@ -548,15 +569,16 @@ async fn dispatch_dispatch<Counterpart: Role>(
 /// Handle a message-processing error without tearing down the connection.
 ///
 /// For requests, sends a JSON-RPC error response to the request's exact output
-/// destination. For notifications and incoming responses, logs without replying.
+/// destination. For responses, routes the error to the local request awaiter.
+/// Notification errors are logged without replying.
 fn handle_handler_error<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
-    reply_target: Option<RequestReplyTarget>,
+    target: Option<HandlerErrorTarget>,
     method: String,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
-    if let Some(reply_target) = reply_target {
-        send_raw_message(
+    match target {
+        Some(HandlerErrorTarget::Request(reply_target)) => send_raw_message(
             &connection.message_tx,
             OutgoingMessage::Response {
                 id: reply_target.id,
@@ -564,13 +586,18 @@ fn handle_handler_error<Counterpart: Role>(
                 response: Err(error),
                 destination: reply_target.destination,
             },
-        )
-    } else {
-        tracing::warn!(
-            %method,
-            ?error,
-            "Ignoring message-processing error because there is no request to answer"
-        );
-        Ok(())
+        ),
+        Some(HandlerErrorTarget::Response(reply_target)) => {
+            reply_target.route(Err(error));
+            Ok(())
+        }
+        None => {
+            tracing::warn!(
+                %method,
+                ?error,
+                "Ignoring message-processing error because there is no request to answer"
+            );
+            Ok(())
+        }
     }
 }

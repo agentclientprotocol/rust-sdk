@@ -32,7 +32,7 @@
 //!
 //! **Component Communication:**
 //! - Editor talks to conductor via stdio
-//! - Conductor uses `_proxy/successor/*` protocol extensions to route messages
+//! - Conductor uses the `_proxy/successor` envelope to route messages
 //! - Each proxy can intercept, transform, or forward messages
 //! - Final agent receives standard ACP messages
 //!
@@ -59,9 +59,9 @@
 //!
 //! ## Related Crates
 //!
-//! - **[agent-client-protocol-proxy](https://crates.io/crates/agent-client-protocol-proxy)** - Framework for building proxy components
 //! - **[agent-client-protocol](https://crates.io/crates/agent-client-protocol)** - Core ACP SDK
-//! - **[agent-client-protocol](https://crates.io/crates/agent-client-protocol)** - Core protocol types, traits, and process spawning
+//! - **[agent-client-protocol-polyfill](https://crates.io/crates/agent-client-protocol-polyfill)** - Compatibility proxies, including the legacy v1 MCP-over-ACP bridge
+//! - **[agent-client-protocol-trace-viewer](https://crates.io/crates/agent-client-protocol-trace-viewer)** - Interactive trace visualization
 
 use std::path::PathBuf;
 use std::str::FromStr;

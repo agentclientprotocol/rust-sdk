@@ -8,19 +8,9 @@ use futures::channel::mpsc;
 use serde::Deserialize as _;
 
 enum ParsedIncomingLine {
-    Ignored,
     Single(RawJsonRpcMessage),
     Malformed { raw: String, error: crate::Error },
     Batch(TransportBatch),
-}
-
-fn message_shape(value: &serde_json::Value) -> (bool, bool) {
-    value.as_object().map_or((false, false), |object| {
-        (
-            object.contains_key("method"),
-            object.contains_key("result") || object.contains_key("error"),
-        )
-    })
 }
 
 fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
@@ -41,85 +31,49 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
             error: crate::Error::invalid_request(),
         },
         serde_json::Value::Array(entries) => {
-            let mut has_response_entry = false;
-            let mut has_call_entry = false;
-            let mut entries = entries
+            let entries = entries
                 .into_iter()
-                .filter_map(|entry| {
-                    let (looks_like_call, looks_like_response) = message_shape(&entry);
-                    match RawJsonRpcMessage::deserialize(&entry) {
-                        Ok(message) => {
-                            match &message {
-                                RawJsonRpcMessage::Request(_)
-                                | RawJsonRpcMessage::Notification(_) => has_call_entry = true,
-                                RawJsonRpcMessage::Response(_) => has_response_entry = true,
-                            }
-                            Some(TransportBatchEntry::message(message))
-                        }
-                        Err(error) => {
-                            has_call_entry |= looks_like_call;
-                            has_response_entry |= looks_like_response;
-                            tracing::debug!(?error, "Invalid JSON-RPC batch entry");
-
-                            // A malformed response must not itself receive a
-                            // response, even when request siblings make this a
-                            // mixed batch. Keep ambiguous call-shaped entries
-                            // so invalid requests still receive an error.
-                            (!looks_like_response || looks_like_call).then(|| {
-                                TransportBatchEntry::malformed(
-                                    entry,
-                                    crate::Error::invalid_request(),
-                                )
-                            })
-                        }
+                .map(|entry| match RawJsonRpcMessage::deserialize(&entry) {
+                    Ok(message) => TransportBatchEntry::message(message),
+                    Err(error) => {
+                        tracing::debug!(?error, "Invalid JSON-RPC batch entry");
+                        TransportBatchEntry::malformed(entry, crate::Error::invalid_request())
                     }
                 })
                 .collect::<Vec<_>>();
 
-            if has_response_entry && !has_call_entry {
-                // A response batch is not a request and must not itself receive
-                // responses. Ignore malformed response-like siblings to avoid
-                // sending error responses back and forth between peers.
-                entries.retain(|entry| entry.as_result().is_ok());
-            }
-            match TransportBatch::from_entries(entries) {
-                Some(batch) => ParsedIncomingLine::Batch(batch),
-                None => ParsedIncomingLine::Ignored,
-            }
+            ParsedIncomingLine::Batch(
+                TransportBatch::from_entries(entries)
+                    .expect("a parsed non-empty JSON array retains at least one entry"),
+            )
         }
-        value => {
-            let (looks_like_call, looks_like_response) = message_shape(&value);
-            match serde_json::from_value(value) {
-                Ok(message) => ParsedIncomingLine::Single(message),
-                Err(error) => {
-                    tracing::debug!(?error, "Invalid JSON-RPC message");
-                    if looks_like_response && !looks_like_call {
-                        ParsedIncomingLine::Ignored
-                    } else {
-                        ParsedIncomingLine::Malformed {
-                            raw: line.to_owned(),
-                            error: crate::Error::invalid_request(),
-                        }
-                    }
+        value => match serde_json::from_value(value) {
+            Ok(message) => ParsedIncomingLine::Single(message),
+            Err(error) => {
+                tracing::debug!(?error, "Invalid JSON-RPC message");
+                ParsedIncomingLine::Malformed {
+                    raw: line.to_owned(),
+                    error: crate::Error::invalid_request(),
                 }
             }
-        }
+        },
     }
 }
 
 impl TransportFrame {
     /// Parse one JSON-RPC wire value while preserving batch boundaries.
     ///
-    /// Malformed calls are returned as explicit malformed frames or batch
-    /// entries. Malformed response-shaped input is ignored, yielding `None`,
-    /// because JSON-RPC responses must not themselves receive responses.
+    /// Every malformed value is retained as an explicit malformed frame or
+    /// batch entry. Standalone malformed input keeps its original text; batch
+    /// entries keep their parsed JSON values, source order, and batch boundary,
+    /// though reserialization may normalize whitespace. Protocol actors decide
+    /// whether a malformed value is call-shaped and requires an Error Response.
     #[must_use]
-    pub fn parse_json(input: &str) -> Option<Self> {
+    pub fn parse_json(input: &str) -> Self {
         match parse_incoming_line(input) {
-            ParsedIncomingLine::Ignored => None,
-            ParsedIncomingLine::Single(message) => Some(Self::Single(message)),
-            ParsedIncomingLine::Malformed { raw, error } => Some(Self::Malformed { raw, error }),
-            ParsedIncomingLine::Batch(batch) => Some(Self::Batch(batch)),
+            ParsedIncomingLine::Single(message) => Self::Single(message),
+            ParsedIncomingLine::Malformed { raw, error } => Self::Malformed { raw, error },
+            ParsedIncomingLine::Batch(batch) => Self::Batch(batch),
         }
     }
 
@@ -142,14 +96,15 @@ impl TransportFrame {
     }
 }
 
-/// Transport outgoing actor for line streams: Serializes RawJsonRpcMessage and yields lines.
+/// Transport outgoing actor for line streams: serializes [`TransportFrame`] values and yields
+/// lines.
 ///
 /// This is a line-based variant of `transport_outgoing_actor` that works with a Sink<String>
 /// instead of an AsyncWrite byte stream. This enables interception of lines before they are
 /// written to the underlying transport.
 ///
 /// This actor handles transport mechanics:
-/// - Serializes RawJsonRpcMessage to JSON strings
+/// - Serializes single messages, malformed values, and batches to JSON strings
 /// - Yields newline-terminated strings
 /// - Handles serialization errors
 ///
@@ -253,7 +208,7 @@ pub(super) async fn transport_outgoing_lines_actor(
     transport_outgoing_frames_actor(transport_rx, outgoing_lines).await
 }
 
-/// Transport incoming actor for line streams: Parses lines into RawJsonRpcMessage values.
+/// Transport incoming actor for line streams: parses lines into [`TransportFrame`] values.
 ///
 /// This is a line-based variant of `transport_incoming_actor` that works with a
 /// Stream<Item = io::Result<String>> instead of an AsyncRead byte stream. This enables
@@ -275,7 +230,6 @@ pub(super) async fn transport_incoming_lines_actor(
         tracing::trace!(message = %line, "Received JSON-RPC message");
 
         match parse_incoming_line(&line) {
-            ParsedIncomingLine::Ignored => {}
             ParsedIncomingLine::Single(message) => {
                 transport_tx
                     .unbounded_send(TransportFrame::Single(message))
@@ -323,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_invalid_members_of_response_batches() {
+    fn preserves_every_invalid_member_of_response_batches() {
         let ParsedIncomingLine::Batch(batch) = parse_incoming_line(
             r#"[
                 {"jsonrpc":"2.0","id":1,"result":{"ok":true}},
@@ -335,24 +289,44 @@ mod tests {
             panic!("expected a JSON-RPC batch");
         };
 
-        assert_eq!(batch.len(), 2);
-        assert!(
-            batch
-                .iter_results()
-                .all(|entry| matches!(entry, Ok(RawJsonRpcMessage::Response(_))))
-        );
+        let entries = batch.iter_results().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 4);
+        assert!(matches!(entries[0], Ok(RawJsonRpcMessage::Response(_))));
+        assert_eq!(entries[1].unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(entries[2].unwrap_err().code, ErrorCode::InvalidRequest);
+        assert!(matches!(entries[3], Ok(RawJsonRpcMessage::Response(_))));
     }
 
     #[test]
-    fn ignores_entirely_malformed_response_shaped_batch() {
-        assert!(matches!(
-            parse_incoming_line(
-                r#"[
+    fn preserves_invalid_value_beside_malformed_response() {
+        let ParsedIncomingLine::Batch(batch) = parse_incoming_line(
+            r#"[
+                17,
                 {"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"Internal error"}}
-            ]"#
-            ),
-            ParsedIncomingLine::Ignored
-        ));
+            ]"#,
+        ) else {
+            panic!("expected a JSON-RPC batch");
+        };
+
+        let entries = batch.iter_results().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].unwrap_err().code, ErrorCode::InvalidRequest);
+        assert_eq!(entries[1].unwrap_err().code, ErrorCode::InvalidRequest);
+    }
+
+    #[test]
+    fn preserves_entirely_malformed_response_shaped_batch() {
+        let ParsedIncomingLine::Batch(batch) = parse_incoming_line(
+            r#"[
+                {"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"Internal error"}}
+            ]"#,
+        ) else {
+            panic!("expected a retained JSON-RPC batch");
+        };
+
+        let entries = batch.iter_results().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].unwrap_err().code, ErrorCode::InvalidRequest);
     }
 
     #[test]
@@ -373,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_malformed_response_shaped_member_beside_request() {
+    fn preserves_malformed_response_shaped_member_beside_request() {
         let ParsedIncomingLine::Batch(batch) = parse_incoming_line(
             r#"[
                 {"jsonrpc":"2.0","id":1,"method":"one","params":{}},
@@ -384,18 +358,20 @@ mod tests {
         };
 
         let entries = batch.iter_results().collect::<Vec<_>>();
-        assert_eq!(entries.len(), 1);
+        assert_eq!(entries.len(), 2);
         assert!(matches!(entries[0], Ok(RawJsonRpcMessage::Request(_))));
+        assert_eq!(entries[1].unwrap_err().code, ErrorCode::InvalidRequest);
     }
 
     #[test]
-    fn ignores_malformed_standalone_response() {
-        assert!(matches!(
-            parse_incoming_line(
-                r#"{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"Internal error"}}"#
-            ),
-            ParsedIncomingLine::Ignored
-        ));
+    fn preserves_malformed_standalone_response() {
+        let ParsedIncomingLine::Malformed { error, .. } = parse_incoming_line(
+            r#"{"jsonrpc":"2.0","id":1,"result":null,"error":{"code":-32603,"message":"Internal error"}}"#,
+        ) else {
+            panic!("expected one retained invalid response");
+        };
+
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
     }
 
     #[test]

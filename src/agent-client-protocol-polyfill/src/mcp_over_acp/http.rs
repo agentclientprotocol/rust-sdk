@@ -183,6 +183,7 @@ enum HttpMessage {
 struct RunningServer {
     waiting_sessions: FxHashMap<RequestId, RegisteredSession>,
     waiting_batch_sessions: Vec<WaitingBatchSession>,
+    pending_calls: VecDeque<PendingCall>,
     general_sessions: Vec<RegisteredSession>,
     message_deque: VecDeque<TransportFrame>,
 }
@@ -192,6 +193,7 @@ impl RunningServer {
         RunningServer {
             waiting_sessions: HashMap::default(),
             waiting_batch_sessions: Vec::new(),
+            pending_calls: VecDeque::new(),
             general_sessions: Vec::default(),
             message_deque: VecDeque::with_capacity(32),
         }
@@ -226,6 +228,7 @@ impl RunningServer {
             }
 
             self.drain_jsonrpc_messages();
+            self.activate_pending_calls(&mut channel.tx)?;
         }
 
         Ok(())
@@ -245,11 +248,14 @@ impl RunningServer {
             } => {
                 tracing::debug!(%http_request_id, ?request, "handling request");
                 let request_id = request.id.clone();
-                channel_tx
-                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::Request(request)))
-                    .map_err(agent_client_protocol::util::internal_error)?;
-                let session = RegisteredSession::new(response_tx);
-                self.waiting_sessions.insert(request_id, session);
+                self.send_or_queue_call(
+                    PendingCall {
+                        frame: TransportFrame::Single(RawJsonRpcMessage::Request(request)),
+                        request_ids: vec![request_id],
+                        session: RegisteredSession::new(response_tx),
+                    },
+                    channel_tx,
+                )?;
             }
             HttpMessage::Notification {
                 http_request_id: _,
@@ -279,13 +285,17 @@ impl RunningServer {
             } => {
                 tracing::debug!(%http_request_id, ?frame, "handling retained frame");
                 if let Some(response_tx) = response_tx {
-                    let session = RegisteredSession::new(response_tx);
                     match &frame {
                         TransportFrame::Batch(_) => {
-                            self.waiting_batch_sessions.push(WaitingBatchSession {
-                                request_ids,
-                                session,
-                            });
+                            self.send_or_queue_call(
+                                PendingCall {
+                                    frame,
+                                    request_ids,
+                                    session: RegisteredSession::new(response_tx),
+                                },
+                                channel_tx,
+                            )?;
+                            return Ok(());
                         }
                         TransportFrame::Single(_) | TransportFrame::Malformed { .. } => {
                             unreachable!("only batches use the retained frame variant")
@@ -306,6 +316,107 @@ impl RunningServer {
         }
         self.purge_closed_sessions();
         Ok(())
+    }
+
+    fn send_or_queue_call(
+        &mut self,
+        call: PendingCall,
+        channel_tx: &mut mpsc::UnboundedSender<TransportFrame>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        if self.call_conflicts_with_active(&call.request_ids) {
+            tracing::debug!(
+                request_ids = ?call.request_ids,
+                "queueing HTTP call until overlapping request IDs are no longer in flight"
+            );
+            self.pending_calls.push_back(call);
+            return Ok(());
+        }
+
+        self.activate_call(call, channel_tx)
+    }
+
+    fn activate_call(
+        &mut self,
+        call: PendingCall,
+        channel_tx: &mut mpsc::UnboundedSender<TransportFrame>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let PendingCall {
+            frame,
+            request_ids,
+            session,
+        } = call;
+        let is_batch = matches!(frame, TransportFrame::Batch(_));
+        channel_tx
+            .unbounded_send(frame)
+            .map_err(agent_client_protocol::util::internal_error)?;
+
+        if is_batch {
+            self.waiting_batch_sessions.push(WaitingBatchSession {
+                request_ids,
+                session,
+            });
+        } else {
+            let request_id = request_ids
+                .into_iter()
+                .next()
+                .expect("single request calls always have one request ID");
+            self.waiting_sessions.insert(request_id, session);
+        }
+
+        Ok(())
+    }
+
+    fn activate_pending_calls(
+        &mut self,
+        channel_tx: &mut mpsc::UnboundedSender<TransportFrame>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        loop {
+            let Some(call) = self.pending_calls.front() else {
+                return Ok(());
+            };
+            if call.session.outgoing_tx.is_closed() {
+                self.pending_calls.pop_front();
+                continue;
+            }
+            if self.call_conflicts_with_active(&call.request_ids) {
+                return Ok(());
+            }
+
+            let call = self
+                .pending_calls
+                .pop_front()
+                .expect("pending call was checked above");
+            self.activate_call(call, channel_tx)?;
+        }
+    }
+
+    fn call_conflicts_with_active(&self, request_ids: &[RequestId]) -> bool {
+        let unidentified_batch_is_active = self
+            .waiting_batch_sessions
+            .iter()
+            .any(|waiting| waiting.request_ids.is_empty());
+
+        if request_ids.is_empty() {
+            // A response-bearing batch without a request ID (for example, a
+            // notification plus an invalid scalar) receives a grouped error
+            // response whose only ID is null. Keep those responses ordered,
+            // including with explicit null-ID calls, because the wire response
+            // does not otherwise carry enough provenance to distinguish them.
+            return unidentified_batch_is_active || self.request_id_is_active(&RequestId::Null);
+        }
+
+        request_ids
+            .iter()
+            .any(|request_id| self.request_id_is_active(request_id))
+            || unidentified_batch_is_active && request_ids.contains(&RequestId::Null)
+    }
+
+    fn request_id_is_active(&self, request_id: &RequestId) -> bool {
+        self.waiting_sessions.contains_key(request_id)
+            || self
+                .waiting_batch_sessions
+                .iter()
+                .any(|waiting| waiting.request_ids.contains(request_id))
     }
 
     fn drain_jsonrpc_messages(&mut self) {
@@ -342,19 +453,19 @@ impl RunningServer {
                         .iter()
                         .any(|id| response_ids.contains(&id))
             });
-            let fallback = self
-                .waiting_batch_sessions
-                .iter()
-                .position(|waiting| waiting.request_ids.is_empty());
+            let fallback = response_ids.contains(&&RequestId::Null).then(|| {
+                self.waiting_batch_sessions
+                    .iter()
+                    .position(|waiting| waiting.request_ids.is_empty())
+            });
+            let fallback = fallback.flatten();
             if let Some(index) = correlated.or(fallback) {
                 let session = self.waiting_batch_sessions.remove(index).session;
-                match session.outgoing_tx.unbounded_send(message) {
-                    Ok(()) => return None,
-                    Err(error) => {
-                        assert!(error.is_disconnected());
-                        message = error.into_inner();
-                    }
-                }
+                // This response belongs to that HTTP POST even if its SSE
+                // receiver has gone away. Never let it fall through to a
+                // later request that reuses the same JSON-RPC ID.
+                drop(session.outgoing_tx.unbounded_send(message));
+                return None;
             }
         }
 
@@ -370,13 +481,11 @@ impl RunningServer {
         if let Some(ref message_id) = message_id
             && let Some(session) = self.waiting_sessions.remove(message_id)
         {
-            match session.outgoing_tx.unbounded_send(message) {
-                Ok(()) => return None,
-                Err(m) => {
-                    assert!(m.is_disconnected());
-                    message = m.into_inner();
-                }
-            }
+            // This response belongs to that HTTP POST even if its SSE
+            // receiver has gone away. Never let it fall through to a later
+            // request that reuses the same JSON-RPC ID.
+            drop(session.outgoing_tx.unbounded_send(message));
+            return None;
         }
 
         self.purge_closed_sessions();
@@ -386,6 +495,11 @@ impl RunningServer {
             .chain(self.waiting_sessions.values_mut())
             .chain(
                 self.waiting_batch_sessions
+                    .iter_mut()
+                    .map(|waiting| &mut waiting.session),
+            )
+            .chain(
+                self.pending_calls
                     .iter_mut()
                     .map(|waiting| &mut waiting.session),
             );
@@ -405,11 +519,19 @@ impl RunningServer {
     fn purge_closed_sessions(&mut self) {
         self.general_sessions
             .retain(|session| !session.outgoing_tx.is_closed());
-        self.waiting_sessions
-            .retain(|_, session| !session.outgoing_tx.is_closed());
-        self.waiting_batch_sessions
-            .retain(|waiting| !waiting.session.outgoing_tx.is_closed());
+        self.pending_calls
+            .retain(|call| !call.session.outgoing_tx.is_closed());
+
+        // Calls already forwarded to the JSON-RPC peer stay registered until
+        // their response arrives. Otherwise a late response could be routed
+        // to a newer HTTP POST that reused the same request ID.
     }
+}
+
+struct PendingCall {
+    frame: TransportFrame,
+    request_ids: Vec<RequestId>,
+    session: RegisteredSession,
 }
 
 struct WaitingBatchSession {
@@ -440,9 +562,7 @@ async fn handle_post(
     body: String,
 ) -> Result<Response, HttpError> {
     let http_request_id = uuid::Uuid::new_v4();
-    let Some(frame) = TransportFrame::parse_json(&body) else {
-        return Ok(StatusCode::ACCEPTED.into_response());
-    };
+    let frame = TransportFrame::parse_json(&body);
 
     match frame {
         TransportFrame::Single(message) => match message {
@@ -480,23 +600,35 @@ async fn handle_post(
                 Ok(StatusCode::ACCEPTED.into_response())
             }
         },
-        TransportFrame::Malformed { error, .. } => Ok(immediate_sse_response(
-            TransportFrame::Single(RawJsonRpcMessage::response(RequestId::Null, Err(error))),
-        )),
+        TransportFrame::Malformed { raw, error } => {
+            if raw
+                .parse::<serde_json::Value>()
+                .is_ok_and(|value| is_response_only_shape(&value))
+            {
+                return Ok(StatusCode::ACCEPTED.into_response());
+            }
+            Ok(immediate_sse_response(TransportFrame::Single(
+                RawJsonRpcMessage::response(RequestId::Null, Err(error)),
+            )))
+        }
         TransportFrame::Batch(batch) => {
             if batch
                 .entries()
                 .all(|entry| matches!(entry, TransportBatchEntry::Malformed { .. }))
             {
                 let responses = agent_client_protocol::TransportBatch::from_messages(
-                    batch.entries().map(|entry| {
-                        let TransportBatchEntry::Malformed { error, .. } = entry else {
+                    batch.entries().filter_map(|entry| {
+                        let TransportBatchEntry::Malformed { raw, error } = entry else {
                             unreachable!("all batch entries were checked as malformed")
                         };
-                        RawJsonRpcMessage::response(RequestId::Null, Err(error.clone()))
+                        (!is_response_only_shape(raw)).then(|| {
+                            RawJsonRpcMessage::response(RequestId::Null, Err(error.clone()))
+                        })
                     }),
-                )
-                .expect("a TransportBatch is non-empty");
+                );
+                let Some(responses) = responses else {
+                    return Ok(StatusCode::ACCEPTED.into_response());
+                };
                 return Ok(immediate_sse_response(TransportFrame::Batch(responses)));
             }
 
@@ -508,7 +640,9 @@ async fn handle_post(
                         request_ids.push(request.id.clone());
                         expects_response = true;
                     }
-                    TransportBatchEntry::Malformed { .. } => expects_response = true,
+                    TransportBatchEntry::Malformed { raw, .. } => {
+                        expects_response |= !is_response_only_shape(raw);
+                    }
                     TransportBatchEntry::Message(
                         RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_),
                     ) => {}
@@ -541,6 +675,13 @@ async fn handle_post(
             }
         }
     }
+}
+
+fn is_response_only_shape(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        !object.contains_key("method")
+            && (object.contains_key("result") || object.contains_key("error"))
+    })
 }
 
 /// Accept a GET request from an MCP client.
@@ -671,6 +812,379 @@ mod tests {
                     error,
                     ..
                 }) if error.code == agent_client_protocol::ErrorCode::ParseError
+            ));
+        });
+    }
+
+    #[test]
+    fn malformed_response_shaped_posts_are_ignored_without_registration() {
+        futures::executor::block_on(async {
+            let (registration_tx, mut registration_rx) = mpsc::unbounded();
+            let state = Arc::new(BridgeState { registration_tx });
+            let malformed_response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": null,
+                "error": { "code": -32603, "message": "Internal error" }
+            });
+
+            let single = handle_post(State(state.clone()), malformed_response.to_string())
+                .await
+                .expect("malformed response-shaped POST");
+            assert_eq!(single.status(), StatusCode::ACCEPTED);
+
+            let batch = handle_post(
+                State(state),
+                serde_json::Value::Array(vec![malformed_response]).to_string(),
+            )
+            .await
+            .expect("malformed response-only batch POST");
+            assert_eq!(batch.status(), StatusCode::ACCEPTED);
+            assert!(
+                registration_rx.try_recv().is_err(),
+                "ignored responses must not be forwarded or register HTTP waiters"
+            );
+        });
+    }
+
+    #[test]
+    fn malformed_response_sibling_does_not_hide_invalid_batch_value() {
+        futures::executor::block_on(async {
+            let (registration_tx, mut registration_rx) = mpsc::unbounded();
+            let state = Arc::new(BridgeState { registration_tx });
+            let response = handle_post(
+                State(state),
+                serde_json::json!([
+                    17,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": null,
+                        "error": { "code": -32603, "message": "Internal error" }
+                    }
+                ])
+                .to_string(),
+            )
+            .await
+            .expect("mixed malformed batch POST");
+
+            let payload = single_sse_payload(response).await;
+            let entries = payload.as_array().expect("batch response array");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0]["id"], serde_json::Value::Null);
+            assert_eq!(
+                entries[0]["error"]["code"],
+                i32::from(agent_client_protocol::ErrorCode::InvalidRequest)
+            );
+            assert!(
+                registration_rx.try_recv().is_err(),
+                "an all-malformed batch is answered by its originating POST"
+            );
+        });
+    }
+
+    #[test]
+    fn concurrent_null_id_posts_are_serialized_to_preserve_response_provenance() {
+        futures::executor::block_on(async {
+            let (registration_tx, mut registration_rx) = mpsc::unbounded();
+            let state = Arc::new(BridgeState { registration_tx });
+
+            let first_http_response = handle_post(
+                State(state.clone()),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "method": "example/first",
+                    "params": {}
+                })
+                .to_string(),
+            )
+            .await
+            .expect("first null-ID POST");
+            let second_http_response = handle_post(
+                State(state),
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": null,
+                    "method": "example/second",
+                    "params": {}
+                })
+                .to_string(),
+            )
+            .await
+            .expect("second null-ID POST");
+
+            let first_registration = registration_rx.next().await.unwrap();
+            let second_registration = registration_rx.next().await.unwrap();
+            let mut server = RunningServer::new();
+            let (mut channel_tx, mut channel_rx) = mpsc::unbounded();
+
+            server
+                .handle_http_message(first_registration, &mut channel_tx)
+                .unwrap();
+            server
+                .handle_http_message(second_registration, &mut channel_tx)
+                .unwrap();
+            assert!(matches!(
+                channel_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Request(request)))
+                    if request.method.as_ref() == "example/first"
+                        && request.id == RequestId::Null
+            ));
+            assert!(
+                channel_rx.try_recv().is_err(),
+                "an overlapping null-ID request must wait for the first response"
+            );
+
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(TransportFrame::Single(
+                        RawJsonRpcMessage::response(
+                            RequestId::Null,
+                            Ok(serde_json::json!({ "source": "first" })),
+                        ),
+                    ))
+                    .is_none()
+            );
+            server.activate_pending_calls(&mut channel_tx).unwrap();
+            assert!(matches!(
+                channel_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Request(request)))
+                    if request.method.as_ref() == "example/second"
+                        && request.id == RequestId::Null
+            ));
+
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(TransportFrame::Single(
+                        RawJsonRpcMessage::response(
+                            RequestId::Null,
+                            Ok(serde_json::json!({ "source": "second" })),
+                        ),
+                    ))
+                    .is_none()
+            );
+
+            assert!(matches!(
+                single_sse_message(first_http_response).await,
+                RawJsonRpcMessage::Response(RpcResponse::Result {
+                    id: RequestId::Null,
+                    result,
+                    ..
+                }) if result == serde_json::json!({ "source": "first" })
+            ));
+            assert!(matches!(
+                single_sse_message(second_http_response).await,
+                RawJsonRpcMessage::Response(RpcResponse::Result {
+                    id: RequestId::Null,
+                    result,
+                    ..
+                }) if result == serde_json::json!({ "source": "second" })
+            ));
+        });
+    }
+
+    #[test]
+    fn unidentified_batch_posts_are_serialized_to_preserve_response_provenance() {
+        futures::executor::block_on(async {
+            fn unidentified_batch(method: &str) -> TransportFrame {
+                TransportFrame::parse_json(
+                    &serde_json::json!([
+                        {
+                            "jsonrpc": "2.0",
+                            "method": method,
+                            "params": {}
+                        },
+                        17
+                    ])
+                    .to_string(),
+                )
+            }
+
+            fn grouped_response(source: &str) -> TransportFrame {
+                TransportFrame::Batch(
+                    agent_client_protocol::TransportBatch::from_messages([
+                        RawJsonRpcMessage::response(
+                            RequestId::Null,
+                            Ok(serde_json::json!({ "source": source })),
+                        ),
+                    ])
+                    .expect("grouped response is non-empty"),
+                )
+            }
+
+            let mut server = RunningServer::new();
+            let (mut channel_tx, mut channel_rx) = mpsc::unbounded();
+            let (first_tx, mut first_rx) = mpsc::unbounded();
+            let (second_tx, mut second_rx) = mpsc::unbounded();
+
+            let first_frame = unidentified_batch("example/first");
+            let second_frame = unidentified_batch("example/second");
+            let expected_first_frame = first_frame.to_json().unwrap();
+            let expected_second_frame = second_frame.to_json().unwrap();
+            server
+                .handle_http_message(
+                    HttpMessage::Frame {
+                        http_request_id: uuid::Uuid::new_v4(),
+                        frame: first_frame,
+                        request_ids: Vec::new(),
+                        response_tx: Some(first_tx),
+                    },
+                    &mut channel_tx,
+                )
+                .unwrap();
+            server
+                .handle_http_message(
+                    HttpMessage::Frame {
+                        http_request_id: uuid::Uuid::new_v4(),
+                        frame: second_frame,
+                        request_ids: Vec::new(),
+                        response_tx: Some(second_tx),
+                    },
+                    &mut channel_tx,
+                )
+                .unwrap();
+
+            assert_eq!(
+                channel_rx.next().await.unwrap().to_json().unwrap(),
+                expected_first_frame
+            );
+            assert!(
+                channel_rx.try_recv().is_err(),
+                "a second unidentified batch must wait for the first response"
+            );
+
+            let callback = TransportFrame::Batch(
+                agent_client_protocol::TransportBatch::from_messages([
+                    RawJsonRpcMessage::notification("callback".into(), serde_json::json!({}))
+                        .unwrap(),
+                ])
+                .expect("callback batch is non-empty"),
+            );
+            assert!(server.try_dispatch_jsonrpc_message(callback).is_none());
+            assert!(matches!(
+                first_rx.next().await,
+                Some(TransportFrame::Batch(_))
+            ));
+
+            let first_response = grouped_response("first");
+            let expected_first_response = first_response.to_json().unwrap();
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(first_response)
+                    .is_none()
+            );
+            assert_eq!(
+                first_rx.next().await.unwrap().to_json().unwrap(),
+                expected_first_response
+            );
+
+            server.activate_pending_calls(&mut channel_tx).unwrap();
+            assert_eq!(
+                channel_rx.next().await.unwrap().to_json().unwrap(),
+                expected_second_frame
+            );
+
+            let second_response = grouped_response("second");
+            let expected_second_response = second_response.to_json().unwrap();
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(second_response)
+                    .is_none()
+            );
+            assert_eq!(
+                second_rx.next().await.unwrap().to_json().unwrap(),
+                expected_second_response
+            );
+        });
+    }
+
+    #[test]
+    fn late_response_to_disconnected_post_cannot_reach_reused_id() {
+        futures::executor::block_on(async {
+            fn request(method: &str) -> RpcRequest<RawJsonRpcParams> {
+                let RawJsonRpcMessage::Request(request) = RawJsonRpcMessage::request(
+                    method.to_owned(),
+                    serde_json::json!({}),
+                    RequestId::Null,
+                )
+                .unwrap() else {
+                    unreachable!("request constructor always returns a request")
+                };
+                request
+            }
+
+            let mut server = RunningServer::new();
+            let (mut channel_tx, mut channel_rx) = mpsc::unbounded();
+            let (first_tx, first_rx) = mpsc::unbounded();
+            let (second_tx, mut second_rx) = mpsc::unbounded();
+
+            server
+                .handle_http_message(
+                    HttpMessage::Request {
+                        http_request_id: uuid::Uuid::new_v4(),
+                        request: request("example/first"),
+                        response_tx: first_tx,
+                    },
+                    &mut channel_tx,
+                )
+                .unwrap();
+            server
+                .handle_http_message(
+                    HttpMessage::Request {
+                        http_request_id: uuid::Uuid::new_v4(),
+                        request: request("example/second"),
+                        response_tx: second_tx,
+                    },
+                    &mut channel_tx,
+                )
+                .unwrap();
+            assert!(matches!(
+                channel_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Request(request)))
+                    if request.method.as_ref() == "example/first"
+            ));
+            drop(first_rx);
+
+            let callback = TransportFrame::Single(
+                RawJsonRpcMessage::notification("callback".into(), serde_json::json!({})).unwrap(),
+            );
+            assert!(server.try_dispatch_jsonrpc_message(callback).is_none());
+            assert!(matches!(
+                second_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Notification(_)))
+            ));
+
+            let first_response = TransportFrame::Single(RawJsonRpcMessage::response(
+                RequestId::Null,
+                Ok(serde_json::json!({ "source": "first" })),
+            ));
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(first_response)
+                    .is_none()
+            );
+            server.activate_pending_calls(&mut channel_tx).unwrap();
+            assert!(matches!(
+                channel_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Request(request)))
+                    if request.method.as_ref() == "example/second"
+            ));
+
+            let second_response = TransportFrame::Single(RawJsonRpcMessage::response(
+                RequestId::Null,
+                Ok(serde_json::json!({ "source": "second" })),
+            ));
+            assert!(
+                server
+                    .try_dispatch_jsonrpc_message(second_response)
+                    .is_none()
+            );
+            assert!(matches!(
+                second_rx.next().await,
+                Some(TransportFrame::Single(RawJsonRpcMessage::Response(
+                    RpcResponse::Result { result, .. }
+                ))) if result == serde_json::json!({ "source": "second" })
             ));
         });
     }

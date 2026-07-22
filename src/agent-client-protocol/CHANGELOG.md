@@ -2,48 +2,65 @@
 
 ## [Unreleased]
 
-### Added
+### Curated 2.0 release notes
 
+**Added**
+
+- Accept incoming JSON-RPC batches in stable v1 and draft v2 connections, process entries
+  independently, and group replies into one response array. The SDK still sends requests and
+  notifications individually.
 - Allow mapped `SentRequest` values to be consumed without implementing `JsonRpcResponse`, and
   accept one-shot mappers.
 
-### Changed
+**Breaking and changed**
 
-- **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary and remove the hidden
-  `FramedChannel` compatibility path. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+- **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary instead of carrying
+  individual message results. Public frame types are cloneable, and `TransportBatch` exposes
+  owned entry iteration. See the [2.0 migration guide].
 - **Breaking:** Rename `ResponseRouter` response methods to use routing terminology and return
-  borrowed `RequestId` values from response and request handles. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  borrowed `RequestId` values from response and request handles. See the [2.0 migration guide].
 - **Breaking:** Remove ambiguous JSON-RPC error-response and dispatch-conversion helpers, and
-  require `Dispatch` notification types to implement `JsonRpcNotification`. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  require `Dispatch` notification types to implement `JsonRpcNotification`. In particular,
+  remove `ConnectionTo::send_error_notification` and `Dispatch::respond_with_error`: JSON-RPC
+  notifications never receive responses. Make `TypeNotification` role-independent and construct
+  it without a connection. See the [2.0 migration guide].
 - **Breaking:** Replace cloneable dynamic-handler registrations with `DynamicHandlerGuard` and
   use `detach()` to keep handlers registered without leaking a connection handle. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  [2.0 migration guide].
 - **Breaking:** Rename `Builder::with_responder` to `with_runner` to describe background
-  connection tasks separately from JSON-RPC response handles. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  connection tasks separately from JSON-RPC response handles. See the [2.0 migration guide].
 - **Breaking:** Rename `MatchDispatch::if_message` to `if_dispatch` and
-  `MatchDispatchFrom::if_message_from` to `if_dispatch_from`. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  `MatchDispatchFrom::if_message_from` to `if_dispatch_from`. See the [2.0 migration guide].
 - **Breaking:** Return borrowed identifiers, connection handles, modes, and metadata from
   `McpConnectionTo` and `ActiveSession`; remove `acp_url` and rename `connection_to` to
-  `connection`. See the [2.0 migration guide](../../md/migration_v2.0.md).
+  `connection`. See the [2.0 migration guide].
 - **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
-  fields and session/stream internals, and removing `util::both`. See the
-  [2.0 migration guide](../../md/migration_v2.0.md).
+  fields and session/stream internals, and removing `util::both`. See the [2.0 migration guide].
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
   `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
-  an object.
+  an object. See the [2.0 migration guide].
 - **Breaking:** Remove the deprecated `zed_claude_code` and `zed_codex` constructors and the
-  `google_gemini` convenience constructor from `AcpAgent`.
+  `google_gemini` convenience constructor from `AcpAgent`. See the [2.0 migration guide].
+- Update `agent-client-protocol-schema` to 1.5.0. The stable v1 schema remains compatible; the
+  opt-in draft v2 API gains semantic newtypes, revised diff and terminal types, and generic
+  fallible conversion helpers. See the
+  [draft v2 migration notes](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html#draft-v2-schema-updates).
 
-### Fixed
+**Fixed**
 
-- Preserve JSON-RPC batch framing across component adapters, and suppress replies
-  to malformed response-shaped input.
+- Preserve JSON-RPC batch framing across component adapters, protocol routing, and tracing
+  bridges. Invalid call entries no longer abort relays, fully filtered response batches are not
+  serialized as empty arrays, and malformed response-only input is ignored rather than answered.
+- Complete a batched request with `Internal Error` when its handler drops the responder, so
+  completed sibling replies can flush; an explicit handler error still takes precedence.
+- Route response-dispatch handler errors to the pending local `SentRequest` instead of losing the
+  original error or sending protocol traffic in response to a response.
+- Let the version-selecting agent router ignore response-only frames before `initialize` and
+  preserve response-only entries beside a valid batched initialization.
+- Release abandoned v2 and v1 probe implementations before continuing a negotiated v1 fallback.
 - Preserve `MatchDispatchFrom` retry state across chained matchers.
+
+[2.0 migration guide]: https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html
 
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.2.0...v1.3.0) - 2026-07-20
 

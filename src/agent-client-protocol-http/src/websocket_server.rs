@@ -75,21 +75,15 @@ async fn run_ws(
                     Some(Ok(WsMessage::Text(text))) => {
                         let text_str = text.to_string();
                         trace!(connection_id = %connection_id, payload = %text_str, "Client → Agent: {} bytes", text_str.len());
-                        match TransportFrame::parse_json(&text_str) {
-                            Some(frame) => {
-                                if let TransportFrame::Single(parsed) = &frame
-                                    && let Some(sid) = session_id_from_message(parsed)
-                                    && let RawJsonRpcMessage::Request(req) = parsed {
-                                        trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
-                                    }
-                                if connection.send_frame_to_agent(frame).is_err() {
-                                    error!(connection_id = %connection_id, "Agent channel closed");
-                                    break;
-                                }
-                            }
-                            None => {
-                                trace!(connection_id = %connection_id, "Ignoring malformed response-shaped JSON-RPC frame");
-                            }
+                        let frame = TransportFrame::parse_json(&text_str);
+                        if let TransportFrame::Single(parsed) = &frame
+                            && let Some(sid) = session_id_from_message(parsed)
+                            && let RawJsonRpcMessage::Request(req) = parsed {
+                                trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
+                        }
+                        if connection.send_frame_to_agent(frame).is_err() {
+                            error!(connection_id = %connection_id, "Agent channel closed");
+                            break;
                         }
                     }
                     Some(Ok(WsMessage::Close(frame))) => {

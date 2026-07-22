@@ -2,6 +2,10 @@
 
 This guide explains how to move existing code to the programming model planned for `agent-client-protocol` `0.11`.
 
+> **Historical note:** later releases merged subprocess and stdio support into
+> `agent-client-protocol`. The examples below use the current import path where
+> that does not obscure the 0.11 migration itself.
+
 Throughout this guide:
 
 - **old API** = `agent-client-protocol` `0.10.x`
@@ -42,7 +46,7 @@ The main construction changes are:
 
 If you already have stdin/stdout or socket-like byte streams, wrap them with `ByteStreams::new(outgoing, incoming)`.
 
-If you are spawning subprocess agents, prefer `agent-client-protocol-tokio` over hand-rolled process wiring.
+If you are spawning subprocess agents, prefer the core crate's `AcpAgent` over hand-rolled process wiring.
 
 If you already have a reason to stay at the raw request/response level, you can still send `PromptRequest` directly with `cx.send_request(...)`; the session helpers are just the default migration path for most client code.
 
@@ -283,14 +287,14 @@ Most migrations to the `0.11` API can remove:
 
 When you need concurrency from a handler in `0.11`, use `cx.spawn(...)`.
 
-## 9. Prefer `agent-client-protocol-tokio` for subprocess agents
+## 9. Prefer `AcpAgent` for subprocess agents
 
 If your old client code spawned an agent with `tokio::process::Command`, the new stack has a higher-level helper for that. `AcpAgent` implements `ConnectTo<Client>` and takes care of spawning the process and wiring up its stdio:
 
 ```rust
 use agent_client_protocol as acp;
 use acp::schema::{InitializeRequest, ProtocolVersion};
-use agent_client_protocol_tokio::AcpAgent;
+use agent_client_protocol::AcpAgent;
 use std::str::FromStr;
 
 #[tokio::main]

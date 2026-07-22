@@ -30,8 +30,12 @@ version_group = "acp"
 name = "agent-client-protocol-polyfill"
 version_group = "acp"
 
-# rmcp is a public dependency, so this crate's major version tracks rmcp's
-# major releases independently of the rest of the workspace.
+# This crate publicly exposes types from both rmcp and agent-client-protocol.
+# A major-version change in either public dependency therefore requires a
+# major release here. Keep it outside the `acp` version group because its
+# version need not equal the core version, but verify dependency-only release
+# proposals manually: core 1.x -> 2.x requires rmcp 2.x -> 3.x even if
+# release-plz initially classifies the manifest update as a patch.
 [[package]]
 name = "agent-client-protocol-rmcp"
 

@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -162,6 +162,7 @@ struct InitializingV1Client {
     expected_session_id: &'static str,
     implementation_name: &'static str,
     client_capabilities: Option<v1::ClientCapabilities>,
+    previous_clients_dropped: Vec<Arc<AtomicBool>>,
 }
 
 impl InitializingV1Client {
@@ -170,6 +171,7 @@ impl InitializingV1Client {
             expected_session_id,
             implementation_name: "agent-client-protocol-test",
             client_capabilities: None,
+            previous_clients_dropped: Vec::new(),
         }
     }
 
@@ -181,11 +183,17 @@ impl InitializingV1Client {
             expected_session_id,
             implementation_name,
             client_capabilities: None,
+            previous_clients_dropped: Vec::new(),
         }
     }
 
     fn with_client_capabilities(mut self, client_capabilities: v1::ClientCapabilities) -> Self {
         self.client_capabilities = Some(client_capabilities);
+        self
+    }
+
+    fn expect_previous_client_dropped(mut self, dropped: Arc<AtomicBool>) -> Self {
+        self.previous_clients_dropped.push(dropped);
         self
     }
 }
@@ -195,6 +203,7 @@ impl ConnectTo<Agent> for InitializingV1Client {
         let expected_session_id = self.expected_session_id;
         let implementation_name = self.implementation_name;
         let client_capabilities = self.client_capabilities;
+        let previous_clients_dropped = self.previous_clients_dropped;
         Client
             .builder()
             .connect_with(agent, async move |cx| {
@@ -207,6 +216,12 @@ impl ConnectTo<Agent> for InitializingV1Client {
 
                 let initialize = cx.send_request(request).block_task().await?;
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                for dropped in previous_clients_dropped {
+                    assert!(
+                        dropped.load(Ordering::SeqCst),
+                        "each abandoned protocol client must be dropped before v1 continues"
+                    );
+                }
 
                 let session = cx
                     .send_request(v1::NewSessionRequest::new(cwd()?))
@@ -256,6 +271,33 @@ impl ConnectTo<Agent> for ExpectingV2InitializeErrorClient {
 
 struct InitializingV2Client {
     expected_session_id: &'static str,
+}
+
+struct DropTrackedClient<C> {
+    client: C,
+    dropped: Arc<AtomicBool>,
+}
+
+impl<C> DropTrackedClient<C> {
+    fn new(client: C, dropped: Arc<AtomicBool>) -> Self {
+        Self { client, dropped }
+    }
+}
+
+struct DropFlag(Arc<AtomicBool>);
+
+impl Drop for DropFlag {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+impl<C: ConnectTo<Agent>> ConnectTo<Agent> for DropTrackedClient<C> {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let Self { client, dropped } = self;
+        let _drop_flag = DropFlag(dropped);
+        client.connect_to(agent).await
+    }
 }
 
 impl InitializingV2Client {
@@ -891,20 +933,30 @@ async fn client_protocol_connector_reuses_matching_connection_before_v1_fallback
 -> Result<(), Error> {
     let connections = Arc::new(AtomicUsize::new(0));
     let agent_connections = Arc::clone(&connections);
+    let v2_client_dropped = Arc::new(AtomicBool::new(false));
+    let v1_drop_observer = Arc::clone(&v2_client_dropped);
+    let v2_drop_observer = Arc::clone(&v2_client_dropped);
 
     Client
         .protocol_connector()
-        .with_v1(|| {
-            InitializingV1Client::new("v1-reused-session").with_client_capabilities(
-                v1::ClientCapabilities::new().session(
-                    v1::ClientSessionCapabilities::new().config_options(
-                        v1::SessionConfigOptionsCapabilities::new()
-                            .boolean(v1::BooleanConfigOptionCapabilities::new()),
+        .with_v1(move || {
+            InitializingV1Client::new("v1-reused-session")
+                .with_client_capabilities(
+                    v1::ClientCapabilities::new().session(
+                        v1::ClientSessionCapabilities::new().config_options(
+                            v1::SessionConfigOptionsCapabilities::new()
+                                .boolean(v1::BooleanConfigOptionCapabilities::new()),
+                        ),
                     ),
-                ),
+                )
+                .expect_previous_client_dropped(Arc::clone(&v1_drop_observer))
+        })
+        .with_v2(move || {
+            DropTrackedClient::new(
+                InitializingV2Client::new("v2-client-should-not-continue"),
+                Arc::clone(&v2_drop_observer),
             )
         })
-        .with_v2(|| InitializingV2Client::new("v2-client-should-not-continue"))
         .connect_to(move || {
             let connection_number = agent_connections.fetch_add(1, Ordering::SeqCst) + 1;
             let initialize_connection_number = connection_number;
@@ -943,6 +995,7 @@ async fn client_protocol_connector_reuses_matching_connection_before_v1_fallback
         .await?;
 
     assert_eq!(connections.load(Ordering::SeqCst), 1);
+    assert!(v2_client_dropped.load(Ordering::SeqCst));
     Ok(())
 }
 
@@ -950,16 +1003,39 @@ async fn client_protocol_connector_reuses_matching_connection_before_v1_fallback
 async fn client_protocol_connector_reconnects_before_v1_fallback() -> Result<(), Error> {
     let connections = Arc::new(AtomicUsize::new(0));
     let agent_connections = Arc::clone(&connections);
+    let v1_factory_calls = Arc::new(AtomicUsize::new(0));
+    let v1_factory_call_counter = Arc::clone(&v1_factory_calls);
+    let v2_client_dropped = Arc::new(AtomicBool::new(false));
+    let v2_drop_tracker = Arc::clone(&v2_client_dropped);
+    let v2_drop_observer = Arc::clone(&v2_client_dropped);
+    let v1_probe_dropped = Arc::new(AtomicBool::new(false));
+    let v1_probe_drop_tracker = Arc::clone(&v1_probe_dropped);
+    let v1_probe_drop_observer = Arc::clone(&v1_probe_dropped);
 
     Client
         .protocol_connector()
-        .with_v1(|| {
-            InitializingV1Client::with_implementation_name(
+        .with_v1(move || {
+            let factory_call = v1_factory_call_counter.fetch_add(1, Ordering::SeqCst);
+            let mut client = InitializingV1Client::with_implementation_name(
                 "v1-reconnected-session",
                 "v1-reconnected-client",
+            );
+            if factory_call == 1 {
+                client = client
+                    .expect_previous_client_dropped(Arc::clone(&v2_drop_observer))
+                    .expect_previous_client_dropped(Arc::clone(&v1_probe_drop_observer));
+            } else {
+                assert_eq!(factory_call, 0, "v1 factory should be called exactly twice");
+            }
+
+            DropTrackedClient::new(client, Arc::clone(&v1_probe_drop_tracker))
+        })
+        .with_v2(move || {
+            DropTrackedClient::new(
+                InitializingV2Client::new("v2-client-should-not-continue"),
+                Arc::clone(&v2_drop_tracker),
             )
         })
-        .with_v2(|| InitializingV2Client::new("v2-client-should-not-continue"))
         .connect_to(move || {
             let connection_number = agent_connections.fetch_add(1, Ordering::SeqCst) + 1;
             let initialize_connection_number = connection_number;
@@ -1003,6 +1079,9 @@ async fn client_protocol_connector_reconnects_before_v1_fallback() -> Result<(),
         .await?;
 
     assert_eq!(connections.load(Ordering::SeqCst), 2);
+    assert_eq!(v1_factory_calls.load(Ordering::SeqCst), 2);
+    assert!(v2_client_dropped.load(Ordering::SeqCst));
+    assert!(v1_probe_dropped.load(Ordering::SeqCst));
     Ok(())
 }
 
@@ -1378,7 +1457,7 @@ async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Err
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn protocol_router_ignores_filtered_response_batch_before_initialize() -> Result<(), Error> {
+async fn protocol_router_ignores_retained_response_batch_before_initialize() -> Result<(), Error> {
     use tokio::io::{AsyncWriteExt as _, BufReader};
 
     let v1_agent = Agent.builder().on_receive_request(
@@ -1419,6 +1498,104 @@ async fn protocol_router_ignores_filtered_response_batch_before_initialize() -> 
     let response = read_wire_json(&mut client_reader).await?;
     assert_eq!(response["id"], 1);
     assert!(response.get("result").is_some(), "{response:?}");
+
+    client_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_ignores_retained_standalone_response_before_initialize()
+-> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let v1_agent = Agent.builder().on_receive_request(
+        async |initialize: v1::InitializeRequest, responder, _cx| {
+            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let agent = Agent.protocol_router().with_v1(v1_agent);
+
+    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut client_reader = BufReader::new(client_reader);
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "result": null,
+            "error": { "code": -32603, "message": "Internal error" },
+        }),
+    )
+    .await?;
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": json_value(v1_initialize_request(ProtocolVersion::V1))?,
+        }),
+    )
+    .await?;
+
+    let response = read_wire_json(&mut client_reader).await?;
+    assert_eq!(response["id"], 1);
+    assert!(response.get("result").is_some(), "{response:?}");
+
+    client_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_rejection_does_not_answer_malformed_response_entries() -> Result<(), Error>
+{
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let agent = Agent.protocol_router().with_v1(Agent.builder());
+    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut client_reader = BufReader::new(client_reader);
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!([
+            17,
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "result": null,
+                "error": { "code": -32603, "message": "Internal error" },
+            }
+        ]),
+    )
+    .await?;
+
+    let response = read_wire_json(&mut client_reader).await?;
+    let responses = response
+        .as_array()
+        .expect("invalid batch entry should receive a response array");
+    assert_eq!(responses.len(), 1);
+    assert!(responses[0]["id"].is_null());
+    assert_eq!(responses[0]["error"]["code"], -32600);
 
     client_writer
         .shutdown()

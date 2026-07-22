@@ -7,11 +7,12 @@ The crates are found in `src/*`. Each crate's `README.md` and `CHANGELOG.md` des
 ## Crate Layout
 
 - `agent-client-protocol` – Core protocol SDK (roles, connections, handlers, schema)
-- `agent-client-protocol-tokio` – Tokio utilities (process spawning, stdio transports)
+- `agent-client-protocol-http` – HTTP/SSE and WebSocket transports
 - `agent-client-protocol-rmcp` – Integration with the `rmcp` crate
 - `agent-client-protocol-cookbook` – Usage patterns rendered as rustdoc
 - `agent-client-protocol-derive` – Proc macros
 - `agent-client-protocol-conductor` – Conductor binary and library for proxy chains
+- `agent-client-protocol-polyfill` – Compatibility proxy implementations
 - `agent-client-protocol-test` – Shared test utilities and fixtures
 - `agent-client-protocol-trace-viewer` – Interactive sequence diagram viewer
 - `yopo` – "You Only Prompt Once" example client
@@ -80,7 +81,6 @@ Common scopes for this repository (typically the crate name without the `agent-c
 
 - `acp` – Core protocol changes
 - `conductor` – Conductor-specific changes
-- `tokio` – Tokio utility changes
 - `rmcp` – rmcp integration changes
 - `cookbook` – Cookbook patterns and docs
 - `trace-viewer` – Trace viewer changes

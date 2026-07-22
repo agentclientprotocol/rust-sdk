@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Curated release notes
+
+- **Breaking change:** Upgrade to `agent-client-protocol` 2.x. Conductor components and the core
+  handlers/types they expose must be migrated together.
+- **Breaking change:** Rename the public `ConductorResponder` background task to
+  `ConductorRunner`, matching the core runner API it implements.
+- **Fixed:** Preserve JSON-RPC batch framing when conductor tracing is enabled.
+- **Documentation:** Remove references to the retired MCP bridge CLI mode and
+  `serve()` API.
+
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v1.2.0...agent-client-protocol-conductor-v1.3.0) - 2026-07-20
 
 ### Other

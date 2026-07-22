@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+### Curated release notes
 
-- Preserve JSON-RPC batch frames through the MCP-over-ACP HTTP bridge and keep
-  malformed POST errors correlated with their originating HTTP requests.
+- **Breaking:** Upgrade to `agent-client-protocol` 2.x. Polyfill components and the core
+  handlers/types they connect must be migrated together.
+- **Changed:** Align the bridge background-task terminology with the core runner APIs.
+- **Documentation:** Update legacy v1 MCP-over-ACP conductor composition examples for the current
+  constructor and distinguish it from the draft native MCP-over-ACP transport.
+- **Fixed:** Preserve JSON-RPC batch frames through the legacy MCP-over-ACP HTTP bridge, answer
+  malformed calls on their originating POST, and ignore malformed response-shaped input.
+- **Fixed:** Serialize overlapping request IDs (including `id: null`) and response-bearing batches
+  without identifiable request IDs, and retain active correlations after an HTTP caller
+  disconnects, preventing late or concurrent responses from being delivered to the wrong POST.
 
 ## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v1.0.0...agent-client-protocol-polyfill-v1.0.1) - 2026-06-29
 

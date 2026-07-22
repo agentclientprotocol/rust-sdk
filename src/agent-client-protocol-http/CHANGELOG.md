@@ -2,10 +2,19 @@
 
 ## [Unreleased]
 
-### Fixed
+### Curated release notes
 
-- Preserve incoming JSON-RPC batch frames and grouped responses across HTTP and WebSocket
+- **Breaking:** Upgrade to `agent-client-protocol` 2.x. Transport implementations and the core
+  handlers/types they connect must be migrated together.
+- **Fixed:** Preserve incoming JSON-RPC batch frames and grouped responses across HTTP and WebSocket
   transports, including session-aware HTTP routing.
+- **Fixed:** Keep call-bearing and invalid-request batch POSTs in peer order while allowing
+  response-only frames, including malformed response-shaped values, to bypass a
+  pending request when completing an SSE callback.
+- **Fixed:** Allow an initial HTTP batch whose first call-shaped entry is `initialize`
+  to create a connection and return its success or rejection as one grouped
+  JSON-RPC response, ignoring any leading response-only entries and buffering
+  sibling side traffic for the connection stream until initialization completes.
 
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.2.0...agent-client-protocol-http-v1.3.0) - 2026-07-20
 

@@ -15,13 +15,14 @@ This repository is the official **Rust SDK** for ACP. It provides crates for bui
 **Core SDK**
 
 - [`agent-client-protocol`](./src/agent-client-protocol/) – Roles (Client, Agent, Proxy, Conductor), connection builders, handlers, and protocol types.
-- [`agent-client-protocol-tokio`](./src/agent-client-protocol-tokio/) – Tokio utilities for spawning agent processes and wiring stdio transports.
+- [`agent-client-protocol-http`](./src/agent-client-protocol-http/) – HTTP/SSE and WebSocket transports.
 - [`agent-client-protocol-rmcp`](./src/agent-client-protocol-rmcp/) – Integration with the [`rmcp`](https://docs.rs/rmcp) MCP SDK.
 - [`agent-client-protocol-derive`](./src/agent-client-protocol-derive/) – Derive macros used by the core crate.
 
 **Proxy orchestration**
 
 - [`agent-client-protocol-conductor`](./src/agent-client-protocol-conductor/) – Binary and library that manages chains of proxy components.
+- [`agent-client-protocol-polyfill`](./src/agent-client-protocol-polyfill/) – Compatibility proxies, including bridging legacy `acp:` MCP declarations for agents that cannot consume them directly.
 - [`agent-client-protocol-trace-viewer`](./src/agent-client-protocol-trace-viewer/) – Interactive sequence-diagram viewer for conductor trace files.
 
 **Patterns, examples, and testing**
@@ -37,12 +38,12 @@ This repository is the official **Rust SDK** for ACP. It provides crates for bui
 
 ## Integrations
 
-- [Schema](./schema/schema.json)
+- [Protocol schema and documentation](https://agentclientprotocol.com/)
 - [Agents](https://agentclientprotocol.com/overview/agents)
 - [Clients](https://agentclientprotocol.com/overview/clients)
 - Official Libraries
   - **Kotlin**: [`acp-kotlin`](https://github.com/agentclientprotocol/kotlin-sdk) – supports JVM, other targets are in progress
-  - **Rust**: [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) - See [examples/agent.rs](https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/agent.rs) and [examples/client.rs](https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/client.rs)
+  - **Rust**: [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) - See the [agent](./src/agent-client-protocol/examples/simple_agent.rs) and [client](./src/agent-client-protocol/examples/yolo_one_shot_client.rs) examples
   - **TypeScript**: [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) - See [examples/](https://github.com/agentclientprotocol/typescript-sdk/tree/main/src/examples)
 - [Community Libraries](https://agentclientprotocol.com/libraries/community)
 

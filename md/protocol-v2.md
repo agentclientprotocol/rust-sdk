@@ -12,24 +12,12 @@ is a versioning experiment, not just an unstable method family.
 
 ## JSON-RPC batches
 
-The standard `Lines`, `ByteStreams`, and `Stdio` transports accept incoming
-JSON-RPC batch arrays. They process each entry independently, preserve valid
-entries when a sibling is invalid, and collect all response-bearing entries
-into one response array after the batch completes. An empty array receives one
-`Invalid Request` response object, while a notification-only batch receives no
-response. Incoming response arrays are routed entry by entry using their request
-IDs; malformed response-like siblings are ignored rather than answered.
-
-This support lives in the shared transport layer and therefore also works in
-v1 mode as a compatibility extension. The SDK does not initiate batches of
-requests or notifications. It only writes a batch array when responding to a
-batch call received from the peer; requests received individually continue to
-receive individual response objects.
-
-ACP peers should still send lifecycle-sensitive calls individually. For
-compatibility, the agent protocol router accepts `initialize` as the first
-entry of an incoming batch and preserves that batch when handing the connection
-to the selected v1 or v2 implementation.
+Batch framing is a shared JSON-RPC transport feature, not a v2-only protocol
+feature. Both v1 and v2 accept incoming batches, preserve them through relays,
+and group replies into one response array. The SDK does not originate batches
+of requests or notifications. See [Transport Architecture: JSON-RPC Batch
+Behavior](./transport-architecture.md#json-rpc-batch-behavior) for the complete
+rules.
 
 By default, `Client.builder()` and `Agent.builder()` continue to expose the
 stable v1 API and advertise protocol v1. To use the v2 API for a connection,
@@ -49,7 +37,7 @@ Client
     .connect_with(agent_transport, async |cx| {
         let initialize = cx
             .send_request(v2::InitializeRequest::new(
-                ProtocolVersion::V1,
+                ProtocolVersion::V2,
                 implementation(),
             ))
             .block_task()
@@ -102,7 +90,7 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 That means v1 and v2 implementations still need separate handlers.
 `Agent.v2()` and `Client.v2()` are v2-only. While protocol v2 stabilizes, the
 `unstable_protocol_v2` crate feature also exposes `Agent.protocol_router()` and
-`Client.protocol_router()` for composing version-specific implementations.
+`Client.protocol_connector()` for composing version-specific implementations.
 
 Agents can add protocol implementations independently, which makes it easy for
 applications built with v2 support to control v2 rollout with a runtime feature
@@ -153,39 +141,45 @@ The protocol router reads the initial `initialize` request, selects the
 highest configured protocol version that is compatible with the requested
 version, and then hands the connection to that implementation. If only v2 is
 configured, v1 clients are rejected without changing the fluent API. The router
-does not convert messages between v1 and v2 after routing.
+does not convert messages between v1 and v2 after routing. For compatibility,
+the initial frame may be a batch whose first call-shaped entry is `initialize`;
+the router preserves the complete frame when handing it to the selected
+implementation. Response-only frames before initialization are ignored.
 
-Clients use the same fluent shape:
+Clients use a connector because fallback may require opening a new transport.
+Both client implementations and the agent transport are factories:
 
-```rust
-use agent_client_protocol::{Client, ConnectTo};
+```rust,ignore
+use agent_client_protocol::Client;
 
-# fn v1_client() -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> {
-#     Client.builder()
-# }
-# fn v2_client() -> impl agent_client_protocol::ConnectTo<agent_client_protocol::Agent> {
-#     Client.v2()
-# }
-# async fn run(agent_transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
-# let enable_protocol_v2 = true;
-let client = Client.protocol_router().with_v1(v1_client());
+let connector = Client
+    .protocol_connector()
+    .with_v1(|| v1_client())
+    .with_v2(|| v2_client());
 
-let client = if enable_protocol_v2 {
-    client.with_v2(v2_client())
-} else {
-    client
-};
-
-client
-    .connect_to(agent_transport)
-    .await?;
-# Ok(())
-# }
+connector.connect_to(|| open_agent_transport()).await?;
 ```
 
-The client router starts the highest configured implementation. If v2
-initialization negotiates v1 and a v1 implementation is configured, it switches
-to the local v1 client implementation and forwards the original initialize
-response. It does not send a second initialize request on the same connection.
-If v2 initialization is rejected, that error is surfaced to the v2 client
-implementation.
+The connector starts the highest configured implementation. If a successful v2
+initialize response negotiates v1 and a v1 implementation is configured, the
+connector starts the v1 implementation and compares the initialize metadata and
+capabilities it would send with the normalized v2 request already seen by the
+agent:
+
+- If they match exactly, the connector reuses the current agent connection and
+  delivers the original response to the v1 implementation with its request ID.
+  It does not send a second initialize request.
+- If they differ, the connector closes that connection, calls both factories
+  again as needed, and performs a fresh v1 initialization on a new agent
+  connection.
+- If the agent rejects the v2 initialize request, the error is surfaced. A
+  rejected initialize is not treated as permission to retry with v1.
+
+## Draft schema changes in schema 1.5
+
+The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 adds
+semantic newtypes for paths, media types, IDs, and cursors; renames
+`DiffPatch.diff` to `DiffPatch.text`; adds terminal state and output update
+types; and makes v1/v2 conversions fallible and generic. These are draft API
+changes rather than stable v1 wire changes. See [Migrating to
+v2.0](./migration_v2.0.md#draft-v2-schema-updates) for concrete source changes.

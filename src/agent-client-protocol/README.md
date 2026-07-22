@@ -19,13 +19,15 @@ enabling features like tool use, permission requests, and streaming responses.
 
 The most common use case is connecting to an existing ACP agent as a client:
 
-```rust
-use agent_client_protocol::{Client, Agent, ConnectTo};
+```rust,no_run
+use agent_client_protocol::{AcpAgent, Client, Result};
 use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 
+# async fn connect() -> Result<()> {
+let agent = AcpAgent::from_args(["my-agent"])?;
 Client.builder()
     .name("my-client")
-    .connect_with(transport, async |cx| {
+    .connect_with(agent, async |cx| {
         // Initialize the connection
         cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
             .block_task()
@@ -33,21 +35,24 @@ Client.builder()
 
         Ok(())
     })
-    .await?;
+    .await
+# }
 ```
 
 ## Learning More
 
 See the [crate documentation](https://docs.rs/agent-client-protocol) for:
 
-- **[Cookbook](https://docs.rs/agent-client-protocol/latest/agent_client_protocol/cookbook/)** — Patterns for building clients, proxies, and agents
+- **[Cookbook](https://docs.rs/agent-client-protocol-cookbook)** — Patterns for building clients, proxies, and agents
 - **[Examples](https://github.com/agentclientprotocol/rust-sdk/tree/main/src/agent-client-protocol/examples)** — Working code you can run
 
 ## Related Crates
 
-- **[agent-client-protocol-tokio](../agent-client-protocol-tokio/)** — Tokio utilities for spawning agent processes
+- **[agent-client-protocol-http](../agent-client-protocol-http/)** — HTTP/SSE and WebSocket transports
 - **[agent-client-protocol-rmcp](../agent-client-protocol-rmcp/)** — MCP tool builders and `rmcp` integration
 - **[agent-client-protocol-derive](../agent-client-protocol-derive/)** — Derive macros for JSON-RPC traits
+- **[agent-client-protocol-conductor](../agent-client-protocol-conductor/)** — Proxy-chain orchestration
+- **[agent-client-protocol-polyfill](../agent-client-protocol-polyfill/)** — Compatibility proxies, including MCP-over-ACP bridging
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 
 ## Contribution Policy

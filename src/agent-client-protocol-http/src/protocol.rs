@@ -27,6 +27,13 @@ pub(crate) fn is_initialize_request(msg: &RawJsonRpcMessage) -> bool {
     matches!(msg, RawJsonRpcMessage::Request(req) if req.method.as_ref() == "initialize")
 }
 
+pub(crate) fn is_response_only_shape(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        !object.contains_key("method")
+            && (object.contains_key("result") || object.contains_key("error"))
+    })
+}
+
 pub(crate) fn method_for_message(msg: &RawJsonRpcMessage) -> Option<&str> {
     match msg {
         RawJsonRpcMessage::Request(req) => Some(req.method.as_ref()),

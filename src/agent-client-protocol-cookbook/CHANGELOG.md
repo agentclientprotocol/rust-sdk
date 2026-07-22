@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Curated release notes
+
+- **Changed:** Align the cookbook release and examples with `agent-client-protocol` 2.x.
+- **Documentation:** Update permission, streaming, MCP server, and conductor examples
+  for the 2.0 APIs.
+
 ## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v1.1.0...agent-client-protocol-cookbook-v1.2.0) - 2026-07-07
 
 ### Added
