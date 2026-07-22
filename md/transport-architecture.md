@@ -21,9 +21,10 @@ The architecture separates two distinct responsibilities:
    - Method dispatch to handlers
    - Error handling
 
-2. **Transport Layer**: Message movement
+2. **Transport and framing layer**: Message movement and JSON-RPC envelope validation
    - Reading/writing from I/O sources
    - Serialization/deserialization
+   - Preserving single-value and batch boundaries
    - Connection management
 
 This separation enables:
@@ -35,9 +36,10 @@ This separation enables:
 
 ### The `TransportFrame` Boundary
 
-The key insight is that `agent_client_protocol::RawJsonRpcMessage` provides a natural,
-transport-neutral boundary backed by the JSON-RPC envelope types from
-`agent-client-protocol-schema`:
+The public, transport-neutral boundary is `TransportFrame`. A frame contains
+one `RawJsonRpcMessage`, one structurally non-empty `TransportBatch`, or a
+malformed wire value that a relay must preserve. `RawJsonRpcMessage` is backed
+by the JSON-RPC envelope types from `agent-client-protocol-schema`:
 
 ```rust
 enum RawJsonRpcMessage {
@@ -47,16 +49,23 @@ enum RawJsonRpcMessage {
 }
 ```
 
-`RawJsonRpcMessage` sits inside the transport-neutral public frame type:
+At that boundary:
 
 - **Above**: Protocol layer works with application types (`OutgoingMessage`, `UntypedMessage`)
-- **Below**: Transport layer parses and serializes `RawJsonRpcMessage`
+- **Below**: Transport actors parse and serialize JSON-RPC frames
 - **Boundary**: `TransportFrame` carries one raw message, a structurally
   non-empty batch, or a malformed wire value retained for a relay
 - **In-process API**: `Channel::rx` and `Channel::tx` carry `TransportFrame`
   directly, so adapters cannot accidentally flatten a batch
 - **Failures**: I/O and connection failures are returned by the future driving
   a transport; they are not sent as channel entries
+
+`TransportFrame::parse_json` returns one frame for every input string, including
+malformed response-shaped input. Standalone malformed input retains its exact
+text. Batch entries retain their parsed JSON values, source order, and batch
+boundary, although serializing a relayed batch may normalize whitespace. The
+protocol actor, not the parser, decides whether malformed input requires a
+response.
 
 ## Actor Architecture
 
@@ -74,19 +83,19 @@ Output: mpsc::UnboundedSender<TransportFrame>
 Responsibilities:
 
 - Assign unique IDs to outgoing requests
-- Subscribe to reply_actor for response correlation
+- Register pending replies before sending requests
 - Convert application-level `OutgoingMessage` to protocol-level `RawJsonRpcMessage`
 
 #### Incoming Protocol Actor
 
 ```
 Input:  mpsc::UnboundedReceiver<TransportFrame>
-Output: Routes to reply_actor or registered handlers
+Output: Routes to pending request awaiters or registered handlers
 ```
 
 Responsibilities:
 
-- Route responses to reply_actor (matches by ID)
+- Route responses to pending request awaiters (matched by ID)
 - Route requests/notifications to registered handlers
 - Convert schema request/notification envelopes to `UntypedMessage` for handlers
 - Retain batch response slots while entries are dispatched
@@ -95,21 +104,22 @@ Responsibilities:
 - Emit nothing for a notification-only batch; answer an empty batch with one
   standalone `Invalid Request` response
 
-#### Reply Actor
+#### Pending Reply Registry
 
-Manages request/response correlation:
+The shared pending-reply registry manages request/response correlation:
 
 - Maintains map from request ID to response channel
 - When response arrives, delivers to waiting request
-- Unchanged from original design
 
 #### Task Actor
 
-Runs user-spawned concurrent tasks via `cx.spawn()`. Unchanged from original design.
+Runs user-spawned concurrent tasks via `cx.spawn()`.
 
 ### Transport Actors
 
-These actors are driven by physical transport components and have **zero knowledge** of protocol semantics:
+These actors are driven by physical transport components. They understand
+JSON-RPC framing and envelope validity, but they do not dispatch ACP methods or
+correlate responses with pending requests:
 
 #### Transport Outgoing Actor
 
@@ -140,8 +150,9 @@ For byte streams:
 - Parse a single message or a non-empty batch array
 - Retain the batch boundary while dispatching each `RawJsonRpcMessage` entry to
   the incoming protocol actor
-- Report malformed JSON once, and report invalid call-batch entries independently
-- Ignore malformed response-batch entries instead of answering a response
+- Retain malformed entries so relays can forward the complete frame
+- Leave call/response-shape classification and Error Response decisions to the
+  incoming protocol actor
 
 For in-process channels:
 
@@ -152,6 +163,44 @@ initiate requests and notifications as individual JSON-RPC messages; response
 arrays are correlated replies to batch calls received from the peer. Relays and
 instrumentation must forward frames intact so they do not change those wire
 semantics.
+
+## JSON-RPC Batch Behavior
+
+Batch support is shared by the stable v1 and draft v2 APIs because it belongs
+to the JSON-RPC transport layer:
+
+- `Lines`, `ByteStreams`, `Stdio`, and the HTTP/WebSocket adapters accept
+  incoming JSON-RPC arrays.
+- Entries are validated and dispatched independently and in source order. An
+  invalid call-shaped entry receives its own `Invalid Request` error without
+  preventing valid siblings from running.
+- Responses for response-bearing entries are collected and written as one
+  response array after dispatch completes. A notification-only batch receives
+  no response.
+- If a handler drops a batched request's `Responder`, the completed dispatch
+  supplies an `Internal Error` for that slot so completed siblings are not
+  stranded. Returning a handler error supplies that error instead. Dropping an
+  individual request's responder continues to send no automatic response.
+- An empty input array receives one standalone `Invalid Request` response; the
+  SDK never writes an empty response array.
+- Response entries are routed by request ID. The framing layer retains malformed
+  values, but the protocol actor ignores values that are response-shaped and
+  not call-shaped because a JSON-RPC response must not itself receive a
+  response; ambiguous call-shaped values still receive `Invalid Request`.
+- The SDK does not originate batches of requests or notifications. Individual
+  calls continue to receive individual responses; a response array is emitted
+  only for an incoming call batch.
+
+Relays, wrappers, and tracing bridges must forward the complete
+`TransportFrame`. Flattening a batch changes observable JSON-RPC semantics even
+when every individual message remains valid.
+
+Lifecycle-sensitive calls should normally be sent individually. As a
+compatibility measure, `AgentProtocolRouter` can select a v1 or v2 agent when
+the first call-shaped entry is `initialize`, while preserving the original
+frame for the selected implementation. Response-only frames received before
+initialization are ignored. `ClientProtocolConnector` starts each attempted
+client implementation with an individual `initialize` request.
 
 ## Message Flow
 
@@ -188,19 +237,21 @@ Transport Incoming Actor
     | TransportFrame (single message or incoming batch)
     |
 Incoming Protocol Actor
-    | - Route responses → reply_actor
+    | - Route responses → pending request awaiters
     | - Route requests → registered handlers
     v
-Handler or Reply Actor
+Handler or request awaiter
 ```
 
 ### Message Ordering in the Conductor
 
-When the conductor forwards messages between components, it must preserve send order to prevent race conditions. The conductor achieves this by routing all message forwarding through a central message queue.
-
-**Key insight**: While the transport actors operate independently, the **conductor's routing logic** serializes all forwarding decisions through a central event loop. This ensures that even though responses use a "fast path" (reply_actor with oneshot channels) at the transport level, the decision to forward them is serialized with notification forwarding at the protocol level.
-
-Without this serialization, responses could overtake notifications when both are forwarded through proxy chains, causing the client to receive messages out of order. See [Conductor Implementation](./conductor.md#message-ordering-invariant) for details.
+The conductor's central routing loop serializes forwarding decisions for
+incoming requests and notifications. Responses stay paired with the request
+contexts managed by the protocol layer and may take a direct response path.
+The conductor therefore does not promise a global total order across unrelated
+concurrent requests, but every underlying transport sink preserves the order in
+which complete frames are accepted. See [Conductor Routing and
+Ordering](./conductor.md#routing-and-ordering).
 
 ## Component Boundary
 
@@ -246,7 +297,8 @@ Benefits:
 
 - **Zero serialization overhead**: Messages passed by value
 - **Same-process efficiency**: Ideal for conductor with in-process proxies
-- **Full type safety**: No parsing errors possible
+- **Explicit wire state**: No serialize/parse round trip is required, while a
+  malformed value received from a physical transport remains an explicit frame
 
 ## Use Cases
 

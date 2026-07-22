@@ -18,7 +18,7 @@ struct ToolCall<P, R, MyRole: Role> {
     result_tx: futures::channel::oneshot::Sender<Result<R, Error>>,
 }
 
-struct ToolFnMutResponder<F, P, R, Counterpart: Role> {
+struct ToolFnMutRunner<F, P, R, Counterpart: Role> {
     func: F,
     call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
     tool_future_fn: Box<
@@ -32,7 +32,7 @@ struct ToolFnMutResponder<F, P, R, Counterpart: Role> {
 }
 
 impl<F, P, R, Counterpart, Counterpart1> RunWithConnectionTo<Counterpart1>
-    for ToolFnMutResponder<F, P, R, Counterpart>
+    for ToolFnMutRunner<F, P, R, Counterpart>
 where
     Counterpart: Role,
     Counterpart1: Role,
@@ -44,7 +44,7 @@ where
         self,
         _connection: ConnectionTo<Counterpart1>,
     ) -> Result<(), Error> {
-        let ToolFnMutResponder {
+        let ToolFnMutRunner {
             mut func,
             mut call_rx,
             tool_future_fn,
@@ -64,7 +64,7 @@ where
     }
 }
 
-struct ToolFnResponder<F, P, R, Counterpart: Role> {
+struct ToolFnRunner<F, P, R, Counterpart: Role> {
     func: F,
     call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
     tool_future_fn: Box<
@@ -75,7 +75,7 @@ struct ToolFnResponder<F, P, R, Counterpart: Role> {
 }
 
 impl<F, P, R, Counterpart, Counterpart1> RunWithConnectionTo<Counterpart1>
-    for ToolFnResponder<F, P, R, Counterpart>
+    for ToolFnRunner<F, P, R, Counterpart>
 where
     Counterpart: Role,
     Counterpart1: Role,
@@ -87,7 +87,7 @@ where
         self,
         _connection: ConnectionTo<Counterpart1>,
     ) -> Result<(), Error> {
-        let ToolFnResponder {
+        let ToolFnRunner {
             func,
             call_rx,
             tool_future_fn,
@@ -177,7 +177,7 @@ where
     }
 }
 
-/// Create a "single-threaded" function-backed MCP tool and its responder.
+/// Create a "single-threaded" function-backed MCP tool and its runner.
 ///
 /// Only one invocation of the tool can be running at a time.
 pub fn tool_fn_mut<P, Ret, F, Counterpart>(
@@ -208,7 +208,7 @@ where
             description: description.to_string(),
             call_tx,
         },
-        ToolFnMutResponder {
+        ToolFnMutRunner {
             func,
             call_rx,
             tool_future_fn: Box::new(tool_future_fn),
@@ -216,7 +216,7 @@ where
     )
 }
 
-/// Create a stateless function-backed MCP tool and its concurrent responder.
+/// Create a stateless function-backed MCP tool and its concurrent runner.
 pub fn tool_fn<P, Ret, F, Counterpart>(
     name: impl ToString,
     description: impl ToString,
@@ -246,7 +246,7 @@ where
             description: description.to_string(),
             call_tx,
         },
-        ToolFnResponder {
+        ToolFnRunner {
             func,
             call_rx,
             tool_future_fn: Box::new(tool_future_fn),

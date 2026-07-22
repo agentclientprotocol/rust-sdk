@@ -22,10 +22,10 @@
 //!
 //! let server = McpServer::from_rmcp("my-server", MyRmcpService::new);
 //!
-//! // Use as a handler
+//! // Attach it to a proxy and connect the proxy to its transport.
 //! Proxy.builder()
-//!     .with_handler(server)
-//!     .serve(client)
+//!     .with_mcp_server(server)
+//!     .connect_to(transport)
 //!     .await?;
 //! ```
 

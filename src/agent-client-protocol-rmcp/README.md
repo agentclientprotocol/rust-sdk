@@ -38,21 +38,25 @@ This crate is separate from `agent-client-protocol` to avoid coupling the core p
 
 - `agent-client-protocol` to remain focused on the ACP protocol
 - `agent-client-protocol-rmcp` to track `rmcp` updates independently
-- Breaking changes in `rmcp` only require updating this crate
+- Integrations to choose compatible `agent-client-protocol` and `rmcp` major
+  versions explicitly
 
 ## Versioning
 
-`rmcp` is a public dependency of this crate: its types appear in the public API (e.g. `McpServerExt::from_rmcp`). Each major release of `rmcp` therefore requires a major release of this crate, independent of the other `agent-client-protocol` crates.
+Both `agent-client-protocol` and `rmcp` are public dependencies of this crate:
+their types and traits appear in its public API. A source-incompatible major
+release of either dependency therefore requires a major release of this crate.
 
-| agent-client-protocol-rmcp | rmcp |
-| -------------------------- | ---- |
-| 2.x                        | 2.x  |
-| 1.x                        | 1.x  |
+| agent-client-protocol-rmcp | agent-client-protocol | rmcp |
+| -------------------------- | --------------------- | ---- |
+| 3.x                        | 2.x                   | 2.x  |
+| 2.x                        | 1.x                   | 2.x  |
+| 1.x                        | 1.x                   | 1.x  |
 
 ## Related Crates
 
 - **[agent-client-protocol](../agent-client-protocol/)** — Core ACP protocol types and traits
-- **[agent-client-protocol-tokio](../agent-client-protocol-tokio/)** — Tokio utilities for spawning agent processes
+- **[agent-client-protocol-conductor](../agent-client-protocol-conductor/)** — Proxy-chain orchestration
 
 ## License
 

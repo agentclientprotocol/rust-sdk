@@ -61,13 +61,37 @@ channel.tx.unbounded_send(TransportFrame::Single(message)).unwrap();
 ```
 
 `TransportFrame` distinguishes a valid single message, a non-empty `TransportBatch`, and an
-explicit malformed wire value. Transport I/O failures are returned by the future from
+explicit malformed wire value. Each batch contains public `TransportBatchEntry` values so a
+relay can retain invalid siblings without turning a protocol error into a transport failure.
+All three public frame types implement `Clone`, and `TransportBatch::into_entries()` provides an
+owned, source-order iterator.
+
+Transport I/O failures are returned by the future from
 `ConnectTo::into_channel_and_future`; they are never channel items. Components should preserve a
 received frame intact when relaying it so batch response grouping remains correct.
 
-The separate, hidden `FramedChannel` and `into_framed_channel_and_future` compatibility path no
-longer exist. Implement only `ConnectTo::connect_to`, optionally overriding
-`into_channel_and_future` for a direct channel adapter.
+`TransportFrame::parse_json` returns a frame directly for every input. It retains malformed
+response-shaped values so raw framed intermediaries can preserve them; protocol actors suppress
+replies to response-only shapes. Standalone malformed input keeps its exact source text. Batch
+entries retain parsed JSON values and source order, but reserialization may normalize whitespace.
+
+The standard line, byte-stream, stdio, HTTP, and WebSocket transports now accept incoming
+JSON-RPC batches in both protocol v1 and v2 mode. Entries are handled independently, replies are
+grouped into one response array, notification-only batches produce no reply, and an empty array
+produces one standalone `Invalid Request` response. Malformed entries that are response-shaped but
+not call-shaped are ignored because JSON-RPC responses must not themselves receive responses. The
+SDK does not initiate batches of requests or notifications. See
+[Transport Architecture](./transport-architecture.md#json-rpc-batch-behavior) for the full framing
+contract.
+
+Dropping a `Responder` for one request in a batch now produces an `Internal Error` fallback after
+dispatch completes, allowing completed sibling responses to flush. A handler error overrides the
+fallback with that error. The longstanding behavior for an individual request is unchanged:
+dropping its responder does not automatically send a response.
+
+Existing `ConnectTo` implementations that override `into_channel_and_future` must now return the
+frame-aware `Channel`. Most components need to implement only `ConnectTo::connect_to`; a direct
+channel adapter may still override `into_channel_and_future` to avoid an intermediate copy.
 
 ## Response routing uses routing terminology
 
@@ -82,6 +106,10 @@ Its methods have therefore been renamed:
 | `respond_with_internal_error` | `route_with_internal_error` |
 
 `Responder` still uses `respond*`, because it sends the response to an incoming request.
+
+If a catch-all response handler returns `Err`, that error is now routed to the local
+`SentRequest` awaiter. It is never serialized as a response to the peer's response. This replaces
+the misleading generic failure that previously appeared when the real interceptor error was lost.
 
 ## Request IDs remain typed
 
@@ -117,6 +145,15 @@ respond to an individual JSON-RPC request. The builder method now reflects that 
 | 1.x | 2.0 |
 | --- | --- |
 | `Builder::with_responder` | `Builder::with_runner` |
+
+The conductor crate applies the same terminology to its public background task:
+
+| 1.x | 2.0 |
+| --- | --- |
+| `agent_client_protocol_conductor::ConductorResponder` | `agent_client_protocol_conductor::ConductorRunner` |
+
+This is a type rename only; custom code that names the conductor task should update its imports
+and type references.
 
 ## Matchers use dispatch terminology
 
@@ -171,6 +208,35 @@ already-returned `NewSessionResponse` is no longer supported, so move request cu
 
 Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 `ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.
+
+## Draft v2 schema updates
+
+The optional `unstable_protocol_v2` surface now tracks
+`agent-client-protocol-schema` 1.5. Because this API is explicitly unstable, its source changes
+are included in the SDK 2.0 migration rather than treated as stable-v1 wire changes.
+
+- Many values that were plain `String` or `PathBuf` fields are semantic newtypes, including
+  `AbsolutePath`, `MediaType`, session/message/tool/terminal IDs, and list cursors. Construct them
+  with `.into()` or their `new` methods, and use `AsRef<Path>` or `as_ref()` when borrowing their
+  contents.
+- `v2::DiffPatch.diff` is now `text`. `DiffPatch::new(text)` remains the preferred constructor.
+- Terminal state is represented by `Terminal`, `TerminalUpdate`, `TerminalOutput`,
+  `TerminalOutputChunk`, and `TerminalExitStatus`. `SessionUpdate` also has terminal update and
+  output-chunk variants, so exhaustive matches must handle the new variants.
+- Conversion helpers are now generic and fallible. Replace `v2_to_v1(value)` and
+  `v1_to_v2(value)` with `try_v2_to_v1::<_, Target>(value)` and
+  `try_v1_to_v2::<_, Target>(value)`. Use `try_v2_to_v1_many::<_, Target>(value)` when one v2
+  update may become several v1 updates.
+- The bespoke `IntoV1`, `IntoV1Many`, and `IntoV2` conversion traits have been removed. Use the
+  standard `TryFrom`/`TryInto` traits for fallible conversions, `From`/`Into` for infallible
+  conversions, or the helper functions above.
+- `v2::SessionCapabilities::into_v1()` is now `try_into_v1_parts()`.
+
+## `SentRequest::map` accepts arbitrary output
+
+`SentRequest::map` can now consume a typed response into any output type; the mapped value no
+longer needs to implement `JsonRpcResponse`. The mapper may also be a one-shot closure. This is
+additive, so existing mapping code does not need to change.
 
 ## `AcpAgent` has its own process configuration
 

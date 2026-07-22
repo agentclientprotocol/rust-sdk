@@ -4,9 +4,9 @@ use uuid::Uuid;
 use crate::role::Role;
 use crate::{ConnectionTo, Dispatch, HandleDispatchFrom, Handled};
 
-/// Internal dyn-safe wrapper around `HandleMessageAs`
+/// Internal dyn-safe wrapper around [`HandleDispatchFrom`].
 ///
-/// The type parameter `R` is the role's counterpart (who we connect to).
+/// The type parameter is the role's counterpart (who we connect to).
 pub(crate) trait DynHandleDispatchFrom<Counterpart: Role>: Send {
     fn dyn_handle_dispatch_from(
         &mut self,

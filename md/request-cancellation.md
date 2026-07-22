@@ -99,5 +99,5 @@ next hop's request ID instead.
 
 ## Related Documentation
 
-- [Protocol Reference](./protocol.md) - The `_proxy/successor/*` envelope protocol
+- [Protocol Reference](./protocol.md) - The `_proxy/successor` envelope protocol
 - [agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol) - SDK API for sending, observing, and forwarding cancellations (see `concepts::cancellation`)

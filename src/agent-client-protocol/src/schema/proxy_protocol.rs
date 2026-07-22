@@ -83,7 +83,10 @@ pub const METHOD_MCP_CONNECT_REQUEST: &str = "_mcp/connect";
 #[derive(Debug, Clone, Serialize, Deserialize, crate::JsonRpcRequest)]
 #[request(method = "_mcp/connect", response = McpConnectResponse, crate = crate)]
 pub struct McpConnectRequest {
-    /// The ACP identifier for the server (e.g., "acp:uuid"), matching `McpServerAcp.id`
+    /// Legacy ACP identifier for the server (for example, `acp:uuid`).
+    ///
+    /// This `acp_id` belongs to the underscore-prefixed compatibility extension;
+    /// the draft native `McpServerAcp` transport uses `server_id` instead.
     pub acp_id: String,
 
     /// Optional `_meta` metadata.

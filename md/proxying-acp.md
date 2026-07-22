@@ -1,4 +1,9 @@
-# Composable Agents via P/ACP (Proxying ACP)
+# Original P/ACP Design Proposal (Historical)
+
+> This document records the original proxying design and is retained for
+> historical context. It contains method names and capability shapes that were
+> superseded during implementation. Do not use it as a wire-protocol
+> specification; see the current [Protocol Reference](./protocol.md) instead.
 
 # Elevator pitch
 

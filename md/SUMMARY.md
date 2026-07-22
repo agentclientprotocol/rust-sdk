@@ -11,6 +11,7 @@
 
 # Transports
 
+- [Transport Architecture](./transport-architecture.md)
 - [HTTP / WebSocket Transport](./http-transport.md)
 
 # Conductor (agent-client-protocol-conductor)
@@ -27,8 +28,7 @@
 
 - [Migrating to v2.0](./migration_v2.0.md)
 - [Migrating to v0.11](./migration_v0.11.x.md)
-- [P/ACP Specification](./proxying-acp.md)
 
 # Archive
 
-- [Transport Architecture](./transport-architecture.md)
+- [Original P/ACP Design Proposal](./proxying-acp.md)

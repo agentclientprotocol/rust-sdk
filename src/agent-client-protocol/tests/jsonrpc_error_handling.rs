@@ -8,11 +8,11 @@
 //! - Missing/invalid parameters
 
 use agent_client_protocol::{
-    ConnectionTo, Dispatch, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder,
-    SentRequest, role::UntypedRole,
+    Channel, ConnectionTo, Dispatch, Handled, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
+    RawJsonRpcMessage, Responder, SentRequest, TransportFrame, role::UntypedRole,
 };
 use expect_test::expect;
-use futures::{AsyncRead, AsyncWrite};
+use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -45,6 +45,68 @@ fn setup_test_streams() -> (
     let client_writer = client_writer.compat_write();
 
     (server_reader, server_writer, client_reader, client_writer)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn response_dispatch_handler_error_reaches_the_local_request_awaiter() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (transport, mut peer) = Channel::duplex();
+            let connection = UntypedRole
+                .builder()
+                .on_receive_dispatch(
+                    async |dispatch: Dispatch, _connection: ConnectionTo<UntypedRole>| {
+                        match dispatch {
+                            Dispatch::Response(..) => {
+                                Err(agent_client_protocol::Error::internal_error()
+                                    .data("response interceptor failed"))
+                            }
+                            message => Ok(Handled::No {
+                                message,
+                                retry: false,
+                            }),
+                        }
+                    },
+                    agent_client_protocol::on_receive_dispatch!(),
+                )
+                .connect_with(transport, async |connection| {
+                    let error = connection
+                        .send_request(SimpleRequest {
+                            message: "intercept me".into(),
+                        })
+                        .block_task()
+                        .await
+                        .expect_err("response handler error should fail the pending request");
+                    assert_eq!(
+                        error.data,
+                        Some(serde_json::json!("response interceptor failed"))
+                    );
+                    Ok(())
+                });
+
+            let peer = async move {
+                let frame = peer
+                    .rx
+                    .next()
+                    .await
+                    .expect("connection should send one request");
+                let TransportFrame::Single(RawJsonRpcMessage::Request(request)) = frame else {
+                    panic!("expected one standalone request");
+                };
+                peer.tx
+                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                        request.id,
+                        Ok(serde_json::json!({ "result": "ignored" })),
+                    )))
+                    .expect("connection should accept the test response");
+                Ok::<(), agent_client_protocol::Error>(())
+            };
+
+            futures::try_join!(connection, peer)?;
+            Ok::<(), agent_client_protocol::Error>(())
+        })
+        .await
+        .unwrap();
 }
 
 // ============================================================================

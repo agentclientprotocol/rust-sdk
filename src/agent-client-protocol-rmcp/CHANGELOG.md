@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Curated release notes
+
+- **Breaking change:** Upgrade the public `agent-client-protocol` dependency from 1.x to
+  2.x. Downstream code using core SDK types through this crate must migrate both
+  crates together; this requires `agent-client-protocol-rmcp` 3.0.0.
+- **Changed:** Align `McpServerBuilder`'s background-task terminology with the core
+  runner APIs.
+- **Documentation:** Replace removed handler and `serve()` APIs in examples and
+  document compatibility with both public dependencies.
+
 ## [2.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v2.0.0...agent-client-protocol-rmcp-v2.0.1) - 2026-07-20
 
 ### Other

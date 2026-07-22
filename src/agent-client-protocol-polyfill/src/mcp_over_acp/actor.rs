@@ -13,7 +13,7 @@ pub(crate) struct BridgeConnectionActor {
     /// How to connect to the MCP server (e.g., stdio or HTTP transport).
     transport: DynConnectTo<mcp::Client>,
 
-    /// Sender for messages back to the polyfill's bridge responder loop.
+    /// Sender for messages back to the polyfill's bridge runner loop.
     bridge_tx: mpsc::Sender<BridgeMessage>,
 
     /// Receiver for messages from the polyfill to forward to the MCP client.

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Curated 2.0 release notes
+
+**Added**
+
+- Support generic request, notification, and response types in the JSON-RPC derive macros.
+- Accept any Rust type expression, including generic types such as `Option<Response>`, in a
+  request's `response` attribute.
+
+**Changed**
+
+- Align this release line with `agent-client-protocol` 2.x; generated implementations target the
+  corresponding core API.
+- Update the macro parser to `syn` 3 and generate collision-resistant internal identifiers and
+  fully qualified support-crate paths.
+
 ## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v1.0.0...agent-client-protocol-derive-v1.0.1) - 2026-06-29
 
 ### Other

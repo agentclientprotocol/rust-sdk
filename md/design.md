@@ -1,6 +1,6 @@
 # Core Library Design
 
-This document describes the design of the `agent-client-protocol` crate and its companion crates (`agent-client-protocol-tokio`, `agent-client-protocol-rmcp`).
+This document describes the design of the `agent-client-protocol` crate and its companion transport and integration crates.
 
 For API usage, see the [rustdoc](https://docs.rs/agent-client-protocol) and [cookbook](https://docs.rs/agent-client-protocol-cookbook).
 
@@ -14,14 +14,12 @@ The core SDK. Provides:
 - **Connection builders** (`builder()`, `connect_to()`, `connect_with()`)
 - **Message handling** (`on_receive_request`, `on_receive_notification`, `on_receive_dispatch`)
 - **Protocol types** (`agent_client_protocol::schema::*`) - all ACP message types
+- **Transports and process launching** (`Channel`, `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`)
 - **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions
 
-### agent-client-protocol-tokio
+### agent-client-protocol-http
 
-Tokio-specific utilities:
-
-- **Process spawning** - spawn agent/proxy processes and connect via stdio
-- **Transport helpers** - convert tokio streams to ACP transports
+Optional HTTP/SSE and WebSocket clients and servers built on the core transport-frame boundary.
 
 ### agent-client-protocol-rmcp
 
@@ -89,7 +87,7 @@ sequenceDiagram
     participant Handlers
     participant UserCode
 
-    Transport->>DispatchLoop: incoming JSON-RPC message
+    Transport->>DispatchLoop: incoming TransportFrame
     DispatchLoop->>Handlers: try handlers in order
 
     alt Handler matches
@@ -165,9 +163,11 @@ This keeps request correctness separate from async cancellation policy. Applicat
 | -------------------------------------------- | ------------------------------------- |
 | `src/agent-client-protocol/src/role.rs`      | Role trait and type definitions       |
 | `src/agent-client-protocol/src/role/acp.rs`  | Client, Agent, Proxy, Conductor roles |
-| `src/agent-client-protocol/src/component.rs` | ConnectTo and Builder traits          |
-| `src/agent-client-protocol/src/handler.rs`   | Connection builder implementation     |
-| `src/agent-client-protocol/src/typed.rs`     | Dispatch type and handler matching    |
+| `src/agent-client-protocol/src/component.rs` | `ConnectTo` component abstraction     |
+| `src/agent-client-protocol/src/jsonrpc.rs`  | Connection builder and frame types    |
+| `src/agent-client-protocol/src/jsonrpc/handlers.rs` | Handler chain implementation  |
+| `src/agent-client-protocol/src/jsonrpc/transport_actor.rs` | Line framing and JSON parsing |
+| `src/agent-client-protocol/src/util/typed.rs` | Dispatch typing and matching helpers |
 | `src/agent-client-protocol/src/mcp_server/`  | Runtime-agnostic MCP server attachment |
 | `src/agent-client-protocol/src/concepts/`    | Rustdoc concept explanations          |
 

@@ -4,7 +4,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage, TransportFrame,
+    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage, TransportBatchEntry,
+    TransportFrame,
     schema::v1::{RequestId, Response as RpcResponse},
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
@@ -19,8 +20,8 @@ use thiserror::Error;
 use tracing::{debug, error, trace, warn};
 
 use crate::protocol::{
-    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_initialize_request, method_for_message,
-    method_requires_session_header, session_id_from_message,
+    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_initialize_request, is_response_only_shape,
+    method_for_message, method_requires_session_header, session_id_from_message,
 };
 
 #[derive(Debug, Error)]
@@ -227,6 +228,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
         };
 
+        let is_response_only = is_response_only_frame(&frame);
         let msg = match frame {
             TransportFrame::Single(message) => message,
             frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
@@ -235,7 +237,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                         .data("ACP HTTP transport: first message must be `initialize`"));
                 }
                 match state.prepare_frame_post(frame) {
-                    Ok(post) => response_posts.push(post),
+                    // Response-only batches answer SSE-delivered callbacks and
+                    // must not be blocked behind the request they answer.
+                    Ok(post) if is_response_only => response_posts.push(post),
+                    Ok(post) => ordered_posts.push(post),
                     Err(error) => {
                         error!("POST failed: {error}");
                         break Err(AcpError::internal_error().data(format!("POST: {error}")));
@@ -269,11 +274,10 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
         }
 
-        let is_response = matches!(msg, RawJsonRpcMessage::Response(_));
         match state.prepare_post(msg) {
             // Responses answer SSE-delivered callbacks and must not be blocked
             // behind a POST that may be waiting for that callback response.
-            Ok(post) if is_response => response_posts.push(post),
+            Ok(post) if is_response_only => response_posts.push(post),
             Ok(post) => ordered_posts.push(post),
             Err(e) => {
                 error!("POST failed: {e}");
@@ -284,6 +288,25 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
     lifecycle.close().await;
     result
+}
+
+fn is_response_only_frame(frame: &TransportFrame) -> bool {
+    match frame {
+        TransportFrame::Single(RawJsonRpcMessage::Response(_)) => true,
+        TransportFrame::Batch(batch) => batch.entries().all(|entry| match entry {
+            TransportBatchEntry::Message(RawJsonRpcMessage::Response(_)) => true,
+            TransportBatchEntry::Malformed { raw, .. } => is_response_only_shape(raw),
+            TransportBatchEntry::Message(
+                RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_),
+            ) => false,
+        }),
+        TransportFrame::Malformed { raw, .. } => {
+            serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
+        }
+        TransportFrame::Single(
+            RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_),
+        ) => false,
+    }
 }
 
 enum HttpLoopEvent {
@@ -573,14 +596,13 @@ impl ClientState {
 
         let body = response.text().await.map_err(|error| error.to_string())?;
         let message = match TransportFrame::parse_json(&body) {
-            Some(TransportFrame::Single(message)) => message,
-            Some(TransportFrame::Malformed { error, .. }) => {
+            TransportFrame::Single(message) => message,
+            TransportFrame::Malformed { error, .. } => {
                 return Err(format!("invalid initialize response: {error}"));
             }
-            Some(TransportFrame::Batch(_)) => {
+            TransportFrame::Batch(_) => {
                 return Err("initialize response must not be a JSON-RPC batch".to_string());
             }
-            None => return Err("initialize response was ignored as malformed".to_string()),
         };
 
         if matches!(
@@ -746,10 +768,7 @@ async fn read_sse(
         if payload.is_empty() {
             continue;
         }
-        let Some(frame) = TransportFrame::parse_json(&payload) else {
-            debug!("ignoring malformed response-shaped SSE payload");
-            continue;
-        };
+        let frame = TransportFrame::parse_json(&payload);
 
         if event_tx.unbounded_send(SseMessage { frame }).is_err() {
             return Err("upstream channel closed".to_string());
@@ -846,10 +865,7 @@ where
                     if discard_incoming {
                         continue;
                     }
-                    let Some(frame) = TransportFrame::parse_json(text.as_str()) else {
-                        debug!("ignoring malformed response-shaped WebSocket payload");
-                        continue;
-                    };
+                    let frame = TransportFrame::parse_json(text.as_str());
                     if incoming.unbounded_send(frame).is_err() {
                         debug!(
                             "upstream channel closed; discarding WS input while draining output"
@@ -960,6 +976,35 @@ mod tests {
         fn unwrap(self) -> RawJsonRpcMessage {
             into_single_message(self).unwrap()
         }
+    }
+
+    #[test]
+    fn malformed_response_shapes_bypass_only_when_the_whole_frame_is_response_only() {
+        let standalone_response = TransportFrame::parse_json(
+            r#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32603}}"#,
+        );
+        assert!(is_response_only_frame(&standalone_response));
+
+        let response_batch = TransportFrame::parse_json(
+            r#"[
+                {"jsonrpc":"2.0","id":1,"result":{}},
+                {"jsonrpc":"2.0","id":2,"result":{},"error":{"code":-32603}}
+            ]"#,
+        );
+        assert!(is_response_only_frame(&response_batch));
+
+        let scalar_batch = TransportFrame::parse_json(
+            r#"[
+                {"jsonrpc":"2.0","id":1,"result":{}},
+                17
+            ]"#,
+        );
+        assert!(!is_response_only_frame(&scalar_batch));
+
+        let call_shaped = TransportFrame::parse_json(
+            r#"{"jsonrpc":"2.0","id":1,"method":"custom/call","result":{}}"#,
+        );
+        assert!(!is_response_only_frame(&call_shaped));
     }
 
     impl WsSink for RecordingWsSink {
@@ -1599,6 +1644,131 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fork_sse_header.as_deref(), Some("forked-session"));
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn only_response_batches_bypass_ordered_posts() {
+        let slow_started = Arc::new(Notify::new());
+        let release_slow = Arc::new(Notify::new());
+        let call_batch_seen = Arc::new(Notify::new());
+        let response_batch_seen = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let slow_started = slow_started.clone();
+                let release_slow = release_slow.clone();
+                let call_batch_seen = call_batch_seen.clone();
+                let response_batch_seen = response_batch_seen.clone();
+                move |body: String| {
+                    let slow_started = slow_started.clone();
+                    let release_slow = release_slow.clone();
+                    let call_batch_seen = call_batch_seen.clone();
+                    let response_batch_seen = response_batch_seen.clone();
+                    async move {
+                        let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+                        if value.get("method").and_then(serde_json::Value::as_str)
+                            == Some("initialize")
+                        {
+                            return initialize_response().await.into_response();
+                        }
+                        if value.get("method").and_then(serde_json::Value::as_str)
+                            == Some("custom/slow")
+                        {
+                            slow_started.notify_one();
+                            release_slow.notified().await;
+                        } else if let Some(entries) = value.as_array() {
+                            if entries.iter().all(|entry| entry.get("method").is_none()) {
+                                response_batch_seen.notify_one();
+                            } else {
+                                call_batch_seen.notify_one();
+                            }
+                        }
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get(pending_sse)
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::notification("custom/slow".to_string(), json!({})).unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), slow_started.notified())
+            .await
+            .unwrap();
+
+        caller
+            .tx
+            .unbounded_send(TransportFrame::Batch(
+                TransportBatch::from_messages([
+                    RawJsonRpcMessage::notification("custom/one".to_string(), json!({})).unwrap(),
+                    RawJsonRpcMessage::notification("custom/two".to_string(), json!({})).unwrap(),
+                ])
+                .unwrap(),
+            ))
+            .unwrap();
+        assert!(
+            timeout(Duration::from_millis(100), call_batch_seen.notified())
+                .await
+                .is_err(),
+            "call-bearing batches must remain behind an earlier ordered POST"
+        );
+
+        caller
+            .tx
+            .unbounded_send(TransportFrame::Batch(
+                TransportBatch::from_messages([
+                    RawJsonRpcMessage::response(RequestId::Number(10), Ok(json!({}))),
+                    RawJsonRpcMessage::response(RequestId::Number(11), Ok(json!({}))),
+                ])
+                .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), response_batch_seen.notified())
+            .await
+            .expect("response-only batch should bypass the ordered POST queue");
+
+        release_slow.notify_one();
+        timeout(Duration::from_secs(1), call_batch_seen.notified())
+            .await
+            .expect("call-bearing batch should be sent after the earlier POST completes");
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)

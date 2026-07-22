@@ -44,7 +44,7 @@ pub enum TraceEvent {
 pub enum Protocol {
     /// Standard ACP protocol messages.
     Acp,
-    /// MCP-over-ACP messages (agent calling proxy's MCP server).
+    /// Legacy v1 MCP-over-ACP messages (agent calling a proxy's MCP server).
     Mcp,
 }
 
@@ -70,7 +70,7 @@ pub struct RequestEvent {
     /// JSON-RPC method name.
     pub method: String,
 
-    /// ACP session ID, if known (null before session/new completes).
+    /// ACP session ID, if known; omitted when no session context is available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
 
@@ -556,7 +556,6 @@ impl MessageInfo {
     ///
     /// This unwraps protocol wrappers to get the "real" message:
     /// - `_proxy/successor` messages are unwrapped to get the inner message
-    /// - `_proxy/initialize` messages are unwrapped to get `initialize`
     /// - `_mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).

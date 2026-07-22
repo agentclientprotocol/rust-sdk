@@ -50,7 +50,7 @@ use crate::role::HasPeer;
 use crate::role::Role;
 use crate::{Agent, Client, ConnectTo, RoleId};
 
-/// Raw JSON-RPC message transported by [`Channel`].
+/// One valid JSON-RPC message carried inside a [`TransportFrame`].
 ///
 /// This uses the JSON-RPC envelope types from `agent-client-protocol-schema`
 /// while keeping method params as raw, JSON-RPC-valid params at the transport boundary.
@@ -70,7 +70,7 @@ pub enum RawJsonRpcMessage {
 /// Malformed wire input is represented explicitly; transport failures are
 /// reported by the future that drives the transport rather than sent through a
 /// [`Channel`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TransportFrame {
     /// One valid JSON-RPC message.
     Single(RawJsonRpcMessage),
@@ -86,14 +86,14 @@ pub enum TransportFrame {
 }
 
 /// A structurally non-empty JSON-RPC batch retained across framed relays.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TransportBatch {
     first: TransportBatchEntry,
     rest: Vec<TransportBatchEntry>,
 }
 
 /// One entry in a [`TransportBatch`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum TransportBatchEntry {
     /// A valid JSON-RPC message.
     Message(RawJsonRpcMessage),
@@ -104,6 +104,17 @@ pub enum TransportBatchEntry {
         /// The JSON-RPC error associated with the malformed value.
         error: crate::Error,
     },
+}
+
+pub(crate) fn is_response_only_shape(value: &serde_json::Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        !object.contains_key("method")
+            && (object.contains_key("result") || object.contains_key("error"))
+    })
+}
+
+pub(crate) fn raw_is_response_only_shape(raw: &str) -> bool {
+    serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
 }
 
 impl TransportBatchEntry {
@@ -119,6 +130,7 @@ impl TransportBatchEntry {
         Self::Malformed { raw, error }
     }
 
+    #[cfg(test)]
     fn as_result(&self) -> Result<&RawJsonRpcMessage, &crate::Error> {
         match self {
             Self::Message(message) => Ok(message),
@@ -126,6 +138,7 @@ impl TransportBatchEntry {
         }
     }
 
+    #[cfg(any(feature = "unstable_protocol_v2", test))]
     fn into_result(self) -> Result<RawJsonRpcMessage, crate::Error> {
         match self {
             Self::Message(message) => Ok(message),
@@ -182,6 +195,11 @@ impl TransportBatch {
         std::iter::once(&mut self.first).chain(&mut self.rest)
     }
 
+    /// Consume this batch and iterate over its entries in source order.
+    pub fn into_entries(self) -> impl Iterator<Item = TransportBatchEntry> {
+        std::iter::once(self.first).chain(self.rest)
+    }
+
     /// Return the number of entries in this non-empty batch.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -197,27 +215,18 @@ impl TransportBatch {
         false
     }
 
-    #[cfg(any(feature = "unstable_protocol_v2", test))]
+    #[cfg(test)]
     pub(crate) fn iter_results(
         &self,
     ) -> impl Iterator<Item = Result<&RawJsonRpcMessage, &crate::Error>> {
         self.entries().map(TransportBatchEntry::as_result)
     }
 
+    #[cfg(any(feature = "unstable_protocol_v2", test))]
     pub(crate) fn into_results(
         self,
     ) -> impl Iterator<Item = Result<RawJsonRpcMessage, crate::Error>> {
-        std::iter::once(self.first)
-            .chain(self.rest)
-            .map(TransportBatchEntry::into_result)
-    }
-
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn first_result_mut(&mut self) -> Result<&mut RawJsonRpcMessage, crate::Error> {
-        match &mut self.first {
-            TransportBatchEntry::Message(message) => Ok(message),
-            TransportBatchEntry::Malformed { error, .. } => Err(error.clone()),
-        }
+        self.into_entries().map(TransportBatchEntry::into_result)
     }
 
     fn messages(&self) -> impl Iterator<Item = &RawJsonRpcMessage> {
@@ -523,17 +532,20 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 ///
 /// # Implementing Custom Handlers
 ///
-/// For advanced use cases, you can implement `HandleMessageAs` directly:
+/// For advanced use cases, you can implement [`HandleDispatchFrom`] directly:
 ///
-/// ```ignore
+/// ```no_run
+/// use agent_client_protocol::{
+///     Client, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled,
+/// };
+///
 /// struct MyHandler;
 ///
-/// impl HandleMessageAs<Agent> for MyHandler {
-///
-///     async fn handle_dispatch(
+/// impl HandleDispatchFrom<Client> for MyHandler {
+///     async fn handle_dispatch_from(
 ///         &mut self,
 ///         message: Dispatch,
-///         cx: ConnectionTo<Self::Role>,
+///         _connection: ConnectionTo<Client>,
 ///     ) -> Result<Handled<Dispatch>, Error> {
 ///         if message.method() == "my/custom/method" {
 ///             // Handle it
@@ -581,9 +593,10 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// Handlers are registered with a [`Builder`] and are called in order until
 /// one claims the message.
 ///
-/// The type parameter `R` is the role this handler plays - who I am.
-/// For an agent handler, `R = Agent` (I handle messages as an agent).
-/// For a client handler, `R = Client` (I handle messages as a client).
+/// The type parameter is the counterpart role that messages arrive from and
+/// that the supplied [`ConnectionTo`] addresses. An agent handler therefore
+/// implements `HandleDispatchFrom<Client>`, while a client handler implements
+/// `HandleDispatchFrom<Agent>`.
 pub trait HandleDispatchFrom<Counterpart: Role>: Send {
     /// Attempt to claim an incoming dispatch (request, notification, or response).
     ///
@@ -602,8 +615,9 @@ pub trait HandleDispatchFrom<Counterpart: Role>: Send {
     ///
     /// * `Ok(Handled::Yes)` if the message was claimed. It will not be propagated further.
     /// * `Ok(Handled::No(message))` if not; the (possibly changed) message will be passed to the remaining handlers.
-    /// * `Err` if processing fails. Requests receive an Error Response; notification
-    ///   and response errors are logged without a wire reply.
+    /// * `Err` if processing fails. Requests receive an Error Response, response
+    ///   errors are routed to the local request awaiter, and notification errors
+    ///   are logged without a wire reply.
     fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
@@ -1252,9 +1266,10 @@ impl<
 
     /// Register a handler for JSON-RPC requests of type `Req`.
     ///
-    /// Your handler receives two arguments:
+    /// Your handler receives three arguments:
     /// 1. The request (type `Req`)
-    /// 2. A [`Responder<R, Req::Response>`] for sending the response
+    /// 2. A [`Responder<Req::Response>`] for sending the response
+    /// 3. A [`ConnectionTo`] for the peer that sent the request
     ///
     /// The request context allows you to:
     /// - Send the response with [`Responder::respond`]
@@ -1263,23 +1278,21 @@ impl<
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// # use agent_client_protocol::UntypedRole;
-    /// # use agent_client_protocol::{Builder};
+    /// ```no_run
+    /// # use agent_client_protocol::{Agent, ConnectTo};
     /// # use agent_client_protocol::schema::v1::{PromptRequest, PromptResponse, SessionNotification};
-    /// # fn example<R: agent_client_protocol::Role>(connection: Builder<R, impl agent_client_protocol::HandleMessageAs<R>>) {
-    /// connection.on_receive_request(async |request: PromptRequest, responder, cx| {
+    /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
+    /// Agent.builder().on_receive_request(async |request: PromptRequest, responder, cx| {
     ///     // Send a notification while processing
     ///     let notif: SessionNotification = todo!();
     ///     cx.send_notification(notif)?;
     ///
-    ///     // Do some work...
-    ///     let result = todo!("process the prompt");
-    ///
     ///     // Send the response
     ///     let response: PromptResponse = todo!();
     ///     responder.respond(response)
-    /// }, agent_client_protocol::on_receive_request!());
+    /// }, agent_client_protocol::on_receive_request!())
+    /// .connect_to(transport)
+    /// .await
     /// # }
     /// ```
     ///
@@ -1562,14 +1575,15 @@ impl<
     /// - An error occurs
     ///
     /// Handler errors are normally contained: requests receive an Error Response,
-    /// while notification and response errors are logged without a wire reply.
+    /// response-handler errors are routed to the pending local request, and
+    /// notification errors are logged without a wire reply.
     ///
     /// On clean EOF, messages already accepted by the outgoing queue—including
     /// handler responses and close-callback notifications—are drained through
     /// the transport sink before this returns `Ok(())`.
     ///
-    /// The transport is responsible for serializing and deserializing [`RawJsonRpcMessage`]
-    /// values to/from the underlying I/O mechanism (byte streams, channels, etc.).
+    /// The transport boundary carries [`TransportFrame`] values. Physical stream adapters
+    /// serialize and deserialize frames, while channel-based components relay them directly.
     ///
     /// Use this mode when you only need to respond to incoming messages and don't need
     /// to initiate your own requests. If you need to send requests to the other side,
@@ -1802,12 +1816,6 @@ where
 {
     async fn connect_to(self, client: impl ConnectTo<R>) -> Result<(), crate::Error> {
         Builder::connect_to(self, client).await
-    }
-
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_builder) = Channel::duplex();
-        let future = Box::pin(Builder::connect_to(self, channel_for_builder));
-        (channel_for_caller, future)
     }
 }
 
@@ -2391,6 +2399,8 @@ impl ResponseDestination {
         let state = Arc::new(Mutex::new(BatchResponseState {
             remaining: slot_count,
             responses: (0..slot_count).map(|_| None).collect(),
+            abandoned: (0..slot_count).map(|_| None).collect(),
+            active_handler_attempts: (0..slot_count).map(|_| 0).collect(),
             dispatch_complete: false,
             emitted: false,
         }));
@@ -2413,6 +2423,38 @@ impl ResponseDestination {
         match self {
             Self::Individual => Some(TransportFrame::Single(response)),
             Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
+        }
+    }
+
+    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<TransportFrame> {
+        match self {
+            Self::Individual => None,
+            Self::Batch(slot) => slot.abandon(fallback).map(batch_response_frame),
+        }
+    }
+
+    fn is_batch(&self) -> bool {
+        matches!(self, Self::Batch(_))
+    }
+
+    fn begin_handler_attempt(
+        &self,
+        message_tx: OutgoingMessageTx,
+    ) -> Option<ResponderHandlerAttempt> {
+        let Self::Batch(slot) = self else {
+            return None;
+        };
+        slot.begin_handler_attempt();
+        Some(ResponderHandlerAttempt {
+            message_tx,
+            destination: self.clone(),
+        })
+    }
+
+    fn finish_handler_attempt(self) -> Option<TransportFrame> {
+        match self {
+            Self::Individual => None,
+            Self::Batch(slot) => slot.finish_handler_attempt().map(batch_response_frame),
         }
     }
 }
@@ -2448,7 +2490,20 @@ impl BatchDispatchCompletion {
             return None;
         }
         state.dispatch_complete = true;
+        for index in 0..state.responses.len() {
+            promote_abandoned_response(&mut state, index);
+        }
         take_completed_batch(&mut state).map(batch_response_frame)
+    }
+}
+
+fn promote_abandoned_response(state: &mut BatchResponseState, index: usize) {
+    if state.active_handler_attempts[index] == 0
+        && state.responses[index].is_none()
+        && let Some(fallback) = state.abandoned[index].take()
+    {
+        state.responses[index] = Some(fallback);
+        state.remaining -= 1;
     }
 }
 
@@ -2487,6 +2542,28 @@ impl std::fmt::Debug for BatchResponseSlot {
 }
 
 impl BatchResponseSlot {
+    fn begin_handler_attempt(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("batch response accumulator mutex poisoned");
+        state.active_handler_attempts[self.index] += 1;
+    }
+
+    fn finish_handler_attempt(self) -> Option<Vec<RawJsonRpcMessage>> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("batch response accumulator mutex poisoned");
+        state.active_handler_attempts[self.index] = state.active_handler_attempts[self.index]
+            .checked_sub(1)
+            .expect("handler attempt completion without a matching start");
+        if state.dispatch_complete {
+            promote_abandoned_response(&mut state, self.index);
+        }
+        take_completed_batch(&mut state)
+    }
+
     fn complete(self, response: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
         let mut state = self
             .state
@@ -2499,11 +2576,11 @@ impl BatchResponseSlot {
             );
             return None;
         }
-        let Some(slot) = state.responses.get_mut(self.index) else {
+        if self.index >= state.responses.len() {
             tracing::error!(index = self.index, "Invalid JSON-RPC batch response slot");
             return None;
-        };
-        if slot.is_some() {
+        }
+        if state.responses[self.index].is_some() {
             tracing::warn!(
                 index = self.index,
                 "Ignoring duplicate completion of JSON-RPC batch response slot"
@@ -2511,8 +2588,34 @@ impl BatchResponseSlot {
             return None;
         }
 
-        *slot = Some(response);
+        state.abandoned[self.index] = None;
+        state.responses[self.index] = Some(response);
         state.remaining -= 1;
+        take_completed_batch(&mut state)
+    }
+
+    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("batch response accumulator mutex poisoned");
+        if state.emitted || state.responses[self.index].is_some() {
+            return None;
+        }
+        if state.abandoned[self.index].is_some() {
+            tracing::warn!(
+                index = self.index,
+                "Ignoring duplicate abandonment of JSON-RPC batch response slot"
+            );
+            return None;
+        }
+
+        if state.dispatch_complete && state.active_handler_attempts[self.index] == 0 {
+            state.responses[self.index] = Some(fallback);
+            state.remaining -= 1;
+        } else {
+            state.abandoned[self.index] = Some(fallback);
+        }
         take_completed_batch(&mut state)
     }
 }
@@ -2520,6 +2623,8 @@ impl BatchResponseSlot {
 struct BatchResponseState {
     remaining: usize,
     responses: Vec<Option<RawJsonRpcMessage>>,
+    abandoned: Vec<Option<RawJsonRpcMessage>>,
+    active_handler_attempts: Vec<usize>,
     dispatch_complete: bool,
     emitted: bool,
 }
@@ -2531,6 +2636,80 @@ struct RequestReplyTarget {
     destination: ResponseDestination,
 }
 
+struct ResponderHandlerAttempt {
+    message_tx: OutgoingMessageTx,
+    destination: ResponseDestination,
+}
+
+impl Drop for ResponderHandlerAttempt {
+    fn drop(&mut self) {
+        if let Err(error) = send_raw_message(
+            &self.message_tx,
+            OutgoingMessage::BatchHandlerAttemptComplete {
+                destination: self.destination.clone(),
+            },
+        ) {
+            tracing::debug!(?error, "could not complete JSON-RPC batch handler attempt");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ResponseReplyTarget {
+    id: RequestId,
+    method: String,
+    sender: Arc<Mutex<Option<oneshot::Sender<ResponsePayload>>>>,
+}
+
+impl ResponseReplyTarget {
+    fn route(self, result: Result<serde_json::Value, crate::Error>) {
+        let sender = self
+            .sender
+            .lock()
+            .expect("response reply mutex poisoned")
+            .take();
+        let Some(sender) = sender else {
+            tracing::debug!(
+                method = %self.method,
+                id = ?self.id,
+                "response was already routed to its local awaiter"
+            );
+            return;
+        };
+
+        if sender
+            .send(ResponsePayload {
+                result,
+                ack_tx: None,
+            })
+            .is_err()
+        {
+            tracing::debug!(
+                method = %self.method,
+                id = ?self.id,
+                "dropped response because local receiver was gone"
+            );
+        }
+    }
+}
+
+enum HandlerErrorTarget {
+    Request(RequestReplyTarget),
+    Response(ResponseReplyTarget),
+}
+
+impl HandlerErrorTarget {
+    fn begin_handler_attempt(
+        &self,
+        message_tx: &OutgoingMessageTx,
+    ) -> Option<ResponderHandlerAttempt> {
+        match self {
+            Self::Request(target) => target.destination.begin_handler_attempt(message_tx.clone()),
+            Self::Response(_) => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 enum OutgoingMessage {
     /// Close the outgoing application queue and acknowledge after every
@@ -2540,6 +2719,19 @@ enum OutgoingMessage {
     /// Mark every entry in an incoming batch as dispatched. A completed
     /// response array may only be emitted after this barrier.
     BatchDispatchComplete { completion: BatchDispatchCompletion },
+
+    /// Finish arbitration for a handler attempt that may have dropped a batch
+    /// responder immediately before returning an error.
+    BatchHandlerAttemptComplete { destination: ResponseDestination },
+
+    /// Record that a claimed batch request dropped its responder without
+    /// replying. The fallback remains provisional while its handler attempt is
+    /// active so a handler error can supply the authoritative response.
+    AbandonedBatchResponse {
+        id: RequestId,
+        method: String,
+        destination: ResponseDestination,
+    },
 
     /// Send a request to the server.
     Request {
@@ -3303,9 +3495,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Register a dynamic message handler, used to intercept messages specific to a particular session
     /// or some similar modal thing.
     ///
-    /// Dynamic message handlers are called first for every incoming message.
-    ///
-    /// If they decline to handle the message, then the message is passed to the regular registered handlers.
+    /// Dynamic message handlers run after the handlers registered on [`Builder`] and before the
+    /// role's default handler. They receive messages that the builder handlers decline.
     ///
     /// The handler will stay registered until the returned registration guard is dropped.
     pub fn add_dynamic_handler(
@@ -3411,6 +3602,13 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 ///
 /// See the [Event Loop and Concurrency](Builder#event-loop-and-concurrency)
 /// section for more details.
+///
+/// # Drop behavior
+///
+/// Dropping a responder for a request that arrived in a batch completes that
+/// slot with an Internal Error, so one abandoned request cannot withhold valid
+/// sibling responses forever. A responder for an individual request retains
+/// the historical behavior: dropping it does not automatically send a reply.
 #[must_use]
 pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the request.
@@ -3430,6 +3628,47 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+
+    /// Completes an abandoned batch slot unless an explicit response disarms it.
+    drop_guard: ResponderDropGuard,
+}
+
+struct ResponderDropGuard {
+    message_tx: OutgoingMessageTx,
+    id: RequestId,
+    method: String,
+    destination: ResponseDestination,
+    armed: bool,
+}
+
+impl ResponderDropGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ResponderDropGuard {
+    fn drop(&mut self) {
+        if !self.armed || !self.destination.is_batch() {
+            return;
+        }
+
+        if let Err(error) = send_raw_message(
+            &self.message_tx,
+            OutgoingMessage::AbandonedBatchResponse {
+                id: self.id.clone(),
+                method: self.method.clone(),
+                destination: self.destination.clone(),
+            },
+        ) {
+            tracing::debug!(
+                id = ?self.id,
+                method = %self.method,
+                ?error,
+                "could not complete abandoned JSON-RPC batch response slot"
+            );
+        }
+    }
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -3457,6 +3696,13 @@ impl Responder<serde_json::Value> {
         let method_clone = method.clone();
         let cancellation = cancellation_registry.register(&id);
         let send_destination = destination.clone();
+        let drop_guard = ResponderDropGuard {
+            message_tx: message_tx.clone(),
+            id: id.clone(),
+            method: method.clone(),
+            destination: destination.clone(),
+            armed: true,
+        };
         Self {
             method,
             id,
@@ -3473,6 +3719,7 @@ impl Responder<serde_json::Value> {
                     },
                 )
             }),
+            drop_guard,
         }
     }
 
@@ -3521,13 +3768,15 @@ impl<T: JsonRpcResponse> Responder<T> {
     }
 
     /// Return a new Responder with a different method name.
-    pub fn wrap_method(self, method: String) -> Responder<T> {
+    pub fn wrap_method(mut self, method: String) -> Responder<T> {
+        self.drop_guard.method.clone_from(&method);
         Responder {
             method,
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
             send_fn: self.send_fn,
+            drop_guard: self.drop_guard,
         }
     }
 
@@ -3549,15 +3798,17 @@ impl<T: JsonRpcResponse> Responder<T> {
                 let t_value = wrap_fn(&method, input);
                 (self.send_fn)(t_value)
             }),
+            drop_guard: self.drop_guard,
         }
     }
 
     /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`).
     pub fn respond_with_result(
-        self,
+        mut self,
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
+        self.drop_guard.disarm();
         (self.send_fn)(response)
     }
 
@@ -3617,6 +3868,9 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
 
     /// Function to send the response to the waiting task.
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+
+    /// Shared route used to deliver a dispatch-handler error to the same waiter.
+    reply_target: ResponseReplyTarget,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
@@ -3642,8 +3896,12 @@ impl ResponseRouter<serde_json::Value> {
         sender: oneshot::Sender<ResponsePayload>,
         cancellation_disarm: SentRequestCancellationDisarm,
     ) -> Self {
-        let response_method = method.clone();
-        let response_id = id.clone();
+        let reply_target = ResponseReplyTarget {
+            id: id.clone(),
+            method: method.clone(),
+            sender: Arc::new(Mutex::new(Some(sender))),
+        };
+        let send_target = reply_target.clone();
         // A response for the request reached this router, so the request is
         // settled from the peer's perspective and a `$/cancel_request` could
         // only ever be redundant. Disarm immediately so handlers may retain
@@ -3654,21 +3912,10 @@ impl ResponseRouter<serde_json::Value> {
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                if sender
-                    .send(ResponsePayload {
-                        result: response,
-                        ack_tx: None,
-                    })
-                    .is_err()
-                {
-                    tracing::debug!(
-                        method = %response_method,
-                        id = ?response_id,
-                        "dropped response because local receiver was gone"
-                    );
-                }
+                send_target.route(response);
                 Ok(())
             }),
+            reply_target,
         }
     }
 
@@ -3728,6 +3975,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
                 let t_value = wrap_fn(&method, input);
                 (self.send_fn)(t_value)
             }),
+            reply_target: self.reply_target,
         }
     }
 
@@ -3950,10 +4198,15 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
         }
     }
 
-    fn request_reply_target(&self) -> Option<RequestReplyTarget> {
+    fn handler_error_target(&self) -> Option<HandlerErrorTarget> {
         match self {
-            Dispatch::Request(_, responder) => Some(responder.reply_target()),
-            Dispatch::Notification(_) | Dispatch::Response(_, _) => None,
+            Dispatch::Request(_, responder) => {
+                Some(HandlerErrorTarget::Request(responder.reply_target()))
+            }
+            Dispatch::Notification(_) => None,
+            Dispatch::Response(_, router) => {
+                Some(HandlerErrorTarget::Response(router.reply_target.clone()))
+            }
         }
     }
 

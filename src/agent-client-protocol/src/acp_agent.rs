@@ -778,20 +778,6 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             futures::future::Either::Right(((), main_race)) => main_race.await,
         }
     }
-
-    fn into_channel_and_future(
-        self,
-    ) -> (
-        crate::Channel,
-        crate::BoxFuture<'static, Result<(), crate::Error>>,
-    ) {
-        let (channel_for_caller, channel_for_agent) = crate::Channel::duplex();
-        let future = Box::pin(crate::ConnectTo::<Counterpart>::connect_to(
-            self,
-            channel_for_agent,
-        ));
-        (channel_for_caller, future)
-    }
 }
 
 impl AcpAgent {

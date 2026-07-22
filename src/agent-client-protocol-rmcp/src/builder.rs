@@ -44,14 +44,14 @@ use agent_client_protocol::{
 ///     .build();
 /// ```
 #[derive(Debug)]
-pub struct McpServerBuilder<Counterpart: Role, Responder>
+pub struct McpServerBuilder<Counterpart: Role, Runner>
 where
-    Responder: RunWithConnectionTo<Counterpart>,
+    Runner: RunWithConnectionTo<Counterpart>,
 {
     phantom: PhantomData<Counterpart>,
     name: String,
     data: McpToolRegistry<Counterpart>,
-    responder: Responder,
+    runner: Runner,
 }
 
 impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
@@ -60,14 +60,14 @@ impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
             name,
             phantom: PhantomData,
             data: McpToolRegistry::default(),
-            responder: NullRun,
+            runner: NullRun,
         }
     }
 }
 
-impl<Counterpart: Role, Responder> McpServerBuilder<Counterpart, Responder>
+impl<Counterpart: Role, Runner> McpServerBuilder<Counterpart, Runner>
 where
-    Responder: RunWithConnectionTo<Counterpart>,
+    Runner: RunWithConnectionTo<Counterpart>,
 {
     /// Set the server instructions that are provided to the client.
     #[must_use]
@@ -115,19 +115,19 @@ where
         Ok(self)
     }
 
-    /// Private fn: adds the tool but also adds a responder that will be
+    /// Private fn: adds the tool but also adds a runner that will be
     /// run while the MCP server is active.
-    fn tool_with_responder(
+    fn tool_with_runner(
         self,
         tool: impl McpTool<Counterpart> + 'static,
-        tool_responder: impl RunWithConnectionTo<Counterpart>,
+        tool_runner: impl RunWithConnectionTo<Counterpart>,
     ) -> McpServerBuilder<Counterpart, impl RunWithConnectionTo<Counterpart>> {
         let this = self.tool(tool);
         McpServerBuilder {
             phantom: PhantomData,
             name: this.name,
             data: this.data,
-            responder: ChainRun::new(this.responder, tool_responder),
+            runner: ChainRun::new(this.runner, tool_runner),
         }
     }
 
@@ -171,9 +171,9 @@ where
         Ret: JsonSchema + Serialize + 'static + Send,
         F: AsyncFnMut(P, McpConnectionTo<Counterpart>) -> Result<Ret, acp::Error> + Send,
     {
-        let (tool, responder) =
+        let (tool, runner) =
             acp::mcp_server::tool_fn_mut(name, description, func, tool_future_hack);
-        self.tool_with_responder(tool, responder)
+        self.tool_with_runner(tool, runner)
     }
 
     /// Convenience wrapper for defining a stateless tool that can run concurrently.
@@ -218,21 +218,21 @@ where
             + Sync
             + 'static,
     {
-        let (tool, responder) = acp::mcp_server::tool_fn(name, description, func, tool_future_hack);
-        self.tool_with_responder(tool, responder)
+        let (tool, runner) = acp::mcp_server::tool_fn(name, description, func, tool_future_hack);
+        self.tool_with_runner(tool, runner)
     }
 
     /// Create an MCP server from this builder.
     ///
     /// This builder can be attached to new sessions (see [`SessionBuilder::with_mcp_server`](`agent_client_protocol::SessionBuilder::with_mcp_server`))
     /// or served up as part of a proxy (see [`Builder::with_mcp_server`](`agent_client_protocol::Builder::with_mcp_server`)).
-    pub fn build(self) -> McpServer<Counterpart, Responder> {
+    pub fn build(self) -> McpServer<Counterpart, Runner> {
         McpServer::new(
             McpServerBuilt {
                 name: self.name,
                 data: Arc::new(self.data),
             },
-            self.responder,
+            self.runner,
         )
     }
 }

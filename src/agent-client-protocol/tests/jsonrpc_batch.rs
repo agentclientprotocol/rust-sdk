@@ -12,8 +12,9 @@ use std::sync::{
 use std::time::Duration;
 
 use agent_client_protocol::{
-    Agent, ByteStreams, ConnectTo, ConnectionTo, Error, JsonRpcMessage, JsonRpcNotification,
-    JsonRpcRequest, JsonRpcResponse, Responder,
+    Agent, ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom,
+    Handled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    RawJsonRpcMessage, Responder, TransportBatch, TransportBatchEntry, TransportFrame,
     role::{Role, UntypedRole},
     schema::ProtocolVersion,
     schema::v1,
@@ -124,6 +125,22 @@ impl JsonRpcMessage for TestNotification {
 
 impl JsonRpcNotification for TestNotification {}
 
+struct RetryErrorHandler;
+
+impl HandleDispatchFrom<UntypedRole> for RetryErrorHandler {
+    async fn handle_dispatch_from(
+        &mut self,
+        _message: Dispatch,
+        _connection: ConnectionTo<UntypedRole>,
+    ) -> Result<Handled<Dispatch>, Error> {
+        Err(Error::internal_error().data("retry handler error won"))
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "RetryErrorHandler"
+    }
+}
+
 fn start_server(
     notification_tx: mpsc::UnboundedSender<String>,
 ) -> (
@@ -142,13 +159,19 @@ fn start_server(
                    responder: Responder<TestResponse>,
                    _connection: ConnectionTo<UntypedRole>| {
                 if request.message == "handler error" {
-                    return Err(agent_client_protocol::Error::internal_error());
+                    return Err(
+                        agent_client_protocol::Error::internal_error().data("handler error won")
+                    );
                 }
                 if request.message == "respond then error" {
                     responder.respond(TestResponse {
                         result: "first response wins".into(),
                     })?;
                     return Err(agent_client_protocol::Error::internal_error());
+                }
+                if request.message == "drop responder" {
+                    drop(responder);
+                    return Ok(());
                 }
                 responder.respond(TestResponse {
                     result: format!("echo: {}", request.message),
@@ -346,6 +369,7 @@ async fn mixed_batch_returns_one_array_with_each_response_bearing_entry() {
                 .find(|response| response["id"] == json!(3))
                 .expect("failing request handler should receive an error");
             assert_eq!(handler_error["error"]["code"], json!(-32603));
+            assert_eq!(handler_error["error"]["data"], json!("handler error won"));
 
             write_json_line(
                 &mut peer_writer,
@@ -539,6 +563,184 @@ async fn incomplete_batch_withholds_partial_responses_without_blocking_standalon
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dropped_batch_responder_gets_internal_error_without_stranding_siblings() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (notification_tx, _notification_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) = start_server(notification_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!([
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 14,
+                        "method": "test/echo",
+                        "params": { "message": "drop responder" }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 15,
+                        "method": "test/echo",
+                        "params": { "message": "healthy sibling" }
+                    }
+                ]),
+            )
+            .await;
+
+            let response = read_json_line(&mut peer_reader).await;
+            let responses = response
+                .as_array()
+                .expect("both batch slots should complete in one response array");
+            assert_eq!(responses.len(), 2);
+
+            let abandoned = responses
+                .iter()
+                .find(|response| response["id"] == json!(14))
+                .expect("abandoned request should receive a fallback response");
+            assert_eq!(abandoned["error"]["code"], json!(-32603));
+            assert!(
+                abandoned["error"]["data"]
+                    .as_str()
+                    .is_some_and(|data| data.contains("dropped its responder"))
+            );
+
+            let healthy = responses
+                .iter()
+                .find(|response| response["id"] == json!(15))
+                .expect("healthy sibling response should not be stranded");
+            assert_eq!(
+                healthy["result"],
+                json!({ "result": "echo: healthy sibling" })
+            );
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retried_batch_handler_error_wins_over_dropped_responder_fallback() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (peer_writer, sdk_reader) = tokio::io::duplex(8192);
+            let (sdk_writer, peer_reader) = tokio::io::duplex(8192);
+            let transport = ByteStreams::new(sdk_writer.compat_write(), sdk_reader.compat());
+
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: TestRequest,
+                       responder: Responder<TestResponse>,
+                       connection: ConnectionTo<UntypedRole>| {
+                    match request.message.as_str() {
+                        "retry later" => Ok(Handled::No {
+                            message: (request, responder),
+                            retry: true,
+                        }),
+                        "register retry error" => {
+                            connection.add_dynamic_handler(RetryErrorHandler)?.detach();
+                            responder.respond(TestResponse {
+                                result: "retry handler registered".into(),
+                            })?;
+                            Ok(Handled::Yes)
+                        }
+                        message => {
+                            responder.respond(TestResponse {
+                                result: format!("echo: {message}"),
+                            })?;
+                            Ok(Handled::Yes)
+                        }
+                    }
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let server_task = tokio::task::spawn_local(server.connect_to(transport));
+            let mut peer_writer = peer_writer;
+            let mut peer_reader = BufReader::new(peer_reader);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!([
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 16,
+                        "method": "test/echo",
+                        "params": { "message": "retry later" }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 17,
+                        "method": "test/echo",
+                        "params": { "message": "healthy sibling" }
+                    }
+                ]),
+            )
+            .await;
+
+            // This standalone round trip is ordered after the original batch
+            // dispatch barrier, proving the retry happens after that barrier.
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 18,
+                    "method": "test/echo",
+                    "params": { "message": "barrier" }
+                }),
+            )
+            .await;
+            let barrier = read_json_line(&mut peer_reader).await;
+            assert_eq!(barrier["id"], json!(18));
+            assert_eq!(barrier["result"], json!({ "result": "echo: barrier" }));
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 19,
+                    "method": "test/echo",
+                    "params": { "message": "register retry error" }
+                }),
+            )
+            .await;
+
+            let first = read_json_line(&mut peer_reader).await;
+            let second = read_json_line(&mut peer_reader).await;
+            let (registration, batch) = if first.is_array() {
+                (second, first)
+            } else {
+                (first, second)
+            };
+            assert_eq!(registration["id"], json!(19));
+
+            let responses = batch
+                .as_array()
+                .expect("retried request and its sibling should remain grouped");
+            assert_eq!(responses.len(), 2);
+            let retry_error = responses
+                .iter()
+                .find(|response| response["id"] == json!(16))
+                .expect("retried request should receive an error");
+            assert_eq!(retry_error["error"]["code"], json!(-32603));
+            assert_eq!(
+                retry_error["error"]["data"],
+                json!("retry handler error won")
+            );
+
+            let sibling = responses
+                .iter()
+                .find(|response| response["id"] == json!(17))
+                .expect("healthy sibling response should be preserved");
+            assert_eq!(
+                sibling["result"],
+                json!({ "result": "echo: healthy sibling" })
+            );
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn all_invalid_nonempty_batch_returns_an_error_array_and_connection_stays_usable() {
     tokio::task::LocalSet::new()
         .run_until(async {
@@ -570,6 +772,117 @@ async fn all_invalid_nonempty_batch_returns_an_error_array_and_connection_stays_
             assert_eq!(standalone["id"], json!(14));
 
             finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_scalar_beside_malformed_response_gets_only_one_error() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (notification_tx, _notification_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) = start_server(notification_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!([
+                    17,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 91,
+                        "result": null,
+                        "error": { "code": -32603, "message": "Internal error" }
+                    }
+                ]),
+            )
+            .await;
+
+            let response = read_json_line(&mut peer_reader).await;
+            let responses = response
+                .as_array()
+                .expect("the invalid call-shaped entry should receive one response array");
+            assert_eq!(responses.len(), 1);
+            assert!(responses[0]["id"].is_null());
+            assert_eq!(responses[0]["error"]["code"], json!(-32600));
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 92,
+                    "method": "test/echo",
+                    "params": { "message": "after malformed response" }
+                }),
+            )
+            .await;
+            let standalone = read_json_line(&mut peer_reader).await;
+            assert!(standalone.is_object());
+            assert_eq!(standalone["id"], json!(92));
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_actor_ignores_response_shaped_malformed_public_frame_entries() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (server_transport, mut peer) = Channel::duplex();
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: TestRequest,
+                       responder: Responder<TestResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(TestResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let server_task = tokio::task::spawn_local(server.connect_to(server_transport));
+
+            let request = serde_json::from_value::<RawJsonRpcMessage>(json!({
+                "jsonrpc": "2.0",
+                "id": 94,
+                "method": "test/echo",
+                "params": { "message": "after retained response" }
+            }))
+            .expect("test request should be valid JSON-RPC");
+            let batch = TransportBatch::from_entries([
+                TransportBatchEntry::malformed(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": 93,
+                        "result": null,
+                        "error": { "code": -32603, "message": "Internal error" }
+                    }),
+                    Error::invalid_request(),
+                ),
+                TransportBatchEntry::message(request),
+            ])
+            .expect("test batch is non-empty");
+            peer.tx
+                .unbounded_send(TransportFrame::Batch(batch))
+                .expect("server should accept the test batch");
+
+            let frame = tokio::time::timeout(TIMEOUT, peer.rx.next())
+                .await
+                .expect("timed out waiting for the batch response")
+                .expect("server channel closed before responding");
+            let TransportFrame::Batch(batch) = frame else {
+                panic!("request sibling should receive one grouped batch response");
+            };
+            let response = serde_json::to_value(batch).expect("batch response should serialize");
+            let responses = response.as_array().expect("response should be an array");
+            assert_eq!(responses.len(), 1);
+            assert_eq!(responses[0]["id"], json!(94));
+
+            drop(peer);
+            tokio::time::timeout(TIMEOUT, server_task)
+                .await
+                .expect("server did not stop after channel close")
+                .expect("server task panicked")
+                .expect("server connection failed");
         })
         .await;
 }
@@ -929,9 +1242,19 @@ async fn response_batch_routes_two_pending_requests_by_id() {
                 )
                 .await;
 
-                // A malformed member of a response batch must not provoke an
-                // error response. The next outbound message is the request the
-                // client sends after both valid responses resolve.
+                // The scalar is still an invalid call-shaped batch member and
+                // receives an Invalid Request response. Valid response siblings
+                // are routed to their local awaiters rather than answered.
+                let invalid = read_json_line(&mut peer_reader).await;
+                let invalid = invalid
+                    .as_array()
+                    .expect("invalid sibling should receive one response array");
+                assert_eq!(invalid.len(), 1);
+                assert!(invalid[0]["id"].is_null());
+                assert_eq!(invalid[0]["error"]["code"], json!(-32600));
+
+                // The next outbound message is the request sent after both
+                // valid responses resolve.
                 let barrier = read_json_line(&mut peer_reader).await;
                 assert_eq!(barrier["method"], json!("test/echo"));
                 assert_eq!(barrier["params"]["message"], json!("barrier"));

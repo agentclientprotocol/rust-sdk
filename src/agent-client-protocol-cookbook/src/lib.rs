@@ -174,14 +174,15 @@ pub mod connecting_as_client {
     //! Client.builder()
     //!     .on_receive_request(async |req: RequestPermissionRequest, responder, _connection| {
     //!         // Auto-approve by selecting the first option (YOLO mode)
-    //!         let option_id = req.options.first().map(|opt| opt.id.clone());
-    //!         responder.respond(RequestPermissionResponse {
-    //!             outcome: match option_id {
-    //!                 Some(id) => RequestPermissionOutcome::Selected { option_id: id },
+    //!         let option_id = req.options.first().map(|opt| opt.option_id.clone());
+    //!         responder.respond(RequestPermissionResponse::new(
+    //!             match option_id {
+    //!                 Some(id) => RequestPermissionOutcome::Selected(
+    //!                     SelectedPermissionOutcome::new(id),
+    //!                 ),
     //!                 None => RequestPermissionOutcome::Cancelled,
-    //!             },
-    //!             meta: None,
-    //!         })
+    //!             }
+    //!         ))
     //!     }, agent_client_protocol::on_receive_request!())
     //!     .connect_with(transport, async |connection| { /* ... */ })
     //!     .await
@@ -263,28 +264,17 @@ pub mod building_an_agent {
     //! ```ignore
     //! .on_receive_request(async |req: PromptRequest, responder, connection| {
     //!     // Stream some text
-    //!     connection.send_notification(SessionNotification {
-    //!         session_id: req.session_id.clone(),
-    //!         update: SessionUpdate::Text(TextUpdate {
-    //!             text: "Hello, ".into(),
-    //!             // ...
-    //!         }),
-    //!         meta: None,
-    //!     })?;
+    //!     connection.send_notification(SessionNotification::new(
+    //!         req.session_id.clone(),
+    //!         SessionUpdate::AgentMessageChunk(ContentChunk::new("Hello, ".into())),
+    //!     ))?;
     //!
-    //!     connection.send_notification(SessionNotification {
-    //!         session_id: req.session_id.clone(),
-    //!         update: SessionUpdate::Text(TextUpdate {
-    //!             text: "world!".into(),
-    //!             // ...
-    //!         }),
-    //!         meta: None,
-    //!     })?;
+    //!     connection.send_notification(SessionNotification::new(
+    //!         req.session_id.clone(),
+    //!         SessionUpdate::AgentMessageChunk(ContentChunk::new("world!".into())),
+    //!     ))?;
     //!
-    //!     responder.respond(PromptResponse {
-    //!         stop_reason: StopReason::EndTurn,
-    //!         meta: None,
-    //!     })
+    //!     responder.respond(PromptResponse::new(StopReason::EndTurn))
     //! }, agent_client_protocol::on_receive_request!())
     //! ```
     //!
@@ -294,18 +284,23 @@ pub mod building_an_agent {
     //! or writing files), send a [`RequestPermissionRequest`]:
     //!
     //! ```ignore
-    //! let response = connection.send_request(RequestPermissionRequest {
-    //!     session_id: session_id.clone(),
-    //!     action: PermissionAction::Bash { command: "rm -rf /".into() },
-    //!     options: vec![
-    //!         PermissionOption { id: "allow".into(), label: "Allow".into() },
-    //!         PermissionOption { id: "deny".into(), label: "Deny".into() },
+    //! let response = connection.send_request(RequestPermissionRequest::new(
+    //!     session_id.clone(),
+    //!     ToolCallUpdate::new(
+    //!         "dangerous-command",
+    //!         ToolCallUpdateFields::new()
+    //!             .title("Run rm -rf /")
+    //!             .kind(ToolKind::Execute)
+    //!             .status(ToolCallStatus::Pending),
+    //!     ),
+    //!     vec![
+    //!         PermissionOption::new("allow", "Allow", PermissionOptionKind::AllowOnce),
+    //!         PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
     //!     ],
-    //!     meta: None,
-    //! }).block_task().await?;
+    //! )).block_task().await?;
     //!
     //! match response.outcome {
-    //!     RequestPermissionOutcome::Selected { option_id } if option_id == "allow" => {
+    //!     RequestPermissionOutcome::Selected(selected) if selected.option_id == "allow" => {
     //!         // User approved, proceed with action
     //!     }
     //!     _ => {
@@ -473,7 +468,7 @@ pub mod global_mcp_server {
     //!         agent_client_protocol::tool_fn!())
     //!     .build();
     //!
-    //! // The proxy component is generic over the MCP server's responder type
+    //! // The proxy component is generic over the MCP server's runner type
     //! struct MyProxy<R> {
     //!     mcp_server: McpServer<Conductor, R>,
     //! }
@@ -799,21 +794,12 @@ pub mod running_proxies_with_conductor {
     //! # Using the `agent-client-protocol-conductor` binary
     //!
     //! The simplest way to run a proxy is with the [`agent-client-protocol-conductor`] binary.
-    //! Configure it with a JSON file:
-    //!
-    //! ```json
-    //! {
-    //!   "proxies": [
-    //!     { "command": ["cargo", "run", "--bin", "my-proxy"] }
-    //!   ],
-    //!   "agent": { "command": ["claude-code", "--agent"] }
-    //! }
-    //! ```
-    //!
-    //! Then run:
+    //! Pass the proxy commands followed by the final agent command:
     //!
     //! ```bash
-    //! agent-client-protocol-conductor --config conductor.json
+    //! agent-client-protocol-conductor agent \
+    //!   "cargo run --bin my-proxy" \
+    //!   "claude-code --agent"
     //! ```
     //!
     //! # Using the conductor as a library
@@ -821,19 +807,20 @@ pub mod running_proxies_with_conductor {
     //! For more control, use [`agent-client-protocol-conductor`] as a library with the `ConductorImpl` type:
     //!
     //! ```ignore
+    //! use agent_client_protocol::{AcpAgent, ConnectTo};
     //! use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
     //!
     //! // Define your proxy as a ConnectTo<Conductor>
     //! let my_proxy = MyProxy::new();
     //!
-    //! // Spawn the agent process
-    //! let agent_process = agent_client_protocol::spawn_process("claude-code", &["--agent"]).await?;
+    //! // Configure the agent process
+    //! let agent = AcpAgent::from_args(["claude-code", "--agent"])?;
     //!
     //! // Create the conductor with your proxy chain
-    //! let conductor = ConductorImpl::new(ProxiesAndAgent {
-    //!     proxies: vec![Box::new(my_proxy)],
-    //!     agent: agent_process,
-    //! });
+    //! let conductor = ConductorImpl::new_agent(
+    //!     "my-conductor",
+    //!     ProxiesAndAgent::new(agent).proxy(my_proxy),
+    //! );
     //!
     //! // Run the conductor (it will accept client connections on stdin/stdout)
     //! conductor.connect_to(client_transport).await?;
@@ -855,5 +842,5 @@ pub mod running_proxies_with_conductor {
     //!
     //! [`agent-client-protocol-conductor`]: https://crates.io/crates/agent-client-protocol-conductor
     //! [`SuccessorMessage`]: agent_client_protocol::schema::SuccessorMessage
-    //! [`agent-client-protocol-conductor` tests]: https://github.com/anthropics/acp-rust-sdk/tree/main/src/agent-client-protocol-conductor/tests
+    //! [`agent-client-protocol-conductor` tests]: https://github.com/agentclientprotocol/rust-sdk/tree/main/src/agent-client-protocol-conductor/tests
 }

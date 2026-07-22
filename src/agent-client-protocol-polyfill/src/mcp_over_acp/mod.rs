@@ -1,11 +1,14 @@
-//! MCP-over-ACP polyfill proxy.
+//! Legacy v1 MCP-over-ACP polyfill proxy.
 //!
-//! This proxy bridges MCP-over-ACP transport for agents that don't support
+//! This proxy bridges the legacy v1 MCP-over-ACP transport for agents that don't support
 //! `mcpCapabilities.acp` natively. It sits in the proxy chain and:
 //!
 //! - Intercepts `NewSessionRequest` to transform `McpServer::Http` entries with `acp:` URLs
 //!   into localhost TCP bridges
 //! - Handles `_mcp/connect`, `_mcp/message`, `_mcp/disconnect` by routing through those bridges
+//!
+//! This extension is distinct from the draft native `McpServer::Acp` transport and
+//! its `mcp/*` methods.
 //!
 //! # Usage
 //!
@@ -16,7 +19,6 @@
 //! let conductor = ConductorImpl::new_agent(
 //!     "conductor",
 //!     ProxiesAndAgent::new(my_agent).proxy(McpOverAcpPolyfill::http()),
-//!     McpBridgeMode::default(),
 //! );
 //! ```
 
@@ -107,9 +109,9 @@ pub enum BridgeMode {
     Http,
 }
 
-/// MCP-over-ACP polyfill proxy.
+/// Legacy v1 MCP-over-ACP polyfill proxy.
 ///
-/// Bridges MCP-over-ACP transport for agents that don't support `mcpCapabilities.acp`.
+/// Bridges the legacy transport for agents that don't support `mcpCapabilities.acp`.
 #[derive(Debug)]
 pub struct McpOverAcpPolyfill {
     mode: BridgeMode,
@@ -144,7 +146,7 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
         Proxy
             .builder()
             .name("mcp-over-acp-polyfill")
-            .with_runner(BridgeResponder {
+            .with_runner(BridgeRunner {
                 bridge_tx: bridge_tx.clone(),
                 bridge_rx,
                 bridge_connections: HashMap::new(),
@@ -309,22 +311,22 @@ impl BridgeListeners {
     }
 }
 
-/// Responder that runs alongside the proxy, managing bridge state.
-struct BridgeResponder {
+/// Runner that manages bridge state alongside the proxy.
+struct BridgeRunner {
     bridge_tx: mpsc::Sender<BridgeMessage>,
     bridge_rx: mpsc::Receiver<BridgeMessage>,
     bridge_connections: HashMap<String, BridgeConnection>,
 }
 
-impl std::fmt::Debug for BridgeResponder {
+impl std::fmt::Debug for BridgeRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BridgeResponder")
+        f.debug_struct("BridgeRunner")
             .field("bridge_connections", &self.bridge_connections.len())
             .finish_non_exhaustive()
     }
 }
 
-impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeResponder {
+impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
     async fn run_with_connection_to(
         mut self,
         connection: ConnectionTo<Conductor>,

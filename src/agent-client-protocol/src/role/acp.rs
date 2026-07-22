@@ -9,7 +9,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::jsonrpc::{TransportBatch, TransportFrame};
+use crate::jsonrpc::{
+    TransportBatch, TransportBatchEntry, TransportFrame, is_response_only_shape,
+    raw_is_response_only_shape,
+};
 use crate::role::{HasPeer, RemoteStyle};
 use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
 #[cfg(feature = "unstable_protocol_v2")]
@@ -202,12 +205,25 @@ impl ClientProtocolConnector {
                             initialize_request_id(&fallback_initialize)
                                 .expect("validated initialize request has an id"),
                         );
+                        // The v2 implementation will never receive its initialize response once
+                        // the matching v1 implementation takes over this connection. Drop its
+                        // future and channels before running the v1 session so any resources it
+                        // owns are released promptly.
+                        drop(client);
                         fallback_client.send(fallback_response)?;
                         return pipe_protocol_peers_until_done(fallback_client, agent_connection)
                             .await;
                     }
 
-                    drop((client, agent_connection, initialize_response));
+                    // Neither probe can continue on the replacement connection. Release both
+                    // client implementations and the original agent connection before starting
+                    // the real v1 session so they cannot retain resources for its lifetime.
+                    drop((
+                        client,
+                        fallback_client,
+                        agent_connection,
+                        initialize_response,
+                    ));
                     return connect_client_protocol(ClientProtocol::V1, v1.create(), agent()).await;
                 }
 
@@ -371,21 +387,28 @@ impl AgentProtocolRouter {
 #[cfg(feature = "unstable_protocol_v2")]
 impl ConnectTo<Client> for AgentProtocolRouter {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), crate::Error> {
-        let client = RunningProtocolPeer::new(client);
-        let Some((mut first_frame, client)) = client.next_frame().await? else {
-            return Ok(());
-        };
         let supported = SupportedAgentProtocols {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
-        let selected = match initialize_message_mut(&mut first_frame)
-            .and_then(|message| select_agent_protocol(message, supported))
-        {
-            Ok(selected) => selected,
-            Err(error) => {
-                return reject_initialize(client, &first_frame, error).await;
-            }
+        let mut client = RunningProtocolPeer::new(client);
+        let (first_frame, client, selected) = loop {
+            let Some((mut frame, next_client)) = client.next_frame().await? else {
+                return Ok(());
+            };
+            let message = match initialize_message_mut(&mut frame) {
+                Ok(Some(message)) => message,
+                Ok(None) => {
+                    client = next_client;
+                    continue;
+                }
+                Err(error) => return reject_initialize(next_client, &frame, error).await,
+            };
+            let selected = match select_agent_protocol(message, supported) {
+                Ok(selected) => selected,
+                Err(error) => return reject_initialize(next_client, &frame, error).await,
+            };
+            break (frame, next_client, selected);
         };
         let Some(agent) = selected.take_agent(self) else {
             let error = selected.unsupported_error(supported);
@@ -395,14 +418,6 @@ impl ConnectTo<Client> for AgentProtocolRouter {
         let agent = RunningProtocolPeer::new(agent);
         agent.send_frame(first_frame)?;
         pipe_protocol_peers_until_closed(client, agent).await
-    }
-
-    fn into_channel_and_future(
-        self,
-    ) -> (Channel, crate::BoxFuture<'static, Result<(), crate::Error>>) {
-        let (channel_for_caller, channel_for_router) = Channel::duplex();
-        let future = Box::pin(ConnectTo::<Client>::connect_to(self, channel_for_router));
-        (channel_for_caller, future)
     }
 }
 
@@ -613,36 +628,51 @@ fn send_initialize_error(
     frame: &TransportFrame,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
-    fn response_for_entry(
-        entry: Result<&RawJsonRpcMessage, &crate::Error>,
+    fn response_for_message(
+        entry: &RawJsonRpcMessage,
         initialize_error: &crate::Error,
     ) -> Option<RawJsonRpcMessage> {
         match entry {
-            Ok(RawJsonRpcMessage::Request(request)) => Some(RawJsonRpcMessage::response(
+            RawJsonRpcMessage::Request(request) => Some(RawJsonRpcMessage::response(
                 request.id.clone(),
                 Err(initialize_error.clone()),
             )),
-            Err(error) => Some(RawJsonRpcMessage::response(
-                RequestId::Null,
-                Err(error.clone()),
-            )),
-            Ok(RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_)) => None,
+            RawJsonRpcMessage::Notification(_) | RawJsonRpcMessage::Response(_) => None,
+        }
+    }
+
+    fn response_for_entry(
+        entry: &TransportBatchEntry,
+        initialize_error: &crate::Error,
+    ) -> Option<RawJsonRpcMessage> {
+        match entry {
+            TransportBatchEntry::Message(message) => {
+                response_for_message(message, initialize_error)
+            }
+            TransportBatchEntry::Malformed { raw, error } if !is_response_only_shape(raw) => Some(
+                RawJsonRpcMessage::response(RequestId::Null, Err(error.clone())),
+            ),
+            TransportBatchEntry::Malformed { .. } => None,
         }
     }
 
     let response = match frame {
         TransportFrame::Single(entry) => {
-            let Some(response) = response_for_entry(Ok(entry), &error) else {
+            let Some(response) = response_for_message(entry, &error) else {
                 return Ok(());
             };
             TransportFrame::Single(response)
         }
-        TransportFrame::Malformed { error, .. } => TransportFrame::Single(
-            RawJsonRpcMessage::response(RequestId::Null, Err(error.clone())),
-        ),
+        TransportFrame::Malformed { raw, error } if !raw_is_response_only_shape(raw) => {
+            TransportFrame::Single(RawJsonRpcMessage::response(
+                RequestId::Null,
+                Err(error.clone()),
+            ))
+        }
+        TransportFrame::Malformed { .. } => return Ok(()),
         TransportFrame::Batch(batch) => {
             let responses = batch
-                .iter_results()
+                .entries()
                 .filter_map(|entry| response_for_entry(entry, &error))
                 .collect::<Vec<_>>();
             let Some(responses) = TransportBatch::from_messages(responses) else {
@@ -760,13 +790,24 @@ fn initialize_message(frame: TransportFrame) -> Result<RawJsonRpcMessage, crate:
 #[cfg(feature = "unstable_protocol_v2")]
 fn initialize_message_mut(
     frame: &mut TransportFrame,
-) -> Result<&mut RawJsonRpcMessage, crate::Error> {
-    let entry = match frame {
-        TransportFrame::Single(entry) => entry,
-        TransportFrame::Malformed { error, .. } => return Err(error.clone()),
-        TransportFrame::Batch(batch) => return batch.first_result_mut(),
-    };
-    Ok(entry)
+) -> Result<Option<&mut RawJsonRpcMessage>, crate::Error> {
+    match frame {
+        TransportFrame::Single(RawJsonRpcMessage::Response(_)) => Ok(None),
+        TransportFrame::Single(entry) => Ok(Some(entry)),
+        TransportFrame::Malformed { raw, .. } if raw_is_response_only_shape(raw) => Ok(None),
+        TransportFrame::Malformed { error, .. } => Err(error.clone()),
+        TransportFrame::Batch(batch) => {
+            for entry in batch.entries_mut() {
+                match entry {
+                    TransportBatchEntry::Message(RawJsonRpcMessage::Response(_)) => {}
+                    TransportBatchEntry::Message(message) => return Ok(Some(message)),
+                    TransportBatchEntry::Malformed { raw, .. } if is_response_only_shape(raw) => {}
+                    TransportBatchEntry::Malformed { error, .. } => return Err(error.clone()),
+                }
+            }
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
