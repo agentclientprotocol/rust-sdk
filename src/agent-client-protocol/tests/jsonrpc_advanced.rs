@@ -6,11 +6,14 @@
 //! - Out-of-order response handling
 
 use agent_client_protocol::{
-    ConnectionTo, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, Responder, SentRequest,
-    role::UntypedRole,
+    Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder,
+    SentRequest, TransportBatch, TransportFrame, role::UntypedRole,
 };
-use futures::{AsyncRead, AsyncWrite};
+use futures::channel::{mpsc, oneshot};
+use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to block and wait for a JSON-RPC response.
@@ -155,6 +158,73 @@ impl JsonRpcResponse for SlowResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AfterResponseNotification {
+    value: u32,
+}
+
+impl JsonRpcMessage for AfterResponseNotification {
+    fn matches_method(method: &str) -> bool {
+        method == "after_response"
+    }
+
+    fn method(&self) -> &'static str {
+        "after_response"
+    }
+
+    fn to_untyped_message(
+        &self,
+    ) -> Result<agent_client_protocol::UntypedMessage, agent_client_protocol::Error> {
+        agent_client_protocol::UntypedMessage::new(self.method(), self)
+    }
+
+    fn parse_message(
+        method: &str,
+        params: &impl serde::Serialize,
+    ) -> Result<Self, agent_client_protocol::Error> {
+        if !Self::matches_method(method) {
+            return Err(agent_client_protocol::Error::method_not_found());
+        }
+        agent_client_protocol::util::json_cast(params)
+    }
+}
+
+impl JsonRpcNotification for AfterResponseNotification {}
+
+struct AfterResponseCollector {
+    notification_tx: mpsc::UnboundedSender<u32>,
+}
+
+impl HandleDispatchFrom<UntypedRole> for AfterResponseCollector {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<UntypedRole>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        if let Dispatch::Notification(notification) = &message
+            && AfterResponseNotification::matches_method(&notification.method)
+        {
+            let notification = AfterResponseNotification::parse_message(
+                &notification.method,
+                &notification.params,
+            )?;
+            self.notification_tx
+                .unbounded_send(notification.value)
+                .map_err(agent_client_protocol::Error::into_internal_error)?;
+            return Ok(Handled::Yes);
+        }
+
+        Ok(Handled::No {
+            message,
+            retry: false,
+        })
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "AfterResponseCollector"
+    }
+}
+
 // ============================================================================
 // Test 1: Bidirectional communication
 // ============================================================================
@@ -213,6 +283,192 @@ async fn test_bidirectional_communication() {
             assert!(result.is_ok(), "Test failed: {result:?}");
         })
         .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn callback_consumes_response_before_following_message_is_dispatched() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (callback_started_tx, callback_started_rx) = oneshot::channel();
+            let (release_callback_tx, release_callback_rx) = oneshot::channel();
+            let (notification_tx, mut notification_rx) = mpsc::unbounded();
+
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(PongResponse {
+                        value: request.value + 1,
+                    })?;
+                    connection.send_notification(AfterResponseNotification {
+                        value: request.value,
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let client = UntypedRole.builder().on_receive_notification(
+                async move |notification: AfterResponseNotification,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    notification_tx
+                        .unbounded_send(notification.value)
+                        .map_err(agent_client_protocol::Error::into_internal_error)
+                },
+                agent_client_protocol::on_receive_notification!(),
+            );
+
+            let result = client
+                .connect_with(server, async move |connection| {
+                    connection
+                        .send_request(PingRequest { value: 41 })
+                        .on_receiving_result(async move |response| {
+                            assert_eq!(response?.value, 42);
+                            callback_started_tx
+                                .send(())
+                                .map_err(|()| agent_client_protocol::Error::internal_error())?;
+                            release_callback_rx
+                                .await
+                                .map_err(|_| agent_client_protocol::Error::internal_error())
+                        })?;
+
+                    callback_started_rx
+                        .await
+                        .map_err(|_| agent_client_protocol::Error::internal_error())?;
+                    assert!(
+                        tokio::time::timeout(Duration::from_millis(100), notification_rx.next())
+                            .await
+                            .is_err(),
+                        "the next message was dispatched before the response callback completed"
+                    );
+
+                    release_callback_tx
+                        .send(())
+                        .map_err(|()| agent_client_protocol::Error::internal_error())?;
+                    let notification =
+                        tokio::time::timeout(Duration::from_secs(10), notification_rx.next())
+                            .await
+                            .map_err(agent_client_protocol::Error::into_internal_error)?
+                            .ok_or_else(agent_client_protocol::Error::internal_error)?;
+                    assert_eq!(notification, 41);
+                    Ok(())
+                })
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unconsumed_response_does_not_block_following_message() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (notification_tx, mut notification_rx) = mpsc::unbounded();
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: PingRequest,
+                       responder: Responder<PongResponse>,
+                       connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(PongResponse {
+                        value: request.value + 1,
+                    })?;
+                    connection.send_notification(AfterResponseNotification {
+                        value: request.value,
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+            let client = UntypedRole.builder().on_receive_notification(
+                async move |notification: AfterResponseNotification,
+                            _connection: ConnectionTo<UntypedRole>| {
+                    notification_tx
+                        .unbounded_send(notification.value)
+                        .map_err(agent_client_protocol::Error::into_internal_error)
+                },
+                agent_client_protocol::on_receive_notification!(),
+            );
+
+            let result = client
+                .connect_with(server, async move |connection| {
+                    let response = connection.send_request(PingRequest { value: 7 });
+                    let notification =
+                        tokio::time::timeout(Duration::from_secs(10), notification_rx.next())
+                            .await
+                            .map_err(agent_client_protocol::Error::into_internal_error)?
+                            .ok_or_else(agent_client_protocol::Error::internal_error)?;
+                    assert_eq!(notification, 7);
+                    assert_eq!(response.block_task().await?.value, 8);
+                    Ok(())
+                })
+                .await;
+
+            assert!(result.is_ok(), "Test failed: {result:?}");
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn ordered_callback_installs_dynamic_handler_before_later_batch_entry() {
+    let (transport, mut peer) = Channel::duplex();
+    let (notification_tx, mut notification_rx) = mpsc::unbounded();
+
+    let client = UntypedRole
+        .builder()
+        .connect_with(transport, async move |connection| {
+            connection
+                .send_request(PingRequest { value: 41 })
+                .on_receiving_result({
+                    let connection = connection.clone();
+                    async move |response| {
+                        assert_eq!(response?.value, 42);
+                        connection
+                            .add_dynamic_handler(AfterResponseCollector { notification_tx })?
+                            .detach();
+                        Ok(())
+                    }
+                })?;
+
+            let notification = notification_rx
+                .next()
+                .await
+                .ok_or_else(agent_client_protocol::Error::internal_error)?;
+            assert_eq!(notification, 41);
+            Ok(())
+        });
+
+    let peer = async move {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+            peer.rx.next().await
+        else {
+            panic!("expected a ping request");
+        };
+        assert_eq!(request.method.as_ref(), "ping");
+
+        let response = RawJsonRpcMessage::response(
+            request.id,
+            Ok(serde_json::to_value(PongResponse { value: 42 })
+                .expect("ping response should serialize")),
+        );
+        let notification = RawJsonRpcMessage::notification(
+            "after_response".into(),
+            serde_json::to_value(AfterResponseNotification { value: 41 })
+                .expect("notification should serialize"),
+        )
+        .expect("notification should form valid JSON-RPC parameters");
+        let batch = TransportBatch::from_messages([response, notification])
+            .expect("test batch should be non-empty");
+        peer.tx
+            .unbounded_send(TransportFrame::Batch(batch))
+            .expect("client should accept the response batch");
+
+        while peer.rx.next().await.is_some() {}
+        Ok::<(), agent_client_protocol::Error>(())
+    };
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        futures::try_join!(client, peer)
+    })
+    .await
+    .expect("dynamic handler was not installed before the later batch entry")
+    .expect("connection failed");
 }
 
 #[tokio::test(flavor = "current_thread")]

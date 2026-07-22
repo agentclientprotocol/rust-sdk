@@ -264,10 +264,19 @@ Pass a finite limit instead of `None` to bound concurrency.
 `ConnectionTo::attach_session` is no longer public. Create sessions through
 `ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Use
 `SessionBuilder::on_session_start` to start without blocking the calling task, or call
-`block_task()` followed by `run_until` or `start_session`. Proxy handlers can use
-`on_proxy_session_start`, or `block_task().start_session_proxy(...)`. Directly attaching an
-already-returned `NewSessionResponse` is no longer supported, so move request customization into
-`build_session_from` before the builder sends `session/new`.
+`block_task()` followed by `run_until` or `start_session` outside message handlers. Proxy handlers
+must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from an
+already-spawned task. Directly attaching an already-returned `NewSessionResponse` is no longer
+supported, so move request customization into `build_session_from` before the builder sends
+`session/new`.
+
+When the session response is routed during its original dispatch, `on_session_start` and
+`on_proxy_session_start` install session routing under the ordered response callback, then spawn
+the user callback. Their callback futures must therefore be `'static`, but they may safely wait
+for later connection or session traffic. A response interceptor that retains and routes the
+response later cannot retroactively order that setup before already-processed messages. Perform
+synchronous bookkeeping in the surrounding request handler when it must complete before every
+later message.
 
 Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 `ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.

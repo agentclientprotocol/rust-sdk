@@ -58,6 +58,12 @@
 
 **Fixed**
 
+- Honor `on_receiving_result` ordering when callback consumption is selected before a response
+  arrives, without stalling unconsumed, blocking, or delayed response routes. Session-start
+  helpers now install their routing state under that ordering barrier for responses routed during
+  their original dispatch, and run user session work in a spawned task.
+- Emit at most one response for an individual request when a handler responds and then returns an
+  error, matching the existing per-entry completion behavior for batches.
 - Preserve JSON-RPC batch framing across component adapters, protocol routing, and tracing
   bridges. Invalid call entries no longer abort relays, fully filtered response batches are not
   serialized as empty arrays, and malformed response-only input is ignored rather than answered.

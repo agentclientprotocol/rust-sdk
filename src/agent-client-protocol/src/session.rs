@@ -179,9 +179,9 @@ where
     /// without blocking the current task. The session handshake and closure execution
     /// happen in a spawned background task.
     ///
-    /// The closure receives an `ActiveSession<'static, _>` and should return
-    /// `Result<(), Error>`. If the closure returns an error, it will propagate
-    /// to the connection's error handling.
+    /// The closure receives an `ActiveSession<'static, _>` and runs in a
+    /// spawned task. If it returns an error, the error propagates to the
+    /// connection's task handling.
     ///
     /// # Example
     ///
@@ -209,13 +209,18 @@ where
     ///
     /// # Ordering
     ///
-    /// This callback blocks the dispatch loop until the session starts and your
-    /// callback completes. See the [`ordering`](crate::concepts::ordering) module for details.
+    /// Session runners and routing setup are started before the dispatch loop
+    /// processes the next message when the session response is routed during
+    /// its original dispatch. The user callback then runs in a spawned task,
+    /// so it may wait for later session traffic without deadlocking the
+    /// connection. A response interceptor that retains the response and routes
+    /// it later cannot retroactively order session setup before messages the
+    /// dispatch loop has already processed.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
         R: 'static,
         F: FnOnce(ActiveSession<'static, Counterpart>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send,
+        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
     {
         let Self {
             connection,
@@ -237,7 +242,7 @@ where
                     let active_session =
                         connection.attach_session(response, dynamic_handler_registrations)?;
 
-                    op(active_session).await
+                    connection.spawn(op(active_session))
                 }
             })
     }
@@ -284,8 +289,12 @@ where
     ///
     /// # Ordering
     ///
-    /// This callback blocks the dispatch loop until the session starts and your
-    /// callback completes. See the [`ordering`](crate::concepts::ordering) module for details.
+    /// The client response, proxy routing, and session runners are set up before
+    /// the dispatch loop processes the next message when the session response
+    /// is routed during its original dispatch. The user callback then runs in a
+    /// spawned task, so it may wait for later connection traffic. A response
+    /// interceptor that retains the response and routes it later cannot
+    /// retroactively order this setup before messages the loop already processed.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<NewSessionResponse>,
@@ -293,7 +302,7 @@ where
     ) -> Result<(), crate::Error>
     where
         F: FnOnce(SessionId) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send,
+        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
         Counterpart: HasPeer<Client>,
         R: 'static,
     {
@@ -328,7 +337,7 @@ where
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
 
-                op(session_id).await
+                connection.spawn(op(session_id))
             }
         })
     }

@@ -37,6 +37,8 @@ impl<Counterpart: Role, H: HandleDispatchFrom<Counterpart>> DynHandleDispatchFro
 pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
     AddDynamicHandler(Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>),
     RemoveDynamicHandler(Uuid),
+    /// Marks the end of the registrations queued by an ordered response callback.
+    Barrier,
 }
 
 impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
@@ -50,6 +52,7 @@ impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
             Self::RemoveDynamicHandler(arg0) => {
                 f.debug_tuple("RemoveDynamicHandler").field(arg0).finish()
             }
+            Self::Barrier => f.write_str("Barrier"),
         }
     }
 }

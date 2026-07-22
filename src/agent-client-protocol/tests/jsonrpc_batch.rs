@@ -980,6 +980,54 @@ async fn duplicate_completion_after_batch_flush_is_ignored() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn duplicate_completion_of_individual_request_is_ignored() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (notification_tx, _notification_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) = start_server(notification_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 27,
+                    "method": "test/echo",
+                    "params": { "message": "respond then error" }
+                }),
+            )
+            .await;
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 28,
+                    "method": "test/echo",
+                    "params": { "message": "after duplicate completion" }
+                }),
+            )
+            .await;
+
+            let first = read_json_line(&mut peer_reader).await;
+            assert_eq!(first["id"], json!(27));
+            assert_eq!(first["result"], json!({ "result": "first response wins" }));
+
+            let barrier = read_json_line(&mut peer_reader).await;
+            assert_eq!(
+                barrier["id"],
+                json!(28),
+                "a duplicate handler-error response must not precede the next request"
+            );
+            assert_eq!(
+                barrier["result"],
+                json!({ "result": "echo: after duplicate completion" })
+            );
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn overlapping_batches_may_reuse_ids_without_cross_contamination() {
     tokio::task::LocalSet::new()
         .run_until(async {
