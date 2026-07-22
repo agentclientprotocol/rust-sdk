@@ -60,7 +60,7 @@
 //! ## Related Crates
 //!
 //! - **[agent-client-protocol](https://crates.io/crates/agent-client-protocol)** - Core ACP SDK
-//! - **[agent-client-protocol-polyfill](https://crates.io/crates/agent-client-protocol-polyfill)** - Compatibility proxies, including the legacy v1 MCP-over-ACP bridge
+//! - **[agent-client-protocol-polyfill](https://crates.io/crates/agent-client-protocol-polyfill)** - Compatibility proxies, including the native MCP-over-ACP to HTTP adapter
 //! - **[agent-client-protocol-trace-viewer](https://crates.io/crates/agent-client-protocol-trace-viewer)** - Interactive trace visualization
 
 use std::path::PathBuf;

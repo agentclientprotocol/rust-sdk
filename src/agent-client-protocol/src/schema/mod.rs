@@ -309,6 +309,8 @@ macro_rules! impl_jsonrpc_response_enum {
 mod agent_to_client;
 mod client_to_agent;
 mod enum_impls;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod mcp;
 mod protocol_level;
 mod proxy_protocol;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -329,5 +331,5 @@ pub use agent_client_protocol_schema::{
     IntoMaybeUndefined, IntoOption, MaybeUndefined, ProtocolVersion,
 };
 
-// Re-export SDK-local proxy/MCP bridge protocol types flatly.
+// Re-export SDK-local proxy protocol types flatly.
 pub use proxy_protocol::*;

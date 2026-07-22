@@ -9,10 +9,11 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
+use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
-    Notification as RpcNotification, Request as RpcRequest, RequestId, Response as RpcResponse,
+    MessageMcpNotification, MessageMcpRequest, Notification as RpcNotification,
+    Request as RpcRequest, RequestId, Response as RpcResponse,
 };
-use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
 use agent_client_protocol::{
     DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams, Role, UntypedMessage,
 };
@@ -44,7 +45,7 @@ pub enum TraceEvent {
 pub enum Protocol {
     /// Standard ACP protocol messages.
     Acp,
-    /// Legacy v1 MCP-over-ACP messages (agent calling a proxy's MCP server).
+    /// MCP messages carried over ACP.
     Mcp,
 }
 
@@ -556,14 +557,14 @@ impl MessageInfo {
     ///
     /// This unwraps protocol wrappers to get the "real" message:
     /// - `_proxy/successor` messages are unwrapped to get the inner message
-    /// - `_mcp/message` messages are detected and marked as MCP protocol
+    /// - `mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).
     fn from_request(req: RpcRequest<RawJsonRpcParams>) -> Self {
         let untyped =
             UntypedMessage::parse_message(&req.method, &params_from_transport(req.params))
                 .expect("untyped message is infallible");
-        Self::from_untyped(Successor(false), Some(req.id), Protocol::Acp, untyped)
+        Self::from_untyped_request(Successor(false), Some(req.id), Protocol::Acp, untyped)
     }
 
     fn from_notification(notification: RpcNotification<RawJsonRpcParams>) -> Self {
@@ -572,23 +573,69 @@ impl MessageInfo {
             &params_from_transport(notification.params),
         )
         .expect("untyped message is infallible");
-        Self::from_untyped(Successor(false), None, Protocol::Acp, untyped)
+        Self::from_untyped_notification(Successor(false), Protocol::Acp, untyped)
     }
 
-    fn from_untyped(
+    fn from_untyped_request(
         successor: Successor,
         id: Option<RequestId>,
         protocol: Protocol,
         untyped: UntypedMessage,
     ) -> Self {
         if let Ok(m) = SuccessorMessage::parse_message(&untyped.method, &untyped.params) {
-            return Self::from_untyped(Successor(true), id, protocol, m.message);
+            return Self::from_untyped_request(Successor(true), id, protocol, m.message);
         }
 
-        if let Ok(m) = McpOverAcpMessage::parse_message(&untyped.method, &untyped.params) {
-            return Self::from_untyped(successor, id, Protocol::Mcp, m.message);
+        if let Ok(m) = MessageMcpRequest::parse_message(&untyped.method, &untyped.params) {
+            let params = m
+                .params
+                .map_or(serde_json::Value::Null, serde_json::Value::Object);
+            return Self::from_untyped_request(
+                successor,
+                id,
+                Protocol::Mcp,
+                UntypedMessage {
+                    method: m.method,
+                    params,
+                },
+            );
         }
 
+        Self::new(successor, id, protocol, untyped)
+    }
+
+    fn from_untyped_notification(
+        successor: Successor,
+        protocol: Protocol,
+        untyped: UntypedMessage,
+    ) -> Self {
+        if let Ok(m) = SuccessorMessage::parse_message(&untyped.method, &untyped.params) {
+            return Self::from_untyped_notification(Successor(true), protocol, m.message);
+        }
+
+        if let Ok(m) = MessageMcpNotification::parse_message(&untyped.method, &untyped.params) {
+            let params = m
+                .params
+                .map_or(serde_json::Value::Null, serde_json::Value::Object);
+            return Self::from_untyped_notification(
+                successor,
+                Protocol::Mcp,
+                UntypedMessage {
+                    method: m.method,
+                    params,
+                },
+            );
+        }
+
+        Self::new(successor, None, protocol, untyped)
+    }
+
+    fn new(
+        successor: Successor,
+        id: Option<RequestId>,
+        protocol: Protocol,
+        untyped: UntypedMessage,
+    ) -> Self {
         Self {
             successor,
             id,
@@ -596,5 +643,34 @@ impl MessageInfo {
             method: untyped.method,
             params: untyped.params,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent_client_protocol::RawJsonRpcMessage;
+    use serde_json::json;
+
+    use super::{MessageInfo, Protocol};
+
+    #[test]
+    fn tolerant_mcp_notification_params_are_traced_as_mcp() {
+        let RawJsonRpcMessage::Notification(notification) = RawJsonRpcMessage::notification(
+            "mcp/message".into(),
+            json!({
+                "connectionId": "connection-1",
+                "method": "notifications/progress",
+                "params": ["invalid named params"]
+            }),
+        )
+        .expect("notification is valid JSON-RPC") else {
+            unreachable!("notification constructor returned a different message kind")
+        };
+
+        let info = MessageInfo::from_notification(notification);
+
+        assert_eq!(info.protocol, Protocol::Mcp);
+        assert_eq!(info.method, "notifications/progress");
+        assert_eq!(info.params, serde_json::Value::Null);
     }
 }

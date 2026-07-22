@@ -26,7 +26,7 @@ src/
 ├── agent-client-protocol-cookbook/     # Usage patterns (rendered as rustdoc)
 ├── agent-client-protocol-derive/       # Proc macros
 ├── agent-client-protocol-conductor/    # Conductor binary and library
-├── agent-client-protocol-polyfill/     # Compatibility proxy implementations
+├── agent-client-protocol-polyfill/     # MCP-over-ACP transport compatibility
 ├── agent-client-protocol-test/         # Test utilities and fixtures
 ├── agent-client-protocol-trace-viewer/ # Trace visualization tool
 └── yopo/                               # "You Only Prompt Once" example client
@@ -40,7 +40,7 @@ graph TD
     http[agent-client-protocol-http<br/>HTTP/SSE/WebSocket transport]
     rmcp[agent-client-protocol-rmcp<br/>rmcp integration]
     conductor[agent-client-protocol-conductor<br/>Proxy orchestration]
-    polyfill[agent-client-protocol-polyfill<br/>Compatibility proxies]
+    polyfill[agent-client-protocol-polyfill<br/>MCP transport compatibility]
     trace[agent-client-protocol-trace-viewer<br/>Trace visualization]
     cookbook[agent-client-protocol-cookbook<br/>Usage patterns]
 
@@ -60,6 +60,7 @@ graph TD
 - [Transport Architecture](./transport-architecture.md) - The frame-aware boundary shared by transports and in-process components
 - [Conductor Design](./conductor.md) - How the conductor orchestrates proxy chains
 - [Protocol Reference](./protocol.md) - Wire protocol details and extension methods
+- [MCP Bridge](./mcp-bridge.md) - Adapting native MCP-over-ACP for HTTP-capable agents
 - [Original P/ACP Design Proposal](./proxying-acp.md) - Historical design context; not the current wire reference
 - [Migrating to v2.0](./migration_v2.0.md) - Upgrade guide from 1.x to 2.0
 - [Migrating to v0.11](./migration_v0.11.x.md) - Upgrade guide from 0.10.x to 0.11

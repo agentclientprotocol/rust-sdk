@@ -5,7 +5,7 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example with_mcp_server
+//! cargo run --example with_mcp_server --features unstable_mcp_over_acp
 //! ```
 
 use agent_client_protocol::{Proxy, mcp_server::McpServer};

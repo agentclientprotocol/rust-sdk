@@ -89,7 +89,7 @@ The trace shows logical component-to-component traffic rather than conductor
 plumbing:
 
 - `_proxy/successor` is unwrapped and logged as its inner ACP method.
-- `_mcp/message` is unwrapped and its inner method is marked with protocol
+- `mcp/message` is unwrapped and its inner method is marked with protocol
   `mcp`.
 - Responses are correlated with the request details retained by the trace
   writer.

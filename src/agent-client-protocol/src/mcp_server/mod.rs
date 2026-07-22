@@ -1,8 +1,9 @@
-//! Runtime-agnostic MCP server support for providing MCP tools over ACP.
+//! Runtime-agnostic MCP server support.
 //!
-//! This module provides the infrastructure for attaching MCP servers to ACP
-//! connections without tying the core SDK to a particular MCP implementation or
-//! async runtime.
+//! This module provides infrastructure for serving MCP directly without tying
+//! the core SDK to a particular MCP implementation or async runtime. With the
+//! `unstable_mcp_over_acp` feature, the same servers can be attached to ACP
+//! session setup requests through the `with_mcp_server` builder methods.
 //!
 //! ## Building MCP servers with tools
 //!
@@ -33,6 +34,7 @@
 //! let server = McpServer::new(MyCustomServer, NullRun);
 //! ```
 
+#[cfg(feature = "unstable_mcp_over_acp")]
 mod active_session;
 mod connect;
 mod context;
@@ -42,7 +44,7 @@ mod tool;
 mod tool_fn;
 
 pub use connect::McpServerConnect;
-pub use context::McpConnectionTo;
+pub use context::{McpConnectionContext, McpConnectionTo};
 pub use registry::{
     EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
 };

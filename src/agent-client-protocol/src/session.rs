@@ -6,9 +6,8 @@ use crate::{
     Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Responder, Role,
     jsonrpc::{
         DynamicHandlerGuard,
-        run::{ChainRun, NullRun, RunWithConnectionTo},
+        run::{NullRun, RunWithConnectionTo},
     },
-    mcp_server::McpServer,
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
@@ -17,6 +16,9 @@ use crate::{
     },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
 /// Marker type indicating the session builder will block the current task.
 #[derive(Debug)]
@@ -149,7 +151,9 @@ where
     R: RunWithConnectionTo<Counterpart>,
     BlockState: SessionBlockState,
 {
-    /// Add the MCP servers from the given registry to this session.
+    /// Attach an MCP server to this new session.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     pub fn with_mcp_server<McpRun>(
         mut self,
         mcp_server: McpServer<Counterpart, McpRun>,

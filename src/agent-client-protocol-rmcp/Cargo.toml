@@ -11,6 +11,14 @@ description = "rmcp integration for Agent Client Protocol MCP servers"
 keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
 
+[features]
+default = []
+unstable_mcp_over_acp = ["agent-client-protocol/unstable_mcp_over_acp"]
+
+[[example]]
+name = "with_mcp_server"
+required-features = ["unstable_mcp_over_acp"]
+
 [dependencies]
 agent-client-protocol.workspace = true
 futures.workspace = true

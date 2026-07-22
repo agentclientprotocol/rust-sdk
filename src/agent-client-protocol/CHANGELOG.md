@@ -31,9 +31,19 @@
   connection tasks separately from JSON-RPC response handles. See the [2.0 migration guide].
 - **Breaking:** Rename `MatchDispatch::if_message` to `if_dispatch` and
   `MatchDispatchFrom::if_message_from` to `if_dispatch_from`. See the [2.0 migration guide].
+- **Breaking:** Replace the SDK-local MCP-over-ACP wire types and underscore-prefixed methods with
+  the shared schema's native `McpServer::Acp`, `mcp/connect`, `mcp/message`, and
+  request/response `mcp/disconnect` transport. The old wire structs and `METHOD_MCP_*` constants
+  are removed. Only the high-level ACP attachment methods require `unstable_mcp_over_acp`;
+  standalone MCP servers remain available without it and no longer allocate schema transport IDs.
+  Global attachment adds the same declaration to new, load, resume, and feature-gated fork session
+  requests. Fake `McpServer::Http` declarations using an `acp:` URL are no longer emitted or
+  consumed. See the [2.0 migration guide].
 - **Breaking:** Return borrowed identifiers, connection handles, modes, and metadata from
-  `McpConnectionTo` and `ActiveSession`; remove `acp_url` and rename `connection_to` to
-  `connection`. See the [2.0 migration guide].
+  `McpConnectionTo` and `ActiveSession`; replace `McpConnectionTo::acp_id` with optional typed
+  `server_id` and `connection_id` accessors, add an explicit standalone-versus-ACP connection
+  context, remove `acp_url`, and rename `connection_to` to `connection`. See the [2.0 migration
+  guide].
 - **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
   fields and session/stream internals, and removing `util::both`. See the [2.0 migration guide].
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local

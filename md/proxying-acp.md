@@ -4,6 +4,12 @@
 > historical context. It contains method names and capability shapes that were
 > superseded during implementation. Do not use it as a wire-protocol
 > specification; see the current [Protocol Reference](./protocol.md) instead.
+>
+> In particular, the SDK-local `_mcp/*` methods and `McpServer::Http` values
+> using an `acp:` URL were retired. Current opt-in implementations use
+> `McpServer::Acp` with `mcp/connect`, `mcp/message`, and `mcp/disconnect`; the
+> compatibility polyfill translates those native declarations only for
+> HTTP-capable agents. Do not copy the historical MCP examples below.
 
 # Elevator pitch
 

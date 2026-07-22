@@ -11,10 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** Upgrade to `agent-client-protocol` 2.x. Polyfill components and the core
   handlers/types they connect must be migrated together.
+- **Breaking:** Consume native `McpServer::Acp` declarations and route `mcp/connect`,
+  `mcp/message`, and request/response `mcp/disconnect`. The bridge no longer recognizes
+  `McpServer::Http` values with `acp:` URLs or the SDK-local underscore-prefixed method family.
+- **Breaking:** Remove the public `BridgeMode` enum and `McpOverAcpPolyfill::stdio`; the repository
+  no longer ships the conductor helper subcommand that stdio mode required. The polyfill now has
+  one supported configuration, selected with `McpOverAcpPolyfill::http()` or `Default`; otherwise
+  use a separately managed MCP transport.
 - **Changed:** Align the bridge background-task terminology with the core runner APIs.
-- **Documentation:** Update legacy v1 MCP-over-ACP conductor composition examples for the current
-  constructor and distinguish it from the draft native MCP-over-ACP transport.
-- **Fixed:** Preserve JSON-RPC batch frames through the legacy MCP-over-ACP HTTP bridge, answer
+- **Changed:** Keep MCP-over-ACP native on the provider-facing side while translating declarations
+  to localhost HTTP only for a final agent that lacks native transport support.
+- **Changed:** Adapt native declarations in new, load, resume, and optionally fork session setup;
+  pass them through unchanged when the successor already supports native MCP-over-ACP, and
+  advertise the adapted capability only when the successor supports HTTP MCP.
+- **Documentation:** Update MCP-over-ACP conductor composition examples for the current native
+  declaration and compatibility boundary.
+- **Fixed:** Preserve JSON-RPC batch frames through the MCP-over-ACP HTTP bridge, answer
   malformed calls on their originating POST, and ignore malformed response-shaped input.
 - **Fixed:** Serialize overlapping request IDs (including `id: null`) and response-bearing batches
   without identifiable request IDs, and retain active correlations after an HTTP caller

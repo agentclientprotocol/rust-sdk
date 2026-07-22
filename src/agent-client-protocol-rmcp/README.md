@@ -4,7 +4,17 @@
 
 ## Overview
 
-This crate bridges [rmcp](https://docs.rs/rmcp)-based MCP server implementations with the ACP MCP server framework from `agent-client-protocol`. It lets you define MCP tools in Rust or use any rmcp service as an MCP server in an ACP proxy.
+This crate bridges [rmcp](https://docs.rs/rmcp)-based MCP server implementations with the
+runtime-agnostic MCP server framework from `agent-client-protocol`. It lets you define MCP tools in
+Rust, serve them directly, or attach them to an ACP proxy.
+
+Attached servers are advertised with the opt-in native MCP-over-ACP transport:
+`McpServer::Acp` plus `mcp/connect`, `mcp/message`, and `mcp/disconnect`. This
+crate does not enable the core SDK's `unstable_mcp_over_acp` feature merely to
+build or directly serve a server. Enable this crate's matching
+`unstable_mcp_over_acp` feature when using `with_mcp_server`. Use
+`agent-client-protocol-polyfill` when the final agent accepts HTTP but not
+ACP-transport MCP servers.
 
 ## Usage
 

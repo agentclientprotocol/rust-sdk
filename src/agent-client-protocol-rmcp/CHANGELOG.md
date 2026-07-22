@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crates together; this requires `agent-client-protocol-rmcp` 3.0.0.
 - **Changed:** Align `McpServerBuilder`'s background-task terminology with the core
   runner APIs.
+- **Changed:** Keep rmcp-backed standalone MCP servers independent of the
+  `unstable_mcp_over_acp` feature. Applications enable this crate's matching passthrough feature
+  only when attaching a server to ACP. Attached services use native `McpServer::Acp`
+  declarations, `mcp/connect`, `mcp/message`, and request/response `mcp/disconnect`; optional
+  typed `server_id` and `connection_id` accessors replace `acp_id` in tool and connection
+  contexts.
 - **Documentation:** Replace removed handler and `serve()` APIs in examples and
   document compatibility with both public dependencies.
 

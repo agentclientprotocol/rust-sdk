@@ -19,7 +19,7 @@ path = "src/main.rs"
 default = []
 
 [dependencies]
-agent-client-protocol = { workspace = true }
+agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
@@ -37,7 +37,6 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
 agent-client-protocol-rmcp.workspace = true
 agent-client-protocol-test.workspace = true
 yopo.workspace = true
