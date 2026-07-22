@@ -1,9 +1,11 @@
+use agent_client_protocol::JsonRpcMessage;
+use agent_client_protocol::schema::SuccessorMessage;
+#[cfg(feature = "unstable_mcp_over_acp")]
+use agent_client_protocol::schema::v1::MessageMcpRequest;
 use agent_client_protocol::schema::v1::{
     ContentBlock, Meta, PromptRequest, SessionId, TextContent,
 };
-use agent_client_protocol::schema::{McpOverAcpMessage, SuccessorMessage};
-use agent_client_protocol::{JsonRpcMessage, UntypedMessage};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 fn trace_context_meta() -> Meta {
     let mut meta = Meta::new();
@@ -100,27 +102,27 @@ fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_prot
 }
 
 #[test]
-fn mcp_over_acp_message_meta_serializes_as_reserved_meta_field()
+#[cfg(feature = "unstable_mcp_over_acp")]
+fn native_mcp_over_acp_message_meta_serializes_as_reserved_meta_field()
 -> Result<(), agent_client_protocol::Error> {
-    let meta = trace_context_meta_value();
-    let inner = UntypedMessage::new("tools/list", json!({ "cursor": "abc" }))?;
-    let message = McpOverAcpMessage {
-        connection_id: "connection-1".into(),
-        message: inner,
-        meta: Some(meta.clone()),
-    };
+    let meta = trace_context_meta();
+    let message = MessageMcpRequest::new("connection-1", "tools/list")
+        .params(serde_json::Map::from_iter([(
+            "cursor".into(),
+            Value::String("abc".into()),
+        )]))
+        .meta(meta.clone());
 
     let untyped = message.to_untyped_message()?;
 
-    assert_eq!(untyped.method(), "_mcp/message");
+    assert_eq!(untyped.method(), "mcp/message");
     assert_eq!(untyped.params()["connectionId"], "connection-1");
     assert_eq!(untyped.params()["method"], "tools/list");
     assert_eq!(untyped.params()["params"]["cursor"], "abc");
-    assert_eq!(untyped.params()["_meta"], meta);
+    assert_eq!(untyped.params()["_meta"], Value::Object(meta.clone()));
     assert!(untyped.params().get("meta").is_none());
 
-    let parsed =
-        McpOverAcpMessage::<UntypedMessage>::parse_message(untyped.method(), untyped.params())?;
+    let parsed = MessageMcpRequest::parse_message(untyped.method(), untyped.params())?;
     assert_eq!(parsed.meta, Some(meta));
 
     Ok(())

@@ -11,9 +11,12 @@ description = "Polyfill proxies for Agent Client Protocol backward compatibility
 keywords = ["acp", "agent", "mcp", "polyfill"]
 categories = ["development-tools"]
 
+[features]
+default = []
+unstable_session_fork = ["agent-client-protocol/unstable_session_fork"]
+
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
-anyhow.workspace = true
 async-stream.workspace = true
 axum.workspace = true
 futures.workspace = true
@@ -22,7 +25,6 @@ rustc-hash.workspace = true
 serde_json.workspace = true
 thiserror = "2.0"
 tokio = { workspace = true, features = ["net"] }
-tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 

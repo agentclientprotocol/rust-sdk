@@ -54,7 +54,7 @@ Binary will be at `target/release/agent-client-protocol-conductor`.
 ## Related Crates
 
 - **[agent-client-protocol](../agent-client-protocol/)** — Core ACP protocol types and traits
-- **[agent-client-protocol-polyfill](../agent-client-protocol-polyfill/)** — Compatibility proxies, including the legacy v1 MCP-over-ACP bridge
+- **[agent-client-protocol-polyfill](../agent-client-protocol-polyfill/)** — Compatibility proxies, including adapting MCP-over-ACP to HTTP
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 
 ## License

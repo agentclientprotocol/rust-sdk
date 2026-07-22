@@ -98,8 +98,9 @@ agent-client-protocol-conductor --serve agent "proxy-one" "base-agent"
 agent-client-protocol-conductor --trace ./trace.jsons --serve agent "proxy-one" "base-agent"
 ```
 
-There is no conductor `mcp` subcommand. MCP compatibility bridging lives in
-`agent-client-protocol-polyfill` and must be inserted explicitly when needed.
+There is no conductor `mcp` subcommand. Compatibility for HTTP-capable agents that lack the
+native ACP MCP transport lives in `agent-client-protocol-polyfill` and must
+be inserted explicitly when needed.
 
 ## Programmatic Usage
 
@@ -122,11 +123,13 @@ the chain depends on initialization data.
 ## MCP Compatibility
 
 MCP-over-ACP adaptation is intentionally not built into `ConductorImpl`. Add
-`McpOverAcpPolyfill::http()` or `McpOverAcpPolyfill::stdio(...)` as a proxy in
-the chain when an agent cannot consume the legacy `McpServer::Http` `acp:`
-declaration directly. Keeping the polyfill explicit prevents instrumentation
-or orchestration from silently changing session MCP declarations. See
-[MCP Bridge](./mcp-bridge.md).
+`McpOverAcpPolyfill::http()` as a proxy in the chain immediately before a final
+agent that cannot consume native `McpServer::Acp` declarations. The
+provider-facing side continues to use the feature-gated `mcp/connect`,
+`mcp/message`, and `mcp/disconnect` methods; only the final-agent side is
+adapted to HTTP. Keeping the polyfill explicit prevents instrumentation or
+orchestration from silently changing session MCP declarations. See [MCP
+Bridge](./mcp-bridge.md).
 
 ## Tracing
 

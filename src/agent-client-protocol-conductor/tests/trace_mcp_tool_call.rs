@@ -31,15 +31,17 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Strips timestamps (set to 0.0)
 /// - Replaces UUIDs with sequential IDs (id:0, id:1, etc.)
 /// - Replaces session IDs with "session:0", etc.
-/// - Replaces acp: URLs with "acp:url:0", etc.
-/// - Replaces connection_id with "connection:0", etc.
+/// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
+/// - Replaces MCP server and connection IDs with stable sequential IDs
 struct EventNormalizer {
     id_map: HashMap<String, String>,
     next_id: usize,
     session_map: HashMap<String, String>,
     next_session: usize,
-    acp_url_map: HashMap<String, String>,
-    next_acp_url: usize,
+    endpoint_map: HashMap<String, String>,
+    next_endpoint: usize,
+    server_map: HashMap<String, String>,
+    next_server: usize,
     connection_map: HashMap<String, String>,
     next_connection: usize,
 }
@@ -51,8 +53,10 @@ impl EventNormalizer {
             next_id: 0,
             session_map: HashMap::new(),
             next_session: 0,
-            acp_url_map: HashMap::new(),
-            next_acp_url: 0,
+            endpoint_map: HashMap::new(),
+            next_endpoint: 0,
+            server_map: HashMap::new(),
+            next_server: 0,
             connection_map: HashMap::new(),
             next_connection: 0,
         }
@@ -89,12 +93,23 @@ impl EventNormalizer {
             .clone()
     }
 
-    fn normalize_acp_url(&mut self, url: &str) -> String {
-        self.acp_url_map
+    fn normalize_endpoint(&mut self, url: &str) -> String {
+        self.endpoint_map
             .entry(url.to_string())
             .or_insert_with(|| {
-                let n = format!("acp:url:{}", self.next_acp_url);
-                self.next_acp_url += 1;
+                let n = format!("http:endpoint:{}", self.next_endpoint);
+                self.next_endpoint += 1;
+                n
+            })
+            .clone()
+    }
+
+    fn normalize_server_id(&mut self, id: &str) -> String {
+        self.server_map
+            .entry(id.to_string())
+            .or_insert_with(|| {
+                let n = format!("server:{}", self.next_server);
+                self.next_server += 1;
                 n
             })
             .clone()
@@ -111,7 +126,7 @@ impl EventNormalizer {
             .clone()
     }
 
-    /// Recursively normalize session IDs, acp: URLs, and connection IDs in JSON values.
+    /// Recursively normalize session IDs, MCP endpoints, and MCP IDs in JSON values.
     fn normalize_json(&mut self, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
@@ -124,17 +139,25 @@ impl EventNormalizer {
                             } else {
                                 self.normalize_json(v)
                             }
-                        } else if k == "url" || k == "acp_id" {
+                        } else if k == "url" {
                             if let serde_json::Value::String(s) = &v {
-                                if s.starts_with("acp:") || s.starts_with("http://localhost:") {
-                                    serde_json::Value::String(self.normalize_acp_url(s))
+                                if s.starts_with("http://127.0.0.1:")
+                                    || s.starts_with("http://localhost:")
+                                {
+                                    serde_json::Value::String(self.normalize_endpoint(s))
                                 } else {
                                     v
                                 }
                             } else {
                                 self.normalize_json(v)
                             }
-                        } else if k == "connection_id" {
+                        } else if k == "serverId" {
+                            if let serde_json::Value::String(s) = &v {
+                                serde_json::Value::String(self.normalize_server_id(s))
+                            } else {
+                                self.normalize_json(v)
+                            }
+                        } else if k == "connectionId" {
                             if let serde_json::Value::String(s) = &v {
                                 serde_json::Value::String(self.normalize_connection_id(s))
                             } else {
@@ -210,7 +233,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
     let (conductor_write, client_read) = duplex(8192);
 
     // Spawn the conductor with:
-    // - ElizaAgent (deterministic mode) as the agent
+    // - Testy as the deterministic agent
     // - ProxyComponent that provides the "test" MCP server with echo tool
     // - Tracing enabled to capture events
     let conductor_handle = tokio::spawn(async move {
@@ -459,10 +482,9 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "cwd": String("/"),
                         "mcpServers": Array [
                             Object {
-                                "type": String("http"),
+                                "type": String("acp"),
                                 "name": String("test"),
-                                "url": String("acp:url:0"),
-                                "headers": Array [],
+                                "serverId": String("server:0"),
                             },
                         ],
                     },
@@ -475,10 +497,10 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     from: "Proxy(1)",
                     to: "Proxy(0)",
                     id: String("id:4"),
-                    method: "_mcp/connect",
+                    method: "mcp/connect",
                     session: None,
                     params: Object {
-                        "acp_id": String("acp:url:0"),
+                        "serverId": String("server:0"),
                     },
                 },
             ),
@@ -490,7 +512,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     id: String("id:4"),
                     is_error: false,
                     payload: Object {
-                        "connection_id": String("connection:0"),
+                        "connectionId": String("connection:0"),
                     },
                 },
             ),

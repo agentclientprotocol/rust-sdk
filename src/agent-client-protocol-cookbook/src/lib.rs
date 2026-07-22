@@ -163,7 +163,8 @@ pub mod connecting_as_client {
     //! - [`read_update`] - Read the next update (text chunk, tool call, etc.)
     //! - [`read_to_string`] - Read all text until the turn ends
     //!
-    //! The session builder also supports adding MCP servers with [`with_mcp_server`].
+    //! With the core SDK's `unstable_mcp_over_acp` feature, the session builder
+    //! also supports adding MCP servers with [`with_mcp_server`].
     //!
     //! # Handling Permission Requests
     //!
@@ -434,7 +435,9 @@ pub mod global_mcp_server {
     //!
     //! Use this pattern when you want a single MCP server that handles tool calls
     //! for all sessions. The server is added to the connection's handler chain and
-    //! automatically injects itself into every `NewSessionRequest` that passes through.
+    //! automatically injects itself into every supported session setup request.
+    //! This pattern requires the core SDK's `unstable_mcp_over_acp` feature (or
+    //! the rmcp crate's matching passthrough feature).
     //!
     //! # When to use
     //!
@@ -545,10 +548,12 @@ pub mod global_mcp_server {
     //! When you call [`with_mcp_server`], the MCP server is added as a message
     //! handler. It:
     //!
-    //! 1. Intercepts `NewSessionRequest` messages and adds its `acp:UUID` URL to the
-    //!    request's `mcp_servers` list
+    //! 1. Intercepts session setup requests and adds a schema-native
+    //!    `McpServer::Acp` declaration with a unique server ID to each request's
+    //!    `mcp_servers` list (`session/new`, `session/load`, `session/resume`, and
+    //!    feature-gated `session/fork`)
     //! 2. Passes the modified request through to the next handler
-    //! 3. Handles incoming MCP protocol messages (tool calls, etc.) for its URL
+    //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
     //!
     //! [`McpServer::builder`]: agent_client_protocol_rmcp::McpServerExt::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp
@@ -560,6 +565,8 @@ pub mod per_session_mcp_server {
     //!
     //! Use this pattern when each session needs its own MCP server instance
     //! with access to session-specific context like the working directory.
+    //! It requires the core SDK's `unstable_mcp_over_acp` feature (or the rmcp
+    //! crate's matching passthrough feature).
     //!
     //! # When to use
     //!

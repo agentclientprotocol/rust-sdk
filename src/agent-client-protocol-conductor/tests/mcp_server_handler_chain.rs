@@ -8,8 +8,9 @@
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, InitializeRequest, InitializeResponse, NewSessionRequest,
-    NewSessionResponse, SessionId,
+    AgentCapabilities, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, McpServer as SchemaMcpServer, McpServerAcpId, NewSessionRequest,
+    NewSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionId,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
@@ -17,8 +18,8 @@ use agent_client_protocol_rmcp::McpServerExt as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -51,6 +52,26 @@ async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
 /// Tracks whether the NewSessionRequest handler was invoked
 struct HandlerConfig {
     new_session_handler_called: AtomicBool,
+}
+
+#[derive(Default)]
+struct SetupRequests {
+    server_ids: Mutex<Vec<McpServerAcpId>>,
+}
+
+impl SetupRequests {
+    fn record(&self, mcp_servers: &[SchemaMcpServer]) {
+        let server_id = mcp_servers.iter().find_map(|server| match server {
+            SchemaMcpServer::Acp(server) if server.name == "test-server" => {
+                Some(server.server_id.clone())
+            }
+            _ => None,
+        });
+
+        if let Some(server_id) = server_id {
+            self.server_ids.lock().unwrap().push(server_id);
+        }
+    }
 }
 
 impl HandlerConfig {
@@ -122,13 +143,19 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
 }
 
 /// A simple agent that responds to initialization and session requests
-struct SimpleAgent;
+struct SimpleAgent {
+    setup_requests: Arc<SetupRequests>,
+}
 
 impl ConnectTo<Client> for SimpleAgent {
     async fn connect_to(
         self,
         client: impl ConnectTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error> {
+        let new_requests = self.setup_requests.clone();
+        let load_requests = self.setup_requests.clone();
+        let resume_requests = self.setup_requests;
+
         Agent
             .builder()
             .name("simple-agent")
@@ -142,10 +169,25 @@ impl ConnectTo<Client> for SimpleAgent {
                 agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request(
-                async |_request: NewSessionRequest, responder, _cx| {
+                async move |request: NewSessionRequest, responder, _cx| {
+                    new_requests.record(&request.mcp_servers);
                     responder.respond(NewSessionResponse::new(SessionId::new(
                         uuid::Uuid::new_v4().to_string(),
                     )))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: LoadSessionRequest, responder, _cx| {
+                    load_requests.record(&request.mcp_servers);
+                    responder.respond(LoadSessionResponse::new())
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: ResumeSessionRequest, responder, _cx| {
+                    resume_requests.record(&request.mcp_servers);
+                    responder.respond(ResumeSessionResponse::new())
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -195,7 +237,9 @@ async fn test_new_session_handler_invoked_with_mcp_server()
     let proxy = DynConnectTo::<Conductor>::new(ProxyWithMcpAndHandler {
         config: handler_config,
     });
-    let agent = DynConnectTo::<Client>::new(SimpleAgent);
+    let agent = DynConnectTo::<Client>::new(SimpleAgent {
+        setup_requests: Arc::default(),
+    });
 
     run_test(vec![proxy], agent, async |connection_to_editor| {
         // Initialize first
@@ -224,6 +268,58 @@ async fn test_new_session_handler_invoked_with_mcp_server()
         "NewSessionRequest handler should be invoked even when MCP server is in the chain. \
          This is a regression - the MCP server was incorrectly forwarding the request directly \
          to the agent instead of letting it flow through the handler chain."
+    );
+
+    Ok(())
+}
+
+/// Global MCP servers are advertised consistently on every stable session setup request.
+#[tokio::test]
+async fn test_mcp_server_injected_into_all_session_setup_requests()
+-> Result<(), agent_client_protocol::Error> {
+    let handler_config = HandlerConfig::new();
+    let setup_requests = Arc::new(SetupRequests::default());
+
+    let proxy = DynConnectTo::<Conductor>::new(ProxyWithMcpAndHandler {
+        config: handler_config,
+    });
+    let agent = DynConnectTo::<Client>::new(SimpleAgent {
+        setup_requests: setup_requests.clone(),
+    });
+
+    run_test(vec![proxy], agent, async |connection_to_editor| {
+        recv(connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)))
+            .await?;
+
+        let cwd = PathBuf::from("/tmp");
+        let new_session =
+            recv(connection_to_editor.send_request(NewSessionRequest::new(cwd.clone()))).await?;
+
+        recv(connection_to_editor.send_request(LoadSessionRequest::new(
+            new_session.session_id.clone(),
+            cwd.clone(),
+        )))
+        .await?;
+
+        recv(
+            connection_to_editor
+                .send_request(ResumeSessionRequest::new(new_session.session_id, cwd)),
+        )
+        .await?;
+
+        Ok::<(), agent_client_protocol::Error>(())
+    })
+    .await?;
+
+    let server_ids = setup_requests.server_ids.lock().unwrap();
+    assert_eq!(
+        server_ids.len(),
+        3,
+        "each setup request should advertise the server"
+    );
+    assert!(
+        server_ids.windows(2).all(|ids| ids[0] == ids[1]),
+        "a global MCP server should keep one advertised server ID"
     );
 
     Ok(())

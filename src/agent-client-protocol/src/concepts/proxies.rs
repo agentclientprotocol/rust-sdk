@@ -64,6 +64,8 @@
 //! A common use case is adding tools via MCP. You can add them globally
 //! (available in all sessions) or per-session.
 //!
+//! These ACP attachment APIs require the `unstable_mcp_over_acp` feature.
+//!
 //! ## Global MCP Server
 //!
 //! ```ignore

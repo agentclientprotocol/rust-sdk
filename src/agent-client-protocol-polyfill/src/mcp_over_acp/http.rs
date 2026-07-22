@@ -31,14 +31,14 @@ use super::{BridgeConnection, BridgeMessage, actor::BridgeConnectionActor};
 /// Runs an HTTP listener for MCP bridge connections.
 pub async fn run_http_listener(
     tcp_listener: TcpListener,
-    acp_id: String,
+    server_id: String,
     mut bridge_tx: mpsc::Sender<BridgeMessage>,
 ) -> Result<(), agent_client_protocol::Error> {
     let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
 
     bridge_tx
         .send(BridgeMessage::ConnectionReceived {
-            acp_id,
+            server_id,
             actor: BridgeConnectionActor::new(
                 HttpMcpBridge::new(tcp_listener),
                 bridge_tx.clone(),

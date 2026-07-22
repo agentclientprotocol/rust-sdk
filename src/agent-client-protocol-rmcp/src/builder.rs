@@ -224,8 +224,9 @@ where
 
     /// Create an MCP server from this builder.
     ///
-    /// This builder can be attached to new sessions (see [`SessionBuilder::with_mcp_server`](`agent_client_protocol::SessionBuilder::with_mcp_server`))
-    /// or served up as part of a proxy (see [`Builder::with_mcp_server`](`agent_client_protocol::Builder::with_mcp_server`)).
+    /// This builder can be served directly. With the `unstable_mcp_over_acp`
+    /// feature, it can also be attached through
+    /// `SessionBuilder::with_mcp_server` or `Builder::with_mcp_server`.
     pub fn build(self) -> McpServer<Counterpart, Runner> {
         McpServer::new(
             McpServerBuilt {
@@ -258,7 +259,7 @@ impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counter
     }
 }
 
-/// An MCP server instance connected to the ACP framework.
+/// A connected MCP server instance.
 pub(crate) struct McpServerConnection<Counterpart: Role> {
     data: Arc<McpToolRegistry<Counterpart>>,
     mcp_connection: McpConnectionTo<Counterpart>,

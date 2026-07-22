@@ -77,6 +77,9 @@
 //! You can attach MCP (Model Context Protocol) servers to a session to provide
 //! tools to the agent:
 //!
+//! MCP attachment requires the `unstable_mcp_over_acp` feature. Standalone MCP
+//! servers remain available without it.
+//!
 //! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol::mcp_server::McpServer;

@@ -45,6 +45,7 @@ use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
 use crate::jsonrpc::task_actor::{Task, TaskTx};
+#[cfg(feature = "unstable_mcp_over_acp")]
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
@@ -1548,9 +1549,14 @@ impl<
         self.with_handler(handler)
     }
 
-    /// Add an MCP server that will be added to all new sessions that are proxied through this connection.
+    /// Add an MCP server to session setup requests proxied through this connection.
+    ///
+    /// The same native MCP server declaration is added to new, load, and resume
+    /// requests, plus fork requests when `unstable_session_fork` is enabled.
     ///
     /// Only applicable to proxies.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,

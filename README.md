@@ -19,10 +19,15 @@ This repository is the official **Rust SDK** for ACP. It provides crates for bui
 - [`agent-client-protocol-rmcp`](./src/agent-client-protocol-rmcp/) – Integration with the [`rmcp`](https://docs.rs/rmcp) MCP SDK.
 - [`agent-client-protocol-derive`](./src/agent-client-protocol-derive/) – Derive macros used by the core crate.
 
+Native MCP-over-ACP support is currently opt-in through the core crate's
+`unstable_mcp_over_acp` feature. Standalone MCP servers need no ACP transport
+feature; the rmcp integration exposes a matching passthrough feature when those
+servers are attached to ACP.
+
 **Proxy orchestration**
 
 - [`agent-client-protocol-conductor`](./src/agent-client-protocol-conductor/) – Binary and library that manages chains of proxy components.
-- [`agent-client-protocol-polyfill`](./src/agent-client-protocol-polyfill/) – Compatibility proxies, including bridging legacy `acp:` MCP declarations for agents that cannot consume them directly.
+- [`agent-client-protocol-polyfill`](./src/agent-client-protocol-polyfill/) – Compatibility proxies, including adapting native MCP-over-ACP declarations to HTTP for agents that cannot consume them directly.
 - [`agent-client-protocol-trace-viewer`](./src/agent-client-protocol-trace-viewer/) – Interactive sequence-diagram viewer for conductor trace files.
 
 **Patterns, examples, and testing**

@@ -83,7 +83,7 @@ pub mod component;
 pub mod concepts;
 /// JSON-RPC connection and handler infrastructure
 mod jsonrpc;
-/// MCP server support for providing MCP tools over ACP
+/// Runtime-agnostic MCP server support, including optional attachment to ACP sessions.
 pub mod mcp_server;
 /// Role types for ACP connections
 pub mod role;

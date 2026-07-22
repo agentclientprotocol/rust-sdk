@@ -1,12 +1,8 @@
-//! Integration test verifying that MCP tools receive the correct session_id
+//! Integration tests for the context delivered to ACP-attached MCP tools.
 //!
-//! This test verifies the complete flow:
-//! 1. Editor creates a session and receives a session_id
-//! 2. Proxy provides an MCP server with an echo tool
-//! 3. Test agent invokes the tool
-//! 4. The tool receives the correct session_id in its context
-//! 5. The tool returns the session_id in its response
-//! 6. We verify the session_ids match
+//! This verifies that an attached tool receives both identifiers defined by the
+//! native MCP-over-ACP lifecycle: the server ID advertised during session setup
+//! and the connection ID created by `mcp/connect`.
 
 use agent_client_protocol::RunWithConnectionTo;
 use agent_client_protocol::mcp_server::McpServer;
@@ -18,34 +14,37 @@ use agent_client_protocol_test::testy::{Testy, TestyCommand};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Input for the echo tool (null/empty)
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct EchoInput {}
 
-/// Output from the echo tool containing the session_id
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct EchoOutput {
-    acp_id: String,
+    server_id: String,
+    connection_id: String,
 }
 
-/// Create a proxy that provides an MCP server with a session_id echo tool
 fn create_echo_proxy() -> DynConnectTo<Conductor> {
-    // Create MCP server with an echo tool that returns the session_id
     let mcp_server = McpServer::builder("echo_server".to_string())
-        .instructions("Test MCP server with session_id echo tool")
+        .instructions("Test MCP server with a connection-context echo tool")
         .tool_fn_mut(
             "echo",
-            "Returns the current session_id",
+            "Returns the current MCP connection context",
             async |_input: EchoInput, context| {
                 Ok(EchoOutput {
-                    acp_id: context.acp_id().to_owned(),
+                    server_id: context
+                        .server_id()
+                        .expect("tool is attached through ACP")
+                        .to_string(),
+                    connection_id: context
+                        .connection_id()
+                        .expect("tool is attached through ACP")
+                        .to_string(),
                 })
             },
             agent_client_protocol::tool_fn_mut!(),
         )
         .build();
 
-    // Create proxy component
     DynConnectTo::new(ProxyWithEchoServer { mcp_server })
 }
 
@@ -87,17 +86,17 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol::
     )
     .await?;
 
-    // Check the response using expect_test
     expect![[r"
         Available tools:
-          - echo: Returns the current session_id"]]
+          - echo: Returns the current MCP connection context"]]
     .assert_eq(&result);
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_protocol::Error> {
+async fn test_acp_identifiers_are_delivered_to_mcp_tools()
+-> Result<(), agent_client_protocol::Error> {
     let result = yopo::prompt(
         ConductorImpl::new_agent(
             "test-conductor".to_string(),
@@ -114,8 +113,16 @@ async fn test_session_id_delivered_to_mcp_tools() -> Result<(), agent_client_pro
     )
     .await?;
 
-    let pattern = regex::Regex::new(r#""acp_id":\s*String\("acp:[0-9a-f-]+"\)"#).unwrap();
-    assert!(pattern.is_match(&result), "unexpected result: {result}");
+    let server_id = regex::Regex::new(r#""server_id":\s*String\("mcp-server:[0-9a-f-]+"\)"#)
+        .expect("valid server ID regex");
+    let connection_id =
+        regex::Regex::new(r#""connection_id":\s*String\("mcp-over-acp-connection:[0-9a-f-]+"\)"#)
+            .expect("valid connection ID regex");
+    assert!(server_id.is_match(&result), "unexpected result: {result}");
+    assert!(
+        connection_id.is_match(&result),
+        "unexpected result: {result}"
+    );
 
     Ok(())
 }

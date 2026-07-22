@@ -39,6 +39,15 @@ Client.builder()
 # }
 ```
 
+## MCP Server Attachment
+
+The runtime-agnostic `mcp_server` module can build and directly serve standalone
+MCP servers without enabling an ACP schema extension. Attaching one to ACP with
+the `with_mcp_server` builder methods requires `unstable_mcp_over_acp`.
+Attached servers are advertised with native `McpServer::Acp` declarations and
+communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
+`agent-client-protocol-polyfill` immediately before an HTTP-capable agent.
+
 ## Learning More
 
 See the [crate documentation](https://docs.rs/agent-client-protocol) for:
@@ -52,7 +61,7 @@ See the [crate documentation](https://docs.rs/agent-client-protocol) for:
 - **[agent-client-protocol-rmcp](../agent-client-protocol-rmcp/)** — MCP tool builders and `rmcp` integration
 - **[agent-client-protocol-derive](../agent-client-protocol-derive/)** — Derive macros for JSON-RPC traits
 - **[agent-client-protocol-conductor](../agent-client-protocol-conductor/)** — Proxy-chain orchestration
-- **[agent-client-protocol-polyfill](../agent-client-protocol-polyfill/)** — Compatibility proxies, including MCP-over-ACP bridging
+- **[agent-client-protocol-polyfill](../agent-client-protocol-polyfill/)** — Compatibility proxies, including adapting MCP-over-ACP to HTTP
 - **[agent-client-protocol-trace-viewer](../agent-client-protocol-trace-viewer/)** — Interactive trace visualization
 
 ## Contribution Policy

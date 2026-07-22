@@ -15,7 +15,7 @@ The core SDK. Provides:
 - **Message handling** (`on_receive_request`, `on_receive_notification`, `on_receive_dispatch`)
 - **Protocol types** (`agent_client_protocol::schema::*`) - all ACP message types
 - **Transports and process launching** (`Channel`, `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`)
-- **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions
+- **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions through the opt-in `unstable_mcp_over_acp` transport
 
 ### agent-client-protocol-http
 
@@ -27,6 +27,11 @@ Integration with the [rmcp](https://docs.rs/rmcp) crate:
 
 - **`McpServer::builder()`** - define MCP tools in Rust code
 - **`McpServer::from_rmcp()`** - wrap an rmcp server as an ACP MCP server
+
+Standalone rmcp-backed servers need no ACP transport feature. Enable the
+integration crate's `unstable_mcp_over_acp` feature to advertise an attached
+server as `McpServer::Acp`. Agents limited to HTTP MCP transports require the
+separate compatibility polyfill.
 
 ## Role System
 

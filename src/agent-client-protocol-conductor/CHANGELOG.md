@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handlers/types they expose must be migrated together.
 - **Breaking change:** Rename the public `ConductorResponder` background task to
   `ConductorRunner`, matching the core runner API it implements.
+- **Changed:** Enable the opt-in native MCP-over-ACP schema so tracing recognizes `mcp/message`.
+  HTTP adaptation remains an explicit `agent-client-protocol-polyfill` proxy rather than
+  conductor behavior.
 - **Fixed:** Preserve JSON-RPC batch framing when conductor tracing is enabled.
 - **Documentation:** Remove references to the retired MCP bridge CLI mode and
   `serve()` API.

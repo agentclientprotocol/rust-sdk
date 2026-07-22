@@ -4,7 +4,8 @@ Version 2.0 makes JSON-RPC notification semantics explicit, changes the low-leve
 transport boundary so frames remain intact across components and adapters, clarifies the
 distinction between responding to requests and routing responses, makes dynamic handler lifetimes
 explicit, and gives `AcpAgent` an SDK-owned process-launch configuration instead of reusing an MCP
-wire-schema type.
+wire-schema type. It also replaces the SDK-local MCP-over-ACP wire extension with the shared
+schema's opt-in native transport.
 
 ## Notifications cannot receive error responses
 
@@ -167,16 +168,78 @@ or responses. Their method names now reflect that input:
 
 ## Connection and session accessors borrow
 
-`McpConnectionTo::acp_id` now returns `&str`. The deprecated `acp_url` alias was removed; use
-`acp_id` instead. `McpConnectionTo::connection_to` is now `connection` and returns
-`&ConnectionTo<_>`.
+`McpConnectionTo::acp_id` is now `server_id` and returns `Option<&McpServerAcpId>`. The new name
+matches the native `McpServer::Acp` declaration; the `Option` reflects that a server can also be
+connected directly without ACP. `connection_id` returns an `Option<&McpConnectionId>` for the
+distinct active connection created by `mcp/connect`. Use `context()` to match explicitly on
+`McpConnectionContext::Standalone` or `McpConnectionContext::Acp { server_id, connection_id }`.
+The deprecated `acp_url` alias was removed. `McpConnectionTo::connection_to` is now `connection`
+and returns `&ConnectionTo<_>`.
 
 `ActiveSession::modes` and `ActiveSession::meta` now return `Option<&T>` instead of `&Option<T>`,
 and `ActiveSession::connection` returns `&ConnectionTo<_>`.
 
-These accessors avoid implicit allocation and handle cloning. Call `.to_owned()` on `acp_id`,
-`.cloned()` on `modes` or `meta`, and `.clone()` on either connection accessor when an owned value
-is required.
+These accessors avoid implicit allocation and handle cloning. Call `.cloned()` on `server_id()`,
+`connection_id()`, `modes`, or `meta`, and `.clone()` on either connection accessor when an owned
+value is required.
+
+## MCP servers use the native opt-in transport
+
+The runtime-agnostic `agent_client_protocol::mcp_server` module remains available without an
+unstable ACP feature, so standalone MCP servers do not allocate or retain schema transport IDs.
+Enable the feature when attaching a server to ACP with `Builder::with_mcp_server` or
+`SessionBuilder::with_mcp_server`:
+
+```toml
+agent-client-protocol = { version = "2", features = ["unstable_mcp_over_acp"] }
+```
+
+`agent-client-protocol-rmcp` no longer enables this feature merely to build or directly serve an
+MCP server. Applications that attach an rmcp-backed server to ACP should enable its matching
+`unstable_mcp_over_acp` passthrough feature. The transport remains unstable and may change
+independently of the stable ACP surface.
+
+In 1.x, the SDK represented an ACP-provided MCP server as `McpServer::Http` with an `acp:` URL and
+routed it through SDK-local underscore-prefixed methods. In 2.0, providers and native consumers
+use:
+
+- `McpServer::Acp(McpServerAcp { name, server_id, .. })` in session setup requests;
+- `mcp/connect` with `serverId`, returning a distinct `connectionId`;
+- `mcp/message` requests and notifications keyed by that connection ID; and
+- an `mcp/disconnect` request with an empty response.
+
+The low-level SDK-local `McpConnectRequest`, `McpConnectResponse`, `McpOverAcpMessage`, and
+`McpDisconnectNotification` types were removed. Use the feature-gated schema types instead:
+
+| 1.x SDK-local type | 2.0 schema type |
+| --- | --- |
+| `McpConnectRequest` | `schema::v1::ConnectMcpRequest` |
+| `McpConnectResponse` | `schema::v1::ConnectMcpResponse` |
+| `McpOverAcpMessage` request | `schema::v1::MessageMcpRequest` |
+| `McpOverAcpMessage` notification | `schema::v1::MessageMcpNotification` |
+| `McpDisconnectNotification` | `schema::v1::DisconnectMcpRequest` and `DisconnectMcpResponse` |
+
+The public method-name constants moved to the schema's generated method-name
+tables:
+
+| 1.x SDK-local constant | 2.0 schema constant |
+| --- | --- |
+| `METHOD_MCP_CONNECT_REQUEST` | `schema::v1::CLIENT_METHOD_NAMES.mcp_connect` |
+| `METHOD_MCP_MESSAGE` | `schema::v1::CLIENT_METHOD_NAMES.mcp_message` or `AGENT_METHOD_NAMES.mcp_message`, depending on direction |
+| `METHOD_MCP_DISCONNECT_NOTIFICATION` | `schema::v1::CLIENT_METHOD_NAMES.mcp_disconnect` |
+
+Code using `Builder::with_mcp_server` or `SessionBuilder::with_mcp_server` continues to attach the
+high-level server in the same place; the emitted declaration and wire methods change. Global
+builder attachment advertises the same server ID on `session/new`, `session/load`,
+`session/resume`, and feature-gated `session/fork`. Per-session attachment remains specific to
+`session/new`. Do not construct an HTTP server with an `acp:` URL. If the final agent accepts HTTP
+but not native ACP MCP servers, insert `McpOverAcpPolyfill` immediately before it. The polyfill now
+consumes native `McpServer::Acp` declarations and adapts only its final-agent-facing side.
+
+The polyfill's public `BridgeMode` enum and `McpOverAcpPolyfill::stdio` were removed because the
+required conductor `mcp` helper subcommand no longer exists. The polyfill has one supported mode;
+construct it with `McpOverAcpPolyfill::http()` or `Default`, or manage a standard MCP transport
+separately.
 
 ## Low-level helpers have a narrower surface
 

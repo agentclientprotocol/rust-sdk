@@ -1,29 +1,45 @@
-//! MCP server attachment and routing for ACP sessions.
+//! MCP server construction, direct serving, and optional ACP attachment.
 
 use std::{marker::PhantomData, sync::Arc};
 
 use futures::{StreamExt, channel::mpsc};
-use uuid::Uuid;
 
 use crate::{
-    Agent, Client, ConnectTo, ConnectionTo, Dispatch, DynConnectTo, HandleDispatchFrom, Handled,
-    Role,
-    jsonrpc::{
-        DynamicHandlerGuard,
-        run::{NullRun, RunWithConnectionTo},
+    ConnectTo, Dispatch, DynConnectTo, Role,
+    jsonrpc::run::{NullRun, RunWithConnectionTo},
+    mcp_server::{McpConnectionContext, McpConnectionTo, McpServerConnect},
+    role,
+};
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+use uuid::Uuid;
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+use crate::{
+    Agent, Client, ConnectionTo, HandleDispatchFrom, Handled,
+    jsonrpc::DynamicHandlerGuard,
+    mcp_server::active_session::McpActiveSession,
+    schema::v1::{
+        LoadSessionRequest, McpServer as SchemaMcpServer, McpServerAcp, McpServerAcpId,
+        NewSessionRequest, ResumeSessionRequest,
     },
-    mcp_server::{McpConnectionTo, McpServerConnect, active_session::McpActiveSession},
-    role::{self, HasPeer},
-    schema::v1::{McpServer as SchemaMcpServer, McpServerHttp, NewSessionRequest},
     util::MatchDispatchFrom,
 };
 
-/// An MCP server that can be attached to ACP connections.
+#[cfg(feature = "unstable_mcp_over_acp")]
+use crate::role::HasPeer;
+
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_session_fork"))]
+use crate::schema::v1::ForkSessionRequest;
+
+/// A runtime-agnostic MCP server.
 ///
-/// `McpServer` wraps an [`McpServerConnect`](`super::McpServerConnect`) implementation and can be used either:
-/// - As a message handler via [`Builder::with_handler`](`crate::Builder::with_handler`), automatically
-///   attaching to new sessions
-/// - Manually for more control
+/// `McpServer` wraps an [`McpServerConnect`](`super::McpServerConnect`)
+/// implementation. A server whose counterpart is [`role::mcp::Client`] can be
+/// connected directly as a standalone MCP component. With the
+/// `unstable_mcp_over_acp` feature, servers can instead be attached to ACP
+/// session setup through `Builder::with_mcp_server` or
+/// `SessionBuilder::with_mcp_server`.
 ///
 /// # Creating an MCP Server
 ///
@@ -33,14 +49,11 @@ use crate::{
 /// Or implement [`McpServerConnect`](`super::McpServerConnect`) for custom server behavior:
 ///
 /// ```rust,ignore
-/// let server = McpServer::new(MyCustomServerConnect);
+/// let server = McpServer::new(MyCustomServerConnect, NullRun);
 /// ```
 pub struct McpServer<Counterpart: Role, Run = NullRun> {
     /// The host role that is serving up this MCP server
     phantom: PhantomData<Counterpart>,
-
-    /// The ACP identifier we assigned for this mcp server; always unique
-    acp_id: String,
 
     /// The "connect" instance
     connect: Arc<dyn McpServerConnect<Counterpart>>,
@@ -60,7 +73,6 @@ impl<Counterpart: Role + std::fmt::Debug, Run: std::fmt::Debug> std::fmt::Debug
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("McpServer")
             .field("phantom", &self.phantom)
-            .field("acp_id", &self.acp_id)
             .field("runner", &self.runner)
             .finish_non_exhaustive()
     }
@@ -79,61 +91,62 @@ where
     pub fn new(c: impl McpServerConnect<Counterpart>, runner: Run) -> Self {
         McpServer {
             phantom: PhantomData,
-            acp_id: format!("acp:{}", Uuid::new_v4()),
             connect: Arc::new(c),
             runner,
         }
     }
 
     /// Split this MCP server into the message handler and a future that must be run while the handler is active.
-    pub(crate) fn into_handler_and_runner(self) -> (McpNewSessionHandler<Counterpart>, Run)
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) fn into_handler_and_runner(self) -> (McpSessionHandler<Counterpart>, Run)
     where
         Counterpart: HasPeer<Agent>,
     {
         let Self {
             phantom: _,
-            acp_id,
             connect,
             runner,
         } = self;
-        (McpNewSessionHandler::new(acp_id, connect), runner)
+        let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
+        (McpSessionHandler::new(server_id, connect), runner)
     }
 }
 
 /// Message handler created from a [`McpServer`].
-pub(crate) struct McpNewSessionHandler<Counterpart: Role>
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub(crate) struct McpSessionHandler<Counterpart: Role>
 where
     Counterpart: HasPeer<Agent>,
 {
-    acp_id: String,
+    server_id: McpServerAcpId,
     connect: Arc<dyn McpServerConnect<Counterpart>>,
     active_session: McpActiveSession<Counterpart>,
 }
 
-impl<Counterpart: Role> McpNewSessionHandler<Counterpart>
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> McpSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    pub fn new(acp_id: String, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+    pub fn new(server_id: McpServerAcpId, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
         Self {
-            active_session: McpActiveSession::new(acp_id.clone(), connect.clone()),
-            acp_id,
+            active_session: McpActiveSession::new(server_id.clone(), connect.clone()),
+            server_id,
             connect,
         }
     }
 
-    /// Modify the new session request to include this MCP server.
-    fn modify_new_session_request(&self, request: &mut NewSessionRequest) {
-        request
-            .mcp_servers
-            .push(SchemaMcpServer::Http(McpServerHttp::new(
-                self.connect.name(),
-                self.acp_id.clone(),
-            )));
+    /// Append this MCP server's native ACP declaration to a session setup request.
+    fn append_declaration(&self, mcp_servers: &mut Vec<SchemaMcpServer>) {
+        mcp_servers.push(SchemaMcpServer::Acp(McpServerAcp::new(
+            self.connect.name(),
+            self.server_id.clone(),
+        )));
     }
 }
 
-impl<Counterpart: Role> McpNewSessionHandler<Counterpart>
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> McpSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
@@ -155,12 +168,13 @@ where
     where
         Counterpart: HasPeer<Agent>,
     {
-        self.modify_new_session_request(request);
+        self.append_declaration(&mut request.mcp_servers);
         cx.add_dynamic_handler(self.active_session)
     }
 }
 
-impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for McpNewSessionHandler<Counterpart>
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for McpSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Client> + HasPeer<Agent>,
 {
@@ -169,17 +183,53 @@ where
         message: Dispatch,
         cx: ConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        MatchDispatchFrom::new(message, &cx)
+        let matcher = MatchDispatchFrom::new(message, &cx)
             .if_request_from(Client, async |mut request: NewSessionRequest, responder| {
-                self.modify_new_session_request(&mut request);
+                self.append_declaration(&mut request.mcp_servers);
                 Ok(Handled::No {
                     message: (request, responder),
                     retry: false,
                 })
             })
             .await
-            .otherwise_delegate(&mut self.active_session)
+            .if_request_from(
+                Client,
+                async |mut request: LoadSessionRequest, responder| {
+                    self.append_declaration(&mut request.mcp_servers);
+                    Ok(Handled::No {
+                        message: (request, responder),
+                        retry: false,
+                    })
+                },
+            )
             .await
+            .if_request_from(
+                Client,
+                async |mut request: ResumeSessionRequest, responder| {
+                    self.append_declaration(&mut request.mcp_servers);
+                    Ok(Handled::No {
+                        message: (request, responder),
+                        retry: false,
+                    })
+                },
+            )
+            .await;
+
+        #[cfg(feature = "unstable_session_fork")]
+        let matcher = matcher
+            .if_request_from(
+                Client,
+                async |mut request: ForkSessionRequest, responder| {
+                    self.append_declaration(&mut request.mcp_servers);
+                    Ok(Handled::No {
+                        message: (request, responder),
+                        retry: false,
+                    })
+                },
+            )
+            .await;
+
+        matcher.otherwise_delegate(&mut self.active_session).await
     }
 
     fn describe_chain(&self) -> impl std::fmt::Debug {
@@ -196,7 +246,6 @@ where
         client: impl ConnectTo<role::mcp::Server>,
     ) -> Result<(), crate::Error> {
         let Self {
-            acp_id,
             connect,
             runner,
             phantom: _,
@@ -217,7 +266,7 @@ where
             .with_spawned(async move |connection_to_client| {
                 let spawned_server: DynConnectTo<role::mcp::Client> =
                     connect.connect(McpConnectionTo {
-                        acp_id,
+                        context: McpConnectionContext::Standalone,
                         connection: connection_to_client.clone(),
                     });
 
