@@ -14,15 +14,18 @@
 //! before processing the next message.** This gives you sequential ordering
 //! guarantees within a single connection.
 //!
-//! # `on_*` Methods Block the Loop
+//! # Ordered Callbacks Hold the Loop
 //!
-//! Methods whose names begin with `on_` register callbacks that run inside
-//! the dispatch loop. When your callback is invoked, the loop is blocked
-//! until your callback completes.
+//! Request and notification callbacks registered with [`on_receive_request`]
+//! and [`on_receive_notification`] run inside the dispatch loop. The loop is
+//! blocked until the callback completes.
 //!
-//! This includes:
-//! - [`on_receive_request`] and [`on_receive_notification`]
-//! - [`on_receiving_result`] and [`on_receiving_ok_result`]
+//! Registering [`on_receiving_result`] or [`on_receiving_ok_result`] returns
+//! immediately. If registration happens before a peer response is routed
+//! during its original dispatch, response handling then holds an ordering
+//! barrier until the callback completes. A pending-request failure delivered
+//! without an incoming response, or a response routed later, does not carry
+//! that barrier.
 //!
 //! Session-start helpers are two-phase: [`on_session_start`] and
 //! [`on_proxy_session_start`] perform framework-owned session setup under this
@@ -30,15 +33,15 @@
 //! can consume later session traffic. No user callback code runs under the
 //! session-setup ordering guarantee.
 //!
-//! For callbacks that run inside the dispatch loop, this means:
+//! While a callback holds the dispatch loop, this means:
 //! - No other messages are processed while your callback runs
 //! - You can safely do setup before "releasing" control back to the loop
 //! - Messages are processed in the order they arrive
 //!
 //! # Deadlock Risk
 //!
-//! Because `on_*` callbacks block the dispatch loop, it's easy to create
-//! deadlocks. The most common pattern:
+//! Because callbacks can hold the dispatch loop, it's easy to create deadlocks.
+//! The most common pattern:
 //!
 //! ```ignore
 //! // DEADLOCK: This blocks the loop waiting for a response,
@@ -58,9 +61,10 @@
 //!
 //! When you send a request, you get a [`SentRequest`] with two ways to handle it:
 //!
-//! ## `block_task()` - Acks immediately, you process later
+//! ## `block_task()` - Does not hold dispatch while you process
 //!
-//! Use this in spawned tasks where you need to wait for the response:
+//! Use this from a task that already runs outside the dispatch loop, such as a
+//! foreground `connect_with` future or a spawned task:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -87,7 +91,7 @@
 //! The dispatch loop continues immediately after delivering the response.
 //! Your code receives the response and can take as long as it wants.
 //!
-//! ## `on_receiving_result()` - Your callback blocks the loop
+//! ## `on_receiving_result()` - A peer response callback can hold the loop
 //!
 //! Use this when you need ordering guarantees:
 //!
@@ -98,7 +102,7 @@
 //! # Client.builder().connect_with(transport, async |cx| {
 //! cx.send_request(MyRequest {})
 //!     .on_receiving_result(async |result| {
-//!         // Dispatch loop is blocked until this completes
+//!         // A timely peer response holds dispatch until this completes
 //!         let response = result?;
 //!         // Do something with response...
 //!         Ok(())
@@ -109,13 +113,16 @@
 //! # }
 //! ```
 //!
-//! The dispatch loop waits for your callback to complete before processing
-//! the next message. Use this when you need to ensure no other messages
-//! are processed until you've handled the response.
+//! Register the callback before a peer response is routed to select this
+//! ordered mode. The dispatch loop then waits for your callback before
+//! processing the next message. A pending-request failure delivered without
+//! an incoming response (such as EOF), a response that was already routed, or
+//! one that an interceptor retains and routes after its original dispatch does
+//! not carry the barrier.
 //!
-//! Register the callback before the response arrives to select this ordered
-//! mode. A response that was already routed, or that an interceptor retains
-//! and routes after its original dispatch, cannot retroactively hold the loop.
+//! An ordered callback must not wait for later inbound traffic on the same
+//! connection. Spawn that follow-up work and return from the callback so the
+//! loop can continue.
 //!
 //! # Escaping the Loop: `spawn`
 //!
@@ -135,10 +142,13 @@
 //! }, on_receive_request!());
 //! ```
 //!
-//! # `run_until` Methods
+//! # Blocking Session Methods
 //!
-//! Methods named `run_until` (like on session builders) run in a spawned task,
-//! so awaiting them won't cause deadlocks:
+//! `SessionBuilder::run_until` does not spawn its caller. It waits for the
+//! session response on the current task, so call it only when that task already
+//! runs outside the dispatch loop—for example, from the foreground future
+//! passed to `connect_with` or from a task created with [`spawn`]. Awaiting it
+//! from a message handler deadlocks just like awaiting `block_task()` there.
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -147,7 +157,7 @@
 //! cx.build_session_cwd()?
 //!     .block_task()
 //!     .run_until(async |mut session| {
-//!         // Safe to await here - we're in a spawned task
+//!         // Safe: connect_with's foreground future runs outside the dispatch loop
 //!         session.send_prompt("Hello")?;
 //!         let response = session.read_to_string().await?;
 //!         Ok(())
@@ -163,12 +173,12 @@
 //!
 //! | Pattern | Blocks Loop? | Use When |
 //! |---------|--------------|----------|
-//! | `on_*` callback | Yes | Quick decisions, need ordering |
-//! | `on_receiving_result` | Yes | Need to process response before next message |
+//! | `on_receive_*` callback | Yes | Handle one incoming message |
+//! | `on_receiving_*` callback | For a timely peer response | Bounded response work that needs ordering |
 //! | `on_session_start` / `on_proxy_session_start` | Setup only | Install session routing, then run session work concurrently |
-//! | `block_task()` | No | In spawned tasks, need response value |
+//! | `block_task()` | If awaited in a handler | Wait for a response from outside the dispatch loop |
 //! | `spawn(...)` | No | Long-running work, don't need ordering |
-//! | `block_task().run_until(...)` | No | Session-scoped work |
+//! | `block_task().run_until(...)` | If called in a handler | Session-scoped work from outside the dispatch loop |
 //!
 //! # Next Steps
 //!

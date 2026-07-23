@@ -261,8 +261,11 @@ where
     /// immediately without blocking the current task. The session handshake, client
     /// response, and proxy setup all happen in a spawned background task.
     ///
-    /// The closure receives the `SessionId` once the session is established, allowing
-    /// you to perform any custom work with that ID (e.g., tracking, logging).
+    /// The closure receives the `SessionId` once the session is established. Use it for logging
+    /// or eventual tracking; it runs concurrently with later connection traffic. Register
+    /// ID-independent state that later handlers must observe before calling this helper. For
+    /// ID-keyed bookkeeping, install a gate or placeholder first, make later handlers await it,
+    /// and populate it from the closure.
     ///
     /// # Example
     ///
@@ -290,13 +293,13 @@ where
     ///
     /// # Ordering
     ///
-    /// The client response and proxy routing are completed, and session runners
-    /// are scheduled, before the dispatch loop processes the next message when
-    /// the session response is routed during its original dispatch. No user
-    /// callback code runs under that ordering guarantee: the callback is invoked
-    /// in a spawned task, so it may wait for later connection traffic. A response
-    /// interceptor that retains the response and routes it later cannot
-    /// retroactively order this setup before messages the loop already processed.
+    /// The client response is queued, proxy routing is installed, and session runners are
+    /// scheduled before the dispatch loop processes the next message when the session response
+    /// is routed during its original dispatch. This is a local ordering guarantee, not a
+    /// guarantee that the response reaches the client before later wire traffic. No user callback
+    /// code runs under the barrier: the callback is invoked in a spawned task, so it may wait for
+    /// later connection traffic. A response interceptor that retains the response and routes it
+    /// later cannot retroactively order this setup before messages the loop already processed.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<NewSessionResponse>,

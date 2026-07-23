@@ -77,9 +77,10 @@
 //! request work instead.
 //!
 //! Cancellation markers are only updated when the connection can process the
-//! incoming `$/cancel_request` notification. Long-running handlers should
-//! return quickly and move work into [`ConnectionTo::spawn`], [`SentRequest`]
-//! callbacks, or another task; see the [ordering](super::ordering) chapter.
+//! incoming `$/cancel_request` notification. Long-running handlers and ordered
+//! [`SentRequest`] callbacks should return quickly and move work into
+//! [`ConnectionTo::spawn`] or another task; see the
+//! [ordering](super::ordering) chapter.
 //!
 //! # Proxies
 //!

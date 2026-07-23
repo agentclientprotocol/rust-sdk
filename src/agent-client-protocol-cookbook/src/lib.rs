@@ -191,9 +191,10 @@ pub mod connecting_as_client {
     //!
     //! # Note on `block_task`
     //!
-    //! Using [`block_task`] is safe inside `connect_with` because the closure runs
-    //! as a spawned task, not on the event loop. The event loop continues processing
-    //! messages (including the response you're waiting for) while your task blocks.
+    //! Using [`block_task`] is safe inside `connect_with` because its foreground
+    //! future runs alongside, rather than inside, the dispatch loop. The loop
+    //! continues processing messages (including the response you're waiting for)
+    //! while the foreground future waits.
     //!
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
@@ -365,10 +366,11 @@ pub mod reusable_components {
     //! # Important: Don't block the event loop
     //!
     //! Message handlers run on the event loop. Blocking in a handler prevents the
-    //! connection from processing new messages. For expensive work:
+    //! connection from processing new messages:
     //!
     //! - Use [`ConnectionTo::spawn`] to offload work to a background task
-    //! - Use [`on_receiving_result`] to schedule work when a response arrives
+    //! - Use [`on_receiving_result`] for bounded, ordered response handling; if it
+    //!   must await later traffic, spawn that work from the callback and return
     //!
     //! [`ConnectTo`]: agent_client_protocol::ConnectTo
     //! [`ConnectionTo::spawn`]: agent_client_protocol::ConnectionTo::spawn
@@ -549,9 +551,9 @@ pub mod global_mcp_server {
     //! handler. It:
     //!
     //! 1. Intercepts session setup requests and adds a schema-native
-    //!    `McpServer::Acp` declaration with a unique server ID to each request's
-    //!    `mcp_servers` list (`session/new`, `session/load`, `session/resume`, and
-    //!    feature-gated `session/fork`)
+    //!    `McpServer::Acp` declaration with one connection-scoped server ID,
+    //!    reused in each request's `mcp_servers` list (`session/new`,
+    //!    `session/load`, `session/resume`, and feature-gated `session/fork`)
     //! 2. Passes the modified request through to the next handler
     //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
     //!
@@ -571,7 +573,7 @@ pub mod per_session_mcp_server {
     //! # When to use
     //!
     //! - Tools need access to the session's working directory
-    //! - You want to track active sessions or maintain per-session state
+    //! - You want eventual active-session tracking that does not need to precede later traffic
     //! - Tools need to customize behavior based on session parameters
     //!
     //! # Basic pattern with `on_proxy_session_start`
@@ -608,8 +610,9 @@ pub mod per_session_mcp_server {
     //!                     // Session proxying is installed before this callback is spawned.
     //!                     //
     //!                     // Use this for follow-up work that may wait for later connection
-    //!                     // traffic. Perform synchronous bookkeeping in the request handler
-    //!                     // itself when it must precede every later message.
+    //!                     // traffic. Register ID-independent state in the request handler.
+    //!                     // For ID-keyed state, preinstall a gate that later handlers await,
+    //!                     // then populate it here.
     //!                     tracing::info!(%session_id, "Session started");
     //!                     Ok(())
     //!                 })
@@ -629,8 +632,12 @@ pub mod per_session_mcp_server {
     //! 4. Runs your callback with the `SessionId`
     //!
     //! The callback runs after the session is established but doesn't block
-    //! the message handler. This is ideal for proxies that just need to inject
-    //! tools and track sessions.
+    //! the message handler. It is suitable for follow-up work and eventual
+    //! session tracking. Because it runs concurrently with later traffic, it
+    //! does not guarantee that bookkeeping keyed by `SessionId` completes
+    //! first. Register ID-independent state before calling the helper. For
+    //! ID-keyed state, preinstall a gate or placeholder that later handlers
+    //! await, then populate it from the callback.
     //!
     //! # Alternative: spawning `start_session_proxy`
     //!

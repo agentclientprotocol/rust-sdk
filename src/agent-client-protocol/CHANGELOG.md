@@ -51,6 +51,12 @@
   an object. See the [2.0 migration guide].
 - **Breaking:** Remove the deprecated `zed_claude_code` and `zed_codex` constructors and the
   `google_gemini` convenience constructor from `AcpAgent`. See the [2.0 migration guide].
+- **Breaking:** Enforce ordered dispatch for `on_receiving_result` and
+  `on_receiving_ok_result` callbacks selected before a peer response is routed during its original
+  dispatch. Registration still returns immediately, but the callback now delays later messages
+  and must not await later traffic on the same connection. Session-start helpers use the barrier
+  only for framework-owned setup, then run user work concurrently; the old documentation claiming
+  that session user callbacks blocked dispatch was inaccurate. See the [2.0 migration guide].
 - Update `agent-client-protocol-schema` to 1.5.0. The stable v1 schema remains compatible; the
   opt-in draft v2 API gains semantic newtypes, revised diff and terminal types, and generic
   fallible conversion helpers. See the
@@ -58,10 +64,9 @@
 
 **Fixed**
 
-- Honor `on_receiving_result` ordering when callback consumption is selected before a response
-  arrives, without stalling unconsumed, blocking, or delayed response routes. Session-start
-  helpers now install their routing state under that ordering barrier for responses routed during
-  their original dispatch, and run user session work in a spawned task.
+- Install framework-owned session and proxy routing before later messages when a session response
+  is routed during its original dispatch. User session work remains concurrent so it can consume
+  later traffic without deadlocking.
 - Emit at most one response for an individual request when a handler responds and then returns an
   error, matching the existing per-entry completion behavior for batches.
 - Preserve JSON-RPC batch framing across component adapters, protocol routing, and tracing
