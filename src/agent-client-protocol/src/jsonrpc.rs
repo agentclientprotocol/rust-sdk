@@ -139,14 +139,6 @@ impl TransportBatchEntry {
         }
     }
 
-    #[cfg(any(feature = "unstable_protocol_v2", test))]
-    fn into_result(self) -> Result<RawJsonRpcMessage, crate::Error> {
-        match self {
-            Self::Message(message) => Ok(message),
-            Self::Malformed { error, .. } => Err(error),
-        }
-    }
-
     fn message_ref(&self) -> Option<&RawJsonRpcMessage> {
         match self {
             Self::Message(message) => Some(message),
@@ -221,13 +213,6 @@ impl TransportBatch {
         &self,
     ) -> impl Iterator<Item = Result<&RawJsonRpcMessage, &crate::Error>> {
         self.entries().map(TransportBatchEntry::as_result)
-    }
-
-    #[cfg(any(feature = "unstable_protocol_v2", test))]
-    pub(crate) fn into_results(
-        self,
-    ) -> impl Iterator<Item = Result<RawJsonRpcMessage, crate::Error>> {
-        self.into_entries().map(TransportBatchEntry::into_result)
     }
 
     fn messages(&self) -> impl Iterator<Item = &RawJsonRpcMessage> {

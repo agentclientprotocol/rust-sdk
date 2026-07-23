@@ -1457,6 +1457,60 @@ async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Err
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn protocol_router_rejection_flushes_with_trailing_malformed_input() -> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |_initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond_with_internal_error("v2 implementation should not run")
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+
+    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+    // Keep the outbound pipe full until the malformed input is already queued.
+    let (server_writer, client_reader) = tokio::io::duplex(1);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut client_reader = BufReader::new(client_reader);
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": json_value(v1_initialize_request(ProtocolVersion::V1))?,
+        }),
+    )
+    .await?;
+    client_writer
+        .write_all(b"{not json\n")
+        .await
+        .map_err(Error::into_internal_error)?;
+    client_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+
+    let response = read_wire_json(&mut client_reader).await?;
+    assert_eq!(response["id"], 1);
+    assert!(
+        response["error"]["data"]
+            .as_str()
+            .is_some_and(|data| data.contains("supports ACP protocol version 2")),
+        "{response:?}"
+    );
+
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn protocol_router_ignores_retained_response_batch_before_initialize() -> Result<(), Error> {
     use tokio::io::{AsyncWriteExt as _, BufReader};
 
