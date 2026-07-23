@@ -86,9 +86,9 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// Wrapper for command-line component lists that can serve as either
 /// proxies-only (for proxy mode) or proxies+agent (for agent mode).
 ///
-/// This exists because `AcpAgent` implements `Component<L>` for all `L`,
-/// so a `Vec<AcpAgent>` can be used as either a list of proxies or as
-/// proxies + final agent depending on the conductor mode.
+/// This exists because `AcpAgent` implements `ConnectTo<Client>` and
+/// `ConnectTo<Conductor>`, so a `Vec<AcpAgent>` can be used as either a list
+/// of proxies or as proxies + final agent depending on the conductor mode.
 #[derive(Debug)]
 pub struct CommandLineComponents(pub Vec<AcpAgent>);
 

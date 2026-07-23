@@ -123,7 +123,7 @@ pub mod __private {
     pub use serde_json;
 }
 
-// Re-export BoxFuture for implementing Component traits
+// Re-export BoxFuture for implementing SDK traits that return boxed futures.
 pub use futures::future::BoxFuture;
 
 // Re-export commonly used infrastructure types for convenience
