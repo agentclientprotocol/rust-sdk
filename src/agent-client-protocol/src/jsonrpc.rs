@@ -5657,7 +5657,7 @@ impl Channel {
     /// # Errors
     ///
     /// Returns an error if the receiving endpoint closes before the input.
-    pub async fn copy(mut self) -> Result<(), crate::Error> {
+    pub(crate) async fn copy(mut self) -> Result<(), crate::Error> {
         while let Some(frame) = self.rx.next().await {
             self.tx
                 .unbounded_send(frame)
