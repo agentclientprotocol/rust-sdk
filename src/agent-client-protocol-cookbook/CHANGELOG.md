@@ -7,11 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Curated release notes
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v1.3.0...agent-client-protocol-cookbook-v2.0.0) - 2026-07-23
 
-- **Changed:** Align the cookbook release and examples with `agent-client-protocol` 2.x.
-- **Documentation:** Update permission, streaming, MCP server, and conductor examples
-  for the 2.0 APIs.
+### Changed
+
+- Update the cookbook for `agent-client-protocol` 2.x, including notification handling, ordered
+  response callbacks, permission and streaming flows, feature-gated native MCP-over-ACP, and
+  current conductor APIs. See the
+  [2.0 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html).
 
 ## [1.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v1.1.0...agent-client-protocol-cookbook-v1.2.0) - 2026-07-07
 

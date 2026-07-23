@@ -7,12 +7,15 @@ explicit, and gives `AcpAgent` an SDK-owned process-launch configuration instead
 wire-schema type. It also replaces the SDK-local MCP-over-ACP wire extension with the shared
 schema's opt-in native transport.
 
-## Compatible crate versions
+## Coordinated crate versions
 
-Most published workspace crates move to the 2.x version family together. The rmcp integration
-moves to 3.x because both `agent-client-protocol` and `rmcp` are public dependencies in its API:
+Most published workspace crates move to the 2.x version family together. Crates whose public APIs
+expose core SDK types must use the matching major release; the trace viewer and cookbook are
+version-aligned as part of the coordinated release but do not impose that public dependency
+constraint. The rmcp integration moves to 3.x because both `agent-client-protocol` and `rmcp` are
+public dependencies in its API:
 
-| Crate | Version compatible with `agent-client-protocol` 2.x |
+| Crate | Coordinated release |
 | --- | --- |
 | `agent-client-protocol` | 2.x |
 | `agent-client-protocol-derive` | 2.x |
@@ -245,7 +248,7 @@ use:
 - `McpServer::Acp(McpServerAcp { name, server_id, .. })` in session setup requests;
 - `mcp/connect` with `serverId`, returning a distinct `connectionId`;
 - `mcp/message` requests and notifications keyed by that connection ID; and
-- an `mcp/disconnect` request with an empty response.
+- a request/response `mcp/disconnect` exchange.
 
 The low-level SDK-local `McpConnectRequest`, `McpConnectResponse`, `McpOverAcpMessage`, and
 `McpDisconnectNotification` types were removed. Use the feature-gated schema types instead:

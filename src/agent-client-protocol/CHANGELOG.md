@@ -2,89 +2,80 @@
 
 ## [Unreleased]
 
-### Curated 2.0 release notes
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.3.0...v2.0.0) - 2026-07-23
 
-**Added**
+Version 2.0 keeps the stable ACP v1 wire schema unchanged while making coordinated breaking
+changes to the Rust SDK APIs and low-level transport boundary.
 
-- Accept incoming JSON-RPC batches in stable v1 and draft v2 connections, process entries
-  independently, and group replies into one response array. The SDK still sends requests and
-  notifications individually.
-- Allow mapped `SentRequest` values to be consumed without implementing `JsonRpcResponse`, and
-  accept one-shot mappers.
+### Breaking changes
 
-**Breaking and changed**
+- `Channel` now carries batch-aware `TransportFrame` values, and custom `Channel` or `ConnectTo`
+  relays must preserve frames rather than forwarding individual messages. `Lines` and
+  `ByteStreams` fields are private; construct those adapters with `new`.
+  ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- JSON-RPC APIs now reflect protocol roles: notifications are never answered,
+  `ResponseRouter` uses `route*` methods, typed request IDs are borrowed, and
+  `TypeNotification` is role-independent. ([#272](https://github.com/agentclientprotocol/rust-sdk/pull/272),
+  [#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+- Handler and routing APIs now use explicit ownership and terminology:
+  `DynamicHandlerGuard` replaces cloneable registrations, background tasks use `with_runner`,
+  combined matchers use `if_dispatch*`, and obsolete low-level helpers have been removed.
+  ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280),
+  [#283](https://github.com/agentclientprotocol/rust-sdk/pull/283))
+- MCP-over-ACP now uses the feature-gated schema-native `McpServer::Acp`, `mcp/connect`,
+  `mcp/message`, and request/response `mcp/disconnect` types. The SDK-local wire types,
+  `acp:` HTTP declarations, and legacy accessors are removed; MCP and session accessors now
+  borrow typed identifiers and connection state. ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- `AcpAgent` now uses `AcpAgentConfig`, represents JSON environment variables as an object, and
+  no longer provides the deprecated Zed constructors or the Gemini convenience constructor.
+  ([#276](https://github.com/agentclientprotocol/rust-sdk/pull/276),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- Response callbacks that select ordered consumption before a response is routed during its
+  original dispatch now finish before later inbound messages are dispatched. Already-routed
+  responses and locally delivered failures do not add this barrier. Framework session setup is
+  ordered, while user session work remains concurrent. An ordered callback must not await later
+  inbound traffic on the same connection.
+  ([#282](https://github.com/agentclientprotocol/rust-sdk/pull/282))
 
-- **Breaking:** Make `Channel` the batch-aware `TransportFrame` boundary instead of carrying
-  individual message results. Public frame types are cloneable, and `TransportBatch` exposes
-  owned entry iteration. See the [2.0 migration guide].
-- **Breaking:** Rename `ResponseRouter` response methods to use routing terminology and return
-  borrowed `RequestId` values from response and request handles. See the [2.0 migration guide].
-- **Breaking:** Remove ambiguous JSON-RPC error-response and dispatch-conversion helpers, and
-  require `Dispatch` notification types to implement `JsonRpcNotification`. In particular,
-  remove `ConnectionTo::send_error_notification` and `Dispatch::respond_with_error`: JSON-RPC
-  notifications never receive responses. Make `TypeNotification` role-independent and construct
-  it without a connection. See the [2.0 migration guide].
-- **Breaking:** Replace cloneable dynamic-handler registrations with `DynamicHandlerGuard` and
-  use `detach()` to keep handlers registered without leaking a connection handle. See the
-  [2.0 migration guide].
-- **Breaking:** Rename `Builder::with_responder` to `with_runner` to describe background
-  connection tasks separately from JSON-RPC response handles. See the [2.0 migration guide].
-- **Breaking:** Rename `MatchDispatch::if_message` to `if_dispatch` and
-  `MatchDispatchFrom::if_message_from` to `if_dispatch_from`. See the [2.0 migration guide].
-- **Breaking:** Replace the SDK-local MCP-over-ACP wire types and underscore-prefixed methods with
-  the shared schema's native `McpServer::Acp`, `mcp/connect`, `mcp/message`, and
-  request/response `mcp/disconnect` transport. The old wire structs and `METHOD_MCP_*` constants
-  are removed. Only the high-level ACP attachment methods require `unstable_mcp_over_acp`;
-  standalone MCP servers remain available without it and no longer allocate schema transport IDs.
-  Global attachment adds the same declaration to new, load, resume, and feature-gated fork session
-  requests. Fake `McpServer::Http` declarations using an `acp:` URL are no longer emitted or
-  consumed. See the [2.0 migration guide].
-- **Breaking:** Return borrowed identifiers, connection handles, modes, and metadata from
-  `McpConnectionTo` and `ActiveSession`; replace `McpConnectionTo::acp_id` with optional typed
-  `server_id` and `connection_id` accessors, add an explicit standalone-versus-ACP connection
-  context, remove `acp_url`, and rename `connection_to` to `connection`. See the [2.0 migration
-  guide].
-- **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
-  fields and session/stream internals, and removing `util::both`. See the [2.0 migration guide].
-- **Breaking:** Remove the obsolete `NullHandler::new` and `MatchDispatch::from_handled`
-  constructors, and make `Channel::copy` an implementation detail. See the
-  [2.0 migration guide].
-- **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
-  `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
-  an object. See the [2.0 migration guide].
-- **Breaking:** Remove the deprecated `zed_claude_code` and `zed_codex` constructors and the
-  `google_gemini` convenience constructor from `AcpAgent`. See the [2.0 migration guide].
-- **Breaking:** Enforce ordered dispatch for `on_receiving_result` and
-  `on_receiving_ok_result` callbacks selected before a peer response is routed during its original
-  dispatch. Registration still returns immediately, but the callback now delays later messages
-  and must not await later traffic on the same connection. Session-start helpers use the barrier
-  only for framework-owned setup, then run user work concurrently; the old documentation claiming
-  that session user callbacks blocked dispatch was inaccurate. See the [2.0 migration guide].
-- Update `agent-client-protocol-schema` to 1.5.0. The stable v1 schema remains compatible; the
+See the [2.0 migration guide] for exact API replacements and migration examples.
+
+### Added
+
+- Accept incoming JSON-RPC batches on stable v1 and draft v2 connections, process entries
+  independently, and group replies into one response array. Typed requests and notifications
+  are still sent individually. ([#271](https://github.com/agentclientprotocol/rust-sdk/pull/271),
+  [#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
+- Add `SentRequest::map` for transforming a response with one-shot closures without requiring the
+  mapped output to implement `JsonRpcResponse`. Values consumed with `block_task` may carry
+  non-`'static` lifetimes; callback-style consumption remains `'static`.
+  ([#278](https://github.com/agentclientprotocol/rust-sdk/pull/278))
+
+### Changed
+
+- Update `agent-client-protocol-schema` to 1.5.0. The stable v1 wire schema is unchanged; the
   opt-in draft v2 API gains semantic newtypes, revised diff and terminal types, and generic
-  fallible conversion helpers. See the
-  [draft v2 migration notes](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html#draft-v2-schema-updates).
+  fallible conversions. ([#273](https://github.com/agentclientprotocol/rust-sdk/pull/273))
 
-**Fixed**
+### Fixed
 
-- Install framework-owned session and proxy routing before later messages when a session response
-  is routed during its original dispatch. User session work remains concurrent so it can consume
-  later traffic without deadlocking.
-- Emit at most one response for an individual request when a handler responds and then returns an
-  error, matching the existing per-entry completion behavior for batches.
-- Preserve JSON-RPC batch framing across component adapters, protocol routing, and tracing
-  bridges. Invalid call entries no longer abort relays, fully filtered response batches are not
-  serialized as empty arrays, and malformed response-only input is ignored rather than answered.
-- Complete a batched request with `Internal Error` when its handler drops the responder, so
-  completed sibling replies can flush; an explicit handler error still takes precedence.
-- Route response-dispatch handler errors to the pending local `SentRequest` instead of losing the
-  original error or sending protocol traffic in response to a response.
-- Let the version-selecting agent router ignore response-only frames before `initialize` and
-  preserve response-only entries beside a valid batched initialization.
-- Let the version-selecting agent router finish flushing an initialization rejection when the
-  peer sends malformed trailing input before closing the transport.
-- Release abandoned v2 and v1 probe implementations before continuing a negotiated v1 fallback.
+- Install framework-owned session and proxy routes before later messages, route response-handler
+  failures to the pending local request, and prevent handlers from emitting a second response
+  after already responding. ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280),
+  [#282](https://github.com/agentclientprotocol/rust-sdk/pull/282))
+- Preserve batch boundaries across adapters, routers, and tracing; retain invalid call entries
+  without aborting relays; do not reply to malformed response-shaped input; and complete dropped
+  batched responders so sibling replies can flush.
+  ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- During protocol negotiation, ignore response-only traffic before initialization, preserve
+  response siblings in mixed initialization batches, flush initialization rejections before
+  closing, and drop unused protocol probes before falling back to v1.
+  ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280),
+  [#285](https://github.com/agentclientprotocol/rust-sdk/pull/285))
 - Preserve `MatchDispatchFrom` retry state across chained matchers.
+  ([#274](https://github.com/agentclientprotocol/rust-sdk/pull/274))
 
 [2.0 migration guide]: https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html
 

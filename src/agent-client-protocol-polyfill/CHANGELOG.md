@@ -7,30 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Curated release notes
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v1.3.0...agent-client-protocol-polyfill-v2.0.0) - 2026-07-23
 
-- **Breaking:** Upgrade to `agent-client-protocol` 2.x. Polyfill components and the core
+### Breaking changes
+
+- Upgrade to `agent-client-protocol` 2.x. Polyfill components and the core
   handlers/types they connect must be migrated together.
-- **Breaking:** Consume native `McpServer::Acp` declarations and route `mcp/connect`,
+- Consume native `McpServer::Acp` declarations and route `mcp/connect`,
   `mcp/message`, and request/response `mcp/disconnect`. The bridge no longer recognizes
   `McpServer::Http` values with `acp:` URLs or the SDK-local underscore-prefixed method family.
-- **Breaking:** Remove the public `BridgeMode` enum and `McpOverAcpPolyfill::stdio`; the repository
+  ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- Remove the public `BridgeMode` enum and `McpOverAcpPolyfill::stdio`; the repository
   no longer ships the conductor helper subcommand that stdio mode required. The polyfill now has
   one supported configuration, selected with `McpOverAcpPolyfill::http()` or `Default`; otherwise
-  use a separately managed MCP transport.
-- **Changed:** Align the bridge background-task terminology with the core runner APIs.
-- **Changed:** Keep MCP-over-ACP native on the provider-facing side while translating declarations
-  to localhost HTTP only for a final agent that lacks native transport support.
-- **Changed:** Adapt native declarations in new, load, resume, and optionally fork session setup;
-  pass them through unchanged when the successor already supports native MCP-over-ACP, and
-  advertise the adapted capability only when the successor supports HTTP MCP.
-- **Documentation:** Update MCP-over-ACP conductor composition examples for the current native
-  declaration and compatibility boundary.
-- **Fixed:** Preserve JSON-RPC batch frames through the MCP-over-ACP HTTP bridge, answer
+  use a separately managed MCP transport. ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+
+See the [core 2.0 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html)
+for the shared transport and handler API changes.
+
+### Changed
+
+- Pass native MCP-over-ACP declarations through when the downstream agent supports them, translate
+  them to localhost HTTP when the agent supports only HTTP MCP, and reject them when the agent
+  supports neither transport. Apply the same behavior to new, load, resume, and feature-gated fork
+  session setup; non-native declarations remain unchanged.
+  ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+
+### Fixed
+
+- Preserve JSON-RPC batch frames through the MCP-over-ACP HTTP bridge, answer
   malformed calls on their originating POST, and ignore malformed response-shaped input.
-- **Fixed:** Serialize overlapping request IDs (including `id: null`) and response-bearing batches
-  without identifiable request IDs, and retain active correlations after an HTTP caller
-  disconnects, preventing late or concurrent responses from being delivered to the wrong POST.
+  ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- Process HTTP POSTs whose responses cannot be uniquely correlated by request ID
+  sequentially—including overlapping IDs, `id: null`, and response-bearing batches without
+  identifiable request IDs—and retain correlation state after a caller disconnects so late
+  responses cannot reach the wrong POST.
+  ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
 
 ## [1.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v1.0.0...agent-client-protocol-polyfill-v1.0.1) - 2026-06-29
 
