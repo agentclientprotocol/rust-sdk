@@ -272,11 +272,12 @@ supported, so move request customization into `build_session_from` before the bu
 
 When the session response is routed during its original dispatch, `on_session_start` and
 `on_proxy_session_start` install session routing under the ordered response callback, then spawn
-the user callback. Their callback futures must therefore be `'static`, but they may safely wait
-for later connection or session traffic. A response interceptor that retains and routes the
-response later cannot retroactively order that setup before already-processed messages. Perform
-synchronous bookkeeping in the surrounding request handler when it must complete before every
-later message.
+the user callback. No user callback code runs under that ordering guarantee. The callback itself
+must be `'static`, but its returned future does not need an additional `'static` bound and may
+safely wait for later connection or session traffic. A response interceptor that retains and
+routes the response later cannot retroactively order that setup before already-processed messages.
+Register application state needed for routing before calling these helpers. Bookkeeping that
+requires the returned session or session ID runs concurrently with later traffic.
 
 Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 `ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.
@@ -307,8 +308,10 @@ are included in the SDK 2.0 migration rather than treated as stable-v1 wire chan
 ## `SentRequest::map` accepts arbitrary output
 
 `SentRequest::map` can now consume a typed response into any output type; the mapped value no
-longer needs to implement `JsonRpcResponse`. The mapper may also be a one-shot closure. This is
-additive, so existing mapping code does not need to change.
+longer needs to implement `JsonRpcResponse`. This includes mapped values carrying non-`'static`
+lifetimes when they are consumed with `block_task`; callback-style consumption still requires
+`'static` because it is spawned onto the connection. The mapper may also be a one-shot closure.
+This is additive, so existing mapping code does not need to change.
 
 ## `AcpAgent` has its own process configuration
 

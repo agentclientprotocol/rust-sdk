@@ -4933,7 +4933,7 @@ impl<T> SentRequest<T> {
     }
 }
 
-impl<T: 'static> SentRequest<T> {
+impl<T> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
     pub fn id(&self) -> &RequestId {
@@ -4950,11 +4950,17 @@ impl<T: 'static> SentRequest<T> {
     ///
     /// The mapped type does not need to implement [`JsonRpcResponse`]. The
     /// mapper runs at most once and may consume captured state. JSON-RPC error
-    /// responses bypass the mapper.
+    /// responses bypass the mapper. The mapped type may carry a non-`'static`
+    /// lifetime when it is consumed with [`block_task`](Self::block_task);
+    /// callback-style consumption still requires a `'static` mapped type
+    /// because its work is spawned onto the connection.
     pub fn map<U>(
         self,
         map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
-    ) -> SentRequest<U> {
+    ) -> SentRequest<U>
+    where
+        T: 'static,
+    {
         SentRequest {
             id: self.id,
             method: self.method,
@@ -5062,6 +5068,7 @@ impl<T: 'static> SentRequest<T> {
         handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
+        T: 'static,
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
     {
         self.response_ordering.mark_ordered();
@@ -5356,6 +5363,7 @@ impl<T: 'static> SentRequest<T> {
         task: impl FnOnce(Result<T, crate::Error>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
+        T: 'static,
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
     {
         self.consume_with(move |response| match response {

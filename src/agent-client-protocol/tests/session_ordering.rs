@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectionTo, RawJsonRpcMessage, Responder, SessionMessage,
-    TransportBatch, TransportFrame,
+    ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
+    SessionMessage, TransportBatch, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
@@ -11,6 +11,61 @@ use agent_client_protocol::{
 use futures::{StreamExt as _, channel::oneshot};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+// Compile-time regressions for the callback future bounds on the two non-blocking
+// session helpers. The callbacks themselves are `'static`, but their future
+// types deliberately carry an arbitrary shorter lifetime.
+#[allow(dead_code)]
+mod callback_future_lifetimes {
+    use std::{
+        future::Future,
+        marker::PhantomData,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    use super::*;
+
+    struct LifetimeTaggedFuture<'a>(PhantomData<&'a ()>);
+
+    impl Future for LifetimeTaggedFuture<'_> {
+        type Output = Result<(), agent_client_protocol::Error>;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    fn session_callback<'a>()
+    -> impl FnOnce(ActiveSession<'static, Agent>) -> LifetimeTaggedFuture<'a> + Send + 'static {
+        |_session| LifetimeTaggedFuture(PhantomData)
+    }
+
+    fn proxy_session_callback<'a>()
+    -> impl FnOnce(SessionId) -> LifetimeTaggedFuture<'a> + Send + 'static {
+        |_session_id| LifetimeTaggedFuture(PhantomData)
+    }
+
+    fn on_session_start_accepts_non_static_callback_future<'a>(
+        connection: &ConnectionTo<Agent>,
+        _scope: &'a str,
+    ) -> Result<(), agent_client_protocol::Error> {
+        connection
+            .build_session_cwd()?
+            .on_session_start(session_callback::<'a>())
+    }
+
+    fn on_proxy_session_start_accepts_non_static_callback_future<'a>(
+        connection: &ConnectionTo<Conductor>,
+        request: NewSessionRequest,
+        responder: Responder<NewSessionResponse>,
+        _scope: &'a str,
+    ) -> Result<(), agent_client_protocol::Error> {
+        connection
+            .build_session_from(request)
+            .on_proxy_session_start(responder, proxy_session_callback::<'a>())
+    }
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn on_session_start_callback_can_consume_later_session_messages() {

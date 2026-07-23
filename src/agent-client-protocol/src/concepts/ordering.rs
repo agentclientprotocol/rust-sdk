@@ -25,11 +25,12 @@
 //! - [`on_receiving_result`] and [`on_receiving_ok_result`]
 //!
 //! Session-start helpers are two-phase: [`on_session_start`] and
-//! [`on_proxy_session_start`] perform their session setup under this ordering
-//! guarantee, then spawn the user callback so it can consume later session
-//! traffic.
+//! [`on_proxy_session_start`] perform framework-owned session setup under this
+//! ordering guarantee, then invoke the user callback in a spawned task so it
+//! can consume later session traffic. No user callback code runs under the
+//! session-setup ordering guarantee.
 //!
-//! This means:
+//! For callbacks that run inside the dispatch loop, this means:
 //! - No other messages are processed while your callback runs
 //! - You can safely do setup before "releasing" control back to the loop
 //! - Messages are processed in the order they arrive

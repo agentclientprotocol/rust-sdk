@@ -209,18 +209,19 @@ where
     ///
     /// # Ordering
     ///
-    /// Session runners and routing setup are started before the dispatch loop
-    /// processes the next message when the session response is routed during
-    /// its original dispatch. The user callback then runs in a spawned task,
-    /// so it may wait for later session traffic without deadlocking the
-    /// connection. A response interceptor that retains the response and routes
-    /// it later cannot retroactively order session setup before messages the
-    /// dispatch loop has already processed.
+    /// Session runners are scheduled and routing setup is installed before the
+    /// dispatch loop processes the next message when the session response is
+    /// routed during its original dispatch. No user callback code runs under
+    /// that ordering guarantee: the callback is invoked in a spawned task, so
+    /// it may wait for later session traffic without deadlocking the connection.
+    /// A response interceptor that retains the response and routes it later
+    /// cannot retroactively order session setup before messages the dispatch
+    /// loop has already processed.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
         R: 'static,
         F: FnOnce(ActiveSession<'static, Counterpart>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let Self {
             connection,
@@ -242,7 +243,7 @@ where
                     let active_session =
                         connection.attach_session(response, dynamic_handler_registrations)?;
 
-                    connection.spawn(op(active_session))
+                    connection.spawn(async move { op(active_session).await })
                 }
             })
     }
@@ -289,10 +290,11 @@ where
     ///
     /// # Ordering
     ///
-    /// The client response, proxy routing, and session runners are set up before
-    /// the dispatch loop processes the next message when the session response
-    /// is routed during its original dispatch. The user callback then runs in a
-    /// spawned task, so it may wait for later connection traffic. A response
+    /// The client response and proxy routing are completed, and session runners
+    /// are scheduled, before the dispatch loop processes the next message when
+    /// the session response is routed during its original dispatch. No user
+    /// callback code runs under that ordering guarantee: the callback is invoked
+    /// in a spawned task, so it may wait for later connection traffic. A response
     /// interceptor that retains the response and routes it later cannot
     /// retroactively order this setup before messages the loop already processed.
     pub fn on_proxy_session_start<F, Fut>(
@@ -302,7 +304,7 @@ where
     ) -> Result<(), crate::Error>
     where
         F: FnOnce(SessionId) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(), crate::Error>> + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
         Counterpart: HasPeer<Client>,
         R: 'static,
     {
@@ -337,7 +339,7 @@ where
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
 
-                connection.spawn(op(session_id))
+                connection.spawn(async move { op(session_id).await })
             }
         })
     }

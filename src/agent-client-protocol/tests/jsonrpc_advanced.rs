@@ -13,7 +13,7 @@ use agent_client_protocol::{
 use futures::channel::{mpsc, oneshot};
 use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::{marker::PhantomData, time::Duration};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to block and wait for a JSON-RPC response.
@@ -102,6 +102,25 @@ impl JsonRpcResponse for PongResponse {
     ) -> Result<Self, agent_client_protocol::Error> {
         agent_client_protocol::util::json_cast(&value)
     }
+}
+
+#[derive(Debug)]
+struct LifetimeTaggedResponse<'a> {
+    value: u32,
+    _scope: PhantomData<&'a ()>,
+}
+
+#[allow(clippy::elidable_lifetime_names)]
+fn map_response_with_scope(
+    request: SentRequest<PongResponse>,
+    _scope: &(),
+) -> SentRequest<LifetimeTaggedResponse<'_>> {
+    request.map(|response| {
+        Ok(LifetimeTaggedResponse {
+            value: response.value,
+            _scope: PhantomData,
+        })
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,6 +542,21 @@ async fn test_map_response_to_application_types() {
                             .await?;
 
                         assert_eq!(*non_send_response, 21_u32);
+
+                        let scope = ();
+                        let scoped_response = map_response_with_scope(
+                            cx.send_request(PingRequest { value: 30 }),
+                            &scope,
+                        );
+                        assert_eq!(scoped_response.method(), "ping");
+                        assert!(matches!(
+                            scoped_response.id(),
+                            agent_client_protocol::schema::v1::RequestId::Str(id)
+                                if !id.is_empty()
+                        ));
+                        let scoped_response = scoped_response.block_task().await?;
+
+                        assert_eq!(scoped_response.value, 31_u32);
                         Ok(())
                     },
                 )
