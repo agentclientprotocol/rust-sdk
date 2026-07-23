@@ -7,6 +7,22 @@ explicit, and gives `AcpAgent` an SDK-owned process-launch configuration instead
 wire-schema type. It also replaces the SDK-local MCP-over-ACP wire extension with the shared
 schema's opt-in native transport.
 
+## Compatible crate versions
+
+Most published workspace crates move to the 2.x version family together. The rmcp integration
+moves to 3.x because both `agent-client-protocol` and `rmcp` are public dependencies in its API:
+
+| Crate | Version compatible with `agent-client-protocol` 2.x |
+| --- | --- |
+| `agent-client-protocol` | 2.x |
+| `agent-client-protocol-derive` | 2.x |
+| `agent-client-protocol-conductor` | 2.x |
+| `agent-client-protocol-cookbook` | 2.x |
+| `agent-client-protocol-http` | 2.x |
+| `agent-client-protocol-polyfill` | 2.x |
+| `agent-client-protocol-trace-viewer` | 2.x |
+| `agent-client-protocol-rmcp` | 3.x |
+
 ## Notifications cannot receive error responses
 
 The SDK no longer exposes `ConnectionTo::send_error_notification`, and
@@ -111,6 +127,29 @@ Its methods have therefore been renamed:
 If a catch-all response handler returns `Err`, that error is now routed to the local
 `SentRequest` awaiter. It is never serialized as a response to the peer's response. This replaces
 the misleading generic failure that previously appeared when the real interceptor error was lost.
+
+## Response callbacks enforce ordered dispatch
+
+The 1.x documentation said that `on_receiving_result` and `on_receiving_ok_result` callbacks held
+the dispatch loop until completion, but the implementation did not enforce that ordering. In 2.0,
+registering either callback before a peer response is routed during its original dispatch selects
+ordered consumption: registration returns immediately, then the loop waits for response handling
+to finish before processing the next message.
+
+This is a behavioral change. An ordered response callback must not await a later response,
+notification, or other inbound traffic on the same connection, because the loop cannot dispatch
+that traffic until the callback returns. Spawn that follow-up work and return from the callback,
+or use `block_task` from a task that already runs outside the dispatch loop, such as the foreground
+future passed to `connect_with`.
+
+The barrier is not retroactive. A pending-request failure delivered without an incoming response
+(such as EOF), a response that was already routed, or a retained `ResponseRouter` routed after its
+original dispatch runs without holding the loop.
+
+Session-start helpers apply this barrier only to framework-owned runner and routing installation,
+then spawn the user callback. This preserves the actual 1.x scheduling behavior for user session
+work while correcting the old documentation that claimed the user callback itself blocked
+dispatch.
 
 ## Request IDs remain typed
 
@@ -275,10 +314,10 @@ Pass a finite limit instead of `None` to bound concurrency.
 `ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Use
 `SessionBuilder::on_session_start` to start without blocking the calling task, or call
 `block_task()` followed by `run_until` or `start_session` outside message handlers. Proxy handlers
-must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from an
-already-spawned task. Directly attaching an already-returned `NewSessionResponse` is no longer
-supported, so move request customization into `build_session_from` before the builder sends
-`session/new`.
+must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from a task
+already outside the dispatch loop, such as a `connect_with` foreground future or a spawned task.
+Directly attaching an already-returned `NewSessionResponse` is no longer supported, so move
+request customization into `build_session_from` before the builder sends `session/new`.
 
 When the session response is routed during its original dispatch, `on_session_start` and
 `on_proxy_session_start` install session routing under the ordered response callback, then spawn
@@ -287,7 +326,9 @@ must be `'static`, but its returned future does not need an additional `'static`
 safely wait for later connection or session traffic. A response interceptor that retains and
 routes the response later cannot retroactively order that setup before already-processed messages.
 Register application state needed for routing before calling these helpers. Bookkeeping that
-requires the returned session or session ID runs concurrently with later traffic.
+requires the returned session or session ID runs concurrently with later traffic. If handlers
+must observe ID-keyed bookkeeping first, install a gate or placeholder before calling the helper,
+have those handlers await it, and populate it from the callback.
 
 Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 `ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.

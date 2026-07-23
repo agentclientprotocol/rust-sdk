@@ -3312,13 +3312,13 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Send an outgoing request and return a [`SentRequest`] for handling the reply.
     ///
-    /// The returned [`SentRequest`] provides methods for receiving the response without
-    /// blocking the event loop:
+    /// The returned [`SentRequest`] makes the response-consumption mode explicit:
     ///
-    /// * [`on_receiving_result`](SentRequest::on_receiving_result) - Schedule
-    ///   a callback to run when the response arrives (doesn't block the event loop)
-    /// * [`block_task`](SentRequest::block_task) - Block the current task until the response
-    ///   arrives (only safe in spawned tasks, not in handlers)
+    /// * [`on_receiving_result`](SentRequest::on_receiving_result) - Register a callback and
+    ///   return immediately. If registered before the response is routed during its original
+    ///   dispatch, the loop waits for the callback to complete.
+    /// * [`block_task`](SentRequest::block_task) - Wait on the current task until the response
+    ///   arrives. This is only safe when that task already runs outside the dispatch loop.
     ///
     /// # Anti-Footgun Design
     ///
@@ -3337,7 +3337,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// ```no_run
     /// # use agent_client_protocol_test::*;
     /// # async fn example(cx: agent_client_protocol::ConnectionTo<agent_client_protocol::UntypedRole>) -> Result<(), agent_client_protocol::Error> {
-    /// // ✅ Option 1: Schedule callback (safe in handlers)
+    /// // ✅ Option 1: Register an ordered callback (safe in handlers)
     /// cx.send_request(MyRequest {})
     ///     .on_receiving_result(async |result| {
     ///         // Handle the response
@@ -4578,19 +4578,21 @@ impl JsonRpcNotification for UntypedMessage {}
 
 /// Represents a pending response of type `R` from an outgoing request.
 ///
-/// Returned by [`ConnectionTo::send_request`], this type provides methods for handling
-/// the response without blocking the event loop. The API is intentionally designed to make
-/// it difficult to accidentally block.
+/// Returned by [`ConnectionTo::send_request`], this type provides explicit response-consumption
+/// modes. The API is intentionally designed to make it difficult to accidentally wait for a
+/// response inside the dispatch loop.
 ///
 /// # Anti-Footgun Design
 ///
 /// You cannot directly `.await` a `SentRequest`. Instead, you must choose how to handle
 /// the response:
 ///
-/// ## Option 1: Schedule a Callback (Safe in Handlers)
+/// ## Option 1: Register an Ordered Callback (Safe in Handlers)
 ///
-/// Use [`on_receiving_result`](Self::on_receiving_result) to schedule a task
-/// that runs when the response arrives. This doesn't block the event loop:
+/// Calling [`on_receiving_result`](Self::on_receiving_result) registers the callback and returns
+/// immediately. When ordered consumption is selected before the response is routed during its
+/// original dispatch, the loop waits for the callback to complete before processing the next
+/// message:
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
@@ -4612,10 +4614,11 @@ impl JsonRpcNotification for UntypedMessage {}
 /// # }
 /// ```
 ///
-/// ## Option 2: Block in a Spawned Task (Safe Only in `spawn`)
+/// ## Option 2: Wait Outside the Dispatch Loop
 ///
-/// Use [`block_task`](Self::block_task) to block until the response arrives, but **only**
-/// in a spawned task (never in a handler):
+/// Use [`block_task`](Self::block_task) only when the current task already runs outside the
+/// dispatch loop—for example, in the foreground future passed to `connect_with` or in a task
+/// created with [`ConnectionTo::spawn`]. Never await it in a handler:
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
@@ -5120,11 +5123,12 @@ impl<T> SentRequest<T> {
 
     /// Block the current task until the response is received.
     ///
-    /// **Warning:** This method blocks the current async task. It is **only safe** to use
-    /// in spawned tasks created with [`ConnectionTo::spawn`]. Using it directly in a
+    /// **Warning:** This method blocks the current async task. It is safe only when that task
+    /// already runs outside the dispatch loop, such as the foreground future passed to
+    /// `connect_with` or a task created with [`ConnectionTo::spawn`]. Using it directly in a
     /// handler callback will deadlock the connection.
     ///
-    /// # Safe Usage (in spawned tasks)
+    /// # Safe Usage (outside the dispatch loop)
     ///
     /// ```no_run
     /// # use agent_client_protocol_test::*;
@@ -5175,7 +5179,7 @@ impl<T> SentRequest<T> {
     /// # When to Use
     ///
     /// Use this method when:
-    /// - You're in a spawned task (via [`ConnectionTo::spawn`])
+    /// - Your current task already runs outside the dispatch loop
     /// - You need the response value to proceed with your logic
     /// - Linear control flow is more natural than callbacks
     ///
@@ -5193,8 +5197,8 @@ impl<T> SentRequest<T> {
                 result: Ok(json_value),
                 ack_tx,
             }) => {
-                // Ack immediately - we're in a spawned task, so the dispatch loop
-                // can continue while we process the value.
+                // Blocking consumers ack before converting or returning the
+                // value, so dispatch can continue while the caller processes it.
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
                 }
@@ -5259,9 +5263,12 @@ impl<T> SentRequest<T> {
     ///
     /// # Ordering
     ///
-    /// Like [`on_receiving_result`](Self::on_receiving_result), the callback blocks the
-    /// dispatch loop until it completes. See the [`ordering`](crate::concepts::ordering) module
-    /// for details.
+    /// Like [`on_receiving_result`](Self::on_receiving_result), response handling holds the
+    /// dispatch loop through callback completion when ordered consumption is selected before a
+    /// peer response is routed during its original dispatch. Pending-request failures delivered
+    /// without an incoming response and delayed routes do not carry that barrier. The callback
+    /// must not await later inbound traffic on the same connection. See the
+    /// [`ordering`](crate::concepts::ordering) module for details.
     ///
     /// # When to Use
     ///
@@ -5287,10 +5294,12 @@ impl<T> SentRequest<T> {
         })
     }
 
-    /// Schedule an async task to run when the response is received.
+    /// Register an async callback to run when the response is received.
     ///
-    /// This is the recommended way to handle responses in handler callbacks, as it doesn't
-    /// block the event loop. The task will be spawned automatically when the response arrives.
+    /// This is the recommended way to select response handling from inside a handler because
+    /// registration returns immediately. The response-consumption task waits concurrently for
+    /// the response; once the response is dispatched, the ordered callback may hold the dispatch
+    /// loop until it completes.
     ///
     /// # Example: Handle response in callback
     ///
@@ -5319,7 +5328,7 @@ impl<T> SentRequest<T> {
     ///             }
     ///         })?;
     ///
-    ///     // Handler continues immediately without waiting
+    ///     // Handler continues immediately after registering the callback
     ///     responder.respond(MyResponse { status: "processing".into() })
     /// }, agent_client_protocol::on_receive_request!())
     /// # .connect_to(agent_client_protocol_test::MockTransport).await?;
@@ -5329,17 +5338,22 @@ impl<T> SentRequest<T> {
     ///
     /// # Ordering
     ///
-    /// The callback runs as a spawned task, but the dispatch loop waits for it to complete
-    /// before processing the next message. This gives you ordering guarantees: no other
-    /// messages will be processed while your callback runs.
+    /// When ordered consumption is selected before a peer response is routed during its original
+    /// dispatch, the callback runs in a connection-managed task and the dispatch loop waits for
+    /// it to complete before processing the next message.
     ///
-    /// Call this before the response arrives to select ordered consumption. If
-    /// the response was already routed, or an interceptor routes a retained
-    /// [`ResponseRouter`] after its original dispatch, the callback still runs
-    /// but cannot retroactively block messages that were already released.
+    /// The barrier does not apply when the pending request is failed without an incoming response,
+    /// such as on EOF. If the response was already routed, or an interceptor routes a retained
+    /// [`ResponseRouter`] after its original dispatch, the callback still runs but cannot
+    /// retroactively block messages that were already released.
     ///
-    /// This differs from [`block_task`](Self::block_task), which signals completion immediately
-    /// upon receiving the response (before your code processes it).
+    /// While the barrier is held, the callback must not await a later response, notification, or
+    /// other inbound traffic on the same connection: that traffic cannot be dispatched until the
+    /// callback completes. Spawn follow-up work with [`ConnectionTo::spawn`] and return, or use
+    /// [`block_task`](Self::block_task) from a task already outside the dispatch loop.
+    ///
+    /// This differs from [`block_task`](Self::block_task), which does not select ordered
+    /// consumption: dispatch remains free while the caller processes the delivered response.
     ///
     /// See the [`ordering`](crate::concepts::ordering) module for details on ordering guarantees
     /// and how to avoid deadlocks.
@@ -5352,11 +5366,12 @@ impl<T> SentRequest<T> {
     /// # When to Use
     ///
     /// Use this method when:
-    /// - You're in a handler callback (not a spawned task)
-    /// - You want ordering guarantees (no other messages processed during your callback)
-    /// - You need to do async work before "releasing" control back to the dispatch loop
+    /// - You need to register response handling from a handler callback
+    /// - You want a peer response callback to complete before later messages are dispatched
+    /// - The callback performs bounded work that does not depend on later inbound traffic
     ///
-    /// For spawned tasks where you don't need ordering guarantees, consider [`block_task`](Self::block_task).
+    /// When already outside the dispatch loop and you do not need ordering guarantees, consider
+    /// [`block_task`](Self::block_task).
     #[track_caller]
     pub fn on_receiving_result<F>(
         self,
