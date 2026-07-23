@@ -81,6 +81,8 @@
   original error or sending protocol traffic in response to a response.
 - Let the version-selecting agent router ignore response-only frames before `initialize` and
   preserve response-only entries beside a valid batched initialization.
+- Let the version-selecting agent router finish flushing an initialization rejection when the
+  peer sends malformed trailing input before closing the transport.
 - Release abandoned v2 and v1 probe implementations before continuing a negotiated v1 fallback.
 - Preserve `MatchDispatchFrom` retry state across chained matchers.
 

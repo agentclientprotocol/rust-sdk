@@ -697,20 +697,11 @@ async fn reject_initialize(
     drop(tx);
 
     let drain_incoming = async move {
-        while let Some(frame) = rx.next().await {
-            match frame {
-                TransportFrame::Single(_) => {}
-                TransportFrame::Malformed { error, .. } => {
-                    return Err(error);
-                }
-                TransportFrame::Batch(batch) => {
-                    for entry in batch.into_results() {
-                        entry?;
-                    }
-                }
-            }
-        }
-        Ok(())
+        // Later input has no protocol meaning once initialization is rejected.
+        // Keep draining it only so the transport can flush the queued rejection;
+        // treating a malformed trailing frame as fatal would cancel that flush.
+        while rx.next().await.is_some() {}
+        Ok::<_, crate::Error>(())
     };
 
     let ((), ()) = futures::try_join!(future, drain_incoming)?;
