@@ -86,14 +86,6 @@ impl MatchDispatch {
         }
     }
 
-    /// Create a pattern matcher from an existing `Handled` state.
-    ///
-    /// This is useful when composing with [`MatchDispatchFrom`] which applies
-    /// peer transforms before delegating to `MatchDispatch` for parsing.
-    pub fn from_handled(state: Result<Handled<Dispatch>, crate::Error>) -> Self {
-        Self { state }
-    }
-
     /// Try to handle the message as a request of type `Req`.
     ///
     /// If the message can be parsed as `Req`, the handler `op` is called with the parsed

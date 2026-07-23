@@ -243,6 +243,16 @@ separately.
 
 ## Low-level helpers have a narrower surface
 
+`NullHandler::new` was removed. Construct the unit struct as `NullHandler` or use
+`NullHandler::default()`.
+
+`MatchDispatch::from_handled` was removed because it exposed an internal composition state. Start
+a standalone match with `MatchDispatch::new`, or continue a peer-aware chain with
+`MatchDispatchFrom`.
+
+`Channel::copy` is now an implementation detail. Connect channels through `ConnectTo`, or use
+`Channel::bridge_with_inspection` when building an inspecting relay.
+
 `DynConnectTo::type_name` now returns `&'static str` without allocating. Call `.to_owned()` when
 an owned type name is required.
 

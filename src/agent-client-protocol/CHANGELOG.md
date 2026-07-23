@@ -46,6 +46,9 @@
   guide].
 - **Breaking:** Narrow low-level helpers by borrowing `DynConnectTo` type names, hiding transport
   fields and session/stream internals, and removing `util::both`. See the [2.0 migration guide].
+- **Breaking:** Remove the obsolete `NullHandler::new` and `MatchDispatch::from_handled`
+  constructors, and make `Channel::copy` an implementation detail. See the
+  [2.0 migration guide].
 - **Breaking:** Replace the MCP wire-schema configuration accepted by `AcpAgent` with the SDK-local
   `AcpAgentConfig`; use `config()` and `into_config()`, and represent JSON environment variables as
   an object. See the [2.0 migration guide].
