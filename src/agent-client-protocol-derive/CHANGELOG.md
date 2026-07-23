@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v1.3.0...agent-client-protocol-derive-v2.0.0) - 2026-07-23
+
+### Fixed
+
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+
+### Other
+
+- *(deps)* bump syn from 2.0.119 to 3.0.2 ([#267](https://github.com/agentclientprotocol/rust-sdk/pull/267))
+
 ### Curated 2.0 release notes
 
 **Added**

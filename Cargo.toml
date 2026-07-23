@@ -27,14 +27,14 @@ homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "1.3.0" }
-agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "1.3.0" }
-agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "1.3.0" }
-agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "1.3.0" }
-agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "1.3.0" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "2.0.1" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "2.0.0" }
+agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "2.0.0" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "2.0.0" }
+agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "2.0.0" }
+agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "2.0.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "3.0.0" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "1.3.0" }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "2.0.0" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol

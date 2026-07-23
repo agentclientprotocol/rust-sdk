@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v1.3.0...agent-client-protocol-trace-viewer-v2.0.0) - 2026-07-23
+
+### Fixed
+
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+
 ### Curated 2.0 release notes
 
 **Changed**

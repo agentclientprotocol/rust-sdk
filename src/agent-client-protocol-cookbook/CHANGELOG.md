@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v1.3.0...agent-client-protocol-cookbook-v2.0.0) - 2026-07-23
+
+### Fixed
+
+- *(acp)* [**breaking**] enforce response lifecycle ordering ([#282](https://github.com/agentclientprotocol/rust-sdk/pull/282))
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- *(acp)* [**breaking**] stop responding to JSON-RPC notifications ([#272](https://github.com/agentclientprotocol/rust-sdk/pull/272))
+
+### Other
+
+- *(acp)* clarify response and session ordering ([#284](https://github.com/agentclientprotocol/rust-sdk/pull/284))
+- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- *(acp)* [**breaking**] clarify routing and handler APIs ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+
 ### Curated release notes
 
 - **Changed:** Align the cookbook release and examples with `agent-client-protocol` 2.x.

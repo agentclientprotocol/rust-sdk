@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
+
+### Fixed
+
+- *(http)* preserve transport lifecycle ordering ([#286](https://github.com/agentclientprotocol/rust-sdk/pull/286))
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
+
 ### Curated release notes
 
 - **Breaking:** Upgrade to `agent-client-protocol` 2.x. Transport implementations and the core

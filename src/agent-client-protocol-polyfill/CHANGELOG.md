@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v1.3.0...agent-client-protocol-polyfill-v2.0.0) - 2026-07-23
+
+### Fixed
+
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
+
+### Other
+
+- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- *(acp)* [**breaking**] clarify routing and handler APIs ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+
 ### Curated release notes
 
 - **Breaking:** Upgrade to `agent-client-protocol` 2.x. Polyfill components and the core

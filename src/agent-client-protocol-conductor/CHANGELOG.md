@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v1.3.0...agent-client-protocol-conductor-v2.0.0) - 2026-07-23
+
+### Added
+
+- *(unstable-v2)* Accept incoming JSON-RPC batches ([#271](https://github.com/agentclientprotocol/rust-sdk/pull/271))
+
+### Fixed
+
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
+- *(acp)* [**breaking**] stop responding to JSON-RPC notifications ([#272](https://github.com/agentclientprotocol/rust-sdk/pull/272))
+
+### Other
+
+- update conductor and RMCP usage examples ([#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
+- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- *(acp)* [**breaking**] clarify routing and handler APIs ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+
 ### Curated release notes
 
 - **Breaking change:** Upgrade to `agent-client-protocol` 2.x. Conductor components and the core

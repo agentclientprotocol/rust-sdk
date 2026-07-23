@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.3.0...v2.0.0) - 2026-07-23
+
+### Added
+
+- *(acp)* map sent requests to application types ([#278](https://github.com/agentclientprotocol/rust-sdk/pull/278))
+- *(deps)* Bump schema to 1.5.0 ([#273](https://github.com/agentclientprotocol/rust-sdk/pull/273))
+- *(unstable-v2)* Accept incoming JSON-RPC batches ([#271](https://github.com/agentclientprotocol/rust-sdk/pull/271))
+
+### Fixed
+
+- *(acp)* flush rejected protocol connections ([#285](https://github.com/agentclientprotocol/rust-sdk/pull/285))
+- *(acp)* [**breaking**] enforce response lifecycle ordering ([#282](https://github.com/agentclientprotocol/rust-sdk/pull/282))
+- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
+- *(acp)* preserve retry state across matcher chains ([#274](https://github.com/agentclientprotocol/rust-sdk/pull/274))
+- *(acp)* [**breaking**] stop responding to JSON-RPC notifications ([#272](https://github.com/agentclientprotocol/rust-sdk/pull/272))
+
+### Other
+
+- update conductor and RMCP usage examples ([#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
+- *(acp)* clarify response and session ordering ([#284](https://github.com/agentclientprotocol/rust-sdk/pull/284))
+- *(acp)* [**breaking**] remove obsolete public helpers ([#283](https://github.com/agentclientprotocol/rust-sdk/pull/283))
+- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+- *(acp)* clean up stale API terminology ([#279](https://github.com/agentclientprotocol/rust-sdk/pull/279))
+- *(acp)* [**breaking**] clarify routing and handler APIs ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+- *(acp)* [**breaking**] give AcpAgent its own launch config ([#276](https://github.com/agentclientprotocol/rust-sdk/pull/276))
+- *(deps)* bump syn from 2.0.119 to 3.0.2 ([#267](https://github.com/agentclientprotocol/rust-sdk/pull/267))
+
 ### Curated 2.0 release notes
 
 **Added**
