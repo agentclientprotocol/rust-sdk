@@ -605,13 +605,11 @@ pub mod per_session_mcp_server {
     //!             connection.build_session_from(request)
     //!                 .with_mcp_server(mcp_server)?
     //!                 .on_proxy_session_start(responder, async move |session_id| {
-    //!                     // This callback runs after the session-id has been sent to the
-    //!                     // client but before any further messages from the client or agent
-    //!                     // related to this session have been processed.
+    //!                     // Session proxying is installed before this callback is spawned.
     //!                     //
-    //!                     // You can use this to store the `session_id` before processing
-    //!                     // future messages, or to send a first prompt to the agent before
-    //!                     // the client has a chance to do so.
+    //!                     // Use this for follow-up work that may wait for later connection
+    //!                     // traffic. Perform synchronous bookkeeping in the request handler
+    //!                     // itself when it must precede every later message.
     //!                     tracing::info!(%session_id, "Session started");
     //!                     Ok(())
     //!                 })
@@ -634,10 +632,11 @@ pub mod per_session_mcp_server {
     //! the message handler. This is ideal for proxies that just need to inject
     //! tools and track sessions.
     //!
-    //! # Alternative: blocking with `start_session_proxy`
+    //! # Alternative: spawning `start_session_proxy`
     //!
-    //! If you need the simpler blocking API (e.g., in a client context where
-    //! blocking is safe), use [`block_task`] + [`start_session_proxy`]:
+    //! If you need the linear [`start_session_proxy`] API, move it into a
+    //! spawned task. Awaiting it directly in the request handler would block
+    //! the dispatch loop that must receive the agent's response:
     //!
     //! ```
     //! # use agent_client_protocol::mcp_server::McpServer;
@@ -654,13 +653,17 @@ pub mod per_session_mcp_server {
     //!                 }, agent_client_protocol::tool_fn!())
     //!                 .build();
     //!
-    //!             let session_id = connection.build_session_from(request)
-    //!                 .with_mcp_server(mcp_server)?
-    //!                 .block_task()
-    //!                 .start_session_proxy(responder)
-    //!                 .await?;
+    //!             let task_connection = connection.clone();
+    //!             connection.spawn(async move {
+    //!                 let session_id = task_connection.build_session_from(request)
+    //!                     .with_mcp_server(mcp_server)?
+    //!                     .block_task()
+    //!                     .start_session_proxy(responder)
+    //!                     .await?;
     //!
-    //!             tracing::info!(%session_id, "Session started");
+    //!                 tracing::info!(%session_id, "Session started");
+    //!                 Ok(())
+    //!             })?;
     //!             Ok(())
     //!         }, agent_client_protocol::on_receive_request!())
     //!         .connect_to(transport)

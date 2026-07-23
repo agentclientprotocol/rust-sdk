@@ -1839,9 +1839,10 @@ pub(crate) struct ResponsePayload {
     /// response processing is complete, allowing the dispatch loop to continue
     /// to the next message.
     ///
-    /// This is `None` for error paths where the response is sent directly
-    /// (e.g., when the outgoing channel is broken) rather than through the
-    /// normal dispatch loop flow.
+    /// This is present only when callback-style consumption was selected before
+    /// the response was routed during its original dispatch. Local error paths,
+    /// blocking consumers, and responses routed later do not hold the dispatch
+    /// loop.
     pub(crate) ack_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -1854,11 +1855,27 @@ impl std::fmt::Debug for ResponsePayload {
     }
 }
 
+#[derive(Clone, Debug, Default)]
+struct ResponseOrdering {
+    ordered: Arc<AtomicBool>,
+}
+
+impl ResponseOrdering {
+    fn mark_ordered(&self) {
+        self.ordered.store(true, Ordering::Release);
+    }
+
+    fn is_ordered(&self) -> bool {
+        self.ordered.load(Ordering::Acquire)
+    }
+}
+
 struct PendingReply {
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<ResponsePayload>,
     cancellation_disarm: SentRequestCancellationDisarm,
+    ordering: ResponseOrdering,
 }
 
 impl PendingReply {
@@ -2387,20 +2404,24 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
 /// Messages send to be serialized over the transport.
 #[derive(Clone)]
 enum ResponseDestination {
-    Individual,
+    Individual(IndividualResponseSlot),
     Batch(BatchResponseSlot),
 }
 
 impl std::fmt::Debug for ResponseDestination {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Individual => formatter.write_str("Individual"),
+            Self::Individual(slot) => formatter.debug_tuple("Individual").field(slot).finish(),
             Self::Batch(slot) => formatter.debug_tuple("Batch").field(slot).finish(),
         }
     }
 }
 
 impl ResponseDestination {
+    fn individual() -> Self {
+        Self::Individual(IndividualResponseSlot::default())
+    }
+
     fn batch(slot_count: usize) -> (impl Iterator<Item = Self>, BatchDispatchCompletion) {
         let state = Arc::new(Mutex::new(BatchResponseState {
             remaining: slot_count,
@@ -2427,14 +2448,14 @@ impl ResponseDestination {
 
     fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
         match self {
-            Self::Individual => Some(TransportFrame::Single(response)),
+            Self::Individual(slot) => slot.complete(response),
             Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
         }
     }
 
     fn abandon(self, fallback: RawJsonRpcMessage) -> Option<TransportFrame> {
         match self {
-            Self::Individual => None,
+            Self::Individual(_) => None,
             Self::Batch(slot) => slot.abandon(fallback).map(batch_response_frame),
         }
     }
@@ -2459,9 +2480,25 @@ impl ResponseDestination {
 
     fn finish_handler_attempt(self) -> Option<TransportFrame> {
         match self {
-            Self::Individual => None,
+            Self::Individual(_) => None,
             Self::Batch(slot) => slot.finish_handler_attempt().map(batch_response_frame),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct IndividualResponseSlot {
+    completed: Arc<AtomicBool>,
+}
+
+impl IndividualResponseSlot {
+    fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
+        if self.completed.swap(true, Ordering::AcqRel) {
+            tracing::warn!("Ignoring duplicate completion of JSON-RPC request");
+            return None;
+        }
+
+        Some(TransportFrame::Single(response))
     }
 }
 
@@ -2665,6 +2702,8 @@ struct ResponseReplyTarget {
     id: RequestId,
     method: String,
     sender: Arc<Mutex<Option<oneshot::Sender<ResponsePayload>>>>,
+    ordering: ResponseOrdering,
+    dispatch: ResponseDispatch,
 }
 
 impl ResponseReplyTarget {
@@ -2683,19 +2722,52 @@ impl ResponseReplyTarget {
             return;
         };
 
-        if sender
-            .send(ResponsePayload {
-                result,
-                ack_tx: None,
-            })
-            .is_err()
-        {
+        let ack_tx = self.dispatch.acknowledgment(&self.ordering);
+        if sender.send(ResponsePayload { result, ack_tx }).is_err() {
             tracing::debug!(
                 method = %self.method,
                 id = ?self.id,
                 "dropped response because local receiver was gone"
             );
         }
+    }
+}
+
+#[derive(Clone, Default)]
+struct ResponseDispatch {
+    state: Arc<Mutex<ResponseDispatchState>>,
+}
+
+#[derive(Default)]
+struct ResponseDispatchState {
+    complete: bool,
+    ack_rx: Option<oneshot::Receiver<()>>,
+}
+
+impl ResponseDispatch {
+    fn acknowledgment(&self, ordering: &ResponseOrdering) -> Option<oneshot::Sender<()>> {
+        if !ordering.is_ordered() {
+            return None;
+        }
+
+        let mut state = self.state.lock().expect("response dispatch mutex poisoned");
+        if state.complete {
+            return None;
+        }
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        let previous_ack = state.ack_rx.replace(ack_rx);
+        debug_assert!(
+            previous_ack.is_none(),
+            "a response dispatch can only be routed once"
+        );
+        Some(ack_tx)
+    }
+
+    fn complete(&self) -> Option<oneshot::Receiver<()>> {
+        let mut state = self.state.lock().expect("response dispatch mutex poisoned");
+        state.complete = true;
+        state.ack_rx.take()
     }
 }
 
@@ -3312,6 +3384,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let method = request.method().to_string();
         let id = RequestId::Str(uuid::Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
+        let response_ordering = ResponseOrdering::default();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
@@ -3328,6 +3401,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 self.task_tx.clone(),
                 response_rx,
                 cancellation,
+                response_ordering,
             )
             .map(move |json| <Req::Response>::from_value(&method, json));
         }
@@ -3343,6 +3417,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     role_id,
                     sender: response_tx,
                     cancellation_disarm: cancellation.disarm_handle(),
+                    ordering: response_ordering.clone(),
                 };
 
                 if self
@@ -3395,6 +3470,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             self.task_tx.clone(),
             response_rx,
             cancellation,
+            response_ordering,
         )
         .map(move |json| <Req::Response>::from_value(&method, json))
     }
@@ -3895,17 +3971,21 @@ impl ResponseRouter<serde_json::Value> {
     /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
-    pub(crate) fn new(
+    fn new(
         method: String,
         id: RequestId,
         role_id: RoleId,
         sender: oneshot::Sender<ResponsePayload>,
         cancellation_disarm: SentRequestCancellationDisarm,
+        ordering: ResponseOrdering,
+        dispatch: ResponseDispatch,
     ) -> Self {
         let reply_target = ResponseReplyTarget {
             id: id.clone(),
             method: method.clone(),
             sender: Arc::new(Mutex::new(Some(sender))),
+            ordering,
+            dispatch,
         };
         let send_target = reply_target.clone();
         // A response for the request reached this router, so the request is
@@ -4603,6 +4683,7 @@ pub struct SentRequest<T> {
     response_rx: oneshot::Receiver<ResponsePayload>,
     to_result: Box<dyn FnOnce(serde_json::Value) -> Result<T, crate::Error> + Send>,
     cancellation: SentRequestCancellation,
+    response_ordering: ResponseOrdering,
     /// Cancellation markers of other (incoming) requests whose cancellation
     /// should be forwarded to this request. See
     /// [`forward_cancellation_from`](Self::forward_cancellation_from).
@@ -4757,6 +4838,7 @@ impl SentRequest<serde_json::Value> {
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
         cancellation: SentRequestCancellation,
+        response_ordering: ResponseOrdering,
     ) -> Self {
         Self {
             id,
@@ -4765,6 +4847,7 @@ impl SentRequest<serde_json::Value> {
             task_tx,
             to_result: Box::new(Ok),
             cancellation,
+            response_ordering,
             cancellation_sources: Vec::new(),
         }
     }
@@ -4850,7 +4933,7 @@ impl<T> SentRequest<T> {
     }
 }
 
-impl<T: 'static> SentRequest<T> {
+impl<T> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
     pub fn id(&self) -> &RequestId {
@@ -4867,11 +4950,17 @@ impl<T: 'static> SentRequest<T> {
     ///
     /// The mapped type does not need to implement [`JsonRpcResponse`]. The
     /// mapper runs at most once and may consume captured state. JSON-RPC error
-    /// responses bypass the mapper.
+    /// responses bypass the mapper. The mapped type may carry a non-`'static`
+    /// lifetime when it is consumed with [`block_task`](Self::block_task);
+    /// callback-style consumption still requires a `'static` mapped type
+    /// because its work is spawned onto the connection.
     pub fn map<U>(
         self,
         map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
-    ) -> SentRequest<U> {
+    ) -> SentRequest<U>
+    where
+        T: 'static,
+    {
         SentRequest {
             id: self.id,
             method: self.method,
@@ -4879,6 +4968,7 @@ impl<T: 'static> SentRequest<T> {
             task_tx: self.task_tx,
             to_result: Box::new(move |value| map_fn((self.to_result)(value)?)),
             cancellation: self.cancellation,
+            response_ordering: self.response_ordering,
             cancellation_sources: self.cancellation_sources,
         }
     }
@@ -4978,8 +5068,10 @@ impl<T: 'static> SentRequest<T> {
         handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
+        T: 'static,
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
     {
+        self.response_ordering.mark_ordered();
         let task_tx = self.task_tx.clone();
         let method = self.method;
         let response_rx = self.response_rx;
@@ -5241,6 +5333,11 @@ impl<T: 'static> SentRequest<T> {
     /// before processing the next message. This gives you ordering guarantees: no other
     /// messages will be processed while your callback runs.
     ///
+    /// Call this before the response arrives to select ordered consumption. If
+    /// the response was already routed, or an interceptor routes a retained
+    /// [`ResponseRouter`] after its original dispatch, the callback still runs
+    /// but cannot retroactively block messages that were already released.
+    ///
     /// This differs from [`block_task`](Self::block_task), which signals completion immediately
     /// upon receiving the response (before your code processes it).
     ///
@@ -5266,6 +5363,7 @@ impl<T: 'static> SentRequest<T> {
         task: impl FnOnce(Result<T, crate::Error>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
+        T: 'static,
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
     {
         self.consume_with(move |response| match response {

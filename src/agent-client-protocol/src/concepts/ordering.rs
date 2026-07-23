@@ -23,9 +23,14 @@
 //! This includes:
 //! - [`on_receive_request`] and [`on_receive_notification`]
 //! - [`on_receiving_result`] and [`on_receiving_ok_result`]
-//! - [`on_session_start`] and [`on_proxy_session_start`]
 //!
-//! This means:
+//! Session-start helpers are two-phase: [`on_session_start`] and
+//! [`on_proxy_session_start`] perform framework-owned session setup under this
+//! ordering guarantee, then invoke the user callback in a spawned task so it
+//! can consume later session traffic. No user callback code runs under the
+//! session-setup ordering guarantee.
+//!
+//! For callbacks that run inside the dispatch loop, this means:
 //! - No other messages are processed while your callback runs
 //! - You can safely do setup before "releasing" control back to the loop
 //! - Messages are processed in the order they arrive
@@ -108,6 +113,10 @@
 //! the next message. Use this when you need to ensure no other messages
 //! are processed until you've handled the response.
 //!
+//! Register the callback before the response arrives to select this ordered
+//! mode. A response that was already routed, or that an interceptor retains
+//! and routes after its original dispatch, cannot retroactively hold the loop.
+//!
 //! # Escaping the Loop: `spawn`
 //!
 //! Use [`spawn`] to run work outside the dispatch loop:
@@ -156,6 +165,7 @@
 //! |---------|--------------|----------|
 //! | `on_*` callback | Yes | Quick decisions, need ordering |
 //! | `on_receiving_result` | Yes | Need to process response before next message |
+//! | `on_session_start` / `on_proxy_session_start` | Setup only | Install session routing, then run session work concurrently |
 //! | `block_task()` | No | In spawned tasks, need response value |
 //! | `spawn(...)` | No | Long-running work, don't need ordering |
 //! | `block_task().run_until(...)` | No | Session-scoped work |

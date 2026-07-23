@@ -264,10 +264,20 @@ Pass a finite limit instead of `None` to bound concurrency.
 `ConnectionTo::attach_session` is no longer public. Create sessions through
 `ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Use
 `SessionBuilder::on_session_start` to start without blocking the calling task, or call
-`block_task()` followed by `run_until` or `start_session`. Proxy handlers can use
-`on_proxy_session_start`, or `block_task().start_session_proxy(...)`. Directly attaching an
-already-returned `NewSessionResponse` is no longer supported, so move request customization into
-`build_session_from` before the builder sends `session/new`.
+`block_task()` followed by `run_until` or `start_session` outside message handlers. Proxy handlers
+must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from an
+already-spawned task. Directly attaching an already-returned `NewSessionResponse` is no longer
+supported, so move request customization into `build_session_from` before the builder sends
+`session/new`.
+
+When the session response is routed during its original dispatch, `on_session_start` and
+`on_proxy_session_start` install session routing under the ordered response callback, then spawn
+the user callback. No user callback code runs under that ordering guarantee. The callback itself
+must be `'static`, but its returned future does not need an additional `'static` bound and may
+safely wait for later connection or session traffic. A response interceptor that retains and
+routes the response later cannot retroactively order that setup before already-processed messages.
+Register application state needed for routing before calling these helpers. Bookkeeping that
+requires the returned session or session ID runs concurrently with later traffic.
 
 Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 `ByteStreams::new(outgoing, incoming)`; their stream fields are no longer public.
@@ -298,8 +308,10 @@ are included in the SDK 2.0 migration rather than treated as stable-v1 wire chan
 ## `SentRequest::map` accepts arbitrary output
 
 `SentRequest::map` can now consume a typed response into any output type; the mapped value no
-longer needs to implement `JsonRpcResponse`. The mapper may also be a one-shot closure. This is
-additive, so existing mapping code does not need to change.
+longer needs to implement `JsonRpcResponse`. This includes mapped values carrying non-`'static`
+lifetimes when they are consumed with `block_task`; callback-style consumption still requires
+`'static` because it is spawned onto the connection. The mapper may also be a one-shot closure.
+This is additive, so existing mapping code does not need to change.
 
 ## `AcpAgent` has its own process configuration
 

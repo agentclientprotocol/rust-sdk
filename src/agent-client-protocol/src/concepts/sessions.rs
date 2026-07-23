@@ -123,8 +123,13 @@
 //! # }
 //! ```
 //!
-//! This follows the same ordering guarantees as other `on_*` methods - see
-//! [Ordering](super::ordering) for details.
+//! When the session response is routed during its original dispatch, session
+//! routing is installed before later messages are dispatched. The callback is
+//! invoked in a spawned task, so no user callback code has that ordering
+//! guarantee and the callback can wait for session traffic. A response
+//! interceptor that retains and routes the response later cannot retroactively
+//! order setup before messages already processed. See [Ordering](super::ordering)
+//! for details.
 //!
 //! # Next Steps
 //!

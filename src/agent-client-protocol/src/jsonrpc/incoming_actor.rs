@@ -4,6 +4,7 @@ use futures::channel::mpsc;
 use futures::stream;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
+use std::collections::VecDeque;
 use uuid::Uuid;
 
 use crate::Dispatch;
@@ -20,6 +21,7 @@ use crate::jsonrpc::RawJsonRpcParams;
 use crate::jsonrpc::RequestReplyTarget;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseDestination;
+use crate::jsonrpc::ResponseDispatch;
 use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::TransportBatchEntry;
 use crate::jsonrpc::TransportFrame;
@@ -88,7 +90,16 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let request_cancellations = super::RequestCancellationRegistry::new();
     let mut on_close = Some(on_close);
 
-    while let Some(message_result) = my_rx.next().await {
+    let mut queued_transport_messages = VecDeque::new();
+    loop {
+        let message_result = if let Some(message) = queued_transport_messages.pop_front() {
+            message
+        } else {
+            let Some(message) = my_rx.next().await else {
+                break;
+            };
+            message
+        };
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {
@@ -106,48 +117,15 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 callback_result?;
             }
 
-            IncomingProtocolMsg::DynamicHandler(message) => match message {
-                DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
-                    // Before adding the new handler, give it a chance to process
-                    // any pending messages.
-                    let mut new_pending_messages = vec![];
-                    for pending_message in pending_messages {
-                        tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
-                        let reply_target = pending_message.handler_error_target();
-                        let handler_attempt = reply_target.as_ref().and_then(|target| {
-                            target.begin_handler_attempt(&connection.message_tx)
-                        });
-                        let method = pending_message.method().to_string();
-                        match handler
-                            .dyn_handle_dispatch_from(pending_message, connection.clone())
-                            .await
-                        {
-                            Ok(Handled::Yes) => {
-                                tracing::trace!("Message handled");
-                            }
-                            Ok(Handled::No {
-                                message: m,
-                                retry: _,
-                            }) => {
-                                tracing::trace!(method = m.method(), handler = ?handler.dyn_describe_chain(), "Message not handled");
-                                new_pending_messages.push(m);
-                            }
-                            Err(err) => {
-                                tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
-                                handle_handler_error(connection, reply_target, method, err)?;
-                            }
-                        }
-                        drop(handler_attempt);
-                    }
-                    pending_messages = new_pending_messages;
-
-                    // Add handler so it will be used for future incoming messages.
-                    dynamic_handlers.insert(uuid, handler);
-                }
-                DynamicHandlerMessage::RemoveDynamicHandler(uuid) => {
-                    dynamic_handlers.remove(&uuid);
-                }
-            },
+            IncomingProtocolMsg::DynamicHandler(message) => {
+                handle_dynamic_handler_message(
+                    message,
+                    connection,
+                    &mut dynamic_handlers,
+                    &mut pending_messages,
+                )
+                .await?;
+            }
 
             IncomingProtocolMsg::Transport(frame) => {
                 let (entries, batch_completion) = frame_entries(frame);
@@ -237,7 +215,8 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             if let Some(pending_reply) = pending_replies.remove(&id) {
                                 let result = protocol_compat
                                     .incoming_response(&pending_reply.method, result);
-                                let dispatch = dispatch_from_response(id, pending_reply, result);
+                                let (dispatch, response_dispatch) =
+                                    dispatch_from_response(id, pending_reply, result);
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -248,6 +227,44 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &request_cancellations,
                                 )
                                 .await?;
+                                if let Some(ack_rx) = response_dispatch.complete() {
+                                    let _ = ack_rx.await;
+
+                                    // Ordered callbacks may synchronously queue dynamic handlers
+                                    // (notably session routing) before acknowledging the response.
+                                    // Put a marker behind those registrations, then install every
+                                    // preceding handler before dispatching the next transport entry.
+                                    connection
+                                        .dynamic_handler_tx
+                                        .unbounded_send(DynamicHandlerMessage::Barrier)
+                                        .map_err(crate::util::internal_error)?;
+
+                                    loop {
+                                        let Some(message) = my_rx.next().await else {
+                                            return Err(crate::util::internal_error(
+                                                "dynamic-handler stream closed before its barrier",
+                                            ));
+                                        };
+                                        match message {
+                                            IncomingProtocolMsg::DynamicHandler(
+                                                DynamicHandlerMessage::Barrier,
+                                            ) => break,
+                                            IncomingProtocolMsg::DynamicHandler(message) => {
+                                                handle_dynamic_handler_message(
+                                                    message,
+                                                    connection,
+                                                    &mut dynamic_handlers,
+                                                    &mut pending_messages,
+                                                )
+                                                .await?;
+                                            }
+                                            message @ (IncomingProtocolMsg::Transport(_)
+                                            | IncomingProtocolMsg::TransportClosed) => {
+                                                queued_transport_messages.push_back(message);
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 tracing::warn!(
                                     ?id,
@@ -282,6 +299,58 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     Ok(())
 }
 
+async fn handle_dynamic_handler_message<Counterpart: Role>(
+    message: DynamicHandlerMessage<Counterpart>,
+    connection: &ConnectionTo<Counterpart>,
+    dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
+    pending_messages: &mut Vec<Dispatch>,
+) -> Result<(), crate::Error> {
+    match message {
+        DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
+            // Before adding the new handler, give it a chance to process
+            // any pending messages.
+            let mut new_pending_messages = vec![];
+            for pending_message in std::mem::take(pending_messages) {
+                tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
+                let reply_target = pending_message.handler_error_target();
+                let handler_attempt = reply_target
+                    .as_ref()
+                    .and_then(|target| target.begin_handler_attempt(&connection.message_tx));
+                let method = pending_message.method().to_string();
+                match handler
+                    .dyn_handle_dispatch_from(pending_message, connection.clone())
+                    .await
+                {
+                    Ok(Handled::Yes) => {
+                        tracing::trace!("Message handled");
+                    }
+                    Ok(Handled::No {
+                        message: m,
+                        retry: _,
+                    }) => {
+                        tracing::trace!(method = m.method(), handler = ?handler.dyn_describe_chain(), "Message not handled");
+                        new_pending_messages.push(m);
+                    }
+                    Err(err) => {
+                        tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
+                        handle_handler_error(connection, reply_target, method, err)?;
+                    }
+                }
+                drop(handler_attempt);
+            }
+            *pending_messages = new_pending_messages;
+
+            // Add handler so it will be used for future incoming messages.
+            dynamic_handlers.insert(uuid, handler);
+        }
+        DynamicHandlerMessage::RemoveDynamicHandler(uuid) => {
+            dynamic_handlers.remove(&uuid);
+        }
+        DynamicHandlerMessage::Barrier => {}
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
     Transport(TransportFrame),
@@ -301,7 +370,7 @@ fn frame_entries(
     let entries: Vec<Result<RawJsonRpcMessage, crate::Error>> = match frame {
         TransportFrame::Single(message) => {
             let destination = matches!(&message, RawJsonRpcMessage::Request(_))
-                .then_some(ResponseDestination::Individual);
+                .then(ResponseDestination::individual);
             return (vec![(Ok(message), destination)], None);
         }
         TransportFrame::Malformed { raw, error } => {
@@ -309,7 +378,7 @@ fn frame_entries(
                 return (Vec::new(), None);
             }
             return (
-                vec![(Err(error), Some(ResponseDestination::Individual))],
+                vec![(Err(error), Some(ResponseDestination::individual()))],
                 None,
             );
         }
@@ -400,13 +469,15 @@ fn dispatch_from_response(
     id: RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
-) -> Dispatch {
+) -> (Dispatch, ResponseDispatch) {
     let PendingReply {
         method,
         role_id,
         sender,
         cancellation_disarm,
+        ordering,
     } = pending_reply;
+    let response_dispatch = ResponseDispatch::default();
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
     let router = ResponseRouter::new(
@@ -415,8 +486,10 @@ fn dispatch_from_response(
         role_id,
         sender,
         cancellation_disarm,
+        ordering,
+        response_dispatch.clone(),
     );
-    Dispatch::Response(result, router)
+    (Dispatch::Response(result, router), response_dispatch)
 }
 
 #[tracing::instrument(

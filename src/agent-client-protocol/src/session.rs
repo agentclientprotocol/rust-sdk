@@ -179,9 +179,9 @@ where
     /// without blocking the current task. The session handshake and closure execution
     /// happen in a spawned background task.
     ///
-    /// The closure receives an `ActiveSession<'static, _>` and should return
-    /// `Result<(), Error>`. If the closure returns an error, it will propagate
-    /// to the connection's error handling.
+    /// The closure receives an `ActiveSession<'static, _>` and runs in a
+    /// spawned task. If it returns an error, the error propagates to the
+    /// connection's task handling.
     ///
     /// # Example
     ///
@@ -209,8 +209,14 @@ where
     ///
     /// # Ordering
     ///
-    /// This callback blocks the dispatch loop until the session starts and your
-    /// callback completes. See the [`ordering`](crate::concepts::ordering) module for details.
+    /// Session runners are scheduled and routing setup is installed before the
+    /// dispatch loop processes the next message when the session response is
+    /// routed during its original dispatch. No user callback code runs under
+    /// that ordering guarantee: the callback is invoked in a spawned task, so
+    /// it may wait for later session traffic without deadlocking the connection.
+    /// A response interceptor that retains the response and routes it later
+    /// cannot retroactively order session setup before messages the dispatch
+    /// loop has already processed.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
         R: 'static,
@@ -237,7 +243,7 @@ where
                     let active_session =
                         connection.attach_session(response, dynamic_handler_registrations)?;
 
-                    op(active_session).await
+                    connection.spawn(async move { op(active_session).await })
                 }
             })
     }
@@ -284,8 +290,13 @@ where
     ///
     /// # Ordering
     ///
-    /// This callback blocks the dispatch loop until the session starts and your
-    /// callback completes. See the [`ordering`](crate::concepts::ordering) module for details.
+    /// The client response and proxy routing are completed, and session runners
+    /// are scheduled, before the dispatch loop processes the next message when
+    /// the session response is routed during its original dispatch. No user
+    /// callback code runs under that ordering guarantee: the callback is invoked
+    /// in a spawned task, so it may wait for later connection traffic. A response
+    /// interceptor that retains the response and routes it later cannot
+    /// retroactively order this setup before messages the loop already processed.
     pub fn on_proxy_session_start<F, Fut>(
         self,
         responder: Responder<NewSessionResponse>,
@@ -328,7 +339,7 @@ where
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
 
-                op(session_id).await
+                connection.spawn(async move { op(session_id).await })
             }
         })
     }
