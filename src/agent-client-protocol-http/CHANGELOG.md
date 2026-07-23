@@ -4,31 +4,32 @@
 
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
 
+### Breaking changes
+
+- Upgrade to `agent-client-protocol` 2.x. Transport implementations and the core
+  handlers/types they connect must be migrated together.
+
+See the [core 2.0 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html)
+for the shared transport changes.
+
 ### Fixed
 
-- *(http)* preserve transport lifecycle ordering ([#286](https://github.com/agentclientprotocol/rust-sdk/pull/286))
-- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
-- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
-
-### Curated release notes
-
-- **Breaking:** Upgrade to `agent-client-protocol` 2.x. Transport implementations and the core
-  handlers/types they connect must be migrated together.
-- **Fixed:** Preserve incoming JSON-RPC batch frames and grouped responses across HTTP and WebSocket
-  transports, including session-aware HTTP routing. HTTP clients now validate and track every batch
-  entry and open streams returned by grouped `session/new` and `session/fork` responses.
-- **Fixed:** Establish connection and session SSE streams before posting dependent messages while
+- Preserve incoming JSON-RPC batch frames and grouped responses across HTTP and WebSocket
+  transports, including session-aware HTTP routing. HTTP clients validate batch messages, track
+  session and request bookkeeping for valid entries, and open streams returned by grouped
+  `session/new` and `session/fork` responses. The HTTP server accepts a mixed initial batch when
+  `initialize` is its first call-shaped entry.
+  ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275),
+  [#280](https://github.com/agentclientprotocol/rust-sdk/pull/280),
+  [#286](https://github.com/agentclientprotocol/rust-sdk/pull/286))
+- Establish connection and session SSE streams before posting dependent messages while
   continuing to deliver callbacks and complete earlier POSTs during setup. Pending setup is
-  cancelled cleanly when the caller exits.
-- **Fixed:** Keep call-bearing and invalid-request batch POSTs in peer order while allowing
-  response-only frames, including malformed response-shaped values, to bypass a
-  pending request when completing an SSE callback.
-- **Fixed:** Allow an initial HTTP batch whose first call-shaped entry is `initialize`
-  to create a connection and return its success or rejection as one grouped
-  JSON-RPC response, ignoring any leading response-only entries and buffering
-  sibling side traffic for the connection stream until initialization completes.
-- **Fixed:** Drain final routed messages to established HTTP SSE and WebSocket streams before
-  closing them when the connected agent exits.
+  cancelled cleanly when the outgoing ACP channel closes. Call-bearing batches remain in peer
+  order, while response-only frames can bypass a pending call to complete an SSE callback.
+  ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280),
+  [#286](https://github.com/agentclientprotocol/rust-sdk/pull/286))
+- Drain final routed messages to established HTTP SSE and WebSocket streams before closing them
+  when the connected agent exits. ([#286](https://github.com/agentclientprotocol/rust-sdk/pull/286))
 
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.2.0...agent-client-protocol-http-v1.3.0) - 2026-07-20
 

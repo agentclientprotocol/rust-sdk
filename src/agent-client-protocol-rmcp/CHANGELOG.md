@@ -9,31 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v2.0.1...agent-client-protocol-rmcp-v3.0.0) - 2026-07-23
 
-### Fixed
+### Breaking changes
 
-- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
+- Use `agent-client-protocol-rmcp` 3.x with `agent-client-protocol` 2.x and `rmcp` 2.x. Both
+  dependencies appear in this crate's public API and must be migrated together.
+- Attached rmcp services now use native `McpServer::Acp` declarations, `mcp/connect`,
+  `mcp/message`, and request/response `mcp/disconnect`; optional typed `server_id` and
+  `connection_id` accessors replace `acp_id` in tool and connection contexts.
+  ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
 
-### Other
+See the [core 2.0 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html)
+for the shared API changes.
 
-- update conductor and RMCP usage examples ([#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
-- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
-- *(acp)* clean up stale API terminology ([#279](https://github.com/agentclientprotocol/rust-sdk/pull/279))
+### Changed
 
-### Curated release notes
-
-- **Breaking change:** Upgrade the public `agent-client-protocol` dependency from 1.x to
-  2.x. Downstream code using core SDK types through this crate must migrate both
-  crates together; this requires `agent-client-protocol-rmcp` 3.0.0.
-- **Changed:** Align `McpServerBuilder`'s background-task terminology with the core
-  runner APIs.
-- **Changed:** Keep rmcp-backed standalone MCP servers independent of the
+- Keep rmcp-backed standalone MCP servers independent of the
   `unstable_mcp_over_acp` feature. Applications enable this crate's matching passthrough feature
-  only when attaching a server to ACP. Attached services use native `McpServer::Acp`
-  declarations, `mcp/connect`, `mcp/message`, and request/response `mcp/disconnect`; optional
-  typed `server_id` and `connection_id` accessors replace `acp_id` in tool and connection
-  contexts.
-- **Documentation:** Replace removed handler and `serve()` APIs in examples and
-  document compatibility with both public dependencies.
+  only when attaching a server to ACP. ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
+
+### Documentation
+
+- Replace removed handler and `serve()` APIs in examples and document compatibility with both
+  public dependencies. ([#279](https://github.com/agentclientprotocol/rust-sdk/pull/279),
+  [#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
 
 ## [2.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v2.0.0...agent-client-protocol-rmcp-v2.0.1) - 2026-07-20
 

@@ -9,34 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v1.3.0...agent-client-protocol-conductor-v2.0.0) - 2026-07-23
 
-### Added
+### Breaking changes
 
-- *(unstable-v2)* Accept incoming JSON-RPC batches ([#271](https://github.com/agentclientprotocol/rust-sdk/pull/271))
+- Upgrade to `agent-client-protocol` 2.x. Conductor components and the core
+  handlers/types they expose must be migrated together.
+- Rename the public `ConductorResponder` background task to `ConductorRunner`, matching the core
+  runner API it implements. ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
+
+See the [core 2.0 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration_v2.0.html)
+for the shared API changes.
+
+### Changed
+
+- Enable the core SDK's draft native MCP-over-ACP support so traces classify `mcp/message`.
+  HTTP translation remains an explicit `agent-client-protocol-polyfill` proxy.
+  ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
 
 ### Fixed
 
-- [**breaking**] harden the 2.0 transport and API boundary ([#280](https://github.com/agentclientprotocol/rust-sdk/pull/280))
-- *(acp)* [**breaking**] preserve JSON-RPC frames across transport adapters ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
-- *(acp)* [**breaking**] stop responding to JSON-RPC notifications ([#272](https://github.com/agentclientprotocol/rust-sdk/pull/272))
+- Preserve JSON-RPC batch framing when conductor tracing is enabled.
+  ([#275](https://github.com/agentclientprotocol/rust-sdk/pull/275))
 
-### Other
+### Documentation
 
-- update conductor and RMCP usage examples ([#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
-- *(acp)* [**breaking**] adopt schema-native MCP-over-ACP ([#281](https://github.com/agentclientprotocol/rust-sdk/pull/281))
-- *(acp)* [**breaking**] clarify routing and handler APIs ([#277](https://github.com/agentclientprotocol/rust-sdk/pull/277))
-
-### Curated release notes
-
-- **Breaking change:** Upgrade to `agent-client-protocol` 2.x. Conductor components and the core
-  handlers/types they expose must be migrated together.
-- **Breaking change:** Rename the public `ConductorResponder` background task to
-  `ConductorRunner`, matching the core runner API it implements.
-- **Changed:** Enable the opt-in native MCP-over-ACP schema so tracing recognizes `mcp/message`.
-  HTTP adaptation remains an explicit `agent-client-protocol-polyfill` proxy rather than
-  conductor behavior.
-- **Fixed:** Preserve JSON-RPC batch framing when conductor tracing is enabled.
-- **Documentation:** Remove references to the retired MCP bridge CLI mode and
-  `serve()` API.
+- Update examples for the current conductor and RMCP APIs, removing references to the retired MCP
+  bridge CLI mode and `serve()` API. ([#287](https://github.com/agentclientprotocol/rust-sdk/pull/287))
 
 ## [1.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v1.2.0...agent-client-protocol-conductor-v1.3.0) - 2026-07-20
 
