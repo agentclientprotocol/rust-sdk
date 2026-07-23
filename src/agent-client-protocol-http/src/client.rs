@@ -147,18 +147,20 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         incoming,
     };
     let mut lifecycle = HttpTransportLifecycle::new(connection);
-    let mut ordered_posts = PostQueue::default();
-    let mut response_posts = PostQueue::default();
+    let mut posts = PostQueues::default();
+    let mut buffered_outgoing = VecDeque::new();
     let mut outgoing_closed = false;
 
-    let result = loop {
-        if outgoing_closed && ordered_posts.is_empty() && response_posts.is_empty() {
+    let result = 'transport: loop {
+        if outgoing_closed && buffered_outgoing.is_empty() && posts.is_empty() {
             break Ok(());
         }
 
         let event = {
             let outgoing_next = async {
-                if outgoing_closed {
+                if let Some(frame) = buffered_outgoing.pop_front() {
+                    Some(frame)
+                } else if outgoing_closed {
                     futures::future::pending().await
                 } else {
                     outgoing.next().await
@@ -167,8 +169,8 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             .fuse();
             let sse_event_next = sse_event_rx.next().fuse();
             let sse_failure_next = lifecycle.next_sse_failure().fuse();
-            let ordered_post_next = ordered_posts.next_completion().fuse();
-            let response_post_next = response_posts.next_completion().fuse();
+            let ordered_post_next = posts.ordered.next_completion().fuse();
+            let response_post_next = posts.responses.next_completion().fuse();
             pin_mut!(
                 outgoing_next,
                 sse_event_next,
@@ -198,31 +200,43 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 let Some(event) = event else {
                     continue;
                 };
-                let open_session_id = match &event.frame {
-                    TransportFrame::Single(message) => state.session_to_open_for_response(message),
-                    TransportFrame::Malformed { .. } | TransportFrame::Batch(_) => None,
-                };
+                let open_session_ids = state.sessions_to_open_for_responses(&event.frame);
                 state.deliver_frame(event.frame);
-                if let Some(session_id) = open_session_id {
-                    lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
+                for session_id in open_session_ids {
+                    match lifecycle
+                        .start_sse(
+                            Some(session_id),
+                            sse_event_tx.clone(),
+                            SseStartContext {
+                                events: &mut sse_event_rx,
+                                outgoing: &mut outgoing,
+                                buffered_outgoing: &mut buffered_outgoing,
+                                posts: &mut posts,
+                                state: &mut state,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(SseStartOutcome::Established) => {}
+                        Ok(SseStartOutcome::OutgoingClosed)
+                            if buffered_outgoing.is_empty() && posts.is_empty() =>
+                        {
+                            break 'transport Ok(());
+                        }
+                        Ok(SseStartOutcome::OutgoingClosed) => {
+                            break 'transport Err(sse_setup_blocked_output_error());
+                        }
+                        Err(error) => break 'transport Err(error),
+                    }
                 }
                 continue;
             }
             HttpLoopEvent::SseFailure(failure) => {
-                let scope = failure.session_id.as_deref().unwrap_or("connection");
-                error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
-                break Err(AcpError::internal_error()
-                    .data(format!("{scope} SSE stream ended: {}", failure.error)));
+                break Err(sse_failure_error(failure));
             }
             HttpLoopEvent::Post(completed) => {
-                let CompletedPost {
-                    pending_request,
-                    result,
-                } = completed;
-                if let Err(e) = result {
-                    state.remove_pending_request(pending_request.as_ref());
-                    error!("POST failed: {e}");
-                    break Err(AcpError::internal_error().data(format!("POST: {e}")));
+                if let Err(error) = handle_completed_post(&mut state, completed) {
+                    break Err(error);
                 }
                 continue;
             }
@@ -239,8 +253,35 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 match state.prepare_frame_post(frame) {
                     // Response-only batches answer SSE-delivered callbacks and
                     // must not be blocked behind the request they answer.
-                    Ok(post) if is_response_only => response_posts.push(post),
-                    Ok(post) => ordered_posts.push(post),
+                    Ok((post, session_ids)) => {
+                        for session_id in session_ids {
+                            match lifecycle
+                                .start_sse(
+                                    Some(session_id),
+                                    sse_event_tx.clone(),
+                                    SseStartContext {
+                                        events: &mut sse_event_rx,
+                                        outgoing: &mut outgoing,
+                                        buffered_outgoing: &mut buffered_outgoing,
+                                        posts: &mut posts,
+                                        state: &mut state,
+                                    },
+                                )
+                                .await
+                            {
+                                Ok(SseStartOutcome::Established) => {}
+                                Ok(SseStartOutcome::OutgoingClosed) => {
+                                    break 'transport Err(sse_setup_blocked_output_error());
+                                }
+                                Err(error) => break 'transport Err(error),
+                            }
+                        }
+                        if is_response_only {
+                            posts.responses.push(post);
+                        } else {
+                            posts.ordered.push(post);
+                        }
+                    }
                     Err(error) => {
                         error!("POST failed: {error}");
                         break Err(AcpError::internal_error().data(format!("POST: {error}")));
@@ -257,7 +298,29 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
             match state.initialize(msg).await {
                 Ok(InitializeOutcome::Connected) => {
-                    lifecycle.start_sse(None, sse_event_tx.clone());
+                    match lifecycle
+                        .start_sse(
+                            None,
+                            sse_event_tx.clone(),
+                            SseStartContext {
+                                events: &mut sse_event_rx,
+                                outgoing: &mut outgoing,
+                                buffered_outgoing: &mut buffered_outgoing,
+                                posts: &mut posts,
+                                state: &mut state,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(SseStartOutcome::Established) => {}
+                        Ok(SseStartOutcome::OutgoingClosed) if buffered_outgoing.is_empty() => {
+                            break 'transport Ok(());
+                        }
+                        Ok(SseStartOutcome::OutgoingClosed) => {
+                            break 'transport Err(sse_setup_blocked_output_error());
+                        }
+                        Err(error) => break 'transport Err(error),
+                    }
                 }
                 Ok(InitializeOutcome::Rejected) => {}
                 Err(e) => {
@@ -268,17 +331,36 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             continue;
         }
 
-        if let Some(session_id) = session_id_from_message(&msg)
-            && state.open_session_streams.insert(session_id.clone())
-        {
-            lifecycle.start_sse(Some(session_id), sse_event_tx.clone());
+        if let Some(session_id) = session_id_from_message(&msg) {
+            for session_id in state.register_session_streams([session_id]) {
+                match lifecycle
+                    .start_sse(
+                        Some(session_id),
+                        sse_event_tx.clone(),
+                        SseStartContext {
+                            events: &mut sse_event_rx,
+                            outgoing: &mut outgoing,
+                            buffered_outgoing: &mut buffered_outgoing,
+                            posts: &mut posts,
+                            state: &mut state,
+                        },
+                    )
+                    .await
+                {
+                    Ok(SseStartOutcome::Established) => {}
+                    Ok(SseStartOutcome::OutgoingClosed) => {
+                        break 'transport Err(sse_setup_blocked_output_error());
+                    }
+                    Err(error) => break 'transport Err(error),
+                }
+            }
         }
 
         match state.prepare_post(msg) {
             // Responses answer SSE-delivered callbacks and must not be blocked
             // behind a POST that may be waiting for that callback response.
-            Ok(post) if is_response_only => response_posts.push(post),
-            Ok(post) => ordered_posts.push(post),
+            Ok(post) if is_response_only => posts.responses.push(post),
+            Ok(post) => posts.ordered.push(post),
             Err(e) => {
                 error!("POST failed: {e}");
                 break Err(AcpError::internal_error().data(format!("POST: {e}")));
@@ -288,6 +370,56 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
 
     lifecycle.close().await;
     result
+}
+
+fn sse_failure_error(failure: SseFailure) -> AcpError {
+    let scope = failure.session_id.as_deref().unwrap_or("connection");
+    error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
+    AcpError::internal_error().data(format!("{scope} SSE stream ended: {}", failure.error))
+}
+
+fn sse_setup_blocked_output_error() -> AcpError {
+    AcpError::internal_error()
+        .data("outgoing channel closed while accepted messages awaited SSE stream establishment")
+}
+
+fn handle_completed_post(
+    state: &mut ClientState,
+    completed: CompletedPost,
+) -> Result<(), AcpError> {
+    let CompletedPost {
+        pending_requests,
+        result,
+    } = completed;
+    if let Err(error) = result {
+        state.remove_pending_requests(&pending_requests);
+        error!("POST failed: {error}");
+        Err(AcpError::internal_error().data(format!("POST: {error}")))
+    } else {
+        Ok(())
+    }
+}
+
+fn queue_response_post(
+    state: &mut ClientState,
+    posts: &mut PostQueues,
+    frame: TransportFrame,
+) -> Result<(), AcpError> {
+    let post = match frame {
+        TransportFrame::Single(message) => state.prepare_post(message),
+        frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
+            state.prepare_frame_post(frame).map(|(post, session_ids)| {
+                debug_assert!(session_ids.is_empty());
+                post
+            })
+        }
+    }
+    .map_err(|error| {
+        error!("POST failed: {error}");
+        AcpError::internal_error().data(format!("POST: {error}"))
+    })?;
+    posts.responses.push(post);
+    Ok(())
 }
 
 fn is_response_only_frame(frame: &TransportFrame) -> bool {
@@ -417,6 +549,20 @@ struct HttpTransportLifecycle {
     sse_tasks: SseTasks,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SseStartOutcome {
+    Established,
+    OutgoingClosed,
+}
+
+struct SseStartContext<'a> {
+    events: &'a mut mpsc::UnboundedReceiver<SseMessage>,
+    outgoing: &'a mut mpsc::UnboundedReceiver<TransportFrame>,
+    buffered_outgoing: &'a mut VecDeque<TransportFrame>,
+    posts: &'a mut PostQueues,
+    state: &'a mut ClientState,
+}
+
 impl HttpTransportLifecycle {
     fn new(connection: HttpConnection) -> Self {
         Self {
@@ -425,9 +571,92 @@ impl HttpTransportLifecycle {
         }
     }
 
-    fn start_sse(&mut self, session_id: Option<String>, event_tx: UnboundedSender<SseMessage>) {
-        self.sse_tasks
-            .push(run_sse(self.connection.clone(), session_id, event_tx));
+    async fn start_sse(
+        &mut self,
+        session_id: Option<String>,
+        event_tx: UnboundedSender<SseMessage>,
+        context: SseStartContext<'_>,
+    ) -> Result<SseStartOutcome, AcpError> {
+        let SseStartContext {
+            events,
+            outgoing,
+            buffered_outgoing,
+            posts,
+            state,
+        } = context;
+        let mut establishing = FuturesUnordered::new();
+        establishing.push(self.begin_sse(session_id, event_tx.clone()));
+
+        loop {
+            if establishing.is_empty() {
+                return Ok(SseStartOutcome::Established);
+            }
+            let outcome = {
+                let failure = self.sse_tasks.next_failure().fuse();
+                let established_next = establishing.next().fuse();
+                let sse_event_next = events.next().fuse();
+                let outgoing_next = outgoing.next().fuse();
+                let ordered_post_next = posts.ordered.next_completion().fuse();
+                let response_post_next = posts.responses.next_completion().fuse();
+                pin_mut!(
+                    failure,
+                    established_next,
+                    sse_event_next,
+                    outgoing_next,
+                    ordered_post_next,
+                    response_post_next
+                );
+                futures::select_biased! {
+                    failure = failure => SseStartWait::Failure(failure),
+                    established = established_next => SseStartWait::Established(established),
+                    event = sse_event_next => SseStartWait::SseEvent(event),
+                    post = response_post_next => SseStartWait::Post(post),
+                    post = ordered_post_next => SseStartWait::Post(post),
+                    outgoing = outgoing_next => SseStartWait::Outgoing(outgoing),
+                }
+            };
+            match outcome {
+                SseStartWait::Established(Some(Ok(()))) => {}
+                SseStartWait::Established(Some(Err(_))) => {
+                    return Err(sse_failure_error(self.sse_tasks.next_failure().await));
+                }
+                SseStartWait::Established(None) => {
+                    return Ok(SseStartOutcome::Established);
+                }
+                SseStartWait::Failure(failure) => return Err(sse_failure_error(failure)),
+                SseStartWait::SseEvent(Some(event)) => {
+                    let open_session_ids = state.sessions_to_open_for_responses(&event.frame);
+                    state.deliver_frame(event.frame);
+                    for session_id in open_session_ids {
+                        establishing.push(self.begin_sse(Some(session_id), event_tx.clone()));
+                    }
+                }
+                SseStartWait::SseEvent(None) => {
+                    return Err(AcpError::internal_error().data("SSE event channel closed"));
+                }
+                SseStartWait::Post(completed) => handle_completed_post(state, completed)?,
+                SseStartWait::Outgoing(Some(frame)) if is_response_only_frame(&frame) => {
+                    queue_response_post(state, posts, frame)?;
+                }
+                SseStartWait::Outgoing(Some(frame)) => buffered_outgoing.push_back(frame),
+                SseStartWait::Outgoing(None) => return Ok(SseStartOutcome::OutgoingClosed),
+            }
+        }
+    }
+
+    fn begin_sse(
+        &mut self,
+        session_id: Option<String>,
+        event_tx: UnboundedSender<SseMessage>,
+    ) -> futures::channel::oneshot::Receiver<()> {
+        let (established_tx, established_rx) = futures::channel::oneshot::channel();
+        self.sse_tasks.push(run_sse(
+            self.connection.clone(),
+            session_id,
+            event_tx,
+            established_tx,
+        ));
+        established_rx
     }
 
     async fn next_sse_failure(&mut self) -> SseFailure {
@@ -438,6 +667,14 @@ impl HttpTransportLifecycle {
         self.connection.close().await;
         self.sse_tasks.abort_all();
     }
+}
+
+enum SseStartWait {
+    Established(Option<Result<(), futures::channel::oneshot::Canceled>>),
+    Failure(SseFailure),
+    SseEvent(Option<SseMessage>),
+    Post(CompletedPost),
+    Outgoing(Option<TransportFrame>),
 }
 
 impl Drop for HttpTransportLifecycle {
@@ -451,10 +688,11 @@ fn run_sse(
     connection: HttpConnection,
     session_id: Option<String>,
     event_tx: UnboundedSender<SseMessage>,
+    established_tx: futures::channel::oneshot::Sender<()>,
 ) -> BoxFuture<'static, SseFailure> {
     Box::pin(async move {
         let label = session_id.clone();
-        let error = match read_sse(connection, session_id, event_tx).await {
+        let error = match read_sse(connection, session_id, event_tx, established_tx).await {
             Ok(()) => "SSE stream closed".to_string(),
             Err(e) => e,
         };
@@ -493,24 +731,24 @@ impl SseTasks {
 struct ClientState {
     connection: HttpConnection,
     open_session_streams: HashSet<String>,
-    pending_requests: HashMap<RequestId, String>,
+    pending_requests: HashMap<RequestId, VecDeque<String>>,
     incoming: futures::channel::mpsc::UnboundedSender<TransportFrame>,
 }
 
 struct PendingPost {
-    pending_request: Option<(RequestId, String)>,
+    pending_requests: Vec<(RequestId, String)>,
     response: BoxFuture<'static, Result<(), String>>,
 }
 
 impl PendingPost {
     fn into_completion(self) -> BoxFuture<'static, CompletedPost> {
         let Self {
-            pending_request,
+            pending_requests,
             response,
         } = self;
         async move {
             CompletedPost {
-                pending_request,
+                pending_requests,
                 result: response.await,
             }
         }
@@ -520,7 +758,7 @@ impl PendingPost {
 
 #[derive(Debug)]
 struct CompletedPost {
-    pending_request: Option<(RequestId, String)>,
+    pending_requests: Vec<(RequestId, String)>,
     result: Result<(), String>,
 }
 
@@ -528,6 +766,18 @@ struct CompletedPost {
 struct PostQueue {
     queued: VecDeque<PendingPost>,
     in_flight: Option<BoxFuture<'static, CompletedPost>>,
+}
+
+#[derive(Default)]
+struct PostQueues {
+    ordered: PostQueue,
+    responses: PostQueue,
+}
+
+impl PostQueues {
+    fn is_empty(&self) -> bool {
+        self.ordered.is_empty() && self.responses.is_empty()
+    }
 }
 
 impl PostQueue {
@@ -621,16 +871,7 @@ impl ClientState {
     }
 
     fn prepare_post(&mut self, msg: RawJsonRpcMessage) -> Result<PendingPost, String> {
-        let session_id = match method_for_message(&msg) {
-            Some(method) => {
-                let session_id = session_id_from_message(&msg);
-                if method_requires_session_header(method) && session_id.is_none() {
-                    return Err(format!("method `{method}` requires sessionId in params"));
-                }
-                session_id
-            }
-            None => None,
-        };
+        let session_id = validated_session_id(&msg)?;
         let connection_id = self
             .connection
             .connection_id()
@@ -645,10 +886,10 @@ impl ClientState {
             request = request.header(HEADER_SESSION_ID, session_id);
         }
 
-        let pending_request = pending_request_for_message(&msg);
-        if let Some((id, method)) = &pending_request {
-            self.pending_requests.insert(id.clone(), method.clone());
-        }
+        let pending_requests = pending_request_for_message(&msg)
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.track_pending_requests(&pending_requests);
 
         let response = async move {
             let response = request.send().await.map_err(|e| e.to_string())?;
@@ -660,12 +901,16 @@ impl ClientState {
             Ok(())
         };
         Ok(PendingPost {
-            pending_request,
+            pending_requests,
             response: response.boxed(),
         })
     }
 
-    fn prepare_frame_post(&self, frame: TransportFrame) -> Result<PendingPost, String> {
+    fn prepare_frame_post(
+        &mut self,
+        frame: TransportFrame,
+    ) -> Result<(PendingPost, Vec<String>), String> {
+        let bookkeeping = FrameBookkeeping::for_frame(&frame)?;
         let connection_id = self
             .connection
             .connection_id()
@@ -687,15 +932,77 @@ impl ClientState {
             }
             Ok(())
         };
-        Ok(PendingPost {
-            pending_request: None,
-            response: response.boxed(),
-        })
+        self.track_pending_requests(&bookkeeping.pending_requests);
+        let session_ids = self.register_session_streams(bookkeeping.session_ids);
+        Ok((
+            PendingPost {
+                pending_requests: bookkeeping.pending_requests,
+                response: response.boxed(),
+            },
+            session_ids,
+        ))
     }
 
-    fn remove_pending_request(&mut self, pending_request: Option<&(RequestId, String)>) {
-        if let Some((id, _)) = pending_request {
+    fn track_pending_requests(&mut self, pending_requests: &[(RequestId, String)]) {
+        for (id, method) in pending_requests {
+            self.pending_requests
+                .entry(id.clone())
+                .or_default()
+                .push_back(method.clone());
+        }
+    }
+
+    fn remove_pending_requests(&mut self, pending_requests: &[(RequestId, String)]) {
+        for (id, method) in pending_requests.iter().rev() {
+            let remove_entry = self.pending_requests.get_mut(id).is_some_and(|methods| {
+                if let Some(index) = methods.iter().rposition(|candidate| candidate == method) {
+                    methods.remove(index);
+                }
+                methods.is_empty()
+            });
+            if remove_entry {
+                self.pending_requests.remove(id);
+            }
+        }
+    }
+
+    fn take_pending_request_method(&mut self, id: &RequestId) -> Option<String> {
+        let (method, remove_entry) = {
+            let methods = self.pending_requests.get_mut(id)?;
+            (methods.pop_front(), methods.is_empty())
+        };
+        if remove_entry {
             self.pending_requests.remove(id);
+        }
+        method
+    }
+
+    fn register_session_streams(
+        &mut self,
+        session_ids: impl IntoIterator<Item = String>,
+    ) -> Vec<String> {
+        session_ids
+            .into_iter()
+            .filter(|session_id| self.open_session_streams.insert(session_id.clone()))
+            .collect()
+    }
+
+    fn sessions_to_open_for_responses(&mut self, frame: &TransportFrame) -> Vec<String> {
+        match frame {
+            TransportFrame::Single(message) => self
+                .session_to_open_for_response(message)
+                .into_iter()
+                .collect(),
+            TransportFrame::Batch(batch) => batch
+                .entries()
+                .filter_map(|entry| match entry {
+                    TransportBatchEntry::Message(message) => {
+                        self.session_to_open_for_response(message)
+                    }
+                    TransportBatchEntry::Malformed { .. } => None,
+                })
+                .collect(),
+            TransportFrame::Malformed { .. } => Vec::new(),
         }
     }
 
@@ -704,7 +1011,7 @@ impl ClientState {
             return None;
         };
         let id = msg.response_id().and_then(pending_request_key)?;
-        let method = self.pending_requests.remove(&id);
+        let method = self.take_pending_request_method(&id);
 
         if !method.as_deref().is_some_and(is_session_opening_method) {
             return None;
@@ -735,6 +1042,53 @@ impl ClientState {
     }
 }
 
+#[derive(Default)]
+struct FrameBookkeeping {
+    session_ids: Vec<String>,
+    pending_requests: Vec<(RequestId, String)>,
+}
+
+impl FrameBookkeeping {
+    fn for_frame(frame: &TransportFrame) -> Result<Self, String> {
+        let mut bookkeeping = Self::default();
+        match frame {
+            TransportFrame::Single(message) => bookkeeping.add_message(message)?,
+            TransportFrame::Batch(batch) => {
+                for entry in batch.entries() {
+                    if let TransportBatchEntry::Message(message) = entry {
+                        bookkeeping.add_message(message)?;
+                    }
+                }
+            }
+            TransportFrame::Malformed { .. } => {}
+        }
+        Ok(bookkeeping)
+    }
+
+    fn add_message(&mut self, message: &RawJsonRpcMessage) -> Result<(), String> {
+        if let Some(session_id) = validated_session_id(message)?
+            && !self.session_ids.contains(&session_id)
+        {
+            self.session_ids.push(session_id);
+        }
+        if let Some(pending_request) = pending_request_for_message(message) {
+            self.pending_requests.push(pending_request);
+        }
+        Ok(())
+    }
+}
+
+fn validated_session_id(msg: &RawJsonRpcMessage) -> Result<Option<String>, String> {
+    let Some(method) = method_for_message(msg) else {
+        return Ok(None);
+    };
+    let session_id = session_id_from_message(msg);
+    if method_requires_session_header(method) && session_id.is_none() {
+        return Err(format!("method `{method}` requires sessionId in params"));
+    }
+    Ok(session_id)
+}
+
 fn is_session_opening_method(method: &str) -> bool {
     matches!(method, "session/new" | "session/fork")
 }
@@ -743,6 +1097,7 @@ async fn read_sse(
     connection: HttpConnection,
     session_id: Option<String>,
     event_tx: UnboundedSender<SseMessage>,
+    established_tx: futures::channel::oneshot::Sender<()>,
 ) -> Result<(), String> {
     let connection_id = connection
         .connection_id()
@@ -760,6 +1115,7 @@ async fn read_sse(
         return Err(format!("HTTP {}", response.status()));
     }
     trace!(session_id = ?session_id, "SSE stream open");
+    let _ = established_tx.send(());
 
     let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
     while let Some(event) = events.next().await {
@@ -906,7 +1262,7 @@ mod tests {
         convert::Infallible,
         sync::{
             Arc,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -934,6 +1290,11 @@ mod tests {
         escaped_tx: futures::channel::oneshot::Sender<
             futures::channel::mpsc::UnboundedSender<TransportFrame>,
         >,
+    }
+
+    struct InitializeThenExitClient {
+        sse_started: Arc<Notify>,
+        finished: Arc<Notify>,
     }
 
     struct QueueOutgoingThenText {
@@ -1005,6 +1366,110 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"custom/call","result":{}}"#,
         );
         assert!(!is_response_only_frame(&call_shaped));
+    }
+
+    fn initialized_client_state() -> ClientState {
+        let connection = HttpConnection::new(
+            url::Url::parse("http://127.0.0.1/acp").unwrap(),
+            reqwest::Client::new(),
+        );
+        connection.set_connection_id("connection-1".to_string());
+        let (incoming, _incoming_rx) = mpsc::unbounded();
+        ClientState {
+            connection,
+            open_session_streams: HashSet::new(),
+            pending_requests: HashMap::new(),
+            incoming,
+        }
+    }
+
+    #[test]
+    fn batch_post_validation_happens_before_tracking_requests_or_sessions() {
+        let mut state = initialized_client_state();
+        let frame = TransportFrame::Batch(
+            TransportBatch::from_messages([
+                RawJsonRpcMessage::request(
+                    "custom/valid".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+                RawJsonRpcMessage::request(
+                    "session/prompt".to_string(),
+                    json!({ "prompt": [] }),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        );
+
+        let Err(error) = state.prepare_frame_post(frame) else {
+            panic!("batch should require sessionId for session/prompt");
+        };
+
+        assert_eq!(
+            error,
+            "method `session/prompt` requires sessionId in params"
+        );
+        assert!(state.pending_requests.is_empty());
+        assert!(state.open_session_streams.is_empty());
+    }
+
+    #[test]
+    fn batch_post_tracks_every_non_null_request_and_rolls_back_from_the_back() {
+        let mut state = initialized_client_state();
+        state.track_pending_requests(&[(RequestId::Number(7), "session/fork".to_string())]);
+        let frame = TransportFrame::Batch(
+            TransportBatch::from_messages([
+                RawJsonRpcMessage::request(
+                    "session/fork".to_string(),
+                    json!({ "sessionId": "source-a" }),
+                    RequestId::Number(7),
+                )
+                .unwrap(),
+                RawJsonRpcMessage::request(
+                    "custom/request".to_string(),
+                    json!({ "sessionId": "source-b" }),
+                    RequestId::Number(7),
+                )
+                .unwrap(),
+                RawJsonRpcMessage::request(
+                    "session/fork".to_string(),
+                    json!({ "sessionId": "source-a" }),
+                    RequestId::Null,
+                )
+                .unwrap(),
+            ])
+            .unwrap(),
+        );
+
+        let (post, session_ids) = state.prepare_frame_post(frame).unwrap();
+
+        assert_eq!(session_ids, ["source-a", "source-b"]);
+        assert_eq!(
+            state.pending_requests.get(&RequestId::Number(7)).unwrap(),
+            &VecDeque::from([
+                "session/fork".to_string(),
+                "session/fork".to_string(),
+                "custom/request".to_string(),
+            ])
+        );
+        assert_eq!(
+            post.pending_requests,
+            [
+                (RequestId::Number(7), "session/fork".to_string()),
+                (RequestId::Number(7), "custom/request".to_string()),
+            ]
+        );
+        assert!(!state.pending_requests.contains_key(&RequestId::Null));
+
+        state.remove_pending_requests(&post.pending_requests);
+
+        assert_eq!(
+            state.pending_requests.get(&RequestId::Number(7)).unwrap(),
+            &VecDeque::from(["session/fork".to_string()])
+        );
     }
 
     impl WsSink for RecordingWsSink {
@@ -1116,6 +1581,41 @@ mod tests {
                 }
 
                 finish.notified().await;
+                finished.notify_one();
+                Ok(())
+            };
+
+            let ((), ()) = futures::try_join!(transport, client)?;
+            Ok(())
+        }
+    }
+
+    impl ConnectTo<Agent> for InitializeThenExitClient {
+        async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), AcpError> {
+            let Self {
+                sse_started,
+                finished,
+            } = self;
+            let (mut channel, transport) = agent.into_channel_and_future();
+            let client = async move {
+                channel
+                    .tx
+                    .unbounded_send(single_frame(
+                        RawJsonRpcMessage::request(
+                            "initialize".to_string(),
+                            json!({}),
+                            RequestId::Number(1),
+                        )
+                        .unwrap(),
+                    ))
+                    .map_err(|error| {
+                        AcpError::internal_error().data(format!("send initialize: {error}"))
+                    })?;
+                into_single_message(channel.rx.next().await.ok_or_else(|| {
+                    AcpError::internal_error().data("initialize response channel closed")
+                })?)?;
+
+                sse_started.notified().await;
                 finished.notify_one();
                 Ok(())
             };
@@ -1384,6 +1884,172 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&inbound.to_json().unwrap()).unwrap(),
             inbound_batch
         );
+
+        drop(caller);
+        timeout(Duration::from_secs(1), transport)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn batch_fork_opens_source_and_result_session_streams() {
+        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (get_tx, mut get_rx) = tokio::sync::mpsc::unbounded_channel();
+        let post_count = Arc::new(AtomicUsize::new(0));
+        let emit_response = Arc::new(Notify::new());
+        let connection_stream_established = Arc::new(AtomicBool::new(false));
+        let source_stream_established = Arc::new(AtomicBool::new(false));
+        let response_batch = json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": { "sessionId": "forked-session" }
+            }
+        ]);
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let post_count = post_count.clone();
+                let connection_stream_established = connection_stream_established.clone();
+                let source_stream_established = source_stream_established.clone();
+                move |body: String| {
+                    let post_count = post_count.clone();
+                    let post_tx = post_tx.clone();
+                    let connection_stream_established = connection_stream_established.clone();
+                    let source_stream_established = source_stream_established.clone();
+                    async move {
+                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
+                            return initialize_response().await.into_response();
+                        }
+
+                        if !connection_stream_established.load(Ordering::SeqCst)
+                            || !source_stream_established.load(Ordering::SeqCst)
+                        {
+                            return StatusCode::CONFLICT.into_response();
+                        }
+                        post_tx
+                            .send(serde_json::from_str::<serde_json::Value>(&body).unwrap())
+                            .unwrap();
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get({
+                let emit_response = emit_response.clone();
+                let response_batch = response_batch.clone();
+                let connection_stream_established = connection_stream_established.clone();
+                let source_stream_established = source_stream_established.clone();
+                move |headers: HeaderMap| {
+                    let emit_response = emit_response.clone();
+                    let response_batch = response_batch.clone();
+                    let get_tx = get_tx.clone();
+                    let connection_stream_established = connection_stream_established.clone();
+                    let source_stream_established = source_stream_established.clone();
+                    async move {
+                        let session_id = headers
+                            .get(HEADER_SESSION_ID)
+                            .and_then(|value| value.to_str().ok())
+                            .map(String::from);
+                        let is_connection_stream = session_id.is_none();
+                        let is_source_stream = session_id.as_deref() == Some("source-session");
+                        if is_connection_stream {
+                            sleep(Duration::from_millis(50)).await;
+                            connection_stream_established.store(true, Ordering::SeqCst);
+                        }
+                        if is_source_stream {
+                            sleep(Duration::from_millis(50)).await;
+                            source_stream_established.store(true, Ordering::SeqCst);
+                        }
+                        get_tx.send(session_id).unwrap();
+
+                        let stream = async_stream::stream! {
+                            if is_source_stream {
+                                emit_response.notified().await;
+                                yield Ok::<_, Infallible>(
+                                    Event::default().data(response_batch.to_string()),
+                                );
+                            }
+                            futures::future::pending::<()>().await;
+                        };
+                        Sse::new(stream)
+                    }
+                }
+            })
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+
+        caller
+            .tx
+            .unbounded_send(TransportFrame::Batch(
+                TransportBatch::from_messages([RawJsonRpcMessage::request(
+                    "session/fork".to_string(),
+                    json!({ "sessionId": "source-session" }),
+                    RequestId::Number(2),
+                )
+                .unwrap()])
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let connection_stream = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(connection_stream.is_none());
+        let source_stream = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(source_stream.as_deref(), Some("source-session"));
+        let posted = timeout(Duration::from_secs(1), post_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(posted.is_array(), "outgoing batch must remain an array");
+
+        emit_response.notify_one();
+        let response = timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(&response, TransportFrame::Batch(_)));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&response.to_json().unwrap()).unwrap(),
+            response_batch
+        );
+        let forked_stream = timeout(Duration::from_secs(1), get_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forked_stream.as_deref(), Some("forked-session"));
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -1876,6 +2542,312 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn client_completion_cancels_pending_sse_establishment() {
+        let sse_started = Arc::new(Notify::new());
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let client_finished = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response)
+                .get({
+                    let sse_started = sse_started.clone();
+                    move || {
+                        let sse_started = sse_started.clone();
+                        async move {
+                            sse_started.notify_one();
+                            futures::future::pending::<StatusCode>().await
+                        }
+                    }
+                })
+                .delete({
+                    let delete_count = delete_count.clone();
+                    move || {
+                        let delete_count = delete_count.clone();
+                        async move {
+                            delete_count.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::ACCEPTED
+                        }
+                    }
+                }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let connection = tokio::spawn(client.connect_to(InitializeThenExitClient {
+            sse_started,
+            finished: client_finished.clone(),
+        }));
+
+        timeout(Duration::from_secs(1), client_finished.notified())
+            .await
+            .expect("client foreground did not finish after the SSE request started");
+
+        timeout(Duration::from_secs(1), connection)
+            .await
+            .expect("transport remained blocked on SSE response headers")
+            .unwrap()
+            .unwrap();
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stalled_sse_establishment_observes_earlier_post_failure() {
+        let app = Router::new().route(
+            "/acp",
+            get(|| async { futures::future::pending::<StatusCode>().await }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let connection = HttpConnection::new(
+            url::Url::parse(&format!("http://{addr}/acp")).unwrap(),
+            reqwest::Client::new(),
+        );
+        connection.set_connection_id("connection-1".to_string());
+        let (incoming, _incoming_rx) = mpsc::unbounded();
+        let mut state = ClientState {
+            connection: connection.clone(),
+            open_session_streams: HashSet::new(),
+            pending_requests: HashMap::new(),
+            incoming,
+        };
+        let pending_request = (RequestId::Number(7), "custom/earlier".to_string());
+        state.track_pending_requests(std::slice::from_ref(&pending_request));
+        let mut posts = PostQueues::default();
+        posts.ordered.push(PendingPost {
+            pending_requests: vec![pending_request],
+            response: async { Err("earlier post failed".to_string()) }.boxed(),
+        });
+
+        let (_outgoing_tx, mut outgoing) = mpsc::unbounded();
+        let mut buffered_outgoing = VecDeque::new();
+        let (event_tx, mut event_rx) = mpsc::unbounded();
+        let mut lifecycle = HttpTransportLifecycle::new(connection);
+        let error = timeout(
+            Duration::from_secs(1),
+            lifecycle.start_sse(
+                Some("later-session".to_string()),
+                event_tx,
+                SseStartContext {
+                    events: &mut event_rx,
+                    outgoing: &mut outgoing,
+                    buffered_outgoing: &mut buffered_outgoing,
+                    posts: &mut posts,
+                    state: &mut state,
+                },
+            ),
+        )
+        .await
+        .expect("stalled SSE setup hid an earlier POST failure")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("earlier post failed"));
+        assert!(state.pending_requests.is_empty());
+
+        lifecycle.close().await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stalled_sse_establishment_keeps_callback_responses_moving() {
+        let release_get = Arc::new(Notify::new());
+        let complete_earlier_post = Arc::new(Notify::new());
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let release_get = release_get.clone();
+                let complete_earlier_post = complete_earlier_post.clone();
+                move || {
+                    release_get.notify_one();
+                    complete_earlier_post.notify_one();
+                    async { StatusCode::ACCEPTED }
+                }
+            })
+            .get({
+                let release_get = release_get.clone();
+                move || {
+                    let release_get = release_get.clone();
+                    async move {
+                        release_get.notified().await;
+                        Sse::new(futures::stream::pending::<Result<Event, Infallible>>())
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let connection = HttpConnection::new(
+            url::Url::parse(&format!("http://{addr}/acp")).unwrap(),
+            reqwest::Client::new(),
+        );
+        connection.set_connection_id("connection-1".to_string());
+        let (incoming, mut incoming_rx) = mpsc::unbounded();
+        let mut state = ClientState {
+            connection: connection.clone(),
+            open_session_streams: HashSet::new(),
+            pending_requests: HashMap::new(),
+            incoming,
+        };
+        let mut posts = PostQueues::default();
+        posts.ordered.push(PendingPost {
+            pending_requests: Vec::new(),
+            response: async move {
+                complete_earlier_post.notified().await;
+                Ok(())
+            }
+            .boxed(),
+        });
+
+        let (outgoing_tx, mut outgoing) = mpsc::unbounded();
+        let outgoing_guard = outgoing_tx.clone();
+        let mut buffered_outgoing = VecDeque::new();
+        let (event_tx, mut event_rx) = mpsc::unbounded();
+        event_tx
+            .unbounded_send(SseMessage {
+                frame: single_frame(
+                    RawJsonRpcMessage::request(
+                        "test/callback".to_string(),
+                        json!({}),
+                        RequestId::Number(99),
+                    )
+                    .unwrap(),
+                ),
+            })
+            .unwrap();
+
+        let responder = async move {
+            let callback = incoming_rx
+                .next()
+                .await
+                .expect("callback was not delivered");
+            assert!(matches!(
+                into_single_message(callback).unwrap(),
+                RawJsonRpcMessage::Request(request)
+                    if request.method.as_ref() == "test/callback"
+            ));
+            outgoing_tx
+                .unbounded_send(single_frame(RawJsonRpcMessage::response(
+                    RequestId::Number(99),
+                    Ok(json!({})),
+                )))
+                .unwrap();
+        };
+        let mut lifecycle = HttpTransportLifecycle::new(connection);
+        let (outcome, ()) = timeout(Duration::from_secs(1), async {
+            futures::join!(
+                lifecycle.start_sse(
+                    Some("later-session".to_string()),
+                    event_tx,
+                    SseStartContext {
+                        events: &mut event_rx,
+                        outgoing: &mut outgoing,
+                        buffered_outgoing: &mut buffered_outgoing,
+                        posts: &mut posts,
+                        state: &mut state,
+                    },
+                ),
+                responder,
+            )
+        })
+        .await
+        .expect("callback response deadlocked behind stalled SSE establishment");
+
+        assert_eq!(outcome.unwrap(), SseStartOutcome::Established);
+        assert!(buffered_outgoing.is_empty());
+
+        drop(outgoing_guard);
+        lifecycle.close().await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn pending_sse_establishment_reports_buffered_output_on_shutdown() {
+        let sse_started = Arc::new(Notify::new());
+        let delete_count = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route(
+            "/acp",
+            post(initialize_response)
+                .get({
+                    let sse_started = sse_started.clone();
+                    move || {
+                        let sse_started = sse_started.clone();
+                        async move {
+                            sse_started.notify_one();
+                            futures::future::pending::<StatusCode>().await
+                        }
+                    }
+                })
+                .delete({
+                    let delete_count = delete_count.clone();
+                    move || {
+                        let delete_count = delete_count.clone();
+                        async move {
+                            delete_count.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::ACCEPTED
+                        }
+                    }
+                }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "initialize".to_string(),
+                    json!({}),
+                    RequestId::Number(1),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        timeout(Duration::from_secs(1), sse_started.notified())
+            .await
+            .expect("connection SSE request did not reach the server");
+
+        caller
+            .tx
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::notification("custom/queued".to_string(), json!({})).unwrap(),
+            ))
+            .unwrap();
+        drop(caller);
+
+        let error = timeout(Duration::from_secs(1), transport)
+            .await
+            .expect("transport remained blocked on SSE response headers")
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("accepted messages"));
+        assert_eq!(delete_count.load(Ordering::SeqCst), 1);
 
         server.abort();
     }

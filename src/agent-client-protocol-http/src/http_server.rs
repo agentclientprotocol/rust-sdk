@@ -357,10 +357,19 @@ pub(crate) async fn handle_get(
             yield Ok::<_, Infallible>(Event::default().data(msg));
         }
         loop {
+            while let Ok(msg) = receiver.try_recv() {
+                trace!(payload = %msg, "SSE → client");
+                yield Ok(Event::default().data(msg));
+            }
             if *closed.borrow() {
+                while let Ok(msg) = receiver.try_recv() {
+                    trace!(payload = %msg, "SSE → client");
+                    yield Ok(Event::default().data(msg));
+                }
                 break;
             }
             tokio::select! {
+                biased;
                 recv = receiver.recv() => match recv {
                     Some(msg) => {
                         trace!(payload = %msg, "SSE → client");
@@ -370,6 +379,10 @@ pub(crate) async fn handle_get(
                 },
                 changed = closed.changed() => {
                     if changed.is_err() || *closed.borrow() {
+                        while let Ok(msg) = receiver.try_recv() {
+                            trace!(payload = %msg, "SSE → client");
+                            yield Ok(Event::default().data(msg));
+                        }
                         break;
                     }
                 }
@@ -1267,6 +1280,68 @@ mod tests {
         assert!(!body.contains(&format!("message-{OUTBOUND_STREAM_CAPACITY}")));
 
         connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn sse_drains_queued_message_before_connection_close() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let request = Request::builder()
+            .method("GET")
+            .uri("/acp")
+            .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id)
+            .body(Body::empty())
+            .unwrap();
+        let response = handle_get(registry, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        connection
+            .push_connection_stream_for_test("final-message".to_string())
+            .await;
+        connection.shutdown().await;
+
+        let body = timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 1024),
+        )
+        .await
+        .expect("SSE body should close without hanging")
+        .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("data: final-message"));
+    }
+
+    #[tokio::test]
+    async fn sse_subscribed_after_connection_close_ends_without_hanging() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        connection.shutdown().await;
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/acp")
+            .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, connection_id)
+            .body(Body::empty())
+            .unwrap();
+        let response = handle_get(registry, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let body = timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(response.into_body(), 1024),
+        )
+        .await
+        .expect("an already-closed SSE stream should end without hanging")
+        .unwrap();
+        assert!(body.is_empty());
     }
 
     #[tokio::test]
