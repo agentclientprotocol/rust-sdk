@@ -11,11 +11,16 @@
 //!
 //! Build an MCP server with tools using the extension trait:
 //!
-//! ```ignore
-//! use agent_client_protocol::mcp_server::McpServer;
+//! ```no_run
+//! use agent_client_protocol::{ConnectTo, mcp_server::McpServer, role::mcp};
 //! use agent_client_protocol_rmcp::McpServerExt;
 //!
-//! let server = McpServer::builder("my-tools").build();
+//! # async fn serve(
+//! #     client_transport: impl ConnectTo<mcp::Server>,
+//! # ) -> agent_client_protocol::Result<()> {
+//! let server = McpServer::<mcp::Client>::builder("my-tools").build();
+//! server.connect_to(client_transport).await
+//! # }
 //! ```
 //!
 //! Or create an MCP server from an rmcp service:

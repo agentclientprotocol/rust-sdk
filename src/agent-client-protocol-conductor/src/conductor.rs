@@ -63,52 +63,50 @@
 //! Components are instantiated lazily when the first `initialize` request is received
 //! from the editor. This enables dynamic proxy chain construction based on client capabilities.
 //!
-//! ### Simple Usage
+//! ### Fixed Chains
 //!
-//! Pass a Vec of components that implement `Component`:
+//! Use [`ProxiesAndAgent`] to assemble a conductor that presents as an agent:
 //!
 //! ```ignore
-//! let conductor = Conductor::new(
+//! use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
+//!
+//! let conductor = ConductorImpl::new_agent(
 //!     "my-conductor",
-//!     vec![proxy1, proxy2, agent],
-//!     None,
+//!     ProxiesAndAgent::new(agent)
+//!         .proxy(proxy1)
+//!         .proxy(proxy2),
 //! );
 //! ```
 //!
-//! All components are spawned in order when the editor sends the first `initialize` request.
-//!
-//! ### Dynamic Component Selection
-//!
-//! Pass a closure to examine the `InitializeRequest` and dynamically construct the chain:
+//! A conductor that presents as a proxy takes only its internal proxies; its
+//! final successor is supplied when the conductor is connected:
 //!
 //! ```ignore
-//! let conductor = Conductor::new(
-//!     "my-conductor",
-//!     |cx, conductor_tx, init_req| async move {
-//!         // Examine capabilities
-//!         let needs_auth = has_auth_capability(&init_req);
+//! use agent_client_protocol_conductor::ConductorImpl;
 //!
-//!         let mut components = Vec::new();
-//!         if needs_auth {
-//!             components.push(spawn_auth_proxy(&cx, &conductor_tx)?);
-//!         }
-//!         components.push(spawn_agent(&cx, &conductor_tx)?);
-//!
-//!         // Return (potentially modified) request and component list
-//!         Ok((init_req, components))
-//!     },
-//!     None,
-//! );
+//! let conductor = ConductorImpl::new_proxy("my-proxy-conductor", vec![proxy]);
 //! ```
 //!
-//! The closure receives:
-//! - `cx: &ConnectionTo` - Connection context for spawning components
-//! - `conductor_tx: &mpsc::Sender<ConductorMessage>` - Channel for message routing
-//! - `init_req: InitializeRequest` - The Initialize request from the editor
+//! ### Dynamic Chain Selection
 //!
-//! And returns:
-//! - Modified `InitializeRequest` to forward downstream
-//! - `Vec<ConnectionTo>` of spawned components
+//! Both constructors also accept an instantiator closure. The closure receives
+//! the `InitializeRequest` and returns the possibly modified request together
+//! with type-erased connectors for the selected chain:
+//!
+//! ```ignore
+//! use agent_client_protocol::{Client, Conductor, DynConnectTo};
+//! use agent_client_protocol_conductor::ConductorImpl;
+//!
+//! let conductor = ConductorImpl::new_agent("my-conductor", |init_req| async move {
+//!     let mut proxies: Vec<DynConnectTo<Conductor>> = Vec::new();
+//!     if has_auth_capability(&init_req) {
+//!         proxies.push(DynConnectTo::new(make_auth_proxy()));
+//!     }
+//!
+//!     let agent: DynConnectTo<Client> = DynConnectTo::new(make_agent());
+//!     Ok((init_req, proxies, agent))
+//! });
+//! ```
 
 use std::sync::Arc;
 

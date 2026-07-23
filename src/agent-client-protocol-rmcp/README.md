@@ -21,11 +21,19 @@ ACP-transport MCP servers.
 Use the `McpServerExt` trait to build an MCP server with tools:
 
 ```rust
-use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::{ConnectTo, mcp_server::McpServer, role::mcp};
 use agent_client_protocol_rmcp::McpServerExt;
 
-let server = McpServer::builder("my-tools").build();
+async fn serve(
+    client_transport: impl ConnectTo<mcp::Server>,
+) -> agent_client_protocol::Result<()> {
+    let server = McpServer::<mcp::Client>::builder("my-tools").build();
+    server.connect_to(client_transport).await
+}
 ```
+
+Choosing `mcp::Client` as the counterpart makes this a standalone MCP server
+that implements `ConnectTo<mcp::Client>`.
 
 Or create an MCP server from an rmcp service:
 
