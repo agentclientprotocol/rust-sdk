@@ -65,24 +65,67 @@ async fn run_ws(
         }
     }
 
+    run_ws_message_loop(
+        &mut ws_tx,
+        &mut ws_rx,
+        &mut outbound_rx,
+        &mut closed,
+        &connection_id,
+        &connection,
+    )
+    .await;
+
+    debug!(connection_id = %connection_id, "Cleaning up WebSocket connection");
+    if let Some(conn) = registry.remove(&connection_id).await {
+        conn.shutdown().await;
+    }
+}
+
+async fn run_ws_message_loop(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, WsMessage>,
+    ws_rx: &mut futures::stream::SplitStream<WebSocket>,
+    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    closed: &mut tokio::sync::watch::Receiver<bool>,
+    connection_id: &str,
+    connection: &crate::connection::Connection,
+) {
     loop {
         if *closed.borrow() {
+            drain_queued_outbound(ws_tx, outbound_rx, connection_id).await;
             break;
         }
         tokio::select! {
+            recv = outbound_rx.recv() => {
+                match recv {
+                    Some(text) => {
+                        if !send_outbound_text(ws_tx, text, connection_id).await {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+
+            changed = closed.changed() => {
+                if changed.is_err() || *closed.borrow() {
+                    drain_queued_outbound(ws_tx, outbound_rx, connection_id).await;
+                    break;
+                }
+            }
+
             msg_result = ws_rx.next() => {
                 match msg_result {
                     Some(Ok(WsMessage::Text(text))) => {
-                        let text_str = text.to_string();
-                        trace!(connection_id = %connection_id, payload = %text_str, "Client → Agent: {} bytes", text_str.len());
-                        let frame = TransportFrame::parse_json(&text_str);
-                        if let TransportFrame::Single(parsed) = &frame
-                            && let Some(sid) = session_id_from_message(parsed)
-                            && let RawJsonRpcMessage::Request(req) = parsed {
-                                trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
-                        }
-                        if connection.send_frame_to_agent(frame).is_err() {
-                            error!(connection_id = %connection_id, "Agent channel closed");
+                        if !forward_client_text(
+                            text.to_string(),
+                            ws_tx,
+                            outbound_rx,
+                            closed,
+                            connection_id,
+                            connection,
+                        )
+                        .await
+                        {
                             break;
                         }
                     }
@@ -101,31 +144,96 @@ async fn run_ws(
                     None => break,
                 }
             }
+        }
+    }
+}
 
-            recv = outbound_rx.recv() => {
-                match recv {
-                    Some(text) => {
-                        trace!(connection_id = %connection_id, payload = %text, "Agent → Client: {} bytes", text.len());
-                        if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
-                            error!(connection_id = %connection_id, "WebSocket send failed");
-                            break;
-                        }
+async fn forward_client_text<S>(
+    text: String,
+    ws_tx: &mut S,
+    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    closed: &mut tokio::sync::watch::Receiver<bool>,
+    connection_id: &str,
+    connection: &crate::connection::Connection,
+) -> bool
+where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    trace!(connection_id = %connection_id, payload = %text, "Client → Agent: {} bytes", text.len());
+    let frame = TransportFrame::parse_json(&text);
+    if let TransportFrame::Single(parsed) = &frame
+        && let Some(sid) = session_id_from_message(parsed)
+        && let RawJsonRpcMessage::Request(req) = parsed
+    {
+        trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
+    }
+    if connection.send_frame_to_agent(frame).is_err() {
+        error!(connection_id = %connection_id, "Agent channel closed");
+        drain_outbound_until_closed(ws_tx, outbound_rx, closed, connection_id).await;
+        false
+    } else {
+        true
+    }
+}
+
+async fn drain_outbound_until_closed<S>(
+    ws_tx: &mut S,
+    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    closed: &mut tokio::sync::watch::Receiver<bool>,
+    connection_id: &str,
+) where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    loop {
+        drain_queued_outbound(ws_tx, outbound_rx, connection_id).await;
+        if *closed.borrow() {
+            drain_queued_outbound(ws_tx, outbound_rx, connection_id).await;
+            break;
+        }
+        tokio::select! {
+            biased;
+            recv = outbound_rx.recv() => match recv {
+                Some(text) => {
+                    if !send_outbound_text(ws_tx, text, connection_id).await {
+                        break;
                     }
-                    None => break,
                 }
-            }
-
+                None => break,
+            },
             changed = closed.changed() => {
                 if changed.is_err() || *closed.borrow() {
+                    drain_queued_outbound(ws_tx, outbound_rx, connection_id).await;
                     break;
                 }
             }
         }
     }
+}
 
-    debug!(connection_id = %connection_id, "Cleaning up WebSocket connection");
-    if let Some(conn) = registry.remove(&connection_id).await {
-        conn.shutdown().await;
+async fn drain_queued_outbound<S>(
+    ws_tx: &mut S,
+    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    connection_id: &str,
+) where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    while let Ok(text) = outbound_rx.try_recv() {
+        if !send_outbound_text(ws_tx, text, connection_id).await {
+            break;
+        }
+    }
+}
+
+async fn send_outbound_text<S>(ws_tx: &mut S, text: String, connection_id: &str) -> bool
+where
+    S: futures::Sink<WsMessage> + Unpin,
+{
+    trace!(connection_id = %connection_id, payload = %text, "Agent → Client: {} bytes", text.len());
+    if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
+        error!(connection_id = %connection_id, "WebSocket send failed");
+        false
+    } else {
+        true
     }
 }
 
@@ -233,6 +341,220 @@ mod tests {
 
             (transport, future)
         }
+    }
+
+    struct FinalFrameThenExitAgentFactory {
+        emit: Arc<tokio::sync::Notify>,
+    }
+
+    impl AgentFactory for FinalFrameThenExitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let emit = self.emit.clone();
+            let future = Box::pin(async move {
+                emit.notified().await;
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Single(
+                        RawJsonRpcMessage::notification(
+                            "test/final".to_string(),
+                            serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap();
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    struct FinalFrameAfterInputCloseAgentFactory {
+        emit: Arc<tokio::sync::Notify>,
+    }
+
+    impl AgentFactory for FinalFrameAfterInputCloseAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let emit = self.emit.clone();
+            let future = Box::pin(async move {
+                drop(agent.rx);
+                emit.notified().await;
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Single(
+                        RawJsonRpcMessage::notification(
+                            "test/final".to_string(),
+                            serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap();
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_drains_final_agent_frame_before_closing() {
+        let emit = Arc::new(tokio::sync::Notify::new());
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(
+            FinalFrameThenExitAgentFactory { emit: emit.clone() },
+        )));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    let emit = emit.clone();
+                    async move {
+                        ws.on_upgrade(move |socket| async move {
+                            let connection_id = ConnectionRegistry::next_connection_id();
+                            let connection = registry
+                                .create_websocket_connection_with_id(connection_id.clone())
+                                .await;
+                            connection.start_router().await;
+                            let (replay, mut outbound_rx) =
+                                connection.subscribe_all_outbound().await;
+                            assert!(replay.is_empty());
+                            let mut closed = connection.subscribe_closed();
+
+                            emit.notify_one();
+                            while !*closed.borrow() {
+                                closed.changed().await.unwrap();
+                            }
+
+                            let (mut ws_tx, mut ws_rx) = socket.split();
+                            run_ws_message_loop(
+                                &mut ws_tx,
+                                &mut ws_rx,
+                                &mut outbound_rx,
+                                &mut closed,
+                                &connection_id,
+                                &connection,
+                            )
+                            .await;
+
+                            if let Some(connection) = registry.remove(&connection_id).await {
+                                connection.shutdown().await;
+                            }
+                        })
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+
+        let frame = timeout(Duration::from_secs(1), client.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let ClientWsMessage::Text(text) = frame else {
+            panic!("expected final text frame: {frame:?}");
+        };
+        let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/final"
+        ));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn inbound_after_agent_exit_drains_queued_final_frame() {
+        let emit = Arc::new(tokio::sync::Notify::new());
+        let registry = ConnectionRegistry::new(Arc::new(FinalFrameAfterInputCloseAgentFactory {
+            emit: emit.clone(),
+        }));
+        let connection_id = ConnectionRegistry::next_connection_id();
+        let connection = registry
+            .create_websocket_connection_with_id(connection_id.clone())
+            .await;
+        connection.start_router().await;
+        let (replay, mut outbound_rx) = connection.subscribe_all_outbound().await;
+        assert!(replay.is_empty());
+        let mut closed = connection.subscribe_closed();
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                let probe = RawJsonRpcMessage::notification(
+                    "test/probe".to_string(),
+                    serde_json::json!({}),
+                )
+                .unwrap();
+                if connection
+                    .send_frame_to_agent(TransportFrame::Single(probe))
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("agent input did not close");
+        assert!(!*closed.borrow(), "outbound routing should still be active");
+
+        let (mut ws_tx, mut ws_rx) = futures::channel::mpsc::unbounded::<WsMessage>();
+        let inbound =
+            RawJsonRpcMessage::notification("test/inbound".to_string(), serde_json::json!({}))
+                .unwrap();
+        let forward = forward_client_text(
+            serde_json::to_string(&inbound).unwrap(),
+            &mut ws_tx,
+            &mut outbound_rx,
+            &mut closed,
+            &connection_id,
+            &connection,
+        );
+        futures::pin_mut!(forward);
+        assert!(
+            futures::poll!(&mut forward).is_pending(),
+            "the WebSocket exited before the outbound router drained"
+        );
+
+        emit.notify_one();
+        assert!(
+            !timeout(Duration::from_secs(1), forward)
+                .await
+                .expect("WebSocket did not close after the outbound router drained"),
+            "the closed agent channel should end the WebSocket loop"
+        );
+
+        let WsMessage::Text(text) = ws_rx.next().await.unwrap() else {
+            panic!("expected queued final text frame");
+        };
+        let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/final"
+        ));
+
+        registry.remove(&connection_id).await;
+        connection.shutdown().await;
     }
 
     #[tokio::test]

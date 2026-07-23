@@ -555,10 +555,13 @@ async fn close_connection_task(connection: Weak<Connection>) {
     let Some(connection) = connection.upgrade() else {
         return;
     };
-    connection.close_streams();
-    if let Some(h) = connection.router_handle.lock().await.take() {
-        h.abort();
+    let router_handle = connection.router_handle.lock().await.take();
+    if let Some(h) = router_handle
+        && let Err(error) = h.await
+    {
+        error!("HTTP outbound router task failed while draining: {error}");
     }
+    connection.close_streams();
 }
 
 fn pending_route_key(id: &RequestId) -> Option<RequestId> {
@@ -739,6 +742,38 @@ mod tests {
         }
     }
 
+    struct FinalFrameThenExitAgentFactory {
+        emit: Arc<Notify>,
+    }
+
+    impl AgentFactory for FinalFrameThenExitAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) = Channel::duplex();
+            let emit = self.emit.clone();
+            let future = Box::pin(async move {
+                emit.notified().await;
+                agent
+                    .tx
+                    .unbounded_send(TransportFrame::Single(
+                        RawJsonRpcMessage::notification(
+                            "test/final".to_string(),
+                            serde_json::json!({}),
+                        )
+                        .unwrap(),
+                    ))
+                    .unwrap();
+                Ok(())
+            });
+
+            (transport, future)
+        }
+    }
+
     #[tokio::test]
     async fn agent_exit_removes_connection_and_closes_streams() {
         let exit = Arc::new(Notify::new());
@@ -819,6 +854,60 @@ mod tests {
         .await
         .unwrap();
         assert!(*connection.subscribe_closed().borrow());
+    }
+
+    #[tokio::test]
+    async fn agent_exit_waits_for_router_to_flush_final_frame() {
+        let emit = Arc::new(Notify::new());
+        let registry = ConnectionRegistry::new(Arc::new(FinalFrameThenExitAgentFactory {
+            emit: emit.clone(),
+        }));
+        let (connection_id, connection) = registry.create_connection().await;
+        let (_replay, mut outbound) = connection.subscribe_connection_stream().await;
+        connection.start_router().await;
+
+        let stream = match &connection.outbound_transport {
+            OutboundTransport::Http(http) => http.connection_stream.clone(),
+            OutboundTransport::WebSocket(_) => unreachable!("created an HTTP connection"),
+        };
+        let state_guard = stream.state.lock().await;
+        emit.notify_one();
+
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.get(&connection_id).await.is_none() {
+                    break;
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !*connection.subscribe_closed().borrow(),
+            "stream closure must wait for the blocked outbound router"
+        );
+
+        drop(state_guard);
+        let text = timeout(Duration::from_secs(1), outbound.recv())
+            .await
+            .unwrap()
+            .expect("final frame should reach the established stream");
+        let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/final"
+        ));
+
+        timeout(Duration::from_secs(1), async {
+            let mut closed = connection.subscribe_closed();
+            while !*closed.borrow() {
+                closed.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
