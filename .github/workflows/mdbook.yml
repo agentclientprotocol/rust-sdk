@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
 
       - name: Install mdBook
-        uses: taiki-e/install-action@07b4745e0c39a41822af610387492e3e53aa222b
+        uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf
         with:
           tool: mdbook,mdbook-mermaid
 
