@@ -12,7 +12,6 @@ pub enum McpConnectionContext {
 
     /// The MCP server was attached to an ACP session.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     Acp {
         /// The identifier advertised in the session's `McpServer::Acp` declaration.
         server_id: McpServerAcpId,
@@ -33,7 +32,6 @@ impl McpConnectionContext {
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     #[must_use]
     pub fn server_id(&self) -> Option<&McpServerAcpId> {
         match self {
@@ -46,7 +44,6 @@ impl McpConnectionContext {
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     #[must_use]
     pub fn connection_id(&self) -> Option<&McpConnectionId> {
         match self {
@@ -74,7 +71,6 @@ impl<Counterpart: Role> McpConnectionTo<Counterpart> {
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     #[must_use]
     pub fn server_id(&self) -> Option<&McpServerAcpId> {
         self.context.server_id()
@@ -84,7 +80,6 @@ impl<Counterpart: Role> McpConnectionTo<Counterpart> {
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     #[must_use]
     pub fn connection_id(&self) -> Option<&McpConnectionId> {
         self.context.connection_id()

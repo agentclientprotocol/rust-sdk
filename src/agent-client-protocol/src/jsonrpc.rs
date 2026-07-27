@@ -1541,7 +1541,6 @@ impl<
     ///
     /// Only applicable to proxies.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,

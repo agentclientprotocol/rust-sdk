@@ -153,7 +153,6 @@ where
 {
     /// Attach an MCP server to this new session.
     #[cfg(feature = "unstable_mcp_over_acp")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "unstable_mcp_over_acp")))]
     pub fn with_mcp_server<McpRun>(
         mut self,
         mcp_server: McpServer<Counterpart, McpRun>,

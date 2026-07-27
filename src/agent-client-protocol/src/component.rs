@@ -47,10 +47,14 @@ use crate::{Channel, Result, role::Role};
 ///
 /// The trait is implemented by several built-in types representing different communication patterns:
 ///
+/// - **[`Lines`]**: A component communicating over asynchronous line streams
 /// - **[`ByteStreams`]**: A component communicating over byte streams (stdin/stdout, sockets, etc.)
 /// - **[`Channel`]**: A component communicating via in-process message channels (for testing or direct connections)
-/// - **[`AcpAgent`]**: An external agent running in a separate process with stdio communication
 /// - **Custom components**: Proxies, transformers, or any ACP-aware service
+#[cfg_attr(
+    not(target_family = "wasm"),
+    doc = "- **[`AcpAgent`]**: An external agent running in a separate process with stdio communication"
+)]
 ///
 /// # Two Ways to Connect
 ///
@@ -97,8 +101,9 @@ use crate::{Channel, Result, role::Role};
 /// ```
 ///
 /// [`ByteStreams`]: crate::ByteStreams
-/// [`AcpAgent`]: crate::AcpAgent
+/// [`Lines`]: crate::Lines
 /// [`Builder`]: crate::Builder
+#[cfg_attr(not(target_family = "wasm"), doc = "[`AcpAgent`]: crate::AcpAgent")]
 pub trait ConnectTo<R: Role>: Send + 'static {
     /// Connect this component to another component.
     ///

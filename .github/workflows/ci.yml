@@ -36,9 +36,15 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
+          target: wasm32-wasip1,wasm32-wasip2
 
       - name: Check with MSRV
-        run: cargo check --workspace --all-targets --all-features --locked
+        run: |
+          cargo check --workspace --all-targets --all-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --no-default-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --all-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --no-default-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --locked
 
   build:
     name: Build
@@ -53,6 +59,7 @@ jobs:
         with:
           toolchain: nightly,stable
           components: rustfmt,clippy
+          target: wasm32-wasip1,wasm32-wasip2
 
       - name: Check formatting
         run: cargo fmt -- --check
@@ -66,14 +73,21 @@ jobs:
         run: |
           cargo clippy
           cargo clippy --all-targets --all-features
+          cargo clippy -p agent-client-protocol --lib --target wasm32-wasip1 --all-features -- -D warnings
+          cargo clippy -p agent-client-protocol --lib --target wasm32-wasip2 --all-features -- -D warnings
 
       - name: Build
         run: cargo build --all-targets --all-features
 
       - name: Check docs.rs build
         env:
-          RUSTDOCFLAGS: --cfg docsrs
-        run: cargo +nightly doc -p agent-client-protocol --all-features --no-deps
+          RUSTDOCFLAGS: --cfg docsrs -D warnings
+        run: cargo +nightly doc -p agent-client-protocol --all-features --no-deps --locked
+
+      - name: Check WASI documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo +stable doc -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --no-deps --locked
 
       - name: Install just
         uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf
