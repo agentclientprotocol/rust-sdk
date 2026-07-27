@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- *(unstable-v2)* Preserve unknown initialize fields when the protocol router
+  hands a same-version connection to its selected implementation.
 - Allow the portable protocol engine and transport abstractions to build for
   the `wasm32-wasip1` and `wasm32-wasip2` targets. The native process-backed
   `AcpAgent`, thread-backed `Stdio`, and associated `LineDirection` type are not

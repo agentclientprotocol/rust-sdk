@@ -84,6 +84,40 @@ fn json_value(value: impl Serialize) -> Result<Value, Error> {
     serde_json::to_value(value).map_err(Error::into_internal_error)
 }
 
+fn initialize_params_with_extensions(protocol_version: ProtocolVersion) -> Result<Value, Error> {
+    let (mut params, capabilities_field) = if protocol_version == ProtocolVersion::V1 {
+        (
+            json_value(v1_initialize_request(protocol_version))?,
+            "clientCapabilities",
+        )
+    } else {
+        (
+            json_value(v2_initialize_request(protocol_version))?,
+            "capabilities",
+        )
+    };
+
+    params
+        .as_object_mut()
+        .expect("serialized initialize params should be an object")
+        .insert(
+            "_futureInitializeField".into(),
+            serde_json::json!({
+                "protocolVersion": protocol_version.as_u16(),
+                "preserved": true,
+            }),
+        );
+    params[capabilities_field]
+        .as_object_mut()
+        .expect("serialized initialize capabilities should be an object")
+        .insert(
+            "_futureCapability".into(),
+            serde_json::json!({ "preserved": true }),
+        );
+
+    Ok(params)
+}
+
 async fn write_wire_json(
     writer: &mut (impl tokio::io::AsyncWrite + Unpin),
     value: &Value,
@@ -1650,6 +1684,139 @@ async fn protocol_router_rejection_does_not_answer_malformed_response_entries() 
     assert_eq!(responses.len(), 1);
     assert!(responses[0]["id"].is_null());
     assert_eq!(responses[0]["error"]["code"], -32600);
+
+    client_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_preserves_same_version_initialize_frames() -> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    for protocol_version in [ProtocolVersion::V1, ProtocolVersion::V2] {
+        let (mut client_writer, router_reader) = tokio::io::duplex(4096);
+        let (router_writer, _client_reader) = tokio::io::duplex(4096);
+        let router_transport =
+            ByteStreams::new(router_writer.compat_write(), router_reader.compat());
+
+        let (router_to_agent_writer, agent_reader) = tokio::io::duplex(4096);
+        let (mut agent_writer, agent_to_router_reader) = tokio::io::duplex(4096);
+        let external_agent_transport = ByteStreams::new(
+            router_to_agent_writer.compat_write(),
+            agent_to_router_reader.compat(),
+        );
+        let router = if protocol_version == ProtocolVersion::V1 {
+            Agent.protocol_router().with_v1(external_agent_transport)
+        } else {
+            Agent.protocol_router().with_v2(external_agent_transport)
+        };
+        let router_task = tokio::spawn(router.connect_to(router_transport));
+        let mut agent_reader = BufReader::new(agent_reader);
+
+        let initialize = serde_json::json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": initialize_params_with_extensions(protocol_version)?,
+            },
+            {
+                "jsonrpc": "2.0",
+                "method": "_future/notification",
+                "params": { "preserved": true },
+            },
+        ]);
+        write_wire_json(&mut client_writer, &initialize).await?;
+        assert_eq!(read_wire_json(&mut agent_reader).await?, initialize);
+
+        client_writer
+            .shutdown()
+            .await
+            .map_err(Error::into_internal_error)?;
+        agent_writer
+            .shutdown()
+            .await
+            .map_err(Error::into_internal_error)?;
+        router_task
+            .await
+            .map_err(agent_client_protocol::util::internal_error)??;
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_validates_same_version_initialize_before_batch_dispatch()
+-> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let initialize_handler_ran = Arc::new(AtomicBool::new(false));
+    let initialize_handler_flag = Arc::clone(&initialize_handler_ran);
+    let sibling_handler_ran = Arc::new(AtomicBool::new(false));
+    let sibling_handler_flag = Arc::clone(&sibling_handler_ran);
+    let agent = Agent.protocol_router().with_v2(
+        Agent
+            .v2()
+            .on_receive_request(
+                async move |initialize: v2::InitializeRequest, responder, _cx| {
+                    initialize_handler_flag.store(true, Ordering::SeqCst);
+                    responder.respond(v2_initialize_response_with_session(
+                        initialize.protocol_version,
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |_request: v2::ListSessionsRequest, responder, _cx| {
+                    sibling_handler_flag.store(true, Ordering::SeqCst);
+                    responder.respond(v2::ListSessionsResponse::new(Vec::new()))
+                },
+                agent_client_protocol::on_receive_request!(),
+            ),
+    );
+
+    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut client_reader = BufReader::new(client_reader);
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!([
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": 2 },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "session/list",
+                "params": {},
+            },
+        ]),
+    )
+    .await?;
+
+    let response = read_wire_json(&mut client_reader).await?;
+    let responses = response
+        .as_array()
+        .expect("rejected initialize batch should receive a response array");
+    assert_eq!(responses.len(), 2);
+    assert_eq!(responses[0]["id"], 1);
+    assert_eq!(responses[1]["id"], 2);
+    assert_eq!(responses[0]["error"]["code"], -32602);
+    assert_eq!(responses[1]["error"]["code"], -32602);
+    assert!(!initialize_handler_ran.load(Ordering::SeqCst));
+    assert!(!sibling_handler_ran.load(Ordering::SeqCst));
 
     client_writer
         .shutdown()
