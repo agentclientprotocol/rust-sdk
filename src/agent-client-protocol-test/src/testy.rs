@@ -4,6 +4,11 @@
 //! can also recognize short plain-text scenario names such as `full`,
 //! `callbacks`, and `session_updates` for manual testing in clients.
 
+#[cfg(feature = "unstable_protocol_v2")]
+mod v2;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use v2::V2Testy;
+
 use agent_client_protocol::schema::v1::{
     AgentAuthCapabilities, AgentCapabilities, AudioContent, AuthMethod, AuthMethodAgent,
     AuthenticateRequest, AuthenticateResponse, AvailableCommand, AvailableCommandInput,
@@ -105,6 +110,8 @@ pub enum TestyScenario {
     Elicitations,
     /// Reports whether the session has received a `session/cancel` notification.
     CancelStatus,
+    /// Waits for `session/cancel` before completing.
+    WaitForCancel,
     /// Runs all stable scenarios and any enabled unstable coverage in a deterministic order.
     Full,
 }
@@ -119,6 +126,7 @@ impl TestyScenario {
             #[cfg(feature = "unstable")]
             Self::Elicitations,
             Self::CancelStatus,
+            Self::WaitForCancel,
             Self::Full,
         ]
     }
@@ -132,6 +140,7 @@ impl TestyScenario {
             #[cfg(feature = "unstable")]
             "elicitations" | "elicitation" | "elicit" => Some(Self::Elicitations),
             "cancel_status" | "cancel status" | "cancel" => Some(Self::CancelStatus),
+            "wait_for_cancel" | "wait for cancel" => Some(Self::WaitForCancel),
             "full" | "all" => Some(Self::Full),
             _ => None,
         }
@@ -146,6 +155,7 @@ impl TestyScenario {
             #[cfg(feature = "unstable")]
             Self::Elicitations => "elicitations",
             Self::CancelStatus => "cancel_status",
+            Self::WaitForCancel => "wait_for_cancel",
             Self::Full => "full",
         }
     }
@@ -211,6 +221,26 @@ impl Testy {
             state: Arc::new(Mutex::new(TestyState::default())),
             cancel_notify: Arc::new(Notify::new()),
         }
+    }
+
+    /// Convert this fixture into its native draft protocol v2 implementation.
+    ///
+    /// The v1 and v2 agents intentionally keep independent session state and
+    /// lifecycle implementations. Use [`Self::protocol_router`] when one
+    /// transport should accept either protocol version.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2(self) -> V2Testy {
+        V2Testy::new()
+    }
+
+    /// Build a Testy agent that selects its native v1 or v2 implementation
+    /// from the client's `initialize` request.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn protocol_router(self) -> agent_client_protocol::AgentProtocolRouter {
+        let v2 = self.clone().v2();
+        Agent.protocol_router().with_v1(self).with_v2(v2)
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, TestyState> {
@@ -664,7 +694,12 @@ impl Testy {
         let mut report = Vec::new();
         self.run_scenario_inner(session_id, scenario, prompt, connection, &mut report)
             .await?;
-        let stop_reason = if report.iter().any(|line| line == "cancel_status: cancelled") {
+        let stop_reason = if report.iter().any(|line| {
+            matches!(
+                line.as_str(),
+                "cancel_status: cancelled" | "wait_for_cancel: cancelled"
+            )
+        }) {
             StopReason::Cancelled
         } else {
             StopReason::EndTurn
@@ -720,6 +755,10 @@ impl Testy {
                 } else {
                     report.push("cancel_status: not_cancelled".to_string());
                 }
+            }
+            TestyScenario::WaitForCancel => {
+                self.wait_for_cancelled(session_id).await;
+                report.push("wait_for_cancel: cancelled".to_string());
             }
             TestyScenario::Full => {
                 self.emit_session_updates(session_id, connection)?;
@@ -2063,6 +2102,22 @@ mod tests {
             StopReason::Cancelled
         );
         assert!(!testy.is_cancelled(&session_id));
+    }
+
+    #[test]
+    fn parse_command_accepts_wait_for_cancel_prompt_aliases() {
+        for input in ["wait_for_cancel", "wait for cancel"] {
+            let command = parse_command(input);
+            assert!(
+                matches!(
+                    command,
+                    TestyCommand::RunScenario {
+                        scenario: TestyScenario::WaitForCancel
+                    }
+                ),
+                "unexpected command for {input:?}: {command:?}"
+            );
+        }
     }
 
     #[cfg(feature = "unstable")]
