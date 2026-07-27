@@ -45,8 +45,8 @@ where
 {
     /// Stable protocol v1 session builder for a new session request.
     ///
-    /// With `unstable_protocol_v2`, use `build_v2_session` on a `Client.v2()`
-    /// connection instead.
+    /// With `unstable_protocol_v2`, a `Client.v2()` callback receives a
+    /// `V2ConnectionTo` with its own v2 `build_session` helper.
     pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart, NullRun> {
         SessionBuilder::new(self, NewSessionRequest::new(cwd.as_ref()))
     }
@@ -817,37 +817,12 @@ fn ensure_v1_session_protocol<Counterpart: Role>(
 fn ensure_v1_session_protocol<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
 ) -> Result<(), crate::Error> {
-    ensure_session_protocol(
-        connection,
-        crate::schema::ProtocolVersion::V1,
-        "build_session",
-        "use `build_v2_session` instead",
-    )
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-fn ensure_session_protocol<Counterpart: Role>(
-    connection: &ConnectionTo<Counterpart>,
-    expected: crate::schema::ProtocolVersion,
-    helper: &str,
-    replacement: &str,
-) -> Result<(), crate::Error> {
-    let Some(actual) = connection.acp_protocol_version() else {
-        if expected == crate::schema::ProtocolVersion::V1 {
-            return Ok(());
-        }
-
-        return Err(crate::Error::invalid_request().data(format!(
-            "`{helper}` requires a protocol v2 connection created with `Client.v2()`"
-        )));
-    };
-
-    if actual == expected {
+    if connection.acp_protocol_version() != Some(crate::schema::ProtocolVersion::V2) {
         return Ok(());
     }
 
-    Err(crate::Error::invalid_request().data(format!(
-        "`{helper}` uses ACP protocol version {expected} types, but this connection uses \
-         protocol version {actual}; {replacement}"
-    )))
+    Err(crate::Error::invalid_request().data(
+        "`build_session` uses ACP protocol v1 types, but this is a protocol v2 connection; \
+         use the `V2ConnectionTo` supplied to `Client.v2()` callbacks",
+    ))
 }

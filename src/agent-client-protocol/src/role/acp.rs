@@ -10,7 +10,7 @@ use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{
-    TransportBatch, TransportBatchEntry, TransportFrame, is_response_only_shape,
+    TransportBatch, TransportBatchEntry, TransportFrame, V2Builder, is_response_only_shape,
     raw_is_response_only_shape,
 };
 use crate::role::{HasPeer, RemoteStyle};
@@ -72,7 +72,7 @@ impl Client {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> Builder<Client, NullHandler, NullRun> {
+    pub fn v2(self) -> V2Builder<Client, NullHandler, NullRun> {
         self.builder().v2_client()
     }
 
@@ -331,7 +331,7 @@ impl Agent {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> Builder<Agent, NullHandler, NullRun> {
+    pub fn v2(self) -> V2Builder<Agent, NullHandler, NullRun> {
         self.builder().v2_agent()
     }
 

@@ -40,7 +40,8 @@ Client.builder()
 # }
 ```
 
-Draft protocol v2 is opt-in through `unstable_protocol_v2` and has separate
+Draft protocol v2 is opt-in through `unstable_protocol_v2`. `Client.v2()` and
+`Agent.v2()` callbacks receive a version-typed `V2ConnectionTo` with
 high-level, command-only session helpers because prompt acceptance and inbound
 traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).

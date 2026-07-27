@@ -115,15 +115,17 @@ pub mod util;
 pub use capabilities::*;
 
 pub use jsonrpc::{
-    Builder, ByteStreams, Channel, ConnectionTo, Dispatch, DynamicHandlerGuard,
+    Builder, ByteStreams, Channel, ConnectionContext, ConnectionTo, Dispatch, DynamicHandlerGuard,
     HandleConnectionClose, HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullClose, NullHandler, RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter,
-    SentRequest, TransportBatch, TransportBatchEntry, TransportFrame, UntypedMessage,
-    is_incoming_transport_closed,
+    NullClose, NullHandler, RawConnectionContext, RawJsonRpcMessage, RawJsonRpcParams, Responder,
+    ResponseRouter, SentRequest, TransportBatch, TransportBatchEntry, TransportFrame,
+    UntypedMessage, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
+#[cfg(feature = "unstable_protocol_v2")]
+pub use jsonrpc::{V2Builder, V2ConnectionContext, V2ConnectionTo};
 
 #[cfg(feature = "unstable_protocol_v2")]
 pub use role::acp::AgentProtocolRouter;

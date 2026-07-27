@@ -2,8 +2,13 @@
 
 use std::fmt::Debug;
 use std::future::Future;
+use std::marker::PhantomData;
 
-use crate::{ConnectionTo, role::Role};
+use crate::{
+    ConnectionTo,
+    jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
+    role::Role,
+};
 
 /// A handler that runs after the incoming transport reaches clean EOF.
 ///
@@ -32,17 +37,21 @@ impl<Counterpart: Role> HandleConnectionClose<Counterpart> for NullClose {
     }
 }
 
-pub(crate) struct CloseCallback<F> {
+pub(crate) struct CloseCallback<F, Context = RawConnectionContext> {
     callback: F,
+    context: PhantomData<fn() -> Context>,
 }
 
-impl<F> CloseCallback<F> {
+impl<F, Context> CloseCallback<F, Context> {
     pub(crate) fn new(callback: F) -> Self {
-        Self { callback }
+        Self {
+            callback,
+            context: PhantomData,
+        }
     }
 }
 
-impl<F> Debug for CloseCallback<F> {
+impl<F, Context> Debug for CloseCallback<F, Context> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CloseCallback")
@@ -50,17 +59,18 @@ impl<F> Debug for CloseCallback<F> {
     }
 }
 
-impl<Counterpart, F, Fut> HandleConnectionClose<Counterpart> for CloseCallback<F>
+impl<Counterpart, F, Fut, Context> HandleConnectionClose<Counterpart> for CloseCallback<F, Context>
 where
     Counterpart: Role,
-    F: FnOnce(ConnectionTo<Counterpart>) -> Fut + Send,
+    Context: ConnectionContext,
+    F: FnOnce(Context::Connection<Counterpart>) -> Fut + Send,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     async fn handle_connection_close(
         self,
         connection: ConnectionTo<Counterpart>,
     ) -> Result<(), crate::Error> {
-        let result = (self.callback)(connection).await;
+        let result = (self.callback)(connection_context::from_raw::<Context, _>(connection)).await;
         if let Err(error) = &result {
             tracing::warn!(?error, "Connection close callback failed");
         }

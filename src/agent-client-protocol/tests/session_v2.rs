@@ -7,12 +7,15 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectionTo, Error, ErrorCode, Responder,
+    Agent, Client, ConnectionTo, Error, ErrorCode, Responder, RunWithConnectionTo, V2ConnectionTo,
     schema::{ProtocolVersion, v2},
 };
 use futures::{
     StreamExt as _,
-    channel::mpsc::{self, UnboundedReceiver},
+    channel::{
+        mpsc::{self, UnboundedReceiver},
+        oneshot,
+    },
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -28,6 +31,34 @@ fn implementation() -> v2::Implementation {
 fn initialize_response(protocol_version: ProtocolVersion) -> v2::InitializeResponse {
     v2::InitializeResponse::new(protocol_version, implementation())
         .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()))
+}
+
+struct V1SessionGuardRunner {
+    cwd: PathBuf,
+    completed: oneshot::Sender<()>,
+}
+
+impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
+    async fn run_with_connection_to(self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
+        let error = connection
+            .build_session(self.cwd)
+            .block_task()
+            .start_session()
+            .await
+            .expect_err("the v1 helper must reject the raw protocol v2 connection");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+
+        let data = error
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        assert!(data.contains("V2ConnectionTo"), "{error:?}");
+
+        self.completed.send(()).map_err(|()| {
+            Error::internal_error().data("v1 session guard test receiver was dropped")
+        })
+    }
 }
 
 async fn next_update(
@@ -57,7 +88,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.protocol_version, ProtocolVersion::V2);
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -66,7 +97,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse>,
-                        _connection: ConnectionTo<Client>| {
+                        _connection: V2ConnectionTo<Client>| {
                 assert!(AsRef::<std::path::Path>::as_ref(&request.cwd).is_absolute());
                 responder.respond(agent_new_response.clone())
             },
@@ -75,7 +106,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async move |request: v2::PromptRequest,
                         responder: Responder<v2::PromptResponse>,
-                        connection: ConnectionTo<Client>| {
+                        connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("v2-session"));
                 assert!(matches!(
                     request.prompt.as_slice(),
@@ -119,7 +150,8 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -137,8 +169,8 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
 
             let opened = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?;
             assert_eq!(opened.response(), &expected_new_response);
@@ -189,7 +221,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -197,7 +229,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "cancel-session",
                 )))
@@ -207,7 +239,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
-                   connection: ConnectionTo<Client>| {
+                   connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new())?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id.clone(),
@@ -226,7 +258,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_notification(
-            async |cancel: v2::CancelSessionNotification, connection: ConnectionTo<Client>| {
+            async |cancel: v2::CancelSessionNotification, connection: V2ConnectionTo<Client>| {
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     cancel.session_id.clone(),
                     v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
@@ -248,7 +280,8 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -265,8 +298,8 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
                 .await?;
 
             let opened = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?;
             let (session, _) = opened.into_parts();
@@ -307,7 +340,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -315,7 +348,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "parallel-prompts",
                 )))
@@ -325,7 +358,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
-                   connection: ConnectionTo<Client>| {
+                   connection: V2ConnectionTo<Client>| {
                 assert!(matches!(
                     request.prompt.as_slice(),
                     [v2::ContentBlock::Text(text)]
@@ -346,7 +379,8 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -363,8 +397,8 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
                 .await?;
 
             let session = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?
                 .into_session();
@@ -403,7 +437,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -411,7 +445,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "rejected-prompt",
                 )))
@@ -421,7 +455,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
-                   connection: ConnectionTo<Client>| {
+                   connection: V2ConnectionTo<Client>| {
                 responder.respond_with_error(Error::invalid_params().data("prompt rejected"))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id,
@@ -438,7 +472,8 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -455,8 +490,8 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
                 .await?;
 
             let opened = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?;
             let (session, _) = opened.into_parts();
@@ -493,7 +528,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -501,7 +536,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "permission-session",
                 )))
@@ -511,7 +546,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
-                   connection: ConnectionTo<Client>| {
+                   connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new())?;
 
                 let session_id = request.session_id;
@@ -554,7 +589,8 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -564,7 +600,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async move |request: v2::RequestPermissionRequest,
                         responder: Responder<v2::RequestPermissionResponse>,
-                        _connection: ConnectionTo<Agent>| {
+                        _connection: V2ConnectionTo<Agent>| {
                 permission_tx
                     .unbounded_send((request, responder))
                     .map_err(Error::into_internal_error)
@@ -581,8 +617,8 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
                 .await?;
 
             let opened = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?;
             let (session, _) = opened.into_parts();
@@ -623,7 +659,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -631,7 +667,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "unhandled-session",
                 )))
@@ -641,7 +677,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async move |request: v2::PromptRequest,
                         responder: Responder<v2::PromptResponse>,
-                        connection: ConnectionTo<Client>| {
+                        connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new())?;
 
                 // A v2 client without typed handlers should ignore an
@@ -684,8 +720,8 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
             .await?;
 
         let session = connection
-            .build_v2_session(cwd()?)
-            .start_session()?
+            .build_session(cwd()?)
+            .start_session()
             .block_task()
             .await?
             .into_session();
@@ -719,7 +755,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -727,7 +763,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
         .on_receive_request(
             async move |request: v2::ResumeSessionRequest,
                         responder: Responder<v2::ResumeSessionResponse>,
-                        connection: ConnectionTo<Client>| {
+                        connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, agent_session_id);
                 assert!(matches!(
                     request.replay_from,
@@ -756,7 +792,8 @@ async fn v2_resume_replay_is_handled_before_the_response() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 let message_id = match update.update {
                     v2::SessionUpdate::UserMessage(message) => message.message_id,
                     v2::SessionUpdate::AgentMessage(message) => message.message_id,
@@ -781,10 +818,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
 
             let request = v2::ResumeSessionRequest::new(session_id.clone(), cwd()?)
                 .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
-            let opened = connection
-                .resume_v2_session_from(request)?
-                .block_task()
-                .await?;
+            let opened = connection.resume_session_from(request).block_task().await?;
 
             assert_eq!(opened.session().session_id(), &session_id);
             assert_eq!(opened.response(), &expected_response);
@@ -819,7 +853,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -827,7 +861,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse>,
-                        _connection: ConnectionTo<Client>| {
+                        _connection: V2ConnectionTo<Client>| {
                 responder.respond(
                     v2::NewSessionResponse::new(v2::SessionId::new("command-session"))
                         .config_options(vec![new_session_config_option.clone()]),
@@ -838,7 +872,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async move |request: v2::SetSessionConfigOptionRequest,
                         responder: Responder<v2::SetSessionConfigOptionResponse>,
-                        _connection: ConnectionTo<Client>| {
+                        _connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("command-session"));
                 assert_eq!(request.config_id, v2::SessionConfigId::new("thinking"));
                 assert_eq!(request.value, v2::SessionConfigOptionValue::from(true));
@@ -849,7 +883,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async |request: v2::CloseSessionRequest,
                    responder: Responder<v2::CloseSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("command-session"));
                 responder.respond(v2::CloseSessionResponse::new())
             },
@@ -866,8 +900,8 @@ async fn v2_session_commands_cover_configuration_and_close() {
             .await?;
 
         let opened = connection
-            .build_v2_session(cwd()?)
-            .start_session()?
+            .build_session(cwd()?)
+            .start_session()
             .block_task()
             .await?;
         let (session, _) = opened.into_parts();
@@ -902,7 +936,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -910,7 +944,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse>,
-                        _connection: ConnectionTo<Client>| {
+                        _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(agent_session_id.clone()))
             },
             agent_client_protocol::on_receive_request!(),
@@ -918,7 +952,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .on_receive_request(
             async move |_request: v2::ListSessionsRequest,
                         responder: Responder<v2::ListSessionsResponse>,
-                        connection: ConnectionTo<Client>| {
+                        connection: V2ConnectionTo<Client>| {
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     v2::SessionId::new("dropped-handle"),
                     v2::SessionUpdate::AgentMessage(
@@ -935,7 +969,8 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -952,8 +987,8 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
                 .await?;
 
             let opened = connection
-                .build_v2_session(cwd()?)
-                .start_session()?
+                .build_session(cwd()?)
+                .start_session()
                 .block_task()
                 .await?;
             let (session, _) = opened.into_parts();
@@ -989,7 +1024,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -997,7 +1032,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond_with_error(Error::invalid_params().data("session rejected"))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1005,7 +1040,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |_request: v2::ListSessionsRequest,
                    responder: Responder<v2::ListSessionsResponse>,
-                   _connection: ConnectionTo<Client>| {
+                   _connection: V2ConnectionTo<Client>| {
                 responder.respond(v2::ListSessionsResponse::new(Vec::new()))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1021,8 +1056,8 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
             .await?;
 
         let error = connection
-            .build_v2_session(cwd()?)
-            .start_session()?
+            .build_session(cwd()?)
+            .start_session()
             .block_task()
             .await
             .expect_err("the session/new error must reach the caller");
@@ -1047,62 +1082,20 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn v1_session_helper_rejects_a_v2_connection() {
+async fn low_level_v2_runner_rejects_the_v1_session_helper() {
+    let (completed_tx, completed_rx) = oneshot::channel();
     let client = Client
         .v2()
-        .connect_with(Agent.v2(), async move |connection| {
-            let error = connection
-                .build_session(cwd()?)
-                .block_task()
-                .start_session()
-                .await
-                .expect_err("the v1 helper must reject a v2 connection");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            assert!(data.contains("use `build_v2_session` instead"), "{error:?}");
-            Ok(())
+        .with_runner(V1SessionGuardRunner {
+            cwd: cwd().expect("current directory should be available"),
+            completed: completed_tx,
+        })
+        .connect_with(Agent.v2(), async move |_connection| {
+            completed_rx.await.map_err(Error::into_internal_error)
         });
 
     tokio::time::timeout(TIMEOUT, client)
         .await
-        .expect("v1/v2 helper guard timed out")
-        .expect("v1/v2 helper guard connection failed");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn v2_session_helper_rejects_a_v1_connection() {
-    let client = Client
-        .builder()
-        .connect_with(Agent.builder(), async move |connection| {
-            let error = connection
-                .build_v2_session(cwd()?)
-                .start_session()
-                .expect_err("the v2 helper must reject a v1 connection");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            assert!(data.contains("use `build_session` instead"), "{error:?}");
-
-            let error = connection
-                .resume_v2_session(v2::SessionId::new("resume"), cwd()?)
-                .expect_err("the v2 resume helper must reject a v1 connection");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            assert!(data.contains("`resume_v2_session`"), "{error:?}");
-            assert!(data.contains("v1 `ResumeSessionRequest`"), "{error:?}");
-            Ok(())
-        });
-
-    tokio::time::timeout(TIMEOUT, client)
-        .await
-        .expect("v2/v1 helper guard timed out")
-        .expect("v2/v1 helper guard connection failed");
+        .expect("low-level v1 session guard test timed out")
+        .expect("low-level v1 session guard connection failed");
 }

@@ -41,7 +41,8 @@ use stable protocol v1.
 
 - **API reference** for individual crates is on [docs.rs/agent-client-protocol](https://docs.rs/agent-client-protocol).
 - **Design and architecture documentation** lives in the mdbook at [agentclientprotocol.github.io/rust-sdk](https://agentclientprotocol.github.io/rust-sdk/). Source is in [`md/`](./md/).
-- **Draft protocol v2** setup and high-level session usage are covered in
+- **Draft protocol v2** setup, version-typed connections, and high-level
+  session usage are covered in
   [Protocol V2](./md/protocol-v2.md).
 
 ## Integrations

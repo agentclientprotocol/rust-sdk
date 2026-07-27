@@ -21,7 +21,10 @@ rules.
 
 By default, `Client.builder()` and `Agent.builder()` continue to expose the
 stable v1 API and advertise protocol v1. To use the v2 API for a connection,
-construct the builder with `Client.v2()` or `Agent.v2()`:
+construct the builder with `Client.v2()` or `Agent.v2()`. Fluent typed handlers,
+spawned tasks, close callbacks, and `connect_with` receive
+`V2ConnectionTo<_>`, so the protocol version is reflected in the high-level
+Rust API as well as on the wire:
 
 ```rust
 use agent_client_protocol::schema::{ProtocolVersion, v2};
@@ -75,10 +78,33 @@ to release.
 
 ## High-level v2 sessions
 
-The unversioned `build_session*`, `SessionBuilder`, `ActiveSession`, and
-`SessionMessage` APIs remain the stable protocol v1 helpers. They now reject a
-connection created with `Client.v2()` before sending `session/new`. Use the
-parallel v2 helpers instead:
+Stable callbacks receive `ConnectionTo<_>` and expose the protocol v1
+`build_session*`, `SessionBuilder`, `ActiveSession`, and `SessionMessage` APIs.
+Callbacks installed through `Client.v2()` receive `V2ConnectionTo<_>` and expose
+the v2 `build_session*` and `resume_session*` helpers. The shared names describe
+the same lifecycle operations while the connection type selects their schema
+and return types at compile time.
+
+Low-level custom `with_handler` and `with_runner` implementations continue to
+receive the protocol-neutral `ConnectionTo<_>`, and generic `send_request`
+remains schema-agnostic. Runtime compatibility checks remain at those explicit
+escape hatches. Dynamic handlers registered through
+`V2ConnectionTo::add_dynamic_handler` use the same low-level
+`HandleDispatchFrom` interface and therefore also receive `ConnectionTo<_>`.
+
+Nested connections preserve the stable `ConnectionTo` API while still typing
+the child implementation's callbacks. On a raw `ConnectionTo<_>`,
+`spawn_connection(Client.v2(), transport)` returns a raw `ConnectionTo<_>`;
+callbacks installed on that v2 child builder still receive
+`V2ConnectionTo<_>`. Existing `spawn_connection::<Role>` calls therefore remain
+source-compatible.
+
+When a raw parent also needs a typed handle to the v2 child, the
+`unstable_protocol_v2` feature exposes
+`ConnectionTo::spawn_connection_with_context`, which returns the context
+selected by the child builder. `V2ConnectionTo::spawn_connection` likewise
+follows the child builder naturally, so spawning `Client.v2()` through an
+already-typed v2 connection returns another `V2ConnectionTo<_>`.
 
 ```rust,ignore
 use agent_client_protocol::schema::{ProtocolVersion, v2};
@@ -115,8 +141,8 @@ Client
         assert!(initialize.capabilities.session.is_some());
 
         let opened = cx
-            .build_v2_session_cwd()?
-            .start_session()?
+            .build_session_cwd()?
+            .start_session()
             .block_task()
             .await?;
         let (session, new_session_response) = opened.into_parts();
@@ -175,7 +201,7 @@ V2 deliberately separates prompt submission from session observation:
   cached on the command handle.
 
 Install connection handlers before `session/new` and `session/resume` requests.
-This is especially important for `resume_v2_session_from`: replay updates
+This is especially important for `resume_session_from`: replay updates
 precede the resume response on the wire, so preinstalled typed handlers observe
 them in order. If a handler forwards updates to another task, the application
 is responsible for any additional projection-drained barrier it needs before

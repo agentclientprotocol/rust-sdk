@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::panic::Location;
 use std::pin::pin;
 use std::sync::{
@@ -631,6 +632,78 @@ where
     }
 }
 
+/// Selects the connection context exposed by a [`Builder`]'s callbacks.
+///
+/// This trait is an implementation detail of the typed builder aliases. It is
+/// public so the callback connection type remains expressible in public API
+/// signatures.
+#[doc(hidden)]
+#[allow(private_bounds)]
+pub trait ConnectionContext: connection_context::Sealed + Send + Sync + 'static {
+    /// The connection type exposed to callbacks for `Counterpart`.
+    type Connection<Counterpart: Role>: Clone + Send + Sync + 'static;
+}
+
+mod connection_context {
+    use super::{ConnectionContext, ConnectionTo, Role};
+
+    pub trait Sealed {
+        fn from_raw<Counterpart: Role>(
+            connection: ConnectionTo<Counterpart>,
+        ) -> <Self as ConnectionContext>::Connection<Counterpart>
+        where
+            Self: ConnectionContext;
+    }
+
+    pub(crate) fn from_raw<Context: ConnectionContext, Counterpart: Role>(
+        connection: ConnectionTo<Counterpart>,
+    ) -> Context::Connection<Counterpart> {
+        <Context as Sealed>::from_raw(connection)
+    }
+}
+
+/// The default callback context used by stable and low-level builders.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct RawConnectionContext;
+
+impl connection_context::Sealed for RawConnectionContext {
+    fn from_raw<Counterpart: Role>(
+        connection: ConnectionTo<Counterpart>,
+    ) -> <Self as ConnectionContext>::Connection<Counterpart> {
+        connection
+    }
+}
+
+impl ConnectionContext for RawConnectionContext {
+    type Connection<Counterpart: Role> = ConnectionTo<Counterpart>;
+}
+
+/// The callback context used by ACP protocol v2 builders.
+#[cfg(feature = "unstable_protocol_v2")]
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug, Default)]
+pub struct V2ConnectionContext;
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl connection_context::Sealed for V2ConnectionContext {
+    fn from_raw<Counterpart: Role>(
+        connection: ConnectionTo<Counterpart>,
+    ) -> <Self as ConnectionContext>::Connection<Counterpart> {
+        V2ConnectionTo { inner: connection }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ConnectionContext for V2ConnectionContext {
+    type Connection<Counterpart: Role> = V2ConnectionTo<Counterpart>;
+}
+
+/// A JSON-RPC connection builder whose callbacks receive [`V2ConnectionTo`].
+#[cfg(feature = "unstable_protocol_v2")]
+pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullClose> =
+    Builder<Host, Handler, Runner, Close, V2ConnectionContext>;
+
 /// A JSON-RPC connection that can act as either a server, client, or both.
 ///
 /// [`Builder`] provides a builder-style API for creating JSON-RPC servers and clients.
@@ -928,11 +1001,17 @@ where
 /// ```
 #[must_use]
 #[derive(Debug)]
-pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose>
-where
+pub struct Builder<
+    Host: Role,
+    Handler = NullHandler,
+    Runner = NullRun,
+    Close = NullClose,
+    Context = RawConnectionContext,
+> where
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
+    Context: ConnectionContext,
 {
     /// My role.
     host: Host,
@@ -951,6 +1030,9 @@ where
 
     /// Handler run when the incoming transport reaches clean EOF.
     on_close: Close,
+
+    /// Selects the connection type exposed to user callbacks.
+    context: PhantomData<fn() -> Context>,
 }
 
 fn default_protocol_mode<Host: Role>() -> ProtocolMode {
@@ -977,6 +1059,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
             runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
+            context: PhantomData,
         }
     }
 }
@@ -994,6 +1077,40 @@ where
             runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
+            context: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Host: Role,
+    Handler: HandleDispatchFrom<Host::Counterpart>,
+    Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close>
+{
+    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            runner: self.runner,
+            protocol_mode: ProtocolMode::v2_agent(),
+            on_close: self.on_close,
+            context: PhantomData,
+        }
+    }
+
+    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            runner: self.runner,
+            protocol_mode: ProtocolMode::v2_client(),
+            on_close: self.on_close,
+            context: PhantomData,
         }
     }
 }
@@ -1003,7 +1120,8 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close>
+    Context: ConnectionContext,
+> Builder<Host, Handler, Runner, Close, Context>
 {
     /// Set the "name" of this connection -- used only for debugging logs.
     pub fn name(mut self, name: impl ToString) -> Self {
@@ -1021,18 +1139,6 @@ impl<
         self
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn v2_agent(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_agent();
-        self
-    }
-
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn v2_client(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_client();
-        self
-    }
-
     /// Merge another [`Builder`] into this one.
     ///
     /// Prefer [`Self::on_receive_request`] or [`Self::on_receive_notification`].
@@ -1044,12 +1150,14 @@ impl<
             impl HandleDispatchFrom<Host::Counterpart>,
             impl RunWithConnectionTo<Host::Counterpart>,
             impl HandleConnectionClose<Host::Counterpart>,
+            Context,
         >,
     ) -> Builder<
         Host,
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
         impl HandleConnectionClose<Host::Counterpart>,
+        Context,
     > {
         let Builder {
             name: other_name,
@@ -1057,6 +1165,7 @@ impl<
             runner: other_runner,
             protocol_mode: other_protocol_mode,
             on_close: other_on_close,
+            context: _,
             host: _,
         } = other;
         Builder {
@@ -1069,6 +1178,7 @@ impl<
             runner: ChainRun::new(self.runner, other_runner),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
             on_close: ChainedClose::new(self.on_close, other_on_close),
+            context: PhantomData,
         }
     }
 
@@ -1079,7 +1189,7 @@ impl<
     pub fn with_handler(
         self,
         handler: impl HandleDispatchFrom<Host::Counterpart>,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close> {
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context> {
         Builder {
             host: self.host,
             name: self.name,
@@ -1087,6 +1197,7 @@ impl<
             runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
+            context: PhantomData,
         }
     }
 
@@ -1094,7 +1205,7 @@ impl<
     pub fn with_runner<Run1>(
         self,
         runner: Run1,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, Context>
     where
         Run1: RunWithConnectionTo<Host::Counterpart>,
     {
@@ -1105,6 +1216,7 @@ impl<
             runner: ChainRun::new(self.runner, runner),
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
+            context: PhantomData,
         }
     }
 
@@ -1113,13 +1225,13 @@ impl<
     pub fn with_spawned<F, Fut>(
         self,
         task: F,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, Context>
     where
-        F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send,
+        F: FnOnce(Context::Connection<Host::Counterpart>) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let location = Location::caller();
-        self.with_runner(SpawnedRun::new(location, task))
+        self.with_runner(SpawnedRun::<_, Context>::new(location, task))
     }
 
     /// Run a callback when the incoming transport reaches clean EOF.
@@ -1132,9 +1244,10 @@ impl<
     ///
     /// Multiple callbacks run sequentially in registration order. All of them
     /// run even if an earlier callback fails, after which the first error is
-    /// returned. Pending requests are failed before callbacks begin, while
-    /// [`ConnectionTo::incoming_closed`] completes only after they finish. A
-    /// callback must therefore not await that close future itself.
+    /// returned. Pending requests are failed before callbacks begin, while the
+    /// selected connection context's `incoming_closed` future completes only
+    /// after they finish. A callback must therefore not await that close
+    /// future itself.
     ///
     /// This separation lets applications choose their cancellation policy. A
     /// callback can notify application-owned tasks and return `Ok(())` for
@@ -1157,9 +1270,9 @@ impl<
     pub fn on_close<F, Fut>(
         self,
         callback: F,
-    ) -> Builder<Host, Handler, Runner, impl HandleConnectionClose<Host::Counterpart>>
+    ) -> Builder<Host, Handler, Runner, impl HandleConnectionClose<Host::Counterpart>, Context>
     where
-        F: FnOnce(ConnectionTo<Host::Counterpart>) -> Fut + Send,
+        F: FnOnce(Context::Connection<Host::Counterpart>) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         Builder {
@@ -1168,7 +1281,8 @@ impl<
             handler: self.handler,
             runner: self.runner,
             protocol_mode: self.protocol_mode,
-            on_close: ChainedClose::new(self.on_close, CloseCallback::new(callback)),
+            on_close: ChainedClose::new(self.on_close, CloseCallback::<_, Context>::new(callback)),
+            context: PhantomData,
         }
     }
 
@@ -1222,26 +1336,26 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Req: JsonRpcRequest,
         Notif: JsonRpcNotification,
         F: AsyncFnMut(
                 Dispatch<Req, Notif>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
         T: IntoHandled<Dispatch<Req, Notif>>,
         ToFut: Fn(
                 &mut F,
                 Dispatch<Req, Notif>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = MessageHandler::new(
+        let handler = MessageHandler::<_, _, _, _, _, _, Context>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1255,12 +1369,15 @@ impl<
     /// Your handler receives three arguments:
     /// 1. The request (type `Req`)
     /// 2. A [`Responder<Req::Response>`] for sending the response
-    /// 3. A [`ConnectionTo`] for the peer that sent the request
+    /// 3. The builder-selected connection context for the peer that sent the
+    ///    request (`ConnectionTo` by default, or `V2ConnectionTo` for a
+    ///    `V2Builder`)
     ///
     /// The request context allows you to:
     /// - Send the response with [`Responder::respond`]
-    /// - Send notifications to the client with [`ConnectionTo::send_notification`]
-    /// - Send requests to the client with [`ConnectionTo::send_request`]
+    /// - Send notifications to the client with the context's
+    ///   `send_notification` method
+    /// - Send requests to the client with the context's `send_request` method
     ///
     /// # Example
     ///
@@ -1296,13 +1413,13 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         F: AsyncFnMut(
                 Req,
                 Responder<Req::Response>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
         T: IntoHandled<(Req, Responder<Req::Response>)>,
@@ -1310,12 +1427,12 @@ impl<
                 &mut F,
                 Req,
                 Responder<Req::Response>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = RequestHandler::new(
+        let handler = RequestHandler::<_, _, _, _, _, Context>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1329,7 +1446,8 @@ impl<
     /// Notifications are fire-and-forget messages that don't expect a response.
     /// Your handler receives:
     /// 1. The notification (type `Notif`)
-    /// 2. A [`ConnectionTo<R>`] for sending messages to the other side
+    /// 2. The builder-selected connection context for sending messages to the
+    ///    other side
     ///
     /// Unlike request handlers, you cannot send a response (notifications don't have IDs),
     /// but you can still send your own requests and notifications using the context.
@@ -1370,21 +1488,22 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Notif: JsonRpcNotification,
-        F: AsyncFnMut(Notif, ConnectionTo<Host::Counterpart>) -> Result<T, crate::Error> + Send,
-        T: IntoHandled<(Notif, ConnectionTo<Host::Counterpart>)>,
+        F: AsyncFnMut(Notif, Context::Connection<Host::Counterpart>) -> Result<T, crate::Error>
+            + Send,
+        T: IntoHandled<(Notif, Context::Connection<Host::Counterpart>)>,
         ToFut: Fn(
                 &mut F,
                 Notif,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::new(
+        let handler = NotificationHandler::<_, _, _, _, _, Context>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1420,24 +1539,29 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
                 Dispatch<Req, Notif>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
         T: IntoHandled<Dispatch<Req, Notif>>,
         ToFut: Fn(
                 &mut F,
                 Dispatch<Req, Notif>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = MessageHandler::new(self.host.counterpart(), peer, op, to_future_hack);
+        let handler = MessageHandler::<_, _, _, _, _, _, Context>::new(
+            self.host.counterpart(),
+            peer,
+            op,
+            to_future_hack,
+        );
         self.with_handler(handler)
     }
 
@@ -1474,13 +1598,13 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
                 Req,
                 Responder<Req::Response>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
         T: IntoHandled<(Req, Responder<Req::Response>)>,
@@ -1488,12 +1612,17 @@ impl<
                 &mut F,
                 Req,
                 Responder<Req::Response>,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = RequestHandler::new(self.host.counterpart(), peer, op, to_future_hack);
+        let handler = RequestHandler::<_, _, _, _, _, Context>::new(
+            self.host.counterpart(),
+            peer,
+            op,
+            to_future_hack,
+        );
         self.with_handler(handler)
     }
 
@@ -1517,20 +1646,26 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
     where
         Host::Counterpart: HasPeer<Peer>,
-        F: AsyncFnMut(Notif, ConnectionTo<Host::Counterpart>) -> Result<T, crate::Error> + Send,
-        T: IntoHandled<(Notif, ConnectionTo<Host::Counterpart>)>,
+        F: AsyncFnMut(Notif, Context::Connection<Host::Counterpart>) -> Result<T, crate::Error>
+            + Send,
+        T: IntoHandled<(Notif, Context::Connection<Host::Counterpart>)>,
         ToFut: Fn(
                 &mut F,
                 Notif,
-                ConnectionTo<Host::Counterpart>,
+                Context::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::new(self.host.counterpart(), peer, op, to_future_hack);
+        let handler = NotificationHandler::<_, _, _, _, _, Context>::new(
+            self.host.counterpart(),
+            peer,
+            op,
+            to_future_hack,
+        );
         self.with_handler(handler)
     }
 
@@ -1549,6 +1684,7 @@ impl<
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
         Close,
+        Context,
     >
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
@@ -1602,25 +1738,26 @@ impl<
         self,
         transport: impl ConnectTo<Host> + 'static,
     ) -> Result<(), crate::Error> {
-        self.connect_with(transport, async move |cx| {
+        let (_, future) = self.into_connection_and_future(transport, async move |cx| {
             cx.incoming_closed().await;
             cx.drain_outgoing().await
-        })
-        .await
+        });
+        future.await
     }
 
     /// Run the connection until the provided closure completes.
     ///
     /// This drives the connection by:
     /// 1. Running your registered handlers in the background to process incoming messages
-    /// 2. Executing your `main_fn` closure with a [`ConnectionTo<R>`] for sending requests/notifications
+    /// 2. Executing your `main_fn` closure with the builder-selected connection
+    ///    context for sending requests and notifications
     ///
     /// The connection stays active until your `main_fn` returns, then shuts down.
     /// Clean incoming EOF fails every pending request and makes future
     /// requests fail immediately. It does not cancel unrelated work in
-    /// `main_fn`: that future may observe [`ConnectionTo::incoming_closed`], or
-    /// the builder can use [`on_close`](Self::on_close) to notify it or return
-    /// an error and stop it.
+    /// `main_fn`: that future may observe the context's `incoming_closed`
+    /// future, or the builder can use [`on_close`](Self::on_close) to notify it
+    /// or return an error and stop it.
     ///
     /// Use this mode when you need to initiate communication (send requests/notifications)
     /// in addition to responding to incoming messages. For server-only mode where you just
@@ -1664,20 +1801,23 @@ impl<
     ///
     /// # Parameters
     ///
-    /// - `main_fn`: Your client logic. Receives a [`ConnectionTo<R>`] for sending messages.
+    /// - `main_fn`: Your client logic. Receives the builder-selected connection
+    ///   context for sending messages.
     ///
     /// # Errors
     ///
     /// Returns an error if a handler, background task, transport, or close
     /// callback fails, or if `main_fn` returns an error. Clean incoming EOF is
-    /// observable through [`ConnectionTo::incoming_closed`] and is not itself
-    /// an error in this mode.
+    /// observable through the context's `incoming_closed` future and is not
+    /// itself an error in this mode.
     pub async fn connect_with<R>(
         self,
         transport: impl ConnectTo<Host> + 'static,
-        main_fn: impl AsyncFnOnce(ConnectionTo<Host::Counterpart>) -> Result<R, crate::Error>,
+        main_fn: impl AsyncFnOnce(Context::Connection<Host::Counterpart>) -> Result<R, crate::Error>,
     ) -> Result<R, crate::Error> {
-        let (_, future) = self.into_connection_and_future(transport, main_fn);
+        let (_, future) = self.into_connection_and_future(transport, async move |connection| {
+            main_fn(connection_context::from_raw::<Context, _>(connection)).await
+        });
         future.await
     }
 
@@ -1697,6 +1837,7 @@ impl<
             host: me,
             protocol_mode,
             on_close,
+            context: _,
         } = self;
 
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
@@ -1798,12 +1939,13 @@ impl<
     }
 }
 
-impl<R, H, Run, Close> ConnectTo<R::Counterpart> for Builder<R, H, Run, Close>
+impl<R, H, Run, Close, Context> ConnectTo<R::Counterpart> for Builder<R, H, Run, Close, Context>
 where
     R: Role,
     H: HandleDispatchFrom<R::Counterpart> + 'static,
     Run: RunWithConnectionTo<R::Counterpart> + 'static,
     Close: HandleConnectionClose<R::Counterpart> + 'static,
+    Context: ConnectionContext,
 {
     async fn connect_to(self, client: impl ConnectTo<R>) -> Result<(), crate::Error> {
         Builder::connect_to(self, client).await
@@ -2883,6 +3025,210 @@ impl<T> IntoHandled<T> for Handled<T> {
     }
 }
 
+/// A protocol-v2 connection context.
+///
+/// Values of this type are supplied to callbacks registered on a
+/// [`V2Builder`]. It exposes the general connection operations that are valid
+/// for protocol v2 while keeping version-specific high-level helpers for other
+/// protocol versions out of the typed context. The generic JSON-RPC send
+/// methods remain intentionally schema-agnostic.
+///
+/// This is a thin, cheaply cloneable handle to the underlying JSON-RPC
+/// connection. It intentionally does not implement [`Deref`](std::ops::Deref)
+/// to [`ConnectionTo`].
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Clone, Debug)]
+pub struct V2ConnectionTo<Counterpart: Role> {
+    inner: ConnectionTo<Counterpart>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
+    /// Return the counterpart role this connection is talking to.
+    pub fn counterpart(&self) -> Counterpart {
+        self.inner.counterpart()
+    }
+
+    /// Wait until the incoming transport reaches clean EOF.
+    pub async fn incoming_closed(&self) {
+        self.inner.incoming_closed().await;
+    }
+
+    /// Return whether clean incoming-EOF processing has completed.
+    #[must_use]
+    pub fn is_incoming_closed(&self) -> bool {
+        self.inner.is_incoming_closed()
+    }
+
+    /// Spawn a task that runs for as long as the JSON-RPC connection is served.
+    #[track_caller]
+    pub fn spawn(
+        &self,
+        task: impl IntoFuture<Output = Result<(), crate::Error>, IntoFuture: Send + 'static>,
+    ) -> Result<(), crate::Error> {
+        self.inner.spawn(task)
+    }
+
+    /// Spawn a JSON-RPC connection in the background.
+    ///
+    /// The returned connection context is selected by `builder`; spawning a
+    /// [`V2Builder`] therefore returns another [`V2ConnectionTo`].
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::{
+    /// #     Agent, Client, ConnectTo, Error, V2ConnectionTo,
+    /// # };
+    /// # fn example(
+    /// #     connection: V2ConnectionTo<Agent>,
+    /// #     transport: impl ConnectTo<Client> + 'static,
+    /// # ) -> Result<(), Error> {
+    /// let child: V2ConnectionTo<Agent> =
+    ///     connection.spawn_connection(Client.v2(), transport)?;
+    /// # drop(child);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[track_caller]
+    pub fn spawn_connection<R: Role, Context: ConnectionContext>(
+        &self,
+        builder: Builder<
+            R,
+            impl HandleDispatchFrom<R::Counterpart> + 'static,
+            impl RunWithConnectionTo<R::Counterpart> + 'static,
+            impl HandleConnectionClose<R::Counterpart> + 'static,
+            Context,
+        >,
+        transport: impl ConnectTo<R> + 'static,
+    ) -> Result<Context::Connection<R::Counterpart>, crate::Error> {
+        self.inner.spawn_connection_with_context(builder, transport)
+    }
+
+    /// Send a request or notification and forward its response appropriately.
+    pub fn send_proxied_message<Req: JsonRpcRequest<Response: Send>, Notif: JsonRpcNotification>(
+        &self,
+        message: Dispatch<Req, Notif>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.send_proxied_message(message)
+    }
+
+    /// Send a request or notification to a specific peer and forward its
+    /// response appropriately.
+    pub fn send_proxied_message_to<
+        Peer: Role,
+        Req: JsonRpcRequest<Response: Send>,
+        Notif: JsonRpcNotification,
+    >(
+        &self,
+        peer: Peer,
+        message: Dispatch<Req, Notif>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner.send_proxied_message_to(peer, message)
+    }
+
+    /// Send an outgoing request to the default counterpart peer.
+    pub fn send_request<Req: JsonRpcRequest>(&self, request: Req) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.send_request(request)
+    }
+
+    /// Send an outgoing request to a specific peer.
+    pub fn send_request_to<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner.send_request_to(peer, request)
+    }
+
+    /// Send an outgoing notification to the default counterpart peer.
+    pub fn send_notification<N: JsonRpcNotification>(
+        &self,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.send_notification(notification)
+    }
+
+    /// Send an outgoing notification to a specific peer.
+    pub fn send_notification_to<Peer: Role, N: JsonRpcNotification>(
+        &self,
+        peer: Peer,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner.send_notification_to(peer, notification)
+    }
+
+    /// Send a `$/cancel_request` notification to the default counterpart peer.
+    pub fn send_cancel_request(
+        &self,
+        request_id: impl Into<crate::schema::v1::RequestId>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.send_cancel_request(request_id)
+    }
+
+    /// Send a `$/cancel_request` notification to a specific peer.
+    pub fn send_cancel_request_to<Peer: Role>(
+        &self,
+        peer: Peer,
+        request_id: impl Into<crate::schema::v1::RequestId>,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner.send_cancel_request_to(peer, request_id)
+    }
+
+    /// Register a low-level dynamic message handler.
+    ///
+    /// Dynamic handlers use the version-neutral [`HandleDispatchFrom`] trait,
+    /// so their callback receives the underlying [`ConnectionTo`]. Prefer
+    /// typed handlers on [`V2Builder`] when registration can happen before the
+    /// connection starts.
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::{
+    /// #     Agent, Client, ConnectTo, DynamicHandlerGuard, Error, NullHandler,
+    /// # };
+    /// # async fn example(
+    /// #     transport: impl ConnectTo<Client> + 'static,
+    /// # ) -> Result<(), Error> {
+    /// Client.v2().connect_with(transport, async |connection| {
+    ///     let guard: DynamicHandlerGuard<Agent> =
+    ///         connection.add_dynamic_handler(NullHandler)?;
+    ///
+    ///     // Keep `guard` alive for as long as the modal handler is needed.
+    ///     drop(guard);
+    ///     Ok(())
+    /// }).await
+    /// # }
+    /// ```
+    pub fn add_dynamic_handler(
+        &self,
+        handler: impl HandleDispatchFrom<Counterpart> + 'static,
+    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
+        self.inner.add_dynamic_handler(handler)
+    }
+}
+
 /// Connection context for sending messages and spawning tasks.
 ///
 /// This is the primary handle for interacting with the JSON-RPC connection from
@@ -3194,7 +3540,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Task::new(location, task).spawn(&self.task_tx)
     }
 
-    /// Spawn a JSON-RPC connection in the background and return a [`ConnectionTo`] for sending messages to it.
+    /// Spawn a JSON-RPC connection in the background and return a raw
+    /// [`ConnectionTo`] for it.
     ///
     /// This is useful for creating multiple connections that communicate with each other,
     /// such as implementing proxy patterns or connecting to multiple backend services.
@@ -3206,7 +3553,13 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// # Returns
     ///
-    /// A `ConnectionTo` that you can use to send requests and notifications to the spawned connection.
+    /// The child builder may select any callback context. For example, this
+    /// method can spawn a `V2Builder`, whose callbacks receive
+    /// `V2ConnectionTo`, while preserving this method's existing raw return
+    /// type and single explicit role parameter.
+    ///
+    /// When a raw parent also needs the builder-selected child handle, use the
+    /// protocol-v2 `spawn_connection_with_context` method.
     ///
     /// # Example: Proxying to a backend connection
     ///
@@ -3222,7 +3575,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///     }, agent_client_protocol::on_receive_request!());
     ///
     /// // Spawn it and get a context to send requests to it
-    /// let backend_connection = cx.spawn_connection(backend, MockTransport)?;
+    /// let backend_connection = cx.spawn_connection::<UntypedRole>(backend, MockTransport)?;
     ///
     /// // Now you can forward requests to the backend
     /// let response = backend_connection.send_request(MyRequest {}).block_task().await?;
@@ -3237,6 +3590,63 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
+            impl ConnectionContext,
+        >,
+        transport: impl ConnectTo<R> + 'static,
+    ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
+        self.spawn_connection_raw(builder, transport)
+    }
+
+    /// Spawn a JSON-RPC connection and return the connection context selected
+    /// by its builder.
+    ///
+    /// This is the low-level counterpart to
+    /// [`V2ConnectionTo::spawn_connection`] for code that intentionally works
+    /// with a raw [`ConnectionTo`], such as custom [`HandleDispatchFrom`] or
+    /// [`RunWithConnectionTo`] implementations. Prefer [`Self::spawn_connection`]
+    /// when a raw child handle is sufficient.
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::{
+    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole,
+    /// #     V2ConnectionTo,
+    /// # };
+    /// # fn example(
+    /// #     connection: ConnectionTo<UntypedRole>,
+    /// #     transport: impl ConnectTo<Client> + 'static,
+    /// # ) -> Result<(), Error> {
+    /// let child: V2ConnectionTo<Agent> =
+    ///     connection.spawn_connection_with_context(Client.v2(), transport)?;
+    /// # drop(child);
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[track_caller]
+    pub fn spawn_connection_with_context<R: Role, Context: ConnectionContext>(
+        &self,
+        builder: Builder<
+            R,
+            impl HandleDispatchFrom<R::Counterpart> + 'static,
+            impl RunWithConnectionTo<R::Counterpart> + 'static,
+            impl HandleConnectionClose<R::Counterpart> + 'static,
+            Context,
+        >,
+        transport: impl ConnectTo<R> + 'static,
+    ) -> Result<Context::Connection<R::Counterpart>, crate::Error> {
+        let connection = self.spawn_connection_raw(builder, transport)?;
+        Ok(connection_context::from_raw::<Context, _>(connection))
+    }
+
+    #[track_caller]
+    fn spawn_connection_raw<R: Role, Context: ConnectionContext>(
+        &self,
+        builder: Builder<
+            R,
+            impl HandleDispatchFrom<R::Counterpart> + 'static,
+            impl RunWithConnectionTo<R::Counterpart> + 'static,
+            impl HandleConnectionClose<R::Counterpart> + 'static,
+            Context,
         >,
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
@@ -5790,6 +6200,149 @@ impl<R: Role> ConnectTo<R> for Channel {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn connection_with_task_receiver() -> (
+        ConnectionTo<crate::role::UntypedRole>,
+        mpsc::UnboundedReceiver<Task>,
+    ) {
+        let (message_tx, _message_rx) = mpsc::unbounded();
+        let (task_tx, task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+
+        (
+            ConnectionTo::new(
+                crate::role::UntypedRole,
+                message_tx,
+                task_tx,
+                dynamic_handler_tx,
+                transport_completion,
+                pending_replies.registrar(),
+                ProtocolMode::disabled(),
+            ),
+            task_rx,
+        )
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn v2_builder_exposes_typed_context_to_user_callbacks() {
+        fn assert_v2_context(_connection: &V2ConnectionTo<Agent>) {}
+
+        let _builder = Client
+            .v2()
+            .on_receive_request(
+                async |_request: UntypedMessage, _responder, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_request!(),
+            )
+            .on_receive_notification(
+                async |_notification: UntypedMessage, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_notification!(),
+            )
+            .on_receive_dispatch(
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_dispatch!(),
+            )
+            .on_receive_request_from(
+                Agent,
+                async |_request: UntypedMessage, _responder, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_request!(),
+            )
+            .on_receive_notification_from(
+                Agent,
+                async |_notification: UntypedMessage, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_notification!(),
+            )
+            .on_receive_dispatch_from(
+                Agent,
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_dispatch!(),
+            )
+            .with_spawned(async |connection| {
+                assert_v2_context(&connection);
+                Ok(())
+            })
+            .on_close(async |connection| {
+                assert_v2_context(&connection);
+                Ok(())
+            });
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn raw_connection_spawns_v2_builder_with_typed_child_callback() {
+        let (parent, mut task_rx) = connection_with_task_receiver();
+        let (transport, _peer) = Channel::duplex();
+        let (callback_tx, callback_rx) = oneshot::channel();
+
+        let child: ConnectionTo<Agent> = parent
+            .spawn_connection::<Client>(
+                Client
+                    .v2()
+                    .with_spawned(async move |_connection: V2ConnectionTo<Agent>| {
+                        callback_tx.send(()).map_err(|()| {
+                            crate::util::internal_error("typed child callback receiver was dropped")
+                        })
+                    }),
+                transport,
+            )
+            .expect("v2 child connection should be spawned");
+
+        let task = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut task_rx))
+            .expect("child connection task should already be queued")
+            .expect("parent task queue should remain open");
+        futures::executor::block_on(async {
+            match future::select(Box::pin(task.run_for_test()), Box::pin(callback_rx)).await {
+                Either::Right((Ok(()), child_task)) => drop(child_task),
+                Either::Right((Err(error), _)) => {
+                    panic!("typed child callback sender was dropped: {error}")
+                }
+                Either::Left((result, _)) => {
+                    panic!("child connection stopped before its typed callback ran: {result:?}")
+                }
+            }
+        });
+
+        drop(child);
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn raw_connection_can_return_v2_context_for_spawned_builder() {
+        let (parent, mut task_rx) = connection_with_task_receiver();
+        let (transport, _peer) = Channel::duplex();
+
+        let child: V2ConnectionTo<Agent> = parent
+            .spawn_connection_with_context(Client.v2(), transport)
+            .expect("v2 child connection should be spawned");
+
+        let child_task = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut task_rx))
+            .expect("child connection task should already be queued")
+            .expect("parent task queue should remain open");
+
+        drop((child, child_task));
+    }
+
     fn connection_with_dynamic_handler_receiver() -> (
         ConnectionTo<crate::role::UntypedRole>,
         mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
@@ -5893,11 +6446,50 @@ mod tests {
         assert!(callback_ran.load(Ordering::Acquire));
     }
 
-    fn next_dynamic_handler_message(
-        receiver: &mut mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
-    ) -> Option<DynamicHandlerMessage<crate::role::UntypedRole>> {
+    fn next_dynamic_handler_message<Counterpart: Role>(
+        receiver: &mut mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
+    ) -> Option<DynamicHandlerMessage<Counterpart>> {
         futures::FutureExt::now_or_never(futures::StreamExt::next(receiver))
             .expect("dynamic-handler receiver should be ready")
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn v2_dynamic_handler_guard_registers_and_removes_handler() {
+        let (message_tx, _message_rx) = mpsc::unbounded();
+        let (task_tx, _task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, mut dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+        let connection = V2ConnectionTo {
+            inner: ConnectionTo::new(
+                Agent,
+                message_tx,
+                task_tx,
+                dynamic_handler_tx,
+                transport_completion,
+                pending_replies.registrar(),
+                ProtocolMode::v2_client(),
+            ),
+        };
+
+        let guard = connection
+            .add_dynamic_handler(NullHandler)
+            .expect("v2 dynamic handler should register");
+        let added_uuid = match next_dynamic_handler_message(&mut dynamic_handler_rx) {
+            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _)) => uuid,
+            other => panic!("expected v2 handler registration, got {other:?}"),
+        };
+
+        drop(guard);
+
+        match next_dynamic_handler_message(&mut dynamic_handler_rx) {
+            Some(DynamicHandlerMessage::RemoveDynamicHandler(uuid)) => {
+                assert_eq!(uuid, added_uuid);
+            }
+            other => panic!("expected v2 handler removal, got {other:?}"),
+        }
     }
 
     #[test]

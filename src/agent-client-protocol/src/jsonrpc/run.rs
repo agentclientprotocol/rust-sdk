@@ -5,8 +5,13 @@
 //! channels and invoke user-provided closures.
 
 use std::future::Future;
+use std::marker::PhantomData;
 
-use crate::{ConnectionTo, role::Role};
+use crate::{
+    ConnectionTo,
+    jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
+    role::Role,
+};
 
 /// A background task that runs alongside a connection.
 ///
@@ -68,22 +73,28 @@ where
 }
 
 /// A RunIn created from a closure via [`with_spawned`](crate::Builder::with_spawned).
-pub struct SpawnedRun<F> {
+pub struct SpawnedRun<F, Context = RawConnectionContext> {
     task_fn: F,
     location: &'static std::panic::Location<'static>,
+    context: PhantomData<fn() -> Context>,
 }
 
-impl<F> SpawnedRun<F> {
+impl<F, Context> SpawnedRun<F, Context> {
     /// Create a new spawned RunIn from a closure.
     pub fn new(location: &'static std::panic::Location<'static>, task_fn: F) -> Self {
-        Self { task_fn, location }
+        Self {
+            task_fn,
+            location,
+            context: PhantomData,
+        }
     }
 }
 
-impl<Counterpart, F, Fut> RunWithConnectionTo<Counterpart> for SpawnedRun<F>
+impl<Counterpart, F, Fut, Context> RunWithConnectionTo<Counterpart> for SpawnedRun<F, Context>
 where
     Counterpart: Role,
-    F: FnOnce(ConnectionTo<Counterpart>) -> Fut + Send,
+    Context: ConnectionContext,
+    F: FnOnce(Context::Connection<Counterpart>) -> Fut + Send,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     async fn run_with_connection_to(
@@ -91,14 +102,14 @@ where
         connection: ConnectionTo<Counterpart>,
     ) -> Result<(), crate::Error> {
         let location = self.location;
-        (self.task_fn)(connection).await.map_err(|err| {
-            let data = err.data.clone();
-            err.data(serde_json::json! {
-                {
+        (self.task_fn)(connection_context::from_raw::<Context, _>(connection))
+            .await
+            .map_err(|err| {
+                let data = err.data.clone();
+                err.data(serde_json::json!({
                     "spawned_at": format!("{}:{}:{}", location.file(), location.line(), location.column()),
                     "data": data,
-                }
+                }))
             })
-        })
     }
 }

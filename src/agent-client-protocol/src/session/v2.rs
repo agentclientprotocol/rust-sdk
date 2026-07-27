@@ -1,37 +1,28 @@
 use std::path::Path;
 
-use crate::{
-    Agent, ConnectionTo, SentRequest,
-    role::HasPeer,
-    schema::{ProtocolVersion, v2},
-};
+use crate::{Agent, SentRequest, V2ConnectionTo, role::HasPeer, schema::v2};
 
-use super::ensure_session_protocol;
-
-impl<Counterpart> ConnectionTo<Counterpart>
+impl<Counterpart> V2ConnectionTo<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
     /// Build a draft protocol v2 `session/new` request.
-    ///
-    /// This is the v2 counterpart to [`ConnectionTo::build_session`]. The
-    /// unversioned helper remains the stable protocol v1 API.
-    pub fn build_v2_session(&self, cwd: impl AsRef<Path>) -> V2SessionBuilder<Counterpart> {
+    pub fn build_session(&self, cwd: impl AsRef<Path>) -> V2SessionBuilder<Counterpart> {
         V2SessionBuilder::new(self, v2::NewSessionRequest::new(cwd.as_ref()))
     }
 
     /// Build a draft protocol v2 session using the current working directory.
     ///
     /// Returns an error if the current directory cannot be determined.
-    pub fn build_v2_session_cwd(&self) -> Result<V2SessionBuilder<Counterpart>, crate::Error> {
+    pub fn build_session_cwd(&self) -> Result<V2SessionBuilder<Counterpart>, crate::Error> {
         let cwd = std::env::current_dir().map_err(|error| {
             crate::Error::internal_error().data(format!("cannot get current directory: {error}"))
         })?;
-        Ok(self.build_v2_session(cwd))
+        Ok(self.build_session(cwd))
     }
 
     /// Build a draft protocol v2 session from an existing `session/new` request.
-    pub fn build_v2_session_from(
+    pub fn build_session_from(
         &self,
         request: v2::NewSessionRequest,
     ) -> V2SessionBuilder<Counterpart> {
@@ -40,15 +31,14 @@ where
 
     /// Resume a draft protocol v2 session.
     ///
-    /// Use [`Self::resume_v2_session_from`] to request history replay or set
+    /// Use [`Self::resume_session_from`] to request history replay or set
     /// other optional resume parameters.
-    pub fn resume_v2_session(
+    pub fn resume_session(
         &self,
         session_id: impl Into<v2::SessionId>,
         cwd: impl AsRef<Path>,
-    ) -> Result<SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>>, crate::Error>
-    {
-        self.resume_v2_session_from(v2::ResumeSessionRequest::new(session_id, cwd.as_ref()))
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>> {
+        self.resume_session_from(v2::ResumeSessionRequest::new(session_id, cwd.as_ref()))
     }
 
     /// Resume a draft protocol v2 session from an existing request.
@@ -56,28 +46,20 @@ where
     /// Register typed session update handlers before connecting. When the
     /// request asks for replay, the agent sends those updates before the
     /// [`v2::ResumeSessionResponse`].
-    pub fn resume_v2_session_from(
+    pub fn resume_session_from(
         &self,
         request: v2::ResumeSessionRequest,
-    ) -> Result<SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>>, crate::Error>
-    {
-        ensure_session_protocol(
-            self,
-            ProtocolVersion::V2,
-            "resume_v2_session",
-            "send a v1 `ResumeSessionRequest` with `ConnectionTo::send_request` instead",
-        )?;
-
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>> {
         let session_id = request.session_id.clone();
         let session_connection = self.clone();
 
-        Ok(self.send_request_to(Agent, request).map(move |response| {
+        self.send_request_to(Agent, request).map(move |response| {
             let session = V2Session {
                 session_id,
                 connection: session_connection,
             };
             Ok(OpenedV2Session { session, response })
-        }))
+        })
     }
 }
 
@@ -96,7 +78,7 @@ pub struct V2SessionBuilder<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    connection: ConnectionTo<Counterpart>,
+    connection: V2ConnectionTo<Counterpart>,
     request: v2::NewSessionRequest,
 }
 
@@ -104,7 +86,7 @@ impl<Counterpart> V2SessionBuilder<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    fn new(connection: &ConnectionTo<Counterpart>, request: v2::NewSessionRequest) -> Self {
+    fn new(connection: &V2ConnectionTo<Counterpart>, request: v2::NewSessionRequest) -> Self {
         Self {
             connection: connection.clone(),
             request,
@@ -119,22 +101,14 @@ where
     /// another explicit [`SentRequest`] completion mode.
     pub fn start_session(
         self,
-    ) -> Result<SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>>, crate::Error>
-    {
-        ensure_session_protocol(
-            &self.connection,
-            ProtocolVersion::V2,
-            "build_v2_session",
-            "use `build_session` instead",
-        )?;
-
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>> {
         let Self {
             connection,
             request,
         } = self;
         let session_connection = connection.clone();
 
-        Ok(connection
+        connection
             .send_request_to(Agent, request)
             .map(move |response| {
                 let session = V2Session {
@@ -142,7 +116,7 @@ where
                     connection: session_connection,
                 };
                 Ok(OpenedV2Session { session, response })
-            }))
+            })
     }
 }
 
@@ -198,7 +172,7 @@ where
     Link: HasPeer<Agent>,
 {
     session_id: v2::SessionId,
-    connection: ConnectionTo<Link>,
+    connection: V2ConnectionTo<Link>,
 }
 
 impl<Link> V2Session<Link>
@@ -211,7 +185,7 @@ where
     }
 
     /// Access the underlying connection.
-    pub fn connection(&self) -> &ConnectionTo<Link> {
+    pub fn connection(&self) -> &V2ConnectionTo<Link> {
         &self.connection
     }
 
