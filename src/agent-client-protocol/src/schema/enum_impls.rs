@@ -13,6 +13,12 @@ use crate::schema::v1::{
 impl_jsonrpc_request_enum!(ClientRequest {
     InitializeRequest => "initialize",
     AuthenticateRequest => "authenticate",
+    #[cfg(feature = "unstable_llm_providers")]
+    ListProvidersRequest => "providers/list",
+    #[cfg(feature = "unstable_llm_providers")]
+    SetProviderRequest => "providers/set",
+    #[cfg(feature = "unstable_llm_providers")]
+    DisableProviderRequest => "providers/disable",
     LogoutRequest => "logout",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
@@ -33,6 +39,12 @@ impl_jsonrpc_request_enum!(ClientRequest {
 impl_jsonrpc_response_enum!(AgentResponse {
     InitializeResponse => "initialize",
     AuthenticateResponse => "authenticate",
+    #[cfg(feature = "unstable_llm_providers")]
+    ListProvidersResponse => "providers/list",
+    #[cfg(feature = "unstable_llm_providers")]
+    SetProviderResponse => "providers/set",
+    #[cfg(feature = "unstable_llm_providers")]
+    DisableProviderResponse => "providers/disable",
     LogoutResponse => "logout",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",

@@ -132,6 +132,7 @@ jobs:
       - name: Check feature powerset
         # `default` is empty and `unstable` is an aggregate alias for the
         # individual unstable_* features, so excluding both avoids checking
-        # duplicate combinations. The regular CI all-features build still covers
-        # the aggregate feature.
-        run: cargo hack check --workspace --feature-powerset --exclude-features default,unstable --no-dev-deps --partition ${{ matrix.partition }}
+        # duplicate combinations. Depth 2 covers every individual feature and
+        # pair, while the regular CI all-features build covers their full union
+        # without making this matrix grow exponentially.
+        run: cargo hack check --workspace --feature-powerset --depth 2 --exclude-features default,unstable --no-dev-deps --partition ${{ matrix.partition }}

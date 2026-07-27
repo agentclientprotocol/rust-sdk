@@ -7,6 +7,7 @@
 - [Design Overview](./design.md)
 - [Protocol Reference](./protocol.md)
 - [Request Cancellation](./request-cancellation.md)
+- [Configurable LLM Providers](./llm-providers.md)
 - [Protocol V2](./protocol-v2.md)
 
 # Transports
