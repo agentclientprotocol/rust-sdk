@@ -212,6 +212,24 @@ macro_rules! impl_v2_jsonrpc_response_enum {
 impl_v2_jsonrpc_request!(v2::InitializeRequest, v2::InitializeResponse, "initialize");
 impl_v2_jsonrpc_request!(v2::LoginAuthRequest, v2::LoginAuthResponse, "auth/login");
 impl_v2_jsonrpc_request!(v2::LogoutAuthRequest, v2::LogoutAuthResponse, "auth/logout");
+#[cfg(feature = "unstable_llm_providers")]
+impl_v2_jsonrpc_request!(
+    v2::ListProvidersRequest,
+    v2::ListProvidersResponse,
+    "providers/list"
+);
+#[cfg(feature = "unstable_llm_providers")]
+impl_v2_jsonrpc_request!(
+    v2::SetProviderRequest,
+    v2::SetProviderResponse,
+    "providers/set"
+);
+#[cfg(feature = "unstable_llm_providers")]
+impl_v2_jsonrpc_request!(
+    v2::DisableProviderRequest,
+    v2::DisableProviderResponse,
+    "providers/disable"
+);
 impl_v2_jsonrpc_request!(v2::NewSessionRequest, v2::NewSessionResponse, "session/new");
 impl_v2_jsonrpc_request!(
     v2::ListSessionsRequest,
@@ -285,6 +303,12 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",
     LoginAuthRequest => "auth/login",
     LogoutAuthRequest => "auth/logout",
+    #[cfg(feature = "unstable_llm_providers")]
+    ListProvidersRequest => "providers/list",
+    #[cfg(feature = "unstable_llm_providers")]
+    SetProviderRequest => "providers/set",
+    #[cfg(feature = "unstable_llm_providers")]
+    DisableProviderRequest => "providers/disable",
     NewSessionRequest => "session/new",
     ListSessionsRequest => "session/list",
     DeleteSessionRequest => "session/delete",
@@ -303,6 +327,12 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     InitializeResponse => "initialize",
     LoginAuthResponse => "auth/login",
     LogoutAuthResponse => "auth/logout",
+    #[cfg(feature = "unstable_llm_providers")]
+    ListProvidersResponse => "providers/list",
+    #[cfg(feature = "unstable_llm_providers")]
+    SetProviderResponse => "providers/set",
+    #[cfg(feature = "unstable_llm_providers")]
+    DisableProviderResponse => "providers/disable",
     NewSessionResponse => "session/new",
     ListSessionsResponse => "session/list",
     DeleteSessionResponse => "session/delete",

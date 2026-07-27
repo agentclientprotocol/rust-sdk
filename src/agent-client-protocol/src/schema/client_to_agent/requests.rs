@@ -6,11 +6,30 @@ use crate::schema::v1::{
     PromptResponse, ResumeSessionRequest, ResumeSessionResponse, SetSessionConfigOptionRequest,
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
+#[cfg(feature = "unstable_llm_providers")]
+use crate::schema::v1::{
+    DisableProviderRequest, DisableProviderResponse, ListProvidersRequest, ListProvidersResponse,
+    SetProviderRequest, SetProviderResponse,
+};
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::v1::{ForkSessionRequest, ForkSessionResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");
+#[cfg(feature = "unstable_llm_providers")]
+impl_jsonrpc_request!(
+    ListProvidersRequest,
+    ListProvidersResponse,
+    "providers/list"
+);
+#[cfg(feature = "unstable_llm_providers")]
+impl_jsonrpc_request!(SetProviderRequest, SetProviderResponse, "providers/set");
+#[cfg(feature = "unstable_llm_providers")]
+impl_jsonrpc_request!(
+    DisableProviderRequest,
+    DisableProviderResponse,
+    "providers/disable"
+);
 impl_jsonrpc_request!(LogoutRequest, LogoutResponse, "logout");
 impl_jsonrpc_request!(LoadSessionRequest, LoadSessionResponse, "session/load");
 impl_jsonrpc_request!(ListSessionsRequest, ListSessionsResponse, "session/list");

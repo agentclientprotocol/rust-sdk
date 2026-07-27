@@ -24,6 +24,8 @@
   The existing `ConnectionTo::spawn_connection::<Role>` API remains
   source-compatible and returns a raw `ConnectionTo`, including when the v2
   child builder's callbacks receive `V2ConnectionTo`.
+- *(unstable)* Add typed v1 and draft-v2 JSON-RPC routing for configurable LLM
+  provider methods behind `unstable_llm_providers`.
 
 ### Fixed
 
