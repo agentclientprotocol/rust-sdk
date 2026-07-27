@@ -22,7 +22,8 @@ This repository is the official **Rust SDK** for ACP. It provides crates for bui
 Native MCP-over-ACP support is currently opt-in through the core crate's
 `unstable_mcp_over_acp` feature. Standalone MCP servers need no ACP transport
 feature; the rmcp integration exposes a matching passthrough feature when those
-servers are attached to ACP.
+servers are attached to ACP. MCP attachment and proxy-session helpers currently
+use stable protocol v1.
 
 **Proxy orchestration**
 
@@ -40,6 +41,9 @@ servers are attached to ACP.
 
 - **API reference** for individual crates is on [docs.rs/agent-client-protocol](https://docs.rs/agent-client-protocol).
 - **Design and architecture documentation** lives in the mdbook at [agentclientprotocol.github.io/rust-sdk](https://agentclientprotocol.github.io/rust-sdk/). Source is in [`md/`](./md/).
+- **Draft protocol v2** setup, version-typed connections, and high-level
+  session usage are covered in
+  [Protocol V2](./md/protocol-v2.md).
 
 ## Integrations
 

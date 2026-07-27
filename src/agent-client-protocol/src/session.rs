@@ -20,6 +20,11 @@ use crate::{
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
+#[cfg(feature = "unstable_protocol_v2")]
+mod v2;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use v2::*;
+
 /// Marker type indicating the session builder will block the current task.
 #[derive(Debug)]
 pub struct Blocking;
@@ -38,12 +43,15 @@ impl<Counterpart: Role> ConnectionTo<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    /// Session builder for a new session request.
+    /// Stable protocol v1 session builder for a new session request.
+    ///
+    /// With `unstable_protocol_v2`, a `Client.v2()` callback receives a
+    /// `V2ConnectionTo` with its own v2 `build_session` helper.
     pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart, NullRun> {
         SessionBuilder::new(self, NewSessionRequest::new(cwd.as_ref()))
     }
 
-    /// Session builder using the current working directory.
+    /// Stable protocol v1 session builder using the current working directory.
     ///
     /// This is a convenience wrapper around [`build_session`](Self::build_session)
     /// that uses [`std::env::current_dir`] to get the working directory.
@@ -56,7 +64,7 @@ where
         Ok(self.build_session(cwd))
     }
 
-    /// Session builder starting from an existing request.
+    /// Stable protocol v1 session builder starting from an existing request.
     ///
     /// Use this when you've intercepted a `session.new` request and want to
     /// modify it (e.g., inject MCP servers) before forwarding.
@@ -107,7 +115,7 @@ where
     }
 }
 
-/// Session builder for a new session request.
+/// Stable protocol v1 session builder for a new session request.
 /// Allows you to add MCP servers or set other details for this session.
 ///
 /// The `BlockState` type parameter tracks whether blocking methods are available:
@@ -222,6 +230,8 @@ where
         F: FnOnce(ActiveSession<'static, Counterpart>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
+        ensure_v1_session_protocol(&self.connection)?;
+
         let Self {
             connection,
             request,
@@ -231,7 +241,7 @@ where
         } = self;
 
         connection
-            .send_request_to(Agent, request)
+            .send_ordered_request_to(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
                 async move |result| {
@@ -310,6 +320,8 @@ where
         Counterpart: HasPeer<Client>,
         R: 'static,
     {
+        ensure_v1_session_protocol(&self.connection)?;
+
         let Self {
             connection,
             request,
@@ -319,7 +331,7 @@ where
         } = self;
 
         // Send the "new session" request to the agent.
-        let sent = connection.send_request_to(Agent, request);
+        let sent = connection.send_ordered_request_to(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -392,6 +404,8 @@ where
             ActiveSession<'runner, Counterpart>,
         ) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
+        ensure_v1_session_protocol(&self.connection)?;
+
         let Self {
             connection,
             request,
@@ -427,6 +441,8 @@ where
     where
         R: 'static,
     {
+        ensure_v1_session_protocol(&self.connection)?;
+
         let Self {
             connection,
             request,
@@ -493,7 +509,7 @@ where
     }
 }
 
-/// Active session struct that lets you send prompts and receive updates.
+/// Stable protocol v1 active session that lets you send prompts and receive updates.
 ///
 /// The `'runner` lifetime represents the span during which session support runners
 /// (such as MCP servers) are active. When created via [`SessionBuilder::start_session`],
@@ -527,7 +543,7 @@ where
     _runner: PhantomData<&'runner ()>,
 }
 
-/// Incoming message from the agent
+/// Incoming stable protocol v1 message from the agent.
 #[non_exhaustive]
 #[derive(Debug)]
 #[allow(
@@ -581,7 +597,7 @@ where
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
-            .send_request_to(
+            .send_ordered_request_to(
                 Agent,
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
             )
@@ -784,4 +800,29 @@ where
     fn describe_chain(&self) -> impl std::fmt::Debug {
         format!("ActiveSessionHandler({})", self.session_id)
     }
+}
+
+#[cfg(not(feature = "unstable_protocol_v2"))]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature matches the feature-enabled protocol guard"
+)]
+fn ensure_v1_session_protocol<Counterpart: Role>(
+    _connection: &ConnectionTo<Counterpart>,
+) -> Result<(), crate::Error> {
+    Ok(())
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn ensure_v1_session_protocol<Counterpart: Role>(
+    connection: &ConnectionTo<Counterpart>,
+) -> Result<(), crate::Error> {
+    if connection.acp_protocol_version() != Some(crate::schema::ProtocolVersion::V2) {
+        return Ok(());
+    }
+
+    Err(crate::Error::invalid_request().data(
+        "`build_session` uses ACP protocol v1 types, but this is a protocol v2 connection; \
+         use the `V2ConnectionTo` supplied to `Client.v2()` callbacks",
+    ))
 }

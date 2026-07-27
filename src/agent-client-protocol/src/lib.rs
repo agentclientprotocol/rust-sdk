@@ -18,8 +18,14 @@
 //! ## Quick Start: Connecting to an Agent
 //!
 //! The most common use case is connecting to an existing ACP agent as a client.
-//! Here's a minimal example that initializes a connection, creates a session,
-//! and sends a prompt:
+//! This example uses stable ACP protocol v1. The draft protocol v2 feature
+//! provides a command-only `V2Session` API and receives updates and interactive
+//! requests through typed connection handlers because prompt acceptance and
+//! inbound traffic are independent. MCP attachment and proxy-session helpers
+//! remain v1-only.
+//!
+//! Here's a minimal example that initializes a v1 connection, creates a
+//! session, and sends a prompt:
 //!
 //! ```no_run
 //! use agent_client_protocol::Client;
@@ -109,15 +115,17 @@ pub mod util;
 pub use capabilities::*;
 
 pub use jsonrpc::{
-    Builder, ByteStreams, Channel, ConnectionTo, Dispatch, DynamicHandlerGuard,
+    Builder, ByteStreams, Channel, ConnectionContext, ConnectionTo, Dispatch, DynamicHandlerGuard,
     HandleConnectionClose, HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullClose, NullHandler, RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter,
-    SentRequest, TransportBatch, TransportBatchEntry, TransportFrame, UntypedMessage,
-    is_incoming_transport_closed,
+    NullClose, NullHandler, RawConnectionContext, RawJsonRpcMessage, RawJsonRpcParams, Responder,
+    ResponseRouter, SentRequest, TransportBatch, TransportBatchEntry, TransportFrame,
+    UntypedMessage, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
+#[cfg(feature = "unstable_protocol_v2")]
+pub use jsonrpc::{V2Builder, V2ConnectionContext, V2ConnectionTo};
 
 #[cfg(feature = "unstable_protocol_v2")]
 pub use role::acp::AgentProtocolRouter;

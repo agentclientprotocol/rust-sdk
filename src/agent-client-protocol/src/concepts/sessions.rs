@@ -4,6 +4,13 @@
 //! session, you can send prompts, receive responses, and the agent maintains
 //! context across turns.
 //!
+//! The examples below use the stable protocol v1 `SessionBuilder` and
+//! `ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
+//! through `Client.v2()` receive `V2ConnectionTo` and its `build_session*`,
+//! `V2SessionBuilder`, and command-only `V2Session` APIs. V2
+//! prompt responses acknowledge acceptance independently; receive session-wide
+//! updates and interactive requests through typed connection handlers.
+//!
 //! # Creating a Session
 //!
 //! Use the session builder to create a new session:

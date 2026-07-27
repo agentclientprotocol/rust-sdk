@@ -17,7 +17,8 @@ enabling features like tool use, permission requests, and streaming responses.
 
 ## Quick Start: Connecting to an Agent
 
-The most common use case is connecting to an existing ACP agent as a client:
+The most common use case is connecting to an existing ACP agent as a client.
+This quick start uses stable protocol v1:
 
 ```rust,no_run
 use agent_client_protocol::{AcpAgent, Client, Result};
@@ -39,6 +40,13 @@ Client.builder()
 # }
 ```
 
+Draft protocol v2 is opt-in through `unstable_protocol_v2`. `Client.v2()` and
+`Agent.v2()` callbacks receive a version-typed `V2ConnectionTo` with
+high-level, command-only session helpers because prompt acceptance and inbound
+traffic are independent. Session updates and interactive requests use typed
+connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
+MCP attachment and proxy-session helpers remain v1-only.
+
 ## MCP Server Attachment
 
 The runtime-agnostic `mcp_server` module can build and directly serve standalone
@@ -47,6 +55,7 @@ the `with_mcp_server` builder methods requires `unstable_mcp_over_acp`.
 Attached servers are advertised with native `McpServer::Acp` declarations and
 communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
 `agent-client-protocol-polyfill` immediately before an HTTP-capable agent.
+These ACP attachment and proxy paths currently use stable protocol v1.
 
 ## Learning More
 

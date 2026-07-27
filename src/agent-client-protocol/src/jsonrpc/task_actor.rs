@@ -45,6 +45,11 @@ impl Task {
             .map_err(crate::util::internal_error)?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(super) async fn run_for_test(self) -> Result<(), crate::Error> {
+        self.future.await
+    }
 }
 
 /// The "task actor" manages dynamically spawned tasks.

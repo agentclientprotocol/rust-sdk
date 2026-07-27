@@ -10,7 +10,7 @@ use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{
-    TransportBatch, TransportBatchEntry, TransportFrame, is_response_only_shape,
+    TransportBatch, TransportBatchEntry, TransportFrame, V2Builder, is_response_only_shape,
     raw_is_response_only_shape,
 };
 use crate::role::{HasPeer, RemoteStyle};
@@ -72,7 +72,7 @@ impl Client {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> Builder<Client, NullHandler, NullRun> {
+    pub fn v2(self) -> V2Builder<Client, NullHandler, NullRun> {
         self.builder().v2_client()
     }
 
@@ -298,13 +298,18 @@ impl Role for Agent {
     ) -> Result<Handled<Dispatch>, crate::Error> {
         MatchDispatchFrom::new(message, &connection)
             .if_dispatch_from(Agent, async |message: Dispatch| {
-                // Subtle: messages that have a session-id field
-                // should be captured by a dynamic message handler
-                // for that session -- but there is a race condition
-                // between the dynamic handler being added and
-                // possible updates. Therefore, we "retry" all such
-                // messages, so that they will be resent as new handlers
-                // are added.
+                // Stable v1 session helpers install a dynamic handler after
+                // `session/new`. Retry session messages to close the race
+                // between the response and that registration.
+                //
+                // V2 uses typed handlers installed before the connection
+                // starts. Retrying an unhandled v2 message would retain it
+                // forever because no per-session dynamic handler is expected.
+                #[cfg(feature = "unstable_protocol_v2")]
+                let retry = message.has_session_id()
+                    && connection.acp_protocol_version()
+                        != Some(crate::schema::ProtocolVersion::V2);
+                #[cfg(not(feature = "unstable_protocol_v2"))]
                 let retry = message.has_session_id();
                 Ok(Handled::No { message, retry })
             })
@@ -326,7 +331,7 @@ impl Agent {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> Builder<Agent, NullHandler, NullRun> {
+    pub fn v2(self) -> V2Builder<Agent, NullHandler, NullRun> {
         self.builder().v2_agent()
     }
 
@@ -1131,7 +1136,7 @@ impl Role for Conductor {
                 Client,
                 async |request: InitializeProxyRequest, responder| {
                     let InitializeProxyRequest { initialize } = request;
-                    cx.send_request_to(Agent, initialize)
+                    cx.send_ordered_request_to(Agent, initialize)
                         .forward_response_to(responder)
                 },
             )
@@ -1139,7 +1144,7 @@ impl Role for Conductor {
             // New session coming from the client -- proxy to the agent
             // and add a dynamic handler for that session-id.
             .if_request_from(Client, async |request: NewSessionRequest, responder| {
-                let sent = cx.send_request_to(Agent, request);
+                let sent = cx.send_ordered_request_to(Agent, request);
                 // The dynamic-handler hook below means we cannot use
                 // `forward_response_to`, so wire up cancellation forwarding
                 // explicitly to keep `session/new` cancellable like every

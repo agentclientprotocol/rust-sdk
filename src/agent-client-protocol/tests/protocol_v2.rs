@@ -11,9 +11,12 @@ use std::{
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, ConnectTo,
-    Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, RawJsonRpcMessage, Role,
-    TransportFrame, UntypedRole,
+    ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
+    HandleDispatchFrom, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler,
+    RawJsonRpcMessage, Role, RunWithConnectionTo, TransportFrame, UntypedRole, V2Builder,
+    V2ConnectionTo,
 };
+use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -55,6 +58,25 @@ impl ConnectTo<UntypedRole> for ForeignPeer {
 
 fn cwd() -> Result<PathBuf, Error> {
     std::env::current_dir().map_err(Error::into_internal_error)
+}
+
+#[allow(dead_code)]
+fn spawn_child_from_generic_context<R, Context>(
+    parent: &ConnectionTo<UntypedRole>,
+    builder: Builder<
+        R,
+        impl HandleDispatchFrom<R::Counterpart> + 'static,
+        impl RunWithConnectionTo<R::Counterpart> + 'static,
+        impl HandleConnectionClose<R::Counterpart> + 'static,
+        Context,
+    >,
+    transport: impl ConnectTo<R> + 'static,
+) -> Result<Context::Connection<R::Counterpart>, Error>
+where
+    R: Role,
+    Context: ConnectionContext,
+{
+    parent.spawn_connection_with_context(builder, transport)
 }
 
 fn v2_implementation() -> v2::Implementation {
@@ -469,6 +491,24 @@ async fn assert_v2_client_rejected_by_v1_agent(agent: impl ConnectTo<Client>) ->
                 data.contains("only supports ACP protocol version 1"),
                 "{error:?}"
             );
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_context_preserves_protocol_neutral_connection_management() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(Agent.v2(), async |connection| {
+            let dynamic_handler: DynamicHandlerGuard<Agent> =
+                connection.add_dynamic_handler(NullHandler)?;
+            let raw_child: ConnectionTo<Agent> =
+                connection.spawn_connection::<Client, _>(Client.builder(), MockTransport)?;
+            let v2_child: V2ConnectionTo<Agent> =
+                connection.spawn_connection(Client.v2(), MockTransport)?;
+
+            drop((dynamic_handler, raw_child, v2_child));
             Ok(())
         })
         .await
@@ -2140,7 +2180,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
 /// A v2 agent whose `session/new` handler only responds once the peer cancels
 /// the request via `$/cancel_request`.
 fn v2_agent_with_cancellable_new_session()
--> Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>> {
+-> V2Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>> {
     Agent
         .v2()
         .on_receive_request(
