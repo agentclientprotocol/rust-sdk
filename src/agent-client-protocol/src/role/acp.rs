@@ -83,7 +83,7 @@ impl Client {
     /// the highest configured protocol implementation. If a v2 implementation
     /// successfully negotiates v1 and a v1 implementation is configured, the
     /// connector reuses the connection only when the v1 implementation's
-    /// `initialize` metadata and capabilities match what the agent already saw;
+    /// complete `initialize` parameters match what the agent already saw;
     /// otherwise it opens a fresh agent connection and restarts with v1.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
@@ -437,6 +437,13 @@ impl AgentProtocol {
         }
     }
 
+    fn version(self) -> ProtocolVersion {
+        match self {
+            Self::V1 => ProtocolVersion::V1,
+            Self::V2 => ProtocolVersion::V2,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Self::V1 => "1",
@@ -549,6 +556,21 @@ fn rewrite_initialize_params(
     requested: ProtocolVersion,
     selected: AgentProtocol,
 ) -> Result<(), crate::Error> {
+    // Validate exact-version initialization without replacing its raw
+    // parameters. Reserializing through the SDK's pinned schema would discard
+    // fields added by newer compatible peers.
+    if requested == selected.version() {
+        match selected {
+            AgentProtocol::V1 => {
+                parse_initialize_params::<InitializeRequest>(params)?;
+            }
+            AgentProtocol::V2 => {
+                parse_initialize_params::<v2::InitializeRequest>(params)?;
+            }
+        }
+        return Ok(());
+    }
+
     match selected {
         AgentProtocol::V1 => {
             let mut initialize = if requested >= ProtocolVersion::V2 {

@@ -162,8 +162,8 @@ connector.connect_to(|| open_agent_transport()).await?;
 
 The connector starts the highest configured implementation. If a successful v2
 initialize response negotiates v1 and a v1 implementation is configured, the
-connector starts the v1 implementation and compares the initialize metadata and
-capabilities it would send with the normalized v2 request already seen by the
+connector starts the v1 implementation and compares the complete initialize
+parameters it would send with the normalized v2 request already seen by the
 agent:
 
 - If they match exactly, the connector reuses the current agent connection and
