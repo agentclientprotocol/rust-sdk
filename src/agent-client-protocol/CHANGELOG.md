@@ -6,6 +6,8 @@
 
 - *(unstable)* Expose programmatic tool-call names through the
   `unstable_tool_call_name` feature.
+- *(unstable)* Expose v1 and draft-v2 plan operations through the
+  `unstable_plan_operations` feature.
 
 ### Fixed
 
