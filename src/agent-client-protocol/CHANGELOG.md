@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- *(unstable)* Expose programmatic tool-call names through the
+  `unstable_tool_call_name` feature.
+
 ### Fixed
 
 - *(unstable-v2)* Preserve unknown initialize fields when the protocol router
