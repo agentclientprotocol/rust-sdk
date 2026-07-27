@@ -175,7 +175,7 @@ agent:
 - If the agent rejects the v2 initialize request, the error is surfaced. A
   rejected initialize is not treated as permission to retry with v1.
 
-## Draft schema changes in schema 1.5
+## Draft schema changes in schema 1.5 and 1.6
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 adds
 semantic newtypes for paths, media types, IDs, and cursors; renames
@@ -183,3 +183,11 @@ semantic newtypes for paths, media types, IDs, and cursors; renames
 types; and makes v1/v2 conversions fallible and generic. These are draft API
 changes rather than stable v1 wire changes. See [Migrating to
 v2.0](./migration_v2.0.md#draft-v2-schema-updates) for concrete source changes.
+
+Schema 1.6 adds `Cancelled` tool-call and plan-entry statuses to draft v2.
+Programmatic tool-call names are available in both protocol versions through
+the separate `unstable_tool_call_name` feature. Draft v2 users must enable both
+`unstable_protocol_v2` and `unstable_tool_call_name`. In v2, an omitted name
+leaves the existing value unchanged, `null` clears it, and a string replaces
+it. V1 cannot clear an existing name, so converting a v2 `null` name to v1
+fails.
