@@ -465,7 +465,7 @@ fn dispatch_from_message<Counterpart: Role>(
 /// This allows handlers to intercept and process responses before they reach
 /// the awaiting code. The default behavior is to forward the response to the
 /// local awaiter via the oneshot channel.
-fn dispatch_from_response(
+pub(super) fn dispatch_from_response(
     id: RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,

@@ -139,6 +139,13 @@ mod imp {
                 }
             }
         }
+
+        pub(crate) fn api_protocol_version(self) -> Option<ProtocolVersion> {
+            match self {
+                Self::Disabled => None,
+                Self::Acp(mode) => Some(mode.api.as_protocol_version()),
+            }
+        }
     }
 
     #[derive(Clone, Debug)]

@@ -73,6 +73,119 @@ When v2 mode is enabled, application code should use types from
 exports remain the stable v1 schema. This will likely change as v2 gets closer
 to release.
 
+## High-level v2 sessions
+
+The unversioned `build_session*`, `SessionBuilder`, `ActiveSession`, and
+`SessionMessage` APIs remain the stable protocol v1 helpers. They now reject a
+connection created with `Client.v2()` before sending `session/new`. Use the
+parallel v2 helpers instead:
+
+```rust,ignore
+use agent_client_protocol::schema::{ProtocolVersion, v2};
+use agent_client_protocol::{Client, Responder};
+
+Client
+    .v2()
+    .on_receive_notification(
+        async |update: v2::UpdateSessionNotification, _cx| {
+            apply_session_update(update)?;
+            Ok(())
+        },
+        agent_client_protocol::on_receive_notification!(),
+    )
+    .on_receive_request(
+        async |request: v2::RequestPermissionRequest,
+               responder: Responder<v2::RequestPermissionResponse>,
+               _cx| {
+            // Transfer the responder to application-owned permission handling
+            // without waiting for user input in the dispatch callback.
+            queue_permission_request(request, responder)?;
+            Ok(())
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+    .connect_with(agent_transport, async |cx| {
+        let initialize = cx
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                v2::Implementation::new("example", "0.1.0"),
+            ))
+            .block_task()
+            .await?;
+        assert!(initialize.capabilities.session.is_some());
+
+        let opened = cx
+            .build_v2_session_cwd()?
+            .start_session()?
+            .block_task()
+            .await?;
+        let (session, new_session_response) = opened.into_parts();
+        assert_eq!(session.session_id(), &new_session_response.session_id);
+
+        session
+            .send_prompt("What is 2 + 2?")
+            .block_task()
+            .await?;
+        println!("prompt accepted");
+
+        Ok(())
+    })
+    .await?;
+```
+
+Here `apply_session_update` updates application-owned state, while
+`queue_permission_request` transfers the request and its responder to a
+separate permission workflow.
+
+V2 deliberately separates prompt submission from session observation:
+
+- `session/prompt` returns a `PromptResponse` as soon as the agent accepts the
+  prompt. `V2Session::send_prompt` returns that request as a
+  `SentRequest<PromptResponse>`; callers must explicitly await it, register a
+  response callback, or detach it.
+- `V2SessionBuilder::start_session` likewise returns a mapped `SentRequest`.
+  Its `OpenedV2Session` result keeps the command handle separate from the
+  complete `NewSessionResponse` represented by the linked schema, rather than
+  reconstructing a selected subset of its fields.
+- `V2Session` is a cloneable command handle containing only the session ID and
+  connection. It does not own, buffer, or unregister inbound messages.
+- Register typed `UpdateSessionNotification` and `RequestPermissionRequest`
+  handlers on `Client.v2()` before connecting. Updates and interactive requests
+  are separate protocol lanes; permission handlers should transfer responders
+  to application-owned work rather than waiting for user input inside the
+  connection dispatch loop. Without matching handlers, unhandled v2
+  notifications are ignored and unhandled requests receive a method-not-found
+  response; they are not retained for a later per-session receiver.
+- `session/update` events can arrive before, during, or after a prompt request.
+  They carry a session ID and entity IDs, but no prompt or turn ID. The SDK
+  therefore does not attribute intervening events to a locally submitted
+  prompt or provide a prompt-scoped text accumulator.
+- `state_update` describes the session-wide foreground state. `idle` means the
+  session can accept ordinary new foreground work; it is not a wire-level
+  boundary assigning previous events to one prompt, and background updates may
+  continue while idle.
+- `cancel_active_work` sends session-wide `session/cancel`. Cancellation
+  completes after the required `idle` update with stop reason `cancelled`. The
+  client should immediately mark unfinished tool calls for the active work as
+  cancelled and must resolve every pending permission request with the
+  cancelled outcome. Cancelling or dropping the prompt's `SentRequest` is the
+  separate JSON-RPC request-cancellation mechanism.
+- `set_config_option` returns the authoritative replacement option set, and
+  `close` returns the complete close response. Mutable configuration is not
+  cached on the command handle.
+
+Install connection handlers before `session/new` and `session/resume` requests.
+This is especially important for `resume_v2_session_from`: replay updates
+precede the resume response on the wire, so preinstalled typed handlers observe
+them in order. If a handler forwards updates to another task, the application
+is responsible for any additional projection-drained barrier it needs before
+treating replay as locally applied.
+
+Dropping command handles has no network or inbound-routing side effect. If an
+application wants stream ergonomics, it can fan typed updates out from the
+connection handler with an explicit buffering and subscriber policy. MCP
+attachment and proxy-session helpers are still v1-only.
+
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
 - A v2 client advertises protocol v2 as its latest supported version.

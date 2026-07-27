@@ -8,11 +8,24 @@
   `unstable_tool_call_name` feature.
 - *(unstable)* Expose v1 and draft-v2 plan operations through the
   `unstable_plan_operations` feature.
+- *(unstable-v2)* Add high-level protocol v2 session builders and handles with
+  independent prompt-acceptance requests, create and resume setup responses,
+  cloneable command handles, configuration, close, and session-wide
+  cancellation. Session updates and interactive requests remain on typed
+  connection handlers; MCP attachment and proxy-session helpers remain v1-only.
 
 ### Fixed
 
 - *(unstable-v2)* Preserve unknown initialize fields when the protocol router
   hands a same-version connection to its selected implementation.
+- *(unstable-v2)* Reject stable v1 session helpers on protocol v2 connections,
+  and v2 session helpers on protocol v1 connections, before sending a
+  mismatched session lifecycle request.
+- *(unstable-v2)* Do not retain unhandled v2 session messages for a dynamic v1
+  session route that will never be installed.
+- Register framework-owned ordered response handling before outbound requests
+  become visible to the peer, preventing fast responses from overtaking session
+  routing or proxy forwarding.
 - Allow the portable protocol engine and transport abstractions to build for
   the `wasm32-wasip1` and `wasm32-wasip2` targets. The native process-backed
   `AcpAgent`, thread-backed `Stdio`, and associated `LineDirection` type are not

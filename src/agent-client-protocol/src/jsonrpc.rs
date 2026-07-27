@@ -1727,6 +1727,7 @@ impl<
             dynamic_handler_tx,
             transport_completion,
             pending_replies.registrar(),
+            protocol_mode,
         );
         let spawn_result = connection.spawn(async move {
             let result = transport_future.await;
@@ -2912,6 +2913,14 @@ pub struct ConnectionTo<Counterpart: Role> {
     dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
     transport_completion: SharedTransportCompletion,
     pending_replies: PendingRepliesRegistrar,
+    #[cfg_attr(
+        not(feature = "unstable_protocol_v2"),
+        allow(
+            dead_code,
+            reason = "retained so ConnectionTo has one constructor shape"
+        )
+    )]
+    protocol_mode: ProtocolMode,
     incoming_closed: IncomingClosed,
 }
 
@@ -3058,6 +3067,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
         transport_completion: SharedTransportCompletion,
         pending_replies: PendingRepliesRegistrar,
+        protocol_mode: ProtocolMode,
     ) -> Self {
         Self {
             counterpart,
@@ -3066,8 +3076,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             dynamic_handler_tx,
             transport_completion,
             pending_replies,
+            protocol_mode,
             incoming_closed: IncomingClosed::new(),
         }
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn acp_protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
+        self.protocol_mode.api_protocol_version()
     }
 
     /// Return the counterpart role this connection is talking to.
@@ -3269,7 +3285,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     {
         match message {
             Dispatch::Request(request, responder) => self
-                .send_request_to(peer, request)
+                .send_ordered_request_to(peer, request)
                 .forward_response_to(responder),
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
@@ -3365,10 +3381,42 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     where
         Counterpart: HasPeer<Peer>,
     {
+        self.send_request_to_with_ordering(peer, request, false)
+    }
+
+    /// Send a request whose callback must run before later inbound messages.
+    ///
+    /// The ordering marker is installed before the request enters the outgoing
+    /// queue, closing the race between a fast peer response and the immediate
+    /// [`SentRequest::on_receiving_result`] call. Callers must consume the
+    /// returned request with a callback-style method without yielding.
+    pub(crate) fn send_ordered_request_to<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.send_request_to_with_ordering(peer, request, true)
+    }
+
+    fn send_request_to_with_ordering<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+        ordered: bool,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
         let method = request.method().to_string();
         let id = RequestId::Str(uuid::Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
         let response_ordering = ResponseOrdering::default();
+        if ordered {
+            response_ordering.mark_ordered();
+        }
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
@@ -5761,9 +5809,88 @@ mod tests {
                 dynamic_handler_tx,
                 transport_completion,
                 pending_replies.registrar(),
+                ProtocolMode::disabled(),
             ),
             dynamic_handler_rx,
         )
+    }
+
+    #[test]
+    fn ordered_request_is_marked_before_entering_outgoing_queue() {
+        let (message_tx, mut message_rx) = mpsc::unbounded();
+        let (task_tx, mut task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            transport_completion,
+            pending_replies.registrar(),
+            ProtocolMode::disabled(),
+        );
+
+        let sent = connection.send_ordered_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("ordered", serde_json::json!({}))
+                .expect("test request should serialize"),
+        );
+        let request_id = sent.id().clone();
+        let message = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut message_rx))
+            .expect("outgoing request should already be queued")
+            .expect("outgoing request queue should remain open");
+        let OutgoingMessage::Request { id, .. } = message else {
+            panic!("expected an outgoing request");
+        };
+        assert_eq!(id, request_id);
+
+        let pending_reply = pending_replies
+            .remove(&request_id)
+            .expect("the request should have a pending reply");
+        assert!(
+            pending_reply.ordering.is_ordered(),
+            "the response ordering barrier must be installed before publication"
+        );
+
+        // Route the response before the callback is registered. The pre-set
+        // ordering marker must hold dispatch until the callback task is
+        // subsequently installed and completes.
+        let (dispatch, response_dispatch) = incoming_actor::dispatch_from_response(
+            request_id,
+            pending_reply,
+            Ok(serde_json::json!({"ok": true})),
+        );
+        let Dispatch::Response(result, router) = dispatch else {
+            panic!("expected a response dispatch");
+        };
+        router
+            .route_with_result(result)
+            .expect("response should route to the pending request");
+        let acknowledgment = response_dispatch
+            .complete()
+            .expect("an ordered response should require acknowledgment");
+
+        let callback_ran = Arc::new(AtomicBool::new(false));
+        sent.on_receiving_result({
+            let callback_ran = callback_ran.clone();
+            async move |result| {
+                assert_eq!(result?, serde_json::json!({"ok": true}));
+                callback_ran.store(true, Ordering::Release);
+                Ok(())
+            }
+        })
+        .expect("ordered callback should be scheduled");
+
+        let task = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut task_rx))
+            .expect("callback task should already be queued")
+            .expect("callback task queue should remain open");
+        futures::executor::block_on(task.run_for_test()).expect("callback task should succeed");
+        futures::executor::block_on(acknowledgment)
+            .expect("callback completion should acknowledge dispatch");
+        assert!(callback_ran.load(Ordering::Acquire));
     }
 
     fn next_dynamic_handler_message(

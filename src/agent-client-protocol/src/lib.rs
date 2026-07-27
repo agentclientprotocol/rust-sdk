@@ -18,8 +18,14 @@
 //! ## Quick Start: Connecting to an Agent
 //!
 //! The most common use case is connecting to an existing ACP agent as a client.
-//! Here's a minimal example that initializes a connection, creates a session,
-//! and sends a prompt:
+//! This example uses stable ACP protocol v1. The draft protocol v2 feature
+//! provides a command-only `V2Session` API and receives updates and interactive
+//! requests through typed connection handlers because prompt acceptance and
+//! inbound traffic are independent. MCP attachment and proxy-session helpers
+//! remain v1-only.
+//!
+//! Here's a minimal example that initializes a v1 connection, creates a
+//! session, and sends a prompt:
 //!
 //! ```no_run
 //! use agent_client_protocol::Client;
