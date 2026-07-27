@@ -10,7 +10,7 @@ use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    connection::ConnectionRegistry,
+    connection::{ConnectionRegistry, OutboundLease},
     protocol::{HEADER_CONNECTION_ID, session_id_from_message},
 };
 
@@ -49,21 +49,16 @@ async fn run_ws(
     connection: Arc<crate::connection::Connection>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (replay, mut outbound_rx) = connection.subscribe_all_outbound().await;
+    let Some(mut outbound_rx) = connection.subscribe_all_outbound() else {
+        error!(connection_id = %connection_id, "WebSocket outbound mailbox already subscribed");
+        if let Some(conn) = registry.remove(&connection_id).await {
+            conn.shutdown().await;
+        }
+        return;
+    };
     let mut closed = connection.subscribe_closed();
 
     debug!(connection_id = %connection_id, "Starting WebSocket message loop");
-
-    for text in replay {
-        trace!(connection_id = %connection_id, payload = %text, "Agent → Client (replay): {} bytes", text.len());
-        if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
-            error!(connection_id = %connection_id, "WebSocket send failed during replay");
-            if let Some(conn) = registry.remove(&connection_id).await {
-                conn.shutdown().await;
-            }
-            return;
-        }
-    }
 
     run_ws_message_loop(
         &mut ws_tx,
@@ -84,7 +79,7 @@ async fn run_ws(
 async fn run_ws_message_loop(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, WsMessage>,
     ws_rx: &mut futures::stream::SplitStream<WebSocket>,
-    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    outbound_rx: &mut OutboundLease,
     closed: &mut tokio::sync::watch::Receiver<bool>,
     connection_id: &str,
     connection: &crate::connection::Connection,
@@ -151,7 +146,7 @@ async fn run_ws_message_loop(
 async fn forward_client_text<S>(
     text: String,
     ws_tx: &mut S,
-    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    outbound_rx: &mut OutboundLease,
     closed: &mut tokio::sync::watch::Receiver<bool>,
     connection_id: &str,
     connection: &crate::connection::Connection,
@@ -178,7 +173,7 @@ where
 
 async fn drain_outbound_until_closed<S>(
     ws_tx: &mut S,
-    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    outbound_rx: &mut OutboundLease,
     closed: &mut tokio::sync::watch::Receiver<bool>,
     connection_id: &str,
 ) where
@@ -212,7 +207,7 @@ async fn drain_outbound_until_closed<S>(
 
 async fn drain_queued_outbound<S>(
     ws_tx: &mut S,
-    outbound_rx: &mut tokio::sync::mpsc::Receiver<String>,
+    outbound_rx: &mut OutboundLease,
     connection_id: &str,
 ) where
     S: futures::Sink<WsMessage> + Unpin,
@@ -256,6 +251,8 @@ mod tests {
     use crate::connection::{AgentFactory, ConnectionRegistry};
 
     use super::*;
+
+    const ISSUE_288_BURST: usize = 1_025;
 
     struct CapturingAgentFactory {
         forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
@@ -409,6 +406,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_buffers_burst_without_polling_slow_subscriber() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    async move {
+                        ws.on_upgrade(move |socket| async move {
+                            let connection_id = ConnectionRegistry::next_connection_id();
+                            let connection = registry
+                                .create_websocket_connection_with_id(connection_id.clone())
+                                .await;
+                            let mut outbound_rx = connection.subscribe_all_outbound().unwrap();
+
+                            for index in 0..ISSUE_288_BURST {
+                                connection
+                                    .push_all_outbound_for_test(format!("message-{index}"))
+                                    .unwrap();
+                            }
+
+                            let mut closed = connection.subscribe_closed();
+                            let (mut ws_tx, mut ws_rx) = socket.split();
+                            let message_loop = run_ws_message_loop(
+                                &mut ws_tx,
+                                &mut ws_rx,
+                                &mut outbound_rx,
+                                &mut closed,
+                                &connection_id,
+                                &connection,
+                            );
+                            let finish = connection.shutdown();
+                            futures::join!(message_loop, finish);
+                            registry.remove(&connection_id).await;
+                        })
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+
+        timeout(Duration::from_secs(5), async {
+            for index in 0..ISSUE_288_BURST {
+                let frame = client.next().await.unwrap().unwrap();
+                let ClientWsMessage::Text(text) = frame else {
+                    panic!("expected text frame: {frame:?}");
+                };
+                assert_eq!(text, format!("message-{index}"));
+            }
+        })
+        .await
+        .expect("WebSocket should deliver the complete burst");
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn websocket_drains_final_agent_frame_before_closing() {
         let emit = Arc::new(tokio::sync::Notify::new());
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(
@@ -428,9 +491,7 @@ mod tests {
                                 .create_websocket_connection_with_id(connection_id.clone())
                                 .await;
                             connection.start_router().await;
-                            let (replay, mut outbound_rx) =
-                                connection.subscribe_all_outbound().await;
-                            assert!(replay.is_empty());
+                            let mut outbound_rx = connection.subscribe_all_outbound().unwrap();
                             let mut closed = connection.subscribe_closed();
 
                             emit.notify_one();
@@ -478,6 +539,13 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "test/final"
         ));
+        let terminal = timeout(Duration::from_secs(1), client.next())
+            .await
+            .expect("WebSocket should terminate after draining the final frame");
+        match terminal {
+            None | Some(Ok(ClientWsMessage::Close(_)) | Err(_)) => {}
+            Some(Ok(frame)) => panic!("expected WebSocket termination, got {frame:?}"),
+        }
 
         server.abort();
     }
@@ -493,8 +561,7 @@ mod tests {
             .create_websocket_connection_with_id(connection_id.clone())
             .await;
         connection.start_router().await;
-        let (replay, mut outbound_rx) = connection.subscribe_all_outbound().await;
-        assert!(replay.is_empty());
+        let mut outbound_rx = connection.subscribe_all_outbound().unwrap();
         let mut closed = connection.subscribe_closed();
 
         timeout(Duration::from_secs(1), async {
