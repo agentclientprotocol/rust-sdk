@@ -109,7 +109,10 @@ pub(crate) async fn handle_post(
             // A batched sibling may emit a callback or notification before all
             // response slots complete. Buffer that side traffic for the SSE
             // stream instead of mistaking it for the initialize response.
-            connection.route_outbound(frame).await;
+            if let Err(error) = connection.route_outbound(frame).await {
+                initialize_cleanup.cleanup().await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+            }
         };
         let init_response = match init_response_frame.to_json() {
             Ok(response) => response,
@@ -346,20 +349,23 @@ pub(crate) async fn handle_get(
     };
 
     let session_id = header_value(request.headers(), HEADER_SESSION_ID);
-    let (replay, mut receiver) = match session_id.as_deref() {
+    let receiver = match session_id.as_deref() {
         Some(session_id) => connection.subscribe_session_stream(session_id).await,
-        None => connection.subscribe_connection_stream().await,
+        None => connection.subscribe_connection_stream(),
+    };
+    let Some(mut receiver) = receiver else {
+        return (
+            StatusCode::CONFLICT,
+            "outbound stream already has a subscriber",
+        )
+            .into_response();
     };
     let mut closed = connection.subscribe_closed();
     let stream = async_stream::stream! {
-        for msg in replay {
-            trace!(payload = %msg, "SSE → client (replay)");
-            yield Ok::<_, Infallible>(Event::default().data(msg));
-        }
         loop {
             while let Ok(msg) = receiver.try_recv() {
                 trace!(payload = %msg, "SSE → client");
-                yield Ok(Event::default().data(msg));
+                yield Ok::<_, Infallible>(Event::default().data(msg));
             }
             if *closed.borrow() {
                 while let Ok(msg) = receiver.try_recv() {
@@ -485,7 +491,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::connection::{AgentFactory, OUTBOUND_STREAM_CAPACITY};
+    use crate::connection::AgentFactory;
+
+    const ISSUE_288_BURST: usize = 1_025;
 
     struct CapturingAgentFactory {
         forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
@@ -851,9 +859,12 @@ mod tests {
             .get(&connection_id)
             .await
             .expect("initialized connection should remain registered");
-        let (replay, _outbound) = connection.subscribe_connection_stream().await;
-        assert_eq!(replay.len(), 1);
-        let side_traffic = serde_json::from_str::<serde_json::Value>(&replay[0]).unwrap();
+        let mut outbound = connection.subscribe_connection_stream().unwrap();
+        let side_traffic = timeout(Duration::from_secs(1), outbound.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let side_traffic = serde_json::from_str::<serde_json::Value>(&side_traffic).unwrap();
         assert_eq!(side_traffic["method"], "custom/during-initialize");
         assert_eq!(side_traffic["params"]["phase"], "before-response");
 
@@ -977,10 +988,11 @@ mod tests {
             forwarded: forwarded_tx,
         })));
         let (connection_id, connection) = registry.create_connection().await;
-        let (_connection_replay, mut connection_outbound) =
-            connection.subscribe_connection_stream().await;
-        let (_session_replay, mut session_outbound) =
-            connection.subscribe_session_stream("session-1").await;
+        let mut connection_outbound = connection.subscribe_connection_stream().unwrap();
+        let mut session_outbound = connection
+            .subscribe_session_stream("session-1")
+            .await
+            .unwrap();
         connection.start_router().await;
 
         let body = json!([
@@ -1044,10 +1056,11 @@ mod tests {
             forwarded: forwarded_tx,
         })));
         let (connection_id, connection) = registry.create_connection().await;
-        let (_connection_replay, mut connection_outbound) =
-            connection.subscribe_connection_stream().await;
-        let (_session_replay, mut session_outbound) =
-            connection.subscribe_session_stream("session-1").await;
+        let mut connection_outbound = connection.subscribe_connection_stream().unwrap();
+        let mut session_outbound = connection
+            .subscribe_session_stream("session-1")
+            .await
+            .unwrap();
         connection.start_router().await;
 
         let body = json!([
@@ -1245,7 +1258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_closes_slow_subscriber_before_skipping_messages() {
+    async fn sse_buffers_burst_without_polling_slow_subscriber() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
             forwarded: forwarded_tx,
@@ -1261,25 +1274,112 @@ mod tests {
         let response = handle_get(registry, request).await;
         assert_eq!(response.status(), StatusCode::OK);
 
-        for i in 0..=OUTBOUND_STREAM_CAPACITY {
-            connection
-                .push_connection_stream_for_test(format!("message-{i}"))
-                .await;
-        }
+        timeout(Duration::from_secs(1), async {
+            for index in 0..ISSUE_288_BURST {
+                connection
+                    .push_connection_stream_for_test(format!("message-{index}"))
+                    .unwrap();
+            }
+        })
+        .await
+        .expect("enqueueing must not wait for the SSE body to be polled");
+        connection.shutdown().await;
 
         let body = timeout(
             Duration::from_secs(1),
             axum::body::to_bytes(response.into_body(), 1024 * 1024),
         )
         .await
-        .unwrap()
+        .expect("SSE body should close after shutdown")
         .unwrap();
         let body = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body.contains("message-0"));
-        assert!(body.contains(&format!("message-{}", OUTBOUND_STREAM_CAPACITY - 1)));
-        assert!(!body.contains(&format!("message-{OUTBOUND_STREAM_CAPACITY}")));
+        let messages = body
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .collect::<Vec<_>>();
+        let expected = (0..ISSUE_288_BURST)
+            .map(|index| format!("message-{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            messages,
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn sse_allows_one_active_subscriber_per_logical_stream() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let request = |session_id: Option<&str>| {
+            let mut request = Request::builder()
+                .method("GET")
+                .uri("/acp")
+                .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+                .header(HEADER_CONNECTION_ID, connection_id.as_str());
+            if let Some(session_id) = session_id {
+                request = request.header(HEADER_SESSION_ID, session_id);
+            }
+            request.body(Body::empty()).unwrap()
+        };
+
+        let connection_stream = handle_get(registry.clone(), request(None)).await;
+        assert_eq!(connection_stream.status(), StatusCode::OK);
+        let duplicate_connection_stream = handle_get(registry.clone(), request(None)).await;
+        assert_eq!(duplicate_connection_stream.status(), StatusCode::CONFLICT);
+
+        let session_one = handle_get(registry.clone(), request(Some("session-1"))).await;
+        assert_eq!(session_one.status(), StatusCode::OK);
+        let duplicate_session_one = handle_get(registry.clone(), request(Some("session-1"))).await;
+        assert_eq!(duplicate_session_one.status(), StatusCode::CONFLICT);
+        let session_two = handle_get(registry.clone(), request(Some("session-2"))).await;
+        assert_eq!(session_two.status(), StatusCode::OK);
+
+        for message in [
+            "already-read",
+            "queued-before-drop-1",
+            "queued-before-drop-2",
+        ] {
+            connection
+                .push_connection_stream_for_test(message.to_string())
+                .unwrap();
+        }
+        let mut connection_body = connection_stream.into_body().into_data_stream();
+        let first_event = timeout(Duration::from_secs(1), connection_body.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(first_event.to_vec()).unwrap(),
+            "data: already-read\n\n"
+        );
+        drop(connection_body);
+
+        connection
+            .push_connection_stream_for_test("queued-after-drop".to_string())
+            .unwrap();
+        let resumed_connection_stream = handle_get(registry.clone(), request(None)).await;
+        assert_eq!(resumed_connection_stream.status(), StatusCode::OK);
 
         connection.shutdown().await;
+        let body = timeout(
+            Duration::from_secs(1),
+            axum::body::to_bytes(resumed_connection_stream.into_body(), 1024),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            concat!(
+                "data: queued-before-drop-1\n\n",
+                "data: queued-before-drop-2\n\n",
+                "data: queued-after-drop\n\n",
+            )
+        );
     }
 
     #[tokio::test]
@@ -1301,7 +1401,7 @@ mod tests {
 
         connection
             .push_connection_stream_for_test("final-message".to_string())
-            .await;
+            .unwrap();
         connection.shutdown().await;
 
         let body = timeout(
@@ -1316,12 +1416,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_subscribed_after_connection_close_ends_without_hanging() {
+    async fn sse_subscribed_after_connection_close_drains_queued_frames() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
             forwarded: forwarded_tx,
         })));
         let (connection_id, connection) = registry.create_connection().await;
+        connection
+            .push_connection_stream_for_test("queued-before-subscribe".to_string())
+            .unwrap();
         connection.shutdown().await;
 
         let request = Request::builder()
@@ -1341,7 +1444,10 @@ mod tests {
         .await
         .expect("an already-closed SSE stream should end without hanging")
         .unwrap();
-        assert!(body.is_empty());
+        assert_eq!(
+            String::from_utf8(body.to_vec()).unwrap(),
+            "data: queued-before-subscribe\n\n"
+        );
     }
 
     #[tokio::test]
