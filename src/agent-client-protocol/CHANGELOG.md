@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow the portable protocol engine and transport abstractions to build for
+  the `wasm32-wasip1` and `wasm32-wasip2` targets. The native process-backed
+  `AcpAgent`, thread-backed `Stdio`, and associated `LineDirection` type are not
+  exposed on these targets. This crate does not provide a WASI runtime adapter;
+  embedders can supply transport through `Channel`, `Lines`, or
+  `futures::io`-compatible `ByteStreams`.
+  ([#262](https://github.com/agentclientprotocol/rust-sdk/issues/262))
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v1.3.0...v2.0.0) - 2026-07-23
 
 Version 2.0 keeps the stable ACP v1 wire schema unchanged while making coordinated breaking

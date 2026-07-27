@@ -277,7 +277,15 @@ an intermediate copy.
 `ByteStreams<Outgoing, Incoming>` works with `futures::io::AsyncWrite` and
 `AsyncRead`. It adapts them to `Lines`, parses each incoming JSON value into one
 frame, and serializes each outgoing frame to one newline-delimited JSON value.
-`Stdio` and `AcpAgent` build on this transport.
+Runtime adapters with different I/O traits can instead bridge asynchronous
+lines into `Lines`.
+
+The native `Stdio` and `AcpAgent` transports build on `ByteStreams`. Their
+current implementations depend on process spawning and blocking-thread
+facilities, so they are not exported on `wasm32-wasip1` or `wasm32-wasip2`.
+The runtime-neutral protocol engine and transport abstractions compile for
+both targets, but this crate does not provide a WASI executor or host I/O
+adapter.
 
 Use cases:
 
@@ -300,12 +308,21 @@ Benefits:
 - **Explicit wire state**: No serialize/parse round trip is required, while a
   malformed value received from a physical transport remains an explicit frame
 
+### Typed Component Interface
+
+The community [`yosh:acp@8.0.1`](https://wasm.directory/yosh/acp/8.0.1) package
+defines an independently versioned typed WIT projection of ACP for the WASI
+0.3 async component model. In that design, the host processes the ACP JSON-RPC
+connection outside the component and maps it to typed calls across the
+component boundary. The package provides interface definitions, not a
+transport or integration supplied by this SDK.
+
 ## Use Cases
 
 ### 1. Standard Agent (Stdio)
 
-Use `Stdio` for the current process or `AcpAgent` for a child process. Both use
-the same frame-aware line transport underneath.
+Use native `Stdio` for the current process or `AcpAgent` for a child process.
+Both use the same frame-aware line transport underneath.
 
 ### 2. In-Process Proxy Chain
 
@@ -317,7 +334,18 @@ no serialization.
 
 Split the socket and pass compatible read/write halves to `ByteStreams::new`.
 
-### 4. Testing with Mock Transport
+### 4. WASI Embedding
+
+Embedders supply and drive their own runtime and host transport:
+
+- Exchange `TransportFrame` values through an in-component `Channel`. A caller
+  using `ConnectTo::into_channel_and_future` must poll the returned future.
+- Exchange newline-delimited JSON through `Lines`, using a
+  `futures::Sink<String>` and
+  `futures::Stream<Item = std::io::Result<String>>`.
+- Use `ByteStreams` with `futures::io::AsyncRead` and `AsyncWrite`.
+
+### 5. Testing with Mock Transport
 
 Use `Channel::duplex()` to inject and inspect `TransportFrame` values without
 real I/O.

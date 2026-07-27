@@ -64,6 +64,20 @@
 //!
 //! [`agent_client_protocol_cookbook`]: https://docs.rs/agent-client-protocol-cookbook
 //!
+//! ## WASI
+//!
+//! The runtime-neutral protocol engine and transport abstractions compile for
+//! `wasm32-wasip1` and `wasm32-wasip2`. This crate does not provide a WASI
+//! executor or host I/O adapter. The native `AcpAgent` and `Stdio`
+//! implementations depend on process spawning and blocking-thread facilities,
+//! so they and `LineDirection` are not exported on these targets.
+//!
+//! Embedders provide their own runtime and transport. They can exchange
+//! `TransportFrame` values through `Channel`, newline-delimited JSON through
+//! `Lines`, or use `ByteStreams` with `futures::io::AsyncRead` and
+//! `AsyncWrite`. The embedding runtime must drive the resulting connection
+//! future.
+//!
 //! ## Core Concepts
 //!
 //! The [`concepts`] module provides detailed explanations of how agent-client-protocol works,
@@ -135,10 +149,14 @@ pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, Json
 mod session;
 pub use session::*;
 
+#[cfg(not(target_family = "wasm"))]
 mod acp_agent;
+#[cfg(not(target_family = "wasm"))]
 pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
 
+#[cfg(not(target_family = "wasm"))]
 mod stdio;
+#[cfg(not(target_family = "wasm"))]
 pub use stdio::Stdio;
 
 /// This is a hack that must be given as the final argument of
