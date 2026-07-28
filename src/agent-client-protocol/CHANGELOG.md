@@ -14,8 +14,13 @@
   cancellation. `Client.v2()` and `Agent.v2()` callbacks receive a
   `V2ConnectionTo` whose unversioned `build_session*` and `resume_session*`
   methods expose only the v2 lifecycle. Session updates and interactive
-  requests remain on typed connection handlers; MCP attachment and
-  proxy-session helpers remain v1-only.
+  requests remain on typed connection handlers. With
+  `unstable_mcp_over_acp`, `V2SessionBuilder::with_mcp_server` adds native
+  per-session MCP attachment while preserving independent response
+  consumption. MCP routes are installed and runners begin executing before
+  `session/new` is published; successful attachments remain active for the
+  connection lifetime. Global proxy attachment and proxy-session helpers
+  remain v1-only.
 - *(unstable-v2)* Expose protocol-neutral dynamic handler registration on
   `V2ConnectionTo`.
 - *(unstable-v2)* Add `ConnectionTo::spawn_connection_with_context` for raw

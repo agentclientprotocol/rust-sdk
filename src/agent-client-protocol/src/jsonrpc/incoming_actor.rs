@@ -347,6 +347,10 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             dynamic_handlers.remove(&uuid);
         }
         DynamicHandlerMessage::Barrier => {}
+        #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+        DynamicHandlerMessage::AcknowledgedBarrier(acknowledgment) => {
+            let _ = acknowledgment.send(());
+        }
     }
     Ok(())
 }
@@ -470,25 +474,10 @@ pub(super) fn dispatch_from_response(
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
 ) -> (Dispatch, ResponseDispatch) {
-    let PendingReply {
-        method,
-        role_id,
-        sender,
-        cancellation_disarm,
-        ordering,
-    } = pending_reply;
     let response_dispatch = ResponseDispatch::default();
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
-    let router = ResponseRouter::new(
-        method.clone(),
-        id.clone(),
-        role_id,
-        sender,
-        cancellation_disarm,
-        ordering,
-        response_dispatch.clone(),
-    );
+    let router = ResponseRouter::new(id.clone(), pending_reply, response_dispatch.clone());
     (Dispatch::Response(result, router), response_dispatch)
 }
 

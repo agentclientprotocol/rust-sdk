@@ -207,10 +207,19 @@ them in order. If a handler forwards updates to another task, the application
 is responsible for any additional projection-drained barrier it needs before
 treating replay as locally applied.
 
-Dropping command handles has no network or inbound-routing side effect. If an
-application wants stream ergonomics, it can fan typed updates out from the
-connection handler with an explicit buffering and subscriber policy. MCP
-attachment and proxy-session helpers are still v1-only.
+Dropping command handles has no network or inbound-routing side effect. For a
+session created with `V2SessionBuilder::with_mcp_server`, the SDK installs the
+MCP routes and initially polls their runner tasks before publishing
+`session/new`, so the agent can connect to those servers during session setup.
+Runners may continue asynchronous initialization; custom connectors must be
+able to queue connections and messages once constructed. A successful setup
+promotes the attachment to the connection lifetime; any setup failure cleans it
+up. This attachment requires both `unstable_protocol_v2` and
+`unstable_mcp_over_acp`. Global proxy attachment and proxy-session helpers
+remain v1-only.
+
+If an application wants stream ergonomics, it can fan typed updates out from
+the connection handler with an explicit buffering and subscriber policy.
 
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
@@ -316,11 +325,14 @@ agent:
 
 ## Draft schema changes in schema 1.5 and 1.6
 
-The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 adds
-semantic newtypes for paths, media types, IDs, and cursors; renames
-`DiffPatch.diff` to `DiffPatch.text`; adds terminal state and output update
-types; and makes v1/v2 conversions fallible and generic. These are draft API
-changes rather than stable v1 wire changes. See [Migrating to
+The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
+semantic newtypes for paths, media types, IDs, and cursors; renamed
+`DiffPatch.diff` to `DiffPatch.text`; and added terminal state and output update
+types. The next schema dependency update removes the former schema-wide v1/v2
+conversion API: versioned implementations should remain separate, with
+purpose-specific adapters at runtime boundaries where the required state and
+policy are available. These are draft API changes rather than stable v1 wire
+changes. See [Migrating to
 v2.0](./migration_v2.0.md#draft-v2-schema-updates) for concrete source changes.
 
 Schema 1.6 adds `Cancelled` tool-call and plan-entry statuses to draft v2.
@@ -328,5 +340,4 @@ Programmatic tool-call names are available in both protocol versions through
 the separate `unstable_tool_call_name` feature. Draft v2 users must enable both
 `unstable_protocol_v2` and `unstable_tool_call_name`. In v2, an omitted name
 leaves the existing value unchanged, `null` clears it, and a string replaces
-it. V1 cannot clear an existing name, so converting a v2 `null` name to v1
-fails.
+it. V1 cannot express the explicit v2 `null` clear operation.

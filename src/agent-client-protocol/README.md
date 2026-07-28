@@ -45,7 +45,9 @@ Draft protocol v2 is opt-in through `unstable_protocol_v2`. `Client.v2()` and
 high-level, command-only session helpers because prompt acceptance and inbound
 traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
-MCP attachment and proxy-session helpers remain v1-only.
+Per-session MCP attachment through `V2SessionBuilder` is available with both
+`unstable_protocol_v2` and `unstable_mcp_over_acp`. Global proxy attachment and
+proxy-session helpers remain v1-only.
 
 ## MCP Server Attachment
 
@@ -55,7 +57,10 @@ the `with_mcp_server` builder methods requires `unstable_mcp_over_acp`.
 Attached servers are advertised with native `McpServer::Acp` declarations and
 communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
 `agent-client-protocol-polyfill` immediately before an HTTP-capable agent.
-These ACP attachment and proxy paths currently use stable protocol v1.
+Stable protocol v1 supports per-session and global proxy attachment. Draft
+protocol v2 supports per-session `session/new` attachment when both unstable
+features are enabled; successful attachments remain active for the connection
+lifetime, and its global proxy path remains v1-only.
 
 ## Learning More
 

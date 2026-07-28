@@ -87,10 +87,30 @@ pub(super) async fn outgoing_protocol_actor(
                 id,
                 method,
                 untyped,
+                readiness,
             } => {
                 // Requests register their response destination synchronously
                 // before entering this queue. EOF removes that registration,
                 // so skip work that can no longer receive a response.
+                if !pending_replies.contains(&id) {
+                    continue;
+                }
+
+                if let Some(readiness) = readiness
+                    && let Err(error) = readiness.await
+                {
+                    tracing::warn!(
+                        ?id,
+                        %method,
+                        ?error,
+                        "Outgoing request readiness failed"
+                    );
+                    if let Some(pending_reply) = pending_replies.remove(&id) {
+                        pending_reply.fail(error);
+                    }
+                    continue;
+                }
+
                 if !pending_replies.contains(&id) {
                     continue;
                 }

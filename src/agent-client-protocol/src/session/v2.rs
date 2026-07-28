@@ -1,6 +1,66 @@
 use std::path::Path;
 
-use crate::{Agent, SentRequest, V2ConnectionTo, role::HasPeer, schema::v2};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use futures::{
+    channel::oneshot,
+    future::{self, Either},
+};
+
+use crate::{
+    Agent, DynamicHandlerGuard, SentRequest, V2ConnectionTo,
+    jsonrpc::run::{NullRun, RunWithConnectionTo},
+    role::HasPeer,
+    schema::v2,
+};
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+use crate::{ConnectionTo, jsonrpc::run::ChainRun, mcp_server::McpServer};
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+async fn run_pending_mcp_attachment<Counterpart, Run>(
+    connection: ConnectionTo<Counterpart>,
+    run: Run,
+    started_tx: oneshot::Sender<Result<(), crate::Error>>,
+    promotion_rx: oneshot::Receiver<()>,
+) -> Result<(), crate::Error>
+where
+    Counterpart: HasPeer<Agent>,
+    Run: RunWithConnectionTo<Counterpart>,
+{
+    let mut run = Box::pin(run.run_with_connection_to(connection));
+    let first_poll =
+        future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(run.as_mut(), cx)))
+            .await;
+    let readiness = match &first_poll {
+        std::task::Poll::Ready(result) => result.clone(),
+        std::task::Poll::Pending => Ok(()),
+    };
+    drop(started_tx.send(readiness));
+
+    match first_poll {
+        std::task::Poll::Ready(Ok(())) => {
+            let _ = promotion_rx.await;
+            Ok(())
+        }
+        // The request has not been published yet, so report an immediate
+        // startup failure through its readiness result without failing the
+        // whole connection.
+        std::task::Poll::Ready(Err(_)) => Ok(()),
+        std::task::Poll::Pending => match future::select(run, promotion_rx).await {
+            Either::Left((result, promotion_rx)) => {
+                // A Pending first poll releases session/new for publication.
+                // From that point onward the agent may already be using this
+                // attachment, so runner failures are connection-fatal just as
+                // they are for other connection runners.
+                result?;
+                let _ = promotion_rx.await;
+                Ok(())
+            }
+            Either::Right((Ok(()), run)) => run.await,
+            Either::Right((Err(_), _run)) => Ok(()),
+        },
+    }
+}
 
 impl<Counterpart> V2ConnectionTo<Counterpart>
 where
@@ -70,19 +130,24 @@ where
 /// session request handlers on [`crate::Builder`] before connecting, then use
 /// [`Self::start_session`] to create the command-only [`V2Session`] handle.
 ///
-/// Per-session MCP attachment and proxy-session helpers are currently available
-/// only through the stable protocol v1 [`crate::SessionBuilder`].
+/// With both the `unstable_protocol_v2` and `unstable_mcp_over_acp` features,
+/// [`Self::with_mcp_server`] attaches an MCP server to the new session.
+/// Proxy-session helpers remain available only through the stable protocol v1
+/// [`crate::SessionBuilder`].
 #[must_use = "call `start_session` to send the `session/new` request"]
 #[derive(Debug)]
-pub struct V2SessionBuilder<Counterpart>
+pub struct V2SessionBuilder<Counterpart, Run = NullRun>
 where
     Counterpart: HasPeer<Agent>,
+    Run: RunWithConnectionTo<Counterpart>,
 {
     connection: V2ConnectionTo<Counterpart>,
     request: v2::NewSessionRequest,
+    dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
+    run: Run,
 }
 
-impl<Counterpart> V2SessionBuilder<Counterpart>
+impl<Counterpart> V2SessionBuilder<Counterpart, NullRun>
 where
     Counterpart: HasPeer<Agent>,
 {
@@ -90,7 +155,41 @@ where
         Self {
             connection: connection.clone(),
             request,
+            dynamic_handler_registrations: Vec::new(),
+            run: NullRun,
         }
+    }
+}
+
+impl<Counterpart, Run> V2SessionBuilder<Counterpart, Run>
+where
+    Counterpart: HasPeer<Agent>,
+    Run: RunWithConnectionTo<Counterpart>,
+{
+    /// Attach an MCP server to this new protocol v2 session.
+    ///
+    /// This method is available when both `unstable_protocol_v2` and
+    /// `unstable_mcp_over_acp` are enabled. MCP routes are installed and their
+    /// runner tasks receive an initial poll before `session/new` is published,
+    /// allowing the agent to connect while handling session setup. A
+    /// successful attachment remains active for the lifetime of the connection.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn with_mcp_server<McpRun>(
+        mut self,
+        mcp_server: McpServer<Counterpart, McpRun>,
+    ) -> Result<V2SessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
+    where
+        McpRun: RunWithConnectionTo<Counterpart>,
+    {
+        let (handler, mcp_run) = mcp_server.into_v2_handler_and_runner();
+        self.dynamic_handler_registrations
+            .push(handler.into_dynamic_handler(&mut self.request, &self.connection)?);
+        Ok(V2SessionBuilder {
+            connection: self.connection,
+            request: self.request,
+            dynamic_handler_registrations: self.dynamic_handler_registrations,
+            run: ChainRun::new(self.run, mcp_run),
+        })
     }
 
     /// Send `session/new` and return its independently consumable request.
@@ -99,24 +198,85 @@ where
     /// complete [`v2::NewSessionResponse`]. Consume the returned request with
     /// [`SentRequest::block_task`], [`SentRequest::on_receiving_result`], or
     /// another explicit [`SentRequest`] completion mode.
-    pub fn start_session(
-        self,
-    ) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>> {
+    ///
+    /// Attached MCP routes are installed and their runner tasks begin
+    /// executing before the request is published. A valid success response
+    /// promotes them to the connection lifetime, independently from how this
+    /// request handle is consumed. Setup errors clean up the pending
+    /// attachment.
+    pub fn start_session(self) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>>
+    where
+        Run: 'static,
+    {
         let Self {
             connection,
             request,
+            dynamic_handler_registrations,
+            run,
         } = self;
         let session_connection = connection.clone();
+        let raw_connection = connection.raw_connection().clone();
 
-        connection
-            .send_request_to(Agent, request)
-            .map(move |response| {
-                let session = V2Session {
-                    session_id: response.session_id.clone(),
-                    connection: session_connection,
-                };
-                Ok(OpenedV2Session { session, response })
-            })
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        let sent_request = if dynamic_handler_registrations.is_empty() {
+            drop(run);
+            raw_connection.send_request_to(Agent, request)
+        } else {
+            let handlers_ready = raw_connection.dynamic_handler_barrier();
+            let (runner_started_tx, runner_started_rx) = oneshot::channel();
+            let (promotion_tx, promotion_rx) = oneshot::channel();
+            let runner_started = match raw_connection.spawn(run_pending_mcp_attachment(
+                raw_connection.clone(),
+                run,
+                runner_started_tx,
+                promotion_rx,
+            )) {
+                Ok(()) => Either::Left(async move {
+                    runner_started_rx.await.map_err(|error| {
+                        crate::util::internal_error(format!(
+                            "MCP runner stopped before its initial poll: {error}"
+                        ))
+                    })?
+                }),
+                Err(error) => Either::Right(future::ready(Err(error))),
+            };
+            let readiness = async move {
+                future::try_join(handlers_ready, runner_started).await?;
+                Ok(())
+            };
+
+            raw_connection.send_request_to_with_response_hook_after(
+                Agent,
+                request,
+                readiness,
+                move |_response| {
+                    promotion_tx.send(()).map_err(|()| {
+                        crate::util::internal_error(
+                            "MCP runner stopped before session setup completed",
+                        )
+                    })?;
+                    dynamic_handler_registrations
+                        .into_iter()
+                        .for_each(DynamicHandlerGuard::detach);
+                    Ok(())
+                },
+            )
+        };
+
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        let sent_request = {
+            drop(dynamic_handler_registrations);
+            drop(run);
+            raw_connection.send_request_to(Agent, request)
+        };
+
+        sent_request.map(move |response| {
+            let session = V2Session {
+                session_id: response.session_id.clone(),
+                connection: session_connection,
+            };
+            Ok(OpenedV2Session { session, response })
+        })
     }
 }
 

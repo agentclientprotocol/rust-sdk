@@ -85,7 +85,10 @@
 //! tools to the agent:
 //!
 //! MCP attachment requires the `unstable_mcp_over_acp` feature. Standalone MCP
-//! servers remain available without it.
+//! servers remain available without it. Draft protocol v2 per-session
+//! attachment uses `V2SessionBuilder::with_mcp_server` and additionally
+//! requires `unstable_protocol_v2`; successful v2 attachments remain active
+//! for the connection lifetime.
 //!
 //! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};

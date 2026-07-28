@@ -22,8 +22,12 @@ This repository is the official **Rust SDK** for ACP. It provides crates for bui
 Native MCP-over-ACP support is currently opt-in through the core crate's
 `unstable_mcp_over_acp` feature. Standalone MCP servers need no ACP transport
 feature; the rmcp integration exposes a matching passthrough feature when those
-servers are attached to ACP. MCP attachment and proxy-session helpers currently
-use stable protocol v1.
+servers are attached to ACP. Stable protocol v1 supports per-session and global
+proxy attachment. Per-session attachment through the draft `V2SessionBuilder`
+is also available when both `unstable_protocol_v2` and
+`unstable_mcp_over_acp` are enabled. Successful v2 attachments remain active
+for the connection lifetime; global proxy attachment and proxy-session helpers
+remain v1-only.
 
 **Proxy orchestration**
 
