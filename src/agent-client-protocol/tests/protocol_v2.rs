@@ -329,6 +329,8 @@ struct InitializingV2Client {
     expected_session_id: &'static str,
 }
 
+struct FutureInitializeV2Client;
+
 struct DropTrackedClient<C> {
     client: C,
     dropped: Arc<AtomicBool>,
@@ -384,6 +386,40 @@ impl ConnectTo<Agent> for InitializingV2Client {
                 Ok(())
             })
             .await
+    }
+}
+
+impl ConnectTo<Agent> for FutureInitializeV2Client {
+    async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
+        let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
+        let agent_task = tokio::spawn(agent_future);
+
+        channel
+            .tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+                "initialize".into(),
+                initialize_params_with_extensions(ProtocolVersion::V2)?,
+                v1::RequestId::Number(1),
+            )?))
+            .map_err(Error::into_internal_error)?;
+
+        while let Some(message) = channel.rx.next().await {
+            let TransportFrame::Single(message) = message else {
+                continue;
+            };
+            let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
+                continue;
+            };
+            let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            agent_task.abort();
+            return Ok(());
+        }
+
+        agent_task.abort();
+        Err(agent_client_protocol::util::internal_error(
+            "v2 agent did not respond to initialize",
+        ))
     }
 }
 
@@ -977,6 +1013,26 @@ async fn client_protocol_connector_routes_to_v2_client_for_v2_agent() -> Result<
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn client_protocol_connector_does_not_require_v1_representability_for_v2_agent()
+-> Result<(), Error> {
+    Client
+        .protocol_connector()
+        .with_v2(|| FutureInitializeV2Client)
+        .connect_to(|| {
+            Agent.v2().on_receive_request(
+                async |initialize: v2::InitializeRequest, responder, _cx| {
+                    assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+                    responder.respond(v2_initialize_response_with_session(
+                        initialize.protocol_version,
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn client_protocol_connector_does_not_retry_after_v2_initialize_rejection()
 -> Result<(), Error> {
     Client
@@ -1375,6 +1431,23 @@ async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(),
                     "{:?}",
                     initialize.client_capabilities
                 );
+                assert_eq!(
+                    initialize
+                        .client_capabilities
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("source")),
+                    Some(&Value::String("v2".into()))
+                );
+                assert_eq!(
+                    initialize
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.get("request")),
+                    Some(&Value::Bool(true))
+                );
+                #[cfg(feature = "unstable_auth_methods")]
+                assert!(initialize.client_capabilities.auth.terminal);
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1383,10 +1456,22 @@ async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(),
     Client
         .v2()
         .connect_with(agent, async |cx| {
+            let mut capabilities = v2::ClientCapabilities::new().meta(Map::from_iter([(
+                "source".into(),
+                Value::String("v2".into()),
+            )]));
+            #[cfg(feature = "unstable_auth_methods")]
+            {
+                capabilities = capabilities.auth(
+                    v2::AuthCapabilities::new().terminal(v2::TerminalAuthCapabilities::new()),
+                );
+            }
             let request = v2::InitializeRequest::new(
                 ProtocolVersion::V2,
                 v2::Implementation::new("v2-metadata-client", "9.9.9").title("V2 Metadata Client"),
-            );
+            )
+            .capabilities(capabilities)
+            .meta(Map::from_iter([("request".into(), Value::Bool(true))]));
             let error = cx
                 .send_request(request)
                 .block_task()

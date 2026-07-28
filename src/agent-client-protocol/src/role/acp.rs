@@ -195,8 +195,10 @@ impl ClientProtocolConnector {
                 let agent_connection = RunningProtocolPeer::new(agent());
                 let (client, initialize) =
                     start_client_protocol(ClientProtocol::V2, client).await?;
-                let v2_initialize_as_v1 =
-                    normalize_initialize_params_for_agent_protocol(&initialize, AgentProtocol::V1)?;
+                // This normalization is only a probe for the connection-reuse
+                // optimization. A request that cannot be represented in v1
+                // can still be valid v2 traffic and must reach the agent.
+                let v2_initialize_as_v1 = normalize_v2_initialize_params_for_reuse(&initialize);
                 let (client, agent_connection, initialize_response) =
                     send_initialize_and_receive(client, agent_connection, initialize).await?;
 
@@ -206,12 +208,13 @@ impl ClientProtocolConnector {
                     let fallback_client = v1.create();
                     let (fallback_client, fallback_initialize) =
                         start_client_protocol(ClientProtocol::V1, fallback_client).await?;
-                    let v1_initialize = normalize_initialize_params_for_agent_protocol(
-                        &fallback_initialize,
-                        AgentProtocol::V1,
-                    )?;
+                    let v1_initialize =
+                        validated_initialize_params::<InitializeRequest>(&fallback_initialize)?;
 
-                    if v1_initialize == v2_initialize_as_v1 {
+                    if v2_initialize_as_v1
+                        .as_ref()
+                        .is_ok_and(|v2_initialize| v2_initialize == &v1_initialize)
+                    {
                         let fallback_response = initialize_response.with_id(
                             initialize_request_id(&fallback_initialize)
                                 .expect("validated initialize request has an id"),
@@ -538,10 +541,9 @@ fn select_agent_protocol(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn normalize_initialize_params_for_agent_protocol(
+fn initialize_request_params(
     message: &RawJsonRpcMessage,
-    selected: AgentProtocol,
-) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
+) -> Result<&serde_json::Map<String, serde_json::Value>, crate::Error> {
     let RawJsonRpcMessage::Request(request) = message else {
         return Err(
             crate::Error::invalid_request().data("first ACP message must be an initialize request")
@@ -555,15 +557,39 @@ fn normalize_initialize_params_for_agent_protocol(
     let Some(RawJsonRpcParams::Object(params)) = &request.params else {
         return Err(invalid_initialize_protocol_version());
     };
-    let Some(protocol_version) = params.get("protocolVersion") else {
+    if !params.contains_key("protocolVersion") {
         return Err(invalid_initialize_protocol_version());
-    };
-
-    let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
-        .map_err(|_| invalid_initialize_protocol_version())?;
-    let mut params = params.clone();
-    rewrite_initialize_params(&mut params, requested, selected)?;
+    }
     Ok(params)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn validated_initialize_params<T: DeserializeOwned>(
+    message: &RawJsonRpcMessage,
+) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
+    let params = initialize_request_params(message)?;
+    parse_initialize_params::<T>(params)?;
+    Ok(params.clone())
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn normalize_v2_initialize_params_for_reuse(
+    message: &RawJsonRpcMessage,
+) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
+    let params = initialize_request_params(message)?;
+    let requested = params
+        .get("protocolVersion")
+        .cloned()
+        .ok_or_else(invalid_initialize_protocol_version)
+        .and_then(|version| {
+            serde_json::from_value::<ProtocolVersion>(version)
+                .map_err(|_| invalid_initialize_protocol_version())
+        })?;
+    if requested == ProtocolVersion::V1 {
+        parse_initialize_params::<InitializeRequest>(params)?;
+        return Ok(params.clone());
+    }
+    normalize_v2_initialize_params_for_v1(params, true)
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -589,27 +615,203 @@ fn rewrite_initialize_params(
 
     match selected {
         AgentProtocol::V1 => {
-            let mut initialize = if requested >= ProtocolVersion::V2 {
-                v2::conversion::try_v2_to_v1(parse_initialize_params::<v2::InitializeRequest>(
-                    params,
-                )?)
-                .map_err(invalid_initialize_params)?
-            } else {
-                parse_initialize_params::<InitializeRequest>(params)?
-            };
-            initialize.protocol_version = ProtocolVersion::V1;
-            replace_initialize_params(params, initialize)
+            debug_assert!(requested >= ProtocolVersion::V2);
+            *params = normalize_v2_initialize_params_for_v1(params, false)?;
+            Ok(())
         }
         AgentProtocol::V2 => {
-            let mut initialize = if requested >= ProtocolVersion::V2 {
-                parse_initialize_params::<v2::InitializeRequest>(params)?
-            } else {
-                v2::conversion::try_v1_to_v2(parse_initialize_params::<InitializeRequest>(params)?)
-                    .map_err(invalid_initialize_params)?
-            };
-            initialize.protocol_version = ProtocolVersion::V2;
-            replace_initialize_params(params, initialize)
+            parse_initialize_params::<v2::InitializeRequest>(params)?;
+            params.insert(
+                "protocolVersion".into(),
+                serde_json::to_value(ProtocolVersion::V2)
+                    .map_err(crate::Error::into_internal_error)?,
+            );
+            Ok(())
         }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn normalize_v2_initialize_params_for_v1(
+    params: &serde_json::Map<String, serde_json::Value>,
+    require_lossless: bool,
+) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
+    // Canonicalize through v2 first so tolerant field semantics are applied.
+    // A lossless result is only required by the connection-reuse probe. Normal
+    // v1 routing may discard fields that have no meaning in the selected
+    // protocol version.
+    let initialize = parse_initialize_params::<v2::InitializeRequest>(params)?;
+    let mut target = serialize_initialize_params(initialize)?;
+    if require_lossless && target != *params {
+        return Err(invalid_initialize_params(
+            "v2 initialize parameters are not losslessly representable in v1",
+        ));
+    }
+
+    target.insert(
+        "protocolVersion".into(),
+        serde_json::to_value(ProtocolVersion::V1).map_err(crate::Error::into_internal_error)?,
+    );
+    let info = target
+        .remove("info")
+        .ok_or_else(|| invalid_initialize_params("v2 InitializeRequest.info is required"))?;
+    target.insert("clientInfo".into(), info);
+    let capabilities = target
+        .remove("capabilities")
+        .and_then(|capabilities| capabilities.as_object().cloned())
+        .ok_or_else(|| {
+            crate::util::internal_error("v2 initialize capabilities did not serialize as an object")
+        })?;
+    let mut capabilities = capabilities;
+    if let Some(auth) = capabilities
+        .get_mut("auth")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let terminal = auth.remove("terminal");
+        if require_lossless
+            && terminal
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|terminal| terminal.contains_key("_meta"))
+        {
+            return Err(invalid_initialize_params(
+                "v2 terminal authentication metadata is not representable in v1",
+            ));
+        }
+        auth.insert("terminal".into(), terminal.is_some().into());
+    }
+    capabilities.insert(
+        "session".into(),
+        serde_json::json!({ "configOptions": { "boolean": {} } }),
+    );
+    target.insert("clientCapabilities".into(), capabilities.into());
+
+    let initialize = parse_initialize_params::<InitializeRequest>(&target)?;
+    let normalized = serialize_initialize_params(initialize)?;
+    if require_lossless && !json_object_contains(&normalized, &target) {
+        return Err(invalid_initialize_params(
+            "v2 initialize parameters are not losslessly representable in v1",
+        ));
+    }
+    Ok(normalized)
+}
+
+#[cfg(all(test, feature = "unstable_protocol_v2"))]
+mod initialize_normalization_tests {
+    use super::*;
+
+    fn v2_initialize_params() -> serde_json::Map<String, serde_json::Value> {
+        let value = serde_json::to_value(v2::InitializeRequest::new(
+            ProtocolVersion::V2,
+            v2::Implementation::new("test-client", "1.0.0"),
+        ))
+        .expect("serialize v2 initialize request");
+        value
+            .as_object()
+            .expect("initialize params serialize as an object")
+            .clone()
+    }
+
+    #[test]
+    fn v2_tolerant_fields_are_canonicalized_before_v1_normalization() {
+        let mut params = v2_initialize_params();
+        params.insert(
+            "capabilities".into(),
+            serde_json::Value::String("malformed".into()),
+        );
+        params.insert(
+            "_meta".into(),
+            serde_json::Value::String("malformed".into()),
+        );
+
+        let normalized = normalize_v2_initialize_params_for_v1(&params, false)
+            .expect("tolerant v2 fields should normalize through their defaults");
+        let normalized = serde_json::Value::Object(normalized);
+
+        assert!(normalized.get("_meta").is_none());
+        assert_eq!(
+            normalized.pointer("/clientCapabilities/session/configOptions/boolean"),
+            Some(&serde_json::json!({}))
+        );
+    }
+
+    #[test]
+    fn noncanonical_v2_fields_disable_reuse_but_not_v1_routing() {
+        let mut params = v2_initialize_params();
+        params
+            .get_mut("info")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("v2 initialize info is an object")
+            .insert("buildCommit".into(), serde_json::json!("abc123"));
+
+        normalize_v2_initialize_params_for_v1(&params, false)
+            .expect("v1 routing may ignore parameters unavailable in v1");
+        normalize_v2_initialize_params_for_v1(&params, true)
+            .expect_err("connection reuse requires lossless normalization");
+    }
+
+    #[test]
+    fn v1_reuse_probe_preserves_raw_initialize_params() {
+        let mut params = v2_initialize_params();
+        params.insert(
+            "protocolVersion".into(),
+            serde_json::json!(ProtocolVersion::V1),
+        );
+        let message = RawJsonRpcMessage::request(
+            "initialize".into(),
+            serde_json::Value::Object(params.clone()),
+            RequestId::Number(1),
+        )
+        .expect("build initialize request");
+
+        let normalized = normalize_v2_initialize_params_for_reuse(&message)
+            .expect("v1-shaped initialize request should be valid");
+
+        assert_eq!(normalized, params);
+    }
+
+    #[cfg(feature = "unstable_auth_methods")]
+    #[test]
+    fn null_v2_terminal_marker_meta_is_omitted_before_v1_normalization() {
+        let mut params = v2_initialize_params();
+        params.insert(
+            "capabilities".into(),
+            serde_json::json!({
+                "auth": {
+                    "terminal": { "_meta": null }
+                }
+            }),
+        );
+
+        let normalized = normalize_v2_initialize_params_for_v1(&params, false)
+            .expect("null marker metadata is equivalent to omission");
+        let normalized = serde_json::Value::Object(normalized);
+
+        assert_eq!(
+            normalized.pointer("/clientCapabilities/auth/terminal"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
+
+    #[cfg(feature = "unstable_auth_methods")]
+    #[test]
+    fn terminal_marker_metadata_disables_reuse_but_not_v1_routing() {
+        let mut params = v2_initialize_params();
+        params.insert(
+            "capabilities".into(),
+            serde_json::json!({
+                "auth": {
+                    "terminal": {
+                        "_meta": { "source": "test" }
+                    }
+                }
+            }),
+        );
+
+        normalize_v2_initialize_params_for_v1(&params, false)
+            .expect("v1 routing may discard terminal marker metadata");
+        normalize_v2_initialize_params_for_v1(&params, true)
+            .expect_err("connection reuse must preserve terminal marker metadata");
     }
 }
 
@@ -622,18 +824,35 @@ fn parse_initialize_params<T: DeserializeOwned>(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn replace_initialize_params(
-    params: &mut serde_json::Map<String, serde_json::Value>,
+fn serialize_initialize_params(
     initialize: impl Serialize,
-) -> Result<(), crate::Error> {
+) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
     let value = serde_json::to_value(initialize).map_err(crate::Error::into_internal_error)?;
     let serde_json::Value::Object(object) = value else {
         return Err(crate::util::internal_error(
             "initialize params did not serialize to an object",
         ));
     };
-    *params = object;
-    Ok(())
+    Ok(object)
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn json_object_contains(
+    actual: &serde_json::Map<String, serde_json::Value>,
+    expected: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    fn contains(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+        match (actual, expected) {
+            (serde_json::Value::Object(actual), serde_json::Value::Object(expected)) => expected
+                .iter()
+                .all(|(key, value)| actual.get(key).is_some_and(|item| contains(item, value))),
+            _ => actual == expected,
+        }
+    }
+
+    expected
+        .iter()
+        .all(|(key, value)| actual.get(key).is_some_and(|item| contains(item, value)))
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

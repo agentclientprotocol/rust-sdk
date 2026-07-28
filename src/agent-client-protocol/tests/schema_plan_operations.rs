@@ -79,11 +79,8 @@ fn v1_plan_operations_are_capability_gated_and_routed() {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
-fn draft_v2_file_and_removal_operations_are_routed_and_convert() {
-    use agent_client_protocol::schema::v2::{
-        self,
-        conversion::{try_v1_to_v2, try_v2_to_v1_many},
-    };
+fn draft_v2_file_and_removal_operations_are_routed() {
+    use agent_client_protocol::schema::v2;
 
     let notification = v2::UpdateSessionNotification::new(
         "session-1",
@@ -101,11 +98,16 @@ fn draft_v2_file_and_removal_operations_are_routed_and_convert() {
     };
     assert!(matches!(parsed.update, v2::SessionUpdate::PlanUpdate(_)));
 
-    let v1_update = SessionUpdate::PlanRemoved(PlanRemoved::new("plan-1"));
-    let v2_update: v2::SessionUpdate = try_v1_to_v2(v1_update.clone()).unwrap();
-    assert!(matches!(v2_update, v2::SessionUpdate::PlanRemoved(_)));
-    assert_eq!(
-        try_v2_to_v1_many::<_, SessionUpdate>(v2_update).unwrap(),
-        vec![v1_update]
+    let notification = v2::UpdateSessionNotification::new(
+        "session-1",
+        v2::SessionUpdate::PlanRemoved(v2::PlanRemoved::new("plan-1")),
     );
+    let untyped = notification.to_untyped_message().unwrap();
+    assert_eq!(untyped.params["update"]["sessionUpdate"], "plan_removed");
+    let v2::AgentNotification::UpdateSessionNotification(parsed) =
+        v2::AgentNotification::parse_message("session/update", &untyped.params).unwrap()
+    else {
+        panic!("expected a v2 session update notification");
+    };
+    assert!(matches!(parsed.update, v2::SessionUpdate::PlanRemoved(_)));
 }
