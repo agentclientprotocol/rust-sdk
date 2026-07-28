@@ -2033,6 +2033,43 @@ pub(crate) struct ResponsePayload {
     pub(crate) ack_tx: Option<oneshot::Sender<()>>,
 }
 
+type ResponseRouteHook =
+    Box<dyn FnOnce(&str, &serde_json::Value) -> Result<(), crate::Error> + Send>;
+
+/// A prerequisite that must complete before an outgoing request is published
+/// to the transport.
+struct RequestReadiness {
+    future: BoxFuture<'static, Result<(), crate::Error>>,
+}
+
+impl RequestReadiness {
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    fn new(future: impl Future<Output = Result<(), crate::Error>> + Send + 'static) -> Self {
+        Self {
+            future: future.boxed(),
+        }
+    }
+}
+
+impl Future for RequestReadiness {
+    type Output = Result<(), crate::Error>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.future.as_mut().poll(cx)
+    }
+}
+
+impl Debug for RequestReadiness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RequestReadiness")
+            .finish_non_exhaustive()
+    }
+}
+
 impl std::fmt::Debug for ResponsePayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponsePayload")
@@ -2063,6 +2100,7 @@ struct PendingReply {
     sender: oneshot::Sender<ResponsePayload>,
     cancellation_disarm: SentRequestCancellationDisarm,
     ordering: ResponseOrdering,
+    response_route_hook: Option<ResponseRouteHook>,
 }
 
 impl PendingReply {
@@ -3009,6 +3047,10 @@ enum OutgoingMessage {
         /// the message to send; this may have a distinct method
         /// depending on the peer
         untyped: UntypedMessage,
+
+        /// Optional prerequisite that must finish before the request becomes
+        /// visible on the transport.
+        readiness: Option<RequestReadiness>,
     },
 
     /// Send a notification to the server.
@@ -3104,6 +3146,11 @@ pub struct V2ConnectionTo<Counterpart: Role> {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
+    /// Access the underlying version-neutral connection inside the SDK.
+    pub(crate) fn raw_connection(&self) -> &ConnectionTo<Counterpart> {
+        &self.inner
+    }
+
     /// Return the counterpart role this connection is talking to.
     pub fn counterpart(&self) -> Counterpart {
         self.inner.counterpart()
@@ -3851,7 +3898,38 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.send_request_to_with_ordering(peer, request, false)
+        self.send_request_to_with_options(peer, request, false, None, None)
+    }
+
+    /// Send a request and run a synchronous side effect when its valid success
+    /// response is routed, after `before_send` completes and independently
+    /// from how the returned request is eventually consumed.
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    pub(crate) fn send_request_to_with_response_hook_after<
+        Peer: Role,
+        Req: JsonRpcRequest,
+        BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
+    >(
+        &self,
+        peer: Peer,
+        request: Req,
+        before_send: BeforeSend,
+        response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        let hook: ResponseRouteHook = Box::new(move |method, value| {
+            let response = Req::Response::from_value(method, value.clone())?;
+            response_hook(&response)
+        });
+        self.send_request_to_with_options(
+            peer,
+            request,
+            false,
+            Some(RequestReadiness::new(before_send)),
+            Some(hook),
+        )
     }
 
     /// Send a request whose callback must run before later inbound messages.
@@ -3868,14 +3946,16 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.send_request_to_with_ordering(peer, request, true)
+        self.send_request_to_with_options(peer, request, true, None, None)
     }
 
-    fn send_request_to_with_ordering<Peer: Role, Req: JsonRpcRequest>(
+    fn send_request_to_with_options<Peer: Role, Req: JsonRpcRequest>(
         &self,
         peer: Peer,
         request: Req,
         ordered: bool,
+        readiness: Option<RequestReadiness>,
+        response_route_hook: Option<ResponseRouteHook>,
     ) -> SentRequest<Req::Response>
     where
         Counterpart: HasPeer<Peer>,
@@ -3920,6 +4000,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     sender: response_tx,
                     cancellation_disarm: cancellation.disarm_handle(),
                     ordering: response_ordering.clone(),
+                    response_route_hook,
                 };
 
                 if self
@@ -3930,6 +4011,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                         id: id.clone(),
                         method: method.clone(),
                         untyped,
+                        readiness,
                     };
 
                     if let Err(error) = self.message_tx.unbounded_send(message) {
@@ -4096,6 +4178,30 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             .map_err(crate::util::internal_error)?;
 
         Ok(DynamicHandlerGuard::new(uuid, self.clone()))
+    }
+
+    /// Wait until every dynamic-handler update queued before this call has
+    /// been applied by the incoming protocol actor.
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    pub(crate) fn dynamic_handler_barrier(&self) -> BoxFuture<'static, Result<(), crate::Error>> {
+        let (acknowledgment_tx, acknowledgment_rx) = oneshot::channel();
+        if let Err(error) =
+            self.dynamic_handler_tx
+                .unbounded_send(DynamicHandlerMessage::AcknowledgedBarrier(
+                    acknowledgment_tx,
+                ))
+        {
+            return future::ready(Err(crate::Error::into_internal_error(error))).boxed();
+        }
+
+        async move {
+            acknowledgment_rx.await.map_err(|error| {
+                crate::util::internal_error(format!(
+                    "dynamic-handler barrier was dropped before acknowledgment: {error}"
+                ))
+            })
+        }
+        .boxed()
     }
 
     fn remove_dynamic_handler(&self, uuid: Uuid) {
@@ -4473,15 +4579,15 @@ impl ResponseRouter<serde_json::Value> {
     /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
-    fn new(
-        method: String,
-        id: RequestId,
-        role_id: RoleId,
-        sender: oneshot::Sender<ResponsePayload>,
-        cancellation_disarm: SentRequestCancellationDisarm,
-        ordering: ResponseOrdering,
-        dispatch: ResponseDispatch,
-    ) -> Self {
+    fn new(id: RequestId, pending_reply: PendingReply, dispatch: ResponseDispatch) -> Self {
+        let PendingReply {
+            method,
+            role_id,
+            sender,
+            cancellation_disarm,
+            ordering,
+            response_route_hook,
+        } = pending_reply;
         let reply_target = ResponseReplyTarget {
             id: id.clone(),
             method: method.clone(),
@@ -4495,11 +4601,19 @@ impl ResponseRouter<serde_json::Value> {
         // only ever be redundant. Disarm immediately so handlers may retain
         // the router without leaving auto-cancellation armed.
         cancellation_disarm.disarm();
+        let hook_method = method.clone();
         Self {
             method,
             id,
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                let response = match response {
+                    Ok(value) => match response_route_hook {
+                        Some(hook) => hook(&hook_method, &value).map(|()| value),
+                        None => Ok(value),
+                    },
+                    Err(error) => Err(error),
+                };
                 send_target.route(response);
                 Ok(())
             }),
@@ -6428,6 +6542,258 @@ mod tests {
         )
     }
 
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    fn connection_for_response_hook_tests() -> (
+        ConnectionTo<crate::role::UntypedRole>,
+        mpsc::UnboundedReceiver<OutgoingMessage>,
+        PendingReplies,
+    ) {
+        let (message_tx, message_rx) = mpsc::unbounded();
+        let (task_tx, _task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+
+        (
+            ConnectionTo::new(
+                crate::role::UntypedRole,
+                message_tx,
+                task_tx,
+                dynamic_handler_tx,
+                transport_completion,
+                pending_replies.registrar(),
+                ProtocolMode::disabled(),
+            ),
+            message_rx,
+            pending_replies,
+        )
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    fn route_test_response(
+        request_id: RequestId,
+        pending_replies: &PendingReplies,
+        result: Result<serde_json::Value, crate::Error>,
+    ) {
+        let pending_reply = pending_replies
+            .remove(&request_id)
+            .expect("the request should have a pending reply");
+        let (dispatch, _) =
+            incoming_actor::dispatch_from_response(request_id, pending_reply, result);
+        let Dispatch::Response(result, router) = dispatch else {
+            panic!("expected a response dispatch");
+        };
+        router
+            .route_with_result(result)
+            .expect("response should route to the pending request");
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn response_hook_runs_when_success_is_routed_before_consumption() {
+        let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let sent = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("hooked", serde_json::json!({}))
+                .expect("test request should serialize"),
+            future::ready(Ok(())),
+            {
+                let hook_ran = hook_ran.clone();
+                move |response| {
+                    assert_eq!(response, &serde_json::json!({"ok": true}));
+                    hook_ran.store(true, Ordering::Release);
+                    Ok(())
+                }
+            },
+        );
+        let request_id = sent.id().clone();
+
+        route_test_response(
+            request_id,
+            &pending_replies,
+            Ok(serde_json::json!({"ok": true})),
+        );
+
+        assert!(hook_ran.load(Ordering::Acquire));
+        assert_eq!(
+            futures::executor::block_on(sent.block_task())
+                .expect("routed response should remain consumable"),
+            serde_json::json!({"ok": true})
+        );
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn response_hook_skips_errors_but_outlives_a_dropped_consumer() {
+        let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
+        let peer_error_hook_ran = Arc::new(AtomicBool::new(false));
+        let peer_error = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("peer-error", serde_json::json!({}))
+                .expect("test request should serialize"),
+            future::ready(Ok(())),
+            {
+                let hook_ran = peer_error_hook_ran.clone();
+                move |_| {
+                    hook_ran.store(true, Ordering::Release);
+                    Ok(())
+                }
+            },
+        );
+        let peer_error_id = peer_error.id().clone();
+        route_test_response(
+            peer_error_id,
+            &pending_replies,
+            Err(crate::Error::invalid_request()),
+        );
+        assert!(
+            futures::executor::block_on(peer_error.block_task()).is_err(),
+            "the peer error should reach the consumer"
+        );
+        assert!(!peer_error_hook_ran.load(Ordering::Acquire));
+
+        let dropped_hook_ran = Arc::new(AtomicBool::new(false));
+        let dropped = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("dropped", serde_json::json!({}))
+                .expect("test request should serialize"),
+            future::ready(Ok(())),
+            {
+                let hook_ran = dropped_hook_ran.clone();
+                move |_| {
+                    hook_ran.store(true, Ordering::Release);
+                    Ok(())
+                }
+            },
+        );
+        let dropped_id = dropped.id().clone();
+        drop(dropped);
+        route_test_response(
+            dropped_id,
+            &pending_replies,
+            Ok(serde_json::json!({"ok": true})),
+        );
+        assert!(dropped_hook_ran.load(Ordering::Acquire));
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn response_hook_failure_replaces_the_success_result() {
+        let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
+        let sent = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("hook-failure", serde_json::json!({}))
+                .expect("test request should serialize"),
+            future::ready(Ok(())),
+            |_| Err(crate::Error::internal_error().data("response hook failed")),
+        );
+        let request_id = sent.id().clone();
+        route_test_response(
+            request_id,
+            &pending_replies,
+            Ok(serde_json::json!({"ok": true})),
+        );
+
+        let error = futures::executor::block_on(sent.block_task())
+            .expect_err("the hook failure should replace the successful response");
+        assert_eq!(error.code, crate::ErrorCode::InternalError);
+        assert_eq!(error.data, Some(serde_json::json!("response hook failed")));
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn outgoing_request_waits_for_readiness_before_publication() {
+        let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let sent = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("after-ready", serde_json::json!({}))
+                .expect("test request should serialize"),
+            async move { ready_rx.await.map_err(crate::Error::into_internal_error) },
+            |_| Ok(()),
+        );
+
+        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            transport_tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+        ));
+
+        assert!(
+            actor.as_mut().now_or_never().is_none(),
+            "the outgoing actor should wait for readiness"
+        );
+        assert!(
+            transport_rx.next().now_or_never().is_none(),
+            "the request must not be published before readiness"
+        );
+
+        ready_tx
+            .send(())
+            .expect("the readiness receiver should remain active");
+        assert!(
+            actor.as_mut().now_or_never().is_none(),
+            "the outgoing actor should continue serving after publication"
+        );
+        let frame = transport_rx
+            .next()
+            .now_or_never()
+            .expect("the ready request should be published")
+            .expect("the transport queue should remain open");
+        assert!(matches!(
+            frame,
+            TransportFrame::Single(RawJsonRpcMessage::Request(_))
+        ));
+
+        drop(sent);
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn outgoing_request_readiness_failure_rejects_without_publication() {
+        let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
+        let hook_ran = Arc::new(AtomicBool::new(false));
+        let sent = connection.send_request_to_with_response_hook_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("never-published", serde_json::json!({}))
+                .expect("test request should serialize"),
+            future::ready(Err(crate::Error::internal_error().data("readiness failed"))),
+            {
+                let hook_ran = hook_ran.clone();
+                move |_| {
+                    hook_ran.store(true, Ordering::Release);
+                    Ok(())
+                }
+            },
+        );
+
+        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            transport_tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+        ));
+
+        assert!(
+            actor.as_mut().now_or_never().is_none(),
+            "the outgoing actor should continue serving after rejecting the request"
+        );
+        assert!(
+            transport_rx.next().now_or_never().is_none(),
+            "a request whose readiness failed must not be published"
+        );
+        let error = futures::executor::block_on(sent.block_task())
+            .expect_err("the readiness error should reach the request consumer");
+        assert_eq!(error.code, crate::ErrorCode::InternalError);
+        assert_eq!(error.data, Some(serde_json::json!("readiness failed")));
+        assert!(!hook_ran.load(Ordering::Acquire));
+    }
+
     #[test]
     fn ordered_request_is_marked_before_entering_outgoing_queue() {
         let (message_tx, mut message_rx) = mpsc::unbounded();
@@ -6570,6 +6936,33 @@ mod tests {
             }
             other => panic!("expected handler removal, got {other:?}"),
         }
+    }
+
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn dynamic_handler_barrier_acknowledges_prior_messages() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let _guard = connection.add_dynamic_handler(NullHandler).unwrap();
+        let mut barrier = Box::pin(connection.dynamic_handler_barrier());
+
+        assert!(matches!(
+            next_dynamic_handler_message(&mut receiver),
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, _))
+        ));
+        assert!(
+            barrier.as_mut().now_or_never().is_none(),
+            "the barrier must wait for the incoming actor"
+        );
+
+        let acknowledgment = match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::AcknowledgedBarrier(acknowledgment)) => acknowledgment,
+            other => panic!("expected acknowledged barrier, got {other:?}"),
+        };
+        acknowledgment
+            .send(())
+            .expect("the barrier receiver should remain active");
+        futures::executor::block_on(barrier)
+            .expect("the acknowledged dynamic-handler barrier should complete");
     }
 
     #[test]

@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::{
     Agent, Client, ConnectionTo, HandleDispatchFrom, Handled,
     jsonrpc::DynamicHandlerGuard,
-    mcp_server::active_session::McpActiveSession,
+    mcp_server::active_session::{McpActiveSession, V1McpProtocol},
     schema::v1::{
         LoadSessionRequest, McpServer as SchemaMcpServer, McpServerAcp, McpServerAcpId,
         NewSessionRequest, ResumeSessionRequest,
@@ -39,7 +39,9 @@ use crate::schema::v1::ForkSessionRequest;
 /// connected directly as a standalone MCP component. With the
 /// `unstable_mcp_over_acp` feature, servers can instead be attached to ACP
 /// session setup through `Builder::with_mcp_server` or
-/// `SessionBuilder::with_mcp_server`.
+/// `SessionBuilder::with_mcp_server`. Draft protocol v2 supports per-session
+/// attachment through `V2SessionBuilder::with_mcp_server` when
+/// `unstable_protocol_v2` is also enabled.
 ///
 /// # Creating an MCP Server
 ///
@@ -63,7 +65,9 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
     /// handles responding to the client.
     ///
     /// Some connector implementations use this to run support tasks alongside
-    /// the message handler.
+    /// the message handler. It has no separate readiness protocol: communication
+    /// primitives needed by `connect` must already exist when the server is
+    /// constructed.
     runner: Run,
 }
 
@@ -110,6 +114,21 @@ where
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
         (McpSessionHandler::new(server_id, connect), runner)
     }
+
+    /// Split this MCP server into a protocol v2 session handler and its runner.
+    #[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+    pub(crate) fn into_v2_handler_and_runner(self) -> (V2McpSessionHandler<Counterpart>, Run)
+    where
+        Counterpart: HasPeer<Agent>,
+    {
+        let Self {
+            phantom: _,
+            connect,
+            runner,
+        } = self;
+        let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
+        (V2McpSessionHandler::new(server_id, connect), runner)
+    }
 }
 
 /// Message handler created from a [`McpServer`].
@@ -120,7 +139,7 @@ where
 {
     server_id: McpServerAcpId,
     connect: Arc<dyn McpServerConnect<Counterpart>>,
-    active_session: McpActiveSession<Counterpart>,
+    active_session: McpActiveSession<Counterpart, V1McpProtocol>,
 }
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -142,6 +161,46 @@ where
             self.connect.name(),
             self.server_id.clone(),
         )));
+    }
+}
+
+/// Protocol v2 session adapter for the shared native MCP-over-ACP runtime.
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+pub(crate) struct V2McpSessionHandler<Counterpart: Role>
+where
+    Counterpart: HasPeer<Agent>,
+{
+    server_id: McpServerAcpId,
+    connect: Arc<dyn McpServerConnect<Counterpart>>,
+    active_session: McpActiveSession<Counterpart, crate::mcp_server::active_session::V2McpProtocol>,
+}
+
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+impl<Counterpart: Role> V2McpSessionHandler<Counterpart>
+where
+    Counterpart: HasPeer<Agent>,
+{
+    fn new(server_id: McpServerAcpId, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+        Self {
+            active_session: McpActiveSession::new(server_id.clone(), connect.clone()),
+            server_id,
+            connect,
+        }
+    }
+
+    /// Attach this server to a draft protocol v2 `session/new` request.
+    pub fn into_dynamic_handler(
+        self,
+        request: &mut crate::schema::v2::NewSessionRequest,
+        cx: &crate::V2ConnectionTo<Counterpart>,
+    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
+        request.mcp_servers.push(crate::schema::v2::McpServer::Acp(
+            crate::schema::v2::McpServerAcp::new(
+                self.connect.name(),
+                crate::schema::v2::McpServerAcpId::new(self.server_id.0),
+            ),
+        ));
+        cx.add_dynamic_handler(self.active_session)
     }
 }
 

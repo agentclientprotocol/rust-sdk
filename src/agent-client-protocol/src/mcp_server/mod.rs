@@ -4,6 +4,8 @@
 //! the core SDK to a particular MCP implementation or async runtime. With the
 //! `unstable_mcp_over_acp` feature, the same servers can be attached to ACP
 //! session setup requests through the `with_mcp_server` builder methods.
+//! Draft protocol v2 per-session attachment additionally requires
+//! `unstable_protocol_v2`.
 //!
 //! ## Building MCP servers with tools
 //!

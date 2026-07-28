@@ -42,6 +42,12 @@ pub trait McpServerConnect<Counterpart: Role>: Send + Sync + 'static {
     /// This is called each time an MCP client connects to this server. The returned
     /// component will handle MCP protocol messages for that connection.
     ///
+    /// Any communication primitives shared with the server's
+    /// [`RunWithConnectionTo`](crate::RunWithConnectionTo) task must be created
+    /// before the [`McpServer`](super::McpServer) is returned. The runner has no
+    /// separate readiness protocol and may continue asynchronous initialization
+    /// while connections and their messages are queued.
+    ///
     /// [`McpConnectionTo`] distinguishes a direct MCP connection from an
     /// ACP-attached connection and provides the corresponding host connection.
     fn connect(&self, cx: McpConnectionTo<Counterpart>) -> DynConnectTo<role::mcp::Client>;
