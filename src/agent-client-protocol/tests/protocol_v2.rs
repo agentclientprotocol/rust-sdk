@@ -8,13 +8,13 @@ use std::{
     },
 };
 
-use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
+use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
 use agent_client_protocol::{
-    Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, ConnectTo,
-    ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
-    HandleDispatchFrom, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler,
-    RawJsonRpcMessage, Role, RunWithConnectionTo, TransportFrame, UntypedRole, V2Builder,
-    V2ConnectionTo,
+    Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
+    ConnectTo, ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
+    HandleDispatchFrom, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, Proxy,
+    RawJsonRpcMessage, Role, RunWithConnectionTo, TransportFrame, UntypedMessage, UntypedRole,
+    V2Builder, V2ConnectionTo,
 };
 use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
@@ -2137,11 +2137,15 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
             agent_client_protocol::on_receive_request!(),
         ))
         .with_v2(Agent.v2().on_receive_request(
-            async |initialize: v2::InitializeRequest, responder, _cx| {
-                assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-                responder.respond(v2_initialize_response_with_session(
-                    initialize.protocol_version,
-                ))
+            async |initialize: UntypedMessage, responder, _cx| {
+                assert_eq!(initialize.params()["protocolVersion"], serde_json::json!(2));
+                assert!(
+                    initialize.params().get("_futureInitializeField").is_none(),
+                    "future-only fields must be dropped when version 3 is canonicalized to v2"
+                );
+                responder.respond(json_value(v2_initialize_response_with_session(
+                    ProtocolVersion::V2,
+                ))?)
             },
             agent_client_protocol::on_receive_request!(),
         ));
@@ -2149,11 +2153,21 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
     let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
     let agent_task = tokio::spawn(agent_future);
 
+    let mut initialize = json_value(v2_initialize_request(ProtocolVersion::from(3_u16)))?;
+    initialize
+        .as_object_mut()
+        .expect("initialize request should serialize as an object")
+        .insert(
+            "_futureInitializeField".to_string(),
+            serde_json::json!({
+                "future-only": true,
+            }),
+        );
     channel
         .tx
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
-            json_value(v2_initialize_request(ProtocolVersion::from(3_u16)))?,
+            initialize,
             v1::RequestId::Number(1),
         )?))
         .map_err(Error::into_internal_error)?;
@@ -2175,6 +2189,69 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
     Err(agent_client_protocol::util::internal_error(
         "protocol router did not respond to initialize",
     ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() {
+    let valid_response = serde_json::json!({
+        "sessionId": "raw-session",
+        "_futureResponseField": {
+            "preserved": true,
+        },
+    });
+    let expected_valid_response = valid_response.clone();
+
+    let connection = Conductor
+        .builder()
+        .on_receive_request(
+            async move |request: SuccessorMessage<UntypedMessage>, responder, _cx| {
+                assert_eq!(request.message.method(), "session/new");
+                match request.message.params()["_case"].as_str() {
+                    Some("malformed") => responder.respond(serde_json::json!({
+                        "_futureResponseField": {
+                            "preserved": false,
+                        },
+                    })),
+                    Some("valid") => responder.respond(valid_response.clone()),
+                    case => panic!("unexpected raw session/new test case: {case:?}"),
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(Proxy.builder(), async move |cx: ConnectionTo<Proxy>| {
+            let malformed = UntypedMessage::new(
+                "session/new",
+                serde_json::json!({
+                    "cwd": "/malformed",
+                    "_case": "malformed",
+                }),
+            )?;
+            let error = cx
+                .send_request(malformed)
+                .block_task()
+                .await
+                .expect_err("missing sessionId must be rejected");
+            assert!(
+                error.to_string().contains("sessionId"),
+                "unexpected malformed session response error: {error:?}"
+            );
+
+            let valid = UntypedMessage::new(
+                "session/new",
+                serde_json::json!({
+                    "cwd": "/valid",
+                    "_case": "valid",
+                }),
+            )?;
+            let response = cx.send_request(valid).block_task().await?;
+            assert_eq!(response, expected_valid_response);
+            Ok(())
+        });
+
+    tokio::time::timeout(tokio::time::Duration::from_secs(10), connection)
+        .await
+        .expect("raw session/new validation timed out")
+        .expect("raw session/new proxy connection failed");
 }
 
 /// A v2 agent whose `session/new` handler only responds once the peer cancels

@@ -325,6 +325,37 @@ pub mod v1 {
 #[cfg(feature = "unstable_protocol_v2")]
 pub mod v2 {
     pub use agent_client_protocol_schema::v2::*;
+
+    /// Initialize request for a protocol-v2 proxy component.
+    ///
+    /// This uses the same `_proxy/initialize` extension method as the stable
+    /// [`super::InitializeProxyRequest`], but preserves the v2 initialize
+    /// request and response schemas.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
+    #[request(
+        method = "_proxy/initialize",
+        response = InitializeResponse,
+        crate = crate
+    )]
+    pub struct InitializeProxyRequest {
+        /// The underlying protocol-v2 initialize request data.
+        #[serde(flatten)]
+        pub initialize: InitializeRequest,
+    }
+
+    impl InitializeProxyRequest {
+        /// Create a proxy initialization request from a normal v2 initialization request.
+        #[must_use]
+        pub fn new(initialize: InitializeRequest) -> Self {
+            Self { initialize }
+        }
+    }
+
+    impl From<InitializeRequest> for InitializeProxyRequest {
+        fn from(initialize: InitializeRequest) -> Self {
+            Self::new(initialize)
+        }
+    }
 }
 
 pub use agent_client_protocol_schema::{

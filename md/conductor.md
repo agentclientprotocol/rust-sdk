@@ -49,6 +49,22 @@ Lazy construction allows an `InstantiateProxiesAndAgent` or
 `InstantiateProxies` implementation to inspect and, when appropriate, adjust
 the initialize request before choosing components.
 
+With the conductor crate's `unstable_protocol_v2` feature, initialization
+selects the v1 or v2 schema from the raw `protocolVersion` before
+deserialization. This prevents v2 `info`, `capabilities`, metadata, and future
+extension fields from being interpreted as a permissive v1 request and dropped.
+An exact-version request whose typed value is unchanged keeps its original raw
+parameters, including unknown extensions. A request for a later compatible
+protocol version selects v2 and is canonicalized through the selected v2
+schema, matching the core protocol router.
+The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
+proxy vectors accept both versions. Custom instantiators can implement the
+feature-gated `instantiate_v2_proxies_and_agent` or `instantiate_v2_proxies`
+method; their default implementation rejects v2 with a JSON-RPC response and
+leaves the connection in a failed state that rejects later traffic. A modified
+typed request is serialized as the new authoritative payload, while its
+`protocolVersion` remains pinned to the implementation the conductor selected.
+
 ## Agent and Proxy Modes
 
 In **agent mode**, the conductor owns zero or more proxies followed by a final
@@ -98,6 +114,12 @@ agent-client-protocol-conductor --serve agent "proxy-one" "base-agent"
 agent-client-protocol-conductor --trace ./trace.jsons --serve agent "proxy-one" "base-agent"
 ```
 
+Build the opt-in binary with draft-v2 proxy initialization enabled using:
+
+```bash
+cargo build -p agent-client-protocol-conductor --features unstable_protocol_v2
+```
+
 There is no conductor `mcp` subcommand. Compatibility for HTTP-capable agents that lack the
 native ACP MCP transport lives in `agent-client-protocol-polyfill` and must
 be inserted explicitly when needed.
@@ -118,7 +140,9 @@ ConductorImpl::new_agent("conductor", components)
 
 `ConductorImpl::new_proxy` accepts an `InstantiateProxies` implementation for
 the nested-proxy case. Both modes can use dynamic instantiator closures when
-the chain depends on initialization data.
+the chain depends on v1 initialization data. A custom instantiator type can
+implement both initialization methods when dynamic selection is also needed for
+v2.
 
 ## MCP Compatibility
 

@@ -24,6 +24,14 @@
   The existing `ConnectionTo::spawn_connection::<Role>` API remains
   source-compatible and returns a raw `ConnectionTo`, including when the v2
   child builder's callbacks receive `V2ConnectionTo`.
+- *(unstable-v2)* Add a version-correct
+  `schema::v2::InitializeProxyRequest` for `_proxy/initialize`. Proxy
+  forwarding now preserves same-version raw initialize fields and raw session
+  creation fields instead of interpreting v2 messages as permissive v1
+  payloads. Add the low-level
+  `Builder::without_acp_version_guard` escape hatch for routing infrastructure
+  that performs its own raw version selection, plus
+  `Builder::with_v2_protocol_guard` for raw-context links after v2 is selected.
 - *(unstable)* Add typed v1 and draft-v2 JSON-RPC routing for configurable LLM
   provider methods behind `unstable_llm_providers`.
 

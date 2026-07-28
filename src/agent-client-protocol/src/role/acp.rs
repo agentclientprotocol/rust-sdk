@@ -14,16 +14,27 @@ use crate::jsonrpc::{
     raw_is_response_only_shape,
 };
 use crate::role::{HasPeer, RemoteStyle};
-use crate::schema::v1::{InitializeRequest, NewSessionRequest, NewSessionResponse, SessionId};
+#[cfg(not(feature = "unstable_protocol_v2"))]
+use crate::schema::InitializeProxyRequest;
+use crate::schema::METHOD_INITIALIZE_PROXY;
+use crate::schema::v1::{InitializeRequest, SessionId};
+#[cfg(not(feature = "unstable_protocol_v2"))]
+use crate::schema::v1::{NewSessionRequest, NewSessionResponse};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::{RequestId, Response as RpcResponse};
-use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(serde::Deserialize)]
+struct NewSessionResponseEnvelope {
+    #[serde(rename = "sessionId")]
+    session_id: SessionId,
+}
 
 /// The client role - typically an IDE or CLI that controls an agent.
 ///
@@ -1122,57 +1133,107 @@ impl Role for Conductor {
         message: Dispatch,
         cx: ConnectionTo<Conductor>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        // Handle various special messages:
-        MatchDispatchFrom::new(message, &cx)
-            .if_request_from(Client, async |_req: InitializeRequest, responder| {
-                responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                    "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
-                )))
-            })
-            .await
-            // Initialize Proxy coming from the client -- forward to the agent but
-            // convert into a regular initialize.
-            .if_request_from(
-                Client,
-                async |request: InitializeProxyRequest, responder| {
-                    let InitializeProxyRequest { initialize } = request;
-                    cx.send_ordered_request_to(Agent, initialize)
-                        .forward_response_to(responder)
-                },
-            )
-            .await
-            // New session coming from the client -- proxy to the agent
-            // and add a dynamic handler for that session-id.
-            .if_request_from(Client, async |request: NewSessionRequest, responder| {
-                let sent = cx.send_ordered_request_to(Agent, request);
-                // The dynamic-handler hook below means we cannot use
-                // `forward_response_to`, so wire up cancellation forwarding
-                // explicitly to keep `session/new` cancellable like every
-                // other proxied request.
-                let sent = sent.forward_cancellation_from(responder.cancellation());
-                sent.on_receiving_result({
-                    let cx = cx.clone();
-                    async move |result| {
-                        if let Ok(NewSessionResponse { session_id, .. }) = &result {
-                            cx.add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                                .detach();
-                        }
-                        responder.respond_with_result(result)
-                    }
+        #[cfg(not(feature = "unstable_protocol_v2"))]
+        {
+            MatchDispatchFrom::new(message, &cx)
+                .if_request_from(Client, async |_req: InitializeRequest, responder| {
+                    responder.respond_with_error(crate::Error::invalid_request().data(format!(
+                        "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
+                    )))
                 })
-            })
-            .await
-            // Incoming message from the client -- forward to the agent
-            .if_dispatch_from(Client, async |message: Dispatch| {
-                cx.send_proxied_message_to(Agent, message)
-            })
-            .await
-            // Incoming message from the agent -- forward to the client
-            .if_dispatch_from(Agent, async |message: Dispatch| {
-                cx.send_proxied_message_to(Client, message)
-            })
-            .await
-            .done()
+                .await
+                .if_request_from(
+                    Client,
+                    async |request: InitializeProxyRequest, responder| {
+                        let InitializeProxyRequest { initialize } = request;
+                        cx.send_ordered_request_to(Agent, initialize)
+                            .forward_response_to(responder)
+                    },
+                )
+                .await
+                .if_request_from(Client, async |request: NewSessionRequest, responder| {
+                    let sent = cx.send_ordered_request_to(Agent, request);
+                    let sent = sent.forward_cancellation_from(responder.cancellation());
+                    sent.on_receiving_result({
+                        let cx = cx.clone();
+                        async move |result| {
+                            if let Ok(NewSessionResponse { session_id, .. }) = &result {
+                                cx.add_dynamic_handler(ProxySessionMessages::new(
+                                    session_id.clone(),
+                                ))?
+                                .detach();
+                            }
+                            responder.respond_with_result(result)
+                        }
+                    })
+                })
+                .await
+                .if_dispatch_from(Client, async |message: Dispatch| {
+                    cx.send_proxied_message_to(Agent, message)
+                })
+                .await
+                .if_dispatch_from(Agent, async |message: Dispatch| {
+                    cx.send_proxied_message_to(Client, message)
+                })
+                .await
+                .done()
+        }
+
+        #[cfg(feature = "unstable_protocol_v2")]
+        {
+            let message = match message {
+                Dispatch::Request(request, responder) if request.method() == "initialize" => {
+                    responder.respond_with_error(crate::Error::invalid_request().data(format!(
+                        "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
+                    )))?;
+                    return Ok(Handled::Yes);
+                }
+                Dispatch::Request(mut request, responder)
+                    if request.method() == METHOD_INITIALIZE_PROXY =>
+                {
+                    request.method = "initialize".to_string();
+                    cx.send_ordered_request_to(Agent, request)
+                        .forward_response_to(responder)?;
+                    return Ok(Handled::Yes);
+                }
+                Dispatch::Request(request, responder) if request.method() == "session/new" => {
+                    let sent = cx.send_ordered_request_to(Agent, request);
+                    // The dynamic-handler hook below means we cannot use
+                    // `forward_response_to`, so wire up cancellation forwarding
+                    // explicitly to keep `session/new` cancellable like every
+                    // other proxied request.
+                    let sent = sent.forward_cancellation_from(responder.cancellation());
+                    sent.on_receiving_result({
+                        let cx = cx.clone();
+                        async move |result| {
+                            let result = result.and_then(|response| {
+                                let envelope: NewSessionResponseEnvelope =
+                                    crate::util::json_cast(response.clone())?;
+                                cx.add_dynamic_handler(ProxySessionMessages::new(
+                                    envelope.session_id,
+                                ))?
+                                .detach();
+                                Ok(response)
+                            });
+                            responder.respond_with_result(result)
+                        }
+                    })?;
+                    return Ok(Handled::Yes);
+                }
+                message => message,
+            };
+
+            MatchDispatchFrom::new(message, &cx)
+                .if_dispatch_from(Client, async |message: Dispatch| {
+                    cx.send_proxied_message_to(Agent, message)
+                })
+                .await
+                .if_dispatch_from(Agent, async |message: Dispatch| {
+                    cx.send_proxied_message_to(Client, message)
+                })
+                .await
+                .done()
+        }
     }
 }
 

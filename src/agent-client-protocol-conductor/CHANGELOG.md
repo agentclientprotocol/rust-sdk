@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add opt-in protocol-v2 initialization for agent and nested proxy chains
+  through `unstable_protocol_v2`, including version-aware custom instantiator
+  methods, raw v2 session creation routing, and the conductor binary.
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v1.3.0...agent-client-protocol-conductor-v2.0.0) - 2026-07-23
 
 ### Breaking changes

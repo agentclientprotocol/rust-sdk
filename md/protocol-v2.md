@@ -212,6 +212,36 @@ application wants stream ergonomics, it can fan typed updates out from the
 connection handler with an explicit buffering and subscriber policy. MCP
 attachment and proxy-session helpers are still v1-only.
 
+## Conductor and proxy initialization
+
+Enable `unstable_protocol_v2` on `agent-client-protocol-conductor` to carry a v2
+connection through a conductor proxy chain. The conductor inspects the raw
+`protocolVersion` before parsing initialization, rewrites ordinary `initialize`
+to `_proxy/initialize` without reserializing its parameters, and restores the
+ordinary method before the request reaches the final agent. For an exact v2
+request, `info`, `capabilities`, metadata, and unknown extension fields
+therefore retain their wire shape across conductor-controlled rewrites. A proxy
+implementation can still deliberately replace the request it forwards.
+
+As with the core protocol router, an exact v2 request can retain unknown raw
+fields, while a request for a later compatible version is canonicalized through
+the selected v2 schema before component instantiation.
+
+Proxy implementations use
+`agent_client_protocol::schema::v2::InitializeProxyRequest`; its response is the
+v2 `InitializeResponse`. The flat `schema::InitializeProxyRequest` remains the
+stable v1 type. Static conductor component providers support both versions.
+Custom `InstantiateProxiesAndAgent` and `InstantiateProxies` implementations
+opt into v2 by implementing their feature-gated v2 method; the default rejects
+v2 rather than interpreting it as v1. Returning the initialize request
+unchanged preserves its complete raw parameters for an exact-version request,
+including unknown extensions; returning a modified typed request makes that
+serialized request authoritative. The conductor pins `protocolVersion` to its
+selected implementation even if an instantiator attempts to change it, and
+validates the final agent's initialize response against that selection.
+The proxy connection also routes v2 `session/new` requests and responses
+without interpreting them as v1 payloads.
+
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
 - A v2 client advertises protocol v2 as its latest supported version.

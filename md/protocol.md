@@ -22,13 +22,16 @@ request from a notification.
 ## Proxy Initialization
 
 The conductor sends `_proxy/initialize` to a component that has a successor.
-Its parameters are the same fields as a normal v1 `InitializeRequest`. Receiving
-this method, rather than `initialize`, tells the component that it is running as
-a proxy and may forward messages with `_proxy/successor`.
+Its parameters are the same fields as the normal `InitializeRequest` for the
+selected ACP version. Receiving this method, rather than `initialize`, tells the
+component that it is running as a proxy and may forward messages with
+`_proxy/successor`.
 
-The response is a normal `InitializeResponse` result. The final agent receives
-the ordinary `initialize` method and does not need to understand the proxy
-extension.
+The response is the matching version's normal `InitializeResponse` result. The
+stable flat `schema::InitializeProxyRequest` type uses v1; with
+`unstable_protocol_v2`, `schema::v2::InitializeProxyRequest` preserves the v2
+request and response types. The final agent receives the ordinary `initialize`
+method and does not need to understand the proxy extension.
 
 ## Successor Forwarding
 

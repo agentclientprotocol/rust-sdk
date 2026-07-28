@@ -78,6 +78,8 @@ pub use self::conductor::*;
 
 use clap::{Parser, Subcommand};
 
+#[cfg(feature = "unstable_protocol_v2")]
+use agent_client_protocol::schema::v2;
 use agent_client_protocol::{AcpAgent, Stdio};
 use agent_client_protocol::{Client, Conductor, DynConnectTo, schema::v1::InitializeRequest};
 use tracing::Instrument;
@@ -99,6 +101,20 @@ impl InstantiateProxies for CommandLineComponents {
     ) -> futures::future::BoxFuture<
         'static,
         Result<(InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
+    > {
+        Box::pin(async move {
+            let proxies = self.0.into_iter().map(DynConnectTo::new).collect();
+            Ok((req, proxies))
+        })
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn instantiate_v2_proxies(
+        self: Box<Self>,
+        req: v2::InitializeRequest,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<(v2::InitializeRequest, Vec<DynConnectTo<Conductor>>), agent_client_protocol::Error>,
     > {
         Box::pin(async move {
             let proxies = self.0.into_iter().map(DynConnectTo::new).collect();
@@ -134,6 +150,39 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
                     // Last element is the agent
                     let agent = DynConnectTo::new(component);
                     return Ok((req, proxies, agent));
+                }
+            }
+
+            Err(agent_client_protocol::util::internal_error(
+                "no agent component in list",
+            ))
+        })
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn instantiate_v2_proxies_and_agent(
+        self: Box<Self>,
+        req: v2::InitializeRequest,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<
+            (
+                v2::InitializeRequest,
+                Vec<DynConnectTo<Conductor>>,
+                DynConnectTo<Client>,
+            ),
+            agent_client_protocol::Error,
+        >,
+    > {
+        Box::pin(async move {
+            let mut iter = self.0.into_iter().peekable();
+            let mut proxies = Vec::new();
+
+            while let Some(component) = iter.next() {
+                if iter.peek().is_some() {
+                    proxies.push(DynConnectTo::new(component));
+                } else {
+                    return Ok((req, proxies, DynConnectTo::new(component)));
                 }
             }
 
