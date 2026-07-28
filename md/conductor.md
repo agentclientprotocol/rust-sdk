@@ -155,6 +155,11 @@ adapted to HTTP. Keeping the polyfill explicit prevents instrumentation or
 orchestration from silently changing session MCP declarations. See [MCP
 Bridge](./mcp-bridge.md).
 
+The polyfill supports v1 by default. For a draft-v2 chain, enable
+`unstable_protocol_v2` on both the conductor and polyfill crates; without the
+polyfill feature, it rejects v2 initialization instead of interpreting v2
+traffic as v1.
+
 ## Tracing
 
 The conductor can record an idealized logical sequence of ACP and MCP messages.

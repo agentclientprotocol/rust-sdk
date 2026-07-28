@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add an `unstable_protocol_v2` feature for using `McpOverAcpPolyfill` in a
+  draft-v2 conductor chain. The polyfill selects the schema during proxy
+  initialization, advertises the v2 ACP MCP capability when adapting an
+  HTTP-capable agent, and handles v2 session setup and `mcp/*` messages without
+  interpreting them as v1.
+
+### Fixed
+
+- Forward MCP request cancellation hop by hop instead of tunneling the
+  loopback connection's `$/cancel_request` ID inside `mcp/message`.
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v1.3.0...agent-client-protocol-polyfill-v2.0.0) - 2026-07-23
 
 ### Breaking changes
