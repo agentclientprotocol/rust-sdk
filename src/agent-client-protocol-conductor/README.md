@@ -47,6 +47,9 @@ The conductor:
 
 ```bash
 cargo build --release -p agent-client-protocol-conductor
+
+# Include draft ACP v2 proxy initialization
+cargo build --release -p agent-client-protocol-conductor --features unstable_protocol_v2
 ```
 
 Binary will be at `target/release/agent-client-protocol-conductor`.

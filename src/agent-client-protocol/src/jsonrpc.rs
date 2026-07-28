@@ -1113,6 +1113,66 @@ impl<
             context: PhantomData,
         }
     }
+
+    /// Disable all automatic ACP protocol-version tracking and validation.
+    ///
+    /// This is a low-level escape hatch for protocol-routing infrastructure
+    /// that inspects and validates raw initialize requests and responses
+    /// itself before selecting a version-specific implementation. It also
+    /// disables the version checks applied to messages after initialization.
+    ///
+    /// This method is deliberately available only on builders whose callbacks
+    /// receive raw [`ConnectionTo`] values. Applications should normally use
+    /// [`Client::builder`](crate::Client::builder),
+    /// [`Agent::builder`](crate::Agent::builder), [`Client::v2`](crate::Client::v2),
+    /// or [`Agent::v2`](crate::Agent::v2) instead.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Client;
+    /// let _ = Client.v2().without_acp_version_guard();
+    /// ```
+    pub fn without_acp_version_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::disabled();
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Agent>,
+    Runner: RunWithConnectionTo<Agent>,
+    Close: HandleConnectionClose<Agent>,
+> Builder<Client, Handler, Runner, Close>
+{
+    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    ///
+    /// This is intended for protocol-routing infrastructure that has already
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
+    /// its callbacks. Most clients should use [`Client::v2`](crate::Client::v2),
+    /// which also exposes the version-typed [`V2ConnectionTo`] API.
+    pub fn with_v2_protocol_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_client();
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Client>,
+    Runner: RunWithConnectionTo<Client>,
+    Close: HandleConnectionClose<Client>,
+> Builder<Agent, Handler, Runner, Close>
+{
+    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    ///
+    /// This is intended for protocol-routing infrastructure that has already
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
+    /// its callbacks. Most agents should use [`Agent::v2`](crate::Agent::v2),
+    /// which also exposes the version-typed [`V2ConnectionTo`] API.
+    pub fn with_v2_protocol_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_agent();
+        self
+    }
 }
 
 impl<
