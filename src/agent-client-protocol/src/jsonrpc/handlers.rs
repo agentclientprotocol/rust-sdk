@@ -500,6 +500,21 @@ impl<H1, H2> ChainedHandler<H1, H2> {
     }
 }
 
+/// Heap-allocates a handler's dispatch future; `inline(never)` keeps its
+/// construction out of the caller's poll frame.
+#[inline(never)]
+fn boxed_dispatch<Counterpart, H>(
+    handler: &mut H,
+    message: Dispatch,
+    connection: ConnectionTo<Counterpart>,
+) -> crate::BoxFuture<'_, Result<Handled<Dispatch>, crate::Error>>
+where
+    Counterpart: Role,
+    H: HandleDispatchFrom<Counterpart>,
+{
+    Box::pin(handler.handle_dispatch_from(message, connection))
+}
+
 impl<Counterpart: Role, H1, H2> HandleDispatchFrom<Counterpart> for ChainedHandler<H1, H2>
 where
     H1: HandleDispatchFrom<Counterpart>,
@@ -518,20 +533,14 @@ where
         message: Dispatch,
         connection: ConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        match self
-            .handler1
-            .handle_dispatch_from(message, connection.clone())
-            .await?
-        {
+        // Box each link so deep chains don't build one giant nested poll
+        // frame per handler and overflow small (e.g. GCD 512 KiB) stacks.
+        match boxed_dispatch(&mut self.handler1, message, connection.clone()).await? {
             Handled::Yes => Ok(Handled::Yes),
             Handled::No {
                 message,
                 retry: retry1,
-            } => match self
-                .handler2
-                .handle_dispatch_from(message, connection)
-                .await?
-            {
+            } => match boxed_dispatch(&mut self.handler2, message, connection).await? {
                 Handled::Yes => Ok(Handled::Yes),
                 Handled::No {
                     message,
