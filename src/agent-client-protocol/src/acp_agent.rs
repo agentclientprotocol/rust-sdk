@@ -442,6 +442,46 @@ struct StderrDrainResult {
     read_error: Option<std::io::Error>,
 }
 
+/// Keeps the waker identity presented to readiness-based readers stable while forwarding
+/// notifications to the task that most recently polled the reader.
+struct StableWakerReader<R> {
+    inner: R,
+    relay: Arc<StableWakerRelay>,
+}
+
+impl<R> StableWakerReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            relay: Arc::new(StableWakerRelay::default()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StableWakerRelay {
+    outer: futures::task::AtomicWaker,
+}
+
+impl futures::task::ArcWake for StableWakerRelay {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        arc_self.outer.wake();
+    }
+}
+
+impl<R: futures::AsyncRead + Unpin> futures::AsyncRead for StableWakerReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut [u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.relay.outer.register(cx.waker());
+        let stable_waker = futures::task::waker(self.relay.clone());
+        let mut stable_context = std::task::Context::from_waker(&stable_waker);
+        std::pin::Pin::new(&mut self.inner).poll_read(&mut stable_context, buffer)
+    }
+}
+
 async fn drain_stderr(
     mut stderr: impl futures::AsyncRead + Unpin,
     debug_callback: Option<DebugCallback>,
@@ -649,7 +689,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             let StderrDrainResult {
                 captured,
                 read_error,
-            } = drain_stderr(child_stderr, debug_callback).await;
+            } = drain_stderr(StableWakerReader::new(child_stderr), debug_callback).await;
             drop(stderr_tx.send(captured));
 
             if let Some(error) = read_error {
@@ -668,13 +708,17 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let incoming_lines: std::pin::Pin<
             Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
         > = if let Some(callback) = self.debug_callback.clone() {
-            Box::pin(BufReader::new(child_stdout).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    callback(line, LineDirection::Stdout);
-                }
-            }))
+            Box::pin(
+                BufReader::new(StableWakerReader::new(child_stdout))
+                    .lines()
+                    .inspect(move |result| {
+                        if let Ok(line) = result {
+                            callback(line, LineDirection::Stdout);
+                        }
+                    }),
+            )
         } else {
-            Box::pin(BufReader::new(child_stdout).lines())
+            Box::pin(BufReader::new(StableWakerReader::new(child_stdout)).lines())
         };
 
         // The JSON-RPC transport keeps polling stdout while it drains stdin.
@@ -960,6 +1004,29 @@ mod tests {
         polls: Arc<AtomicUsize>,
     }
 
+    struct RecordingPendingReader {
+        wakers: Arc<Mutex<Vec<std::task::Waker>>>,
+    }
+
+    impl futures::AsyncRead for RecordingPendingReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            _buffer: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.wakers.lock().unwrap().push(cx.waker().clone());
+            std::task::Poll::Pending
+        }
+    }
+
+    struct CountingWake(AtomicUsize);
+
+    impl futures::task::ArcWake for CountingWake {
+        fn wake_by_ref(arc_self: &Arc<Self>) {
+            arc_self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     impl futures::AsyncRead for ErrorAfterData {
         fn poll_read(
             self: std::pin::Pin<&mut Self>,
@@ -994,6 +1061,47 @@ mod tests {
         assert_eq!(result.read_error.unwrap().to_string(), "read failed");
         assert_eq!(polls.load(Ordering::SeqCst), 2);
         assert_eq!(*recorded.lock().unwrap(), ["partial"]);
+    }
+
+    #[test]
+    fn subprocess_reader_keeps_inner_waker_stable_and_forwards_to_latest_task() {
+        use futures::AsyncRead as _;
+
+        let inner_wakers = Arc::new(Mutex::new(Vec::new()));
+        let mut reader = Box::pin(StableWakerReader::new(RecordingPendingReader {
+            wakers: inner_wakers.clone(),
+        }));
+        let first_outer = Arc::new(CountingWake(AtomicUsize::new(0)));
+        let second_outer = Arc::new(CountingWake(AtomicUsize::new(0)));
+        let first_waker = futures::task::waker(first_outer.clone());
+        let second_waker = futures::task::waker(second_outer.clone());
+        let mut buffer = [0; 1];
+
+        assert!(
+            reader
+                .as_mut()
+                .poll_read(
+                    &mut std::task::Context::from_waker(&first_waker),
+                    &mut buffer
+                )
+                .is_pending()
+        );
+        assert!(
+            reader
+                .as_mut()
+                .poll_read(
+                    &mut std::task::Context::from_waker(&second_waker),
+                    &mut buffer,
+                )
+                .is_pending()
+        );
+
+        let inner_wakers = inner_wakers.lock().unwrap();
+        assert_eq!(inner_wakers.len(), 2);
+        assert!(inner_wakers[0].will_wake(&inner_wakers[1]));
+        inner_wakers[0].wake_by_ref();
+        assert_eq!(first_outer.0.load(Ordering::SeqCst), 0);
+        assert_eq!(second_outer.0.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
