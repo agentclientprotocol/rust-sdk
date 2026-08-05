@@ -141,6 +141,33 @@
 //! order setup before messages already processed. See [Ordering](super::ordering)
 //! for details.
 //!
+//! For a draft v2 proxy, use
+//! `V2SessionBuilder::on_proxy_session_start` instead. It forwards the complete
+//! `NewSessionResponse` and then spawns the callback with an
+//! `OpenedV2Session`, so the callback keeps both the command-only session handle
+//! and the operation-specific response:
+//!
+//! ```rust,ignore
+//! Proxy.v2()
+//!     .on_receive_request_from(
+//!         Client,
+//!         async |request: schema::v2::NewSessionRequest, responder, cx| {
+//!             cx.build_session_from(request)
+//!                 .on_proxy_session_start(responder, async |opened| {
+//!                     let (session, setup_response) = opened.into_parts();
+//!                     track_session(session.session_id(), setup_response);
+//!                     Ok(())
+//!                 })
+//!         },
+//!         agent_client_protocol::on_receive_request!(),
+//!     );
+//! ```
+//!
+//! The downstream request inherits upstream cancellation. Session routing is
+//! installed before later inbound traffic is dispatched, but user work runs
+//! outside that ordering barrier. V2 session updates and interactive requests
+//! remain independent traffic handled by typed connection callbacks.
+//!
 //! # Next Steps
 //!
 //! - [Callbacks](super::callbacks) - Handle incoming requests

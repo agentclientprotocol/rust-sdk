@@ -50,7 +50,7 @@ use crate::jsonrpc::task_actor::{Task, TaskTx};
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
-use crate::{Agent, Client, ConnectTo, RoleId};
+use crate::{Agent, Client, ConnectTo, Proxy, RoleId};
 
 /// One valid JSON-RPC message carried inside a [`TransportFrame`].
 ///
@@ -1042,6 +1042,8 @@ fn default_protocol_mode<Host: Role>() -> ProtocolMode {
         ProtocolMode::v1_agent()
     } else if role == TypeId::of::<Client>() {
         ProtocolMode::v1_client()
+    } else if role == TypeId::of::<Proxy>() {
+        ProtocolMode::v1_proxy()
     } else {
         ProtocolMode::disabled()
     }
@@ -1114,6 +1116,18 @@ impl<
         }
     }
 
+    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            runner: self.runner,
+            protocol_mode: ProtocolMode::v2_proxy(),
+            on_close: self.on_close,
+            context: PhantomData,
+        }
+    }
+
     /// Disable all automatic ACP protocol-version tracking and validation.
     ///
     /// This is a low-level escape hatch for protocol-routing infrastructure
@@ -1124,8 +1138,10 @@ impl<
     /// This method is deliberately available only on builders whose callbacks
     /// receive raw [`ConnectionTo`] values. Applications should normally use
     /// [`Client::builder`](crate::Client::builder),
-    /// [`Agent::builder`](crate::Agent::builder), [`Client::v2`](crate::Client::v2),
-    /// or [`Agent::v2`](crate::Agent::v2) instead.
+    /// [`Agent::builder`](crate::Agent::builder),
+    /// [`Proxy::builder`](crate::Proxy::builder), [`Client::v2`](crate::Client::v2),
+    /// [`Agent::v2`](crate::Agent::v2), or [`Proxy::v2`](crate::Proxy::v2)
+    /// instead.
     ///
     /// ```compile_fail
     /// # use agent_client_protocol::Client;
@@ -1729,30 +1745,6 @@ impl<
         self.with_handler(handler)
     }
 
-    /// Add an MCP server to session setup requests proxied through this connection.
-    ///
-    /// The same native MCP server declaration is added to new, load, and resume
-    /// requests, plus fork requests when `unstable_session_fork` is enabled.
-    ///
-    /// Only applicable to proxies.
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    pub fn with_mcp_server(
-        self,
-        mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
-    ) -> Builder<
-        Host,
-        impl HandleDispatchFrom<Host::Counterpart>,
-        impl RunWithConnectionTo<Host::Counterpart>,
-        Close,
-        Context,
-    >
-    where
-        Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
-    {
-        let (handler, runner) = mcp_server.into_handler_and_runner();
-        self.with_handler(handler).with_runner(runner)
-    }
-
     /// Run in server mode with the provided transport.
     ///
     /// This drives the connection by continuously processing messages from the transport
@@ -1996,6 +1988,74 @@ impl<
         });
 
         (connection, future)
+    }
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<
+    Host: Role,
+    Handler: HandleDispatchFrom<Host::Counterpart>,
+    Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close, RawConnectionContext>
+{
+    /// Add an MCP server to protocol v1 session setup requests proxied through
+    /// this connection.
+    ///
+    /// The same native MCP server declaration is added to new, load, and resume
+    /// requests, plus fork requests when `unstable_session_fork` is enabled.
+    ///
+    /// Only applicable to proxies. Use the same method on `V2Builder` to
+    /// attach the server to protocol v2 setup requests.
+    pub fn with_mcp_server(
+        self,
+        mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
+    ) -> Builder<
+        Host,
+        impl HandleDispatchFrom<Host::Counterpart>,
+        impl RunWithConnectionTo<Host::Counterpart>,
+        Close,
+        RawConnectionContext,
+    >
+    where
+        Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
+    {
+        let (handler, runner) = mcp_server.into_handler_and_runner();
+        self.with_handler(handler).with_runner(runner)
+    }
+}
+
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+impl<
+    Host: Role,
+    Handler: HandleDispatchFrom<Host::Counterpart>,
+    Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close, V2ConnectionContext>
+{
+    /// Add an MCP server to protocol v2 session setup requests proxied through
+    /// this connection.
+    ///
+    /// The same native MCP server declaration is added to new and resume
+    /// requests, plus fork requests when `unstable_session_fork` is enabled.
+    /// Unrelated request fields are preserved exactly.
+    ///
+    /// Only applicable to proxies.
+    pub fn with_mcp_server(
+        self,
+        mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
+    ) -> Builder<
+        Host,
+        impl HandleDispatchFrom<Host::Counterpart>,
+        impl RunWithConnectionTo<Host::Counterpart>,
+        Close,
+        V2ConnectionContext,
+    >
+    where
+        Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
+    {
+        let (handler, runner) = mcp_server.into_v2_handler_and_runner();
+        self.with_handler(handler).with_runner(runner)
     }
 }
 
@@ -3044,9 +3104,11 @@ enum OutgoingMessage {
         /// the original method
         method: String,
 
-        /// the message to send; this may have a distinct method
-        /// depending on the peer
+        /// The logical message before peer-direction wrapping.
         untyped: UntypedMessage,
+
+        /// How to transform the logical message for its target peer.
+        remote_style: crate::role::RemoteStyle,
 
         /// Optional prerequisite that must finish before the request becomes
         /// visible on the transport.
@@ -3932,6 +3994,35 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         )
     }
 
+    /// Send an ordered request with readiness and valid-success hooks.
+    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    pub(crate) fn send_ordered_request_to_with_response_hook_after<
+        Peer: Role,
+        Req: JsonRpcRequest,
+        BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
+    >(
+        &self,
+        peer: Peer,
+        request: Req,
+        before_send: BeforeSend,
+        response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        let hook: ResponseRouteHook = Box::new(move |method, value| {
+            let response = Req::Response::from_value(method, value.clone())?;
+            response_hook(&response)
+        });
+        self.send_request_to_with_options(
+            peer,
+            request,
+            true,
+            Some(RequestReadiness::new(before_send)),
+            Some(hook),
+        )
+    }
+
     /// Send a request whose callback must run before later inbound messages.
     ///
     /// The ordering marker is installed before the request enters the outgoing
@@ -3988,7 +4079,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             .map(move |json| <Req::Response>::from_value(&method, json));
         }
 
-        match remote_style.transform_outgoing_message(request) {
+        match request.to_untyped_message() {
             Ok(untyped) => {
                 // Register before enqueueing so incoming EOF can fail every
                 // observable request before close callbacks begin. The
@@ -4011,6 +4102,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                         id: id.clone(),
                         method: method.clone(),
                         untyped,
+                        remote_style,
                         readiness,
                     };
 
@@ -6446,6 +6538,142 @@ mod tests {
             )
             .on_receive_dispatch_from(
                 Agent,
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_dispatch!(),
+            )
+            .with_spawned(async |connection| {
+                assert_v2_context(&connection);
+                Ok(())
+            })
+            .on_close(async |connection| {
+                assert_v2_context(&connection);
+                Ok(())
+            });
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn proxy_builders_select_exact_proxy_protocol_guards() -> Result<(), crate::Error> {
+        use crate::schema::ProtocolVersion;
+
+        for (mode, selected, unsupported) in [
+            (
+                Proxy.builder().protocol_mode,
+                ProtocolVersion::V1,
+                ProtocolVersion::V2,
+            ),
+            (
+                Proxy.v2().protocol_mode,
+                ProtocolVersion::V2,
+                ProtocolVersion::V1,
+            ),
+        ] {
+            assert_eq!(mode.api_protocol_version(), Some(selected));
+
+            let error = ProtocolCompat::new(mode)
+                .incoming_message(UntypedMessage::new(
+                    "_proxy/initialize",
+                    serde_json::json!({ "protocolVersion": unsupported }),
+                )?)
+                .expect_err("a proxy builder must reject the other protocol version");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains(&format!("only supports ACP protocol version {selected}")),
+                "{error:?}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn v2_proxy_rejects_explicitly_prewrapped_initialize_request() {
+        let (message_tx, message_rx) = mpsc::unbounded();
+        let (task_tx, _task_rx) = mpsc::unbounded();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let transport_completion: SharedTransportCompletion =
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared();
+        let pending_replies = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::Conductor,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            transport_completion,
+            pending_replies.registrar(),
+            ProtocolMode::v2_proxy(),
+        );
+
+        let request = crate::schema::SuccessorMessage {
+            message: UntypedMessage::new(
+                "initialize",
+                serde_json::json!({ "protocolVersion": crate::schema::ProtocolVersion::V1 }),
+            )
+            .expect("test initialize request should serialize"),
+            meta: None,
+        };
+        let sent = connection.send_request_to(Agent, request);
+
+        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            transport_tx,
+            ProtocolCompat::new(ProtocolMode::v2_proxy()),
+        ));
+        assert!(
+            actor.as_mut().now_or_never().is_none(),
+            "the outgoing actor should continue after rejecting the request"
+        );
+        assert!(
+            transport_rx.next().now_or_never().is_none(),
+            "an explicitly prewrapped initialize must not reach the transport"
+        );
+
+        let error = futures::executor::block_on(sent.block_task())
+            .expect_err("connection routing must own successor wrapping");
+        let data = error
+            .data
+            .as_ref()
+            .and_then(|data| data.as_str())
+            .unwrap_or_default();
+        assert!(data.contains("logical `initialize`"), "{error:?}");
+        assert!(data.contains("_proxy/successor"), "{error:?}");
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn v2_proxy_builder_exposes_typed_context_to_user_callbacks() {
+        fn assert_v2_context(_connection: &V2ConnectionTo<crate::Conductor>) {}
+
+        let _builder = Proxy
+            .v2()
+            .on_receive_request_from(
+                Client,
+                async |_request: UntypedMessage, _responder, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_request!(),
+            )
+            .on_receive_notification_from(
+                Agent,
+                async |_notification: UntypedMessage, connection| {
+                    assert_v2_context(&connection);
+                    Ok(())
+                },
+                crate::on_receive_notification!(),
+            )
+            .on_receive_dispatch_from(
+                Client,
                 async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
                     assert_v2_context(&connection);
                     Ok(())

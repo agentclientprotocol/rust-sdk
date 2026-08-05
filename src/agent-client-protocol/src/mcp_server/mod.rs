@@ -4,7 +4,10 @@
 //! the core SDK to a particular MCP implementation or async runtime. With the
 //! `unstable_mcp_over_acp` feature, the same servers can be attached to ACP
 //! session setup requests through the `with_mcp_server` builder methods.
-//! Draft protocol v2 per-session attachment additionally requires
+//! Stable protocol v1 and draft protocol v2 both support global proxy
+//! attachment and per-session attachment. V2 uses
+//! `Proxy.v2().with_mcp_server(...)` or
+//! `V2SessionBuilder::with_mcp_server(...)` and additionally requires
 //! `unstable_protocol_v2`.
 //!
 //! ## Building MCP servers with tools

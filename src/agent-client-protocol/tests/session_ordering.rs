@@ -8,7 +8,16 @@ use agent_client_protocol::{
         PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
     },
 };
-use futures::{StreamExt as _, channel::oneshot};
+use futures::{
+    StreamExt as _,
+    channel::{mpsc, oneshot},
+};
+
+#[cfg(feature = "unstable_protocol_v2")]
+use agent_client_protocol::{
+    JsonRpcMessage, JsonRpcResponse, Proxy, V2ConnectionTo,
+    schema::{ProtocolVersion, SuccessorMessage, v2},
+};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -46,6 +55,15 @@ mod callback_future_lifetimes {
         |_session_id| LifetimeTaggedFuture(PhantomData)
     }
 
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn v2_proxy_session_callback<'a>() -> impl FnOnce(
+        agent_client_protocol::OpenedV2Session<Conductor, v2::NewSessionResponse>,
+    ) -> LifetimeTaggedFuture<'a>
+    + Send
+    + 'static {
+        |_opened| LifetimeTaggedFuture(PhantomData)
+    }
+
     fn on_session_start_accepts_non_static_callback_future<'a>(
         connection: &ConnectionTo<Agent>,
         _scope: &'a str,
@@ -64,6 +82,18 @@ mod callback_future_lifetimes {
         connection
             .build_session_from(request)
             .on_proxy_session_start(responder, proxy_session_callback::<'a>())
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn v2_on_proxy_session_start_accepts_non_static_callback_future<'a>(
+        connection: &V2ConnectionTo<Conductor>,
+        request: v2::NewSessionRequest,
+        responder: Responder<v2::NewSessionResponse>,
+        _scope: &'a str,
+    ) -> Result<(), agent_client_protocol::Error> {
+        connection
+            .build_session_from(request)
+            .on_proxy_session_start(responder, v2_proxy_session_callback::<'a>())
     }
 }
 
@@ -193,4 +223,173 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
         .await
         .expect("same-batch session update was not routed")
         .expect("session connection failed");
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[tokio::test(flavor = "current_thread")]
+async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
+    let session_id = v2::SessionId::new("same-batch-v2-session");
+    let setup_response = v2::NewSessionResponse::new(session_id.clone()).config_options(vec![
+        v2::SessionConfigOption::boolean("thinking", "Thinking", true),
+    ]);
+    let callback_response = setup_response.clone();
+    let response_session_id = session_id.clone();
+    let notification_session_id = session_id.clone();
+    let (transport, mut peer) = Channel::duplex();
+    let (callback_tx, mut callback_rx) = mpsc::unbounded();
+    let (peer_done_tx, peer_done_rx) = oneshot::channel();
+
+    let proxy = Proxy
+        .v2()
+        .on_receive_request_from(
+            Client,
+            async |request: v2::InitializeProxyRequest, responder, _connection| {
+                responder.respond(v2::InitializeResponse::new(
+                    request.initialize.protocol_version,
+                    v2::Implementation::new("same-batch-proxy", env!("CARGO_PKG_VERSION")),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request_from(
+            Client,
+            async move |request: v2::NewSessionRequest,
+                        responder,
+                        connection: V2ConnectionTo<Conductor>| {
+                let callback_response = callback_response.clone();
+                let response_session_id = response_session_id.clone();
+                let callback_tx = callback_tx.clone();
+                connection
+                    .build_session_from(request)
+                    .on_proxy_session_start(responder, move |opened| async move {
+                        assert_eq!(opened.session().session_id(), &response_session_id);
+                        assert_eq!(opened.response(), &callback_response);
+                        callback_tx.unbounded_send(()).map_err(|_| {
+                            agent_client_protocol::Error::internal_error()
+                                .data("v2 proxy callback receiver was dropped")
+                        })
+                    })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(transport, async move |_connection| {
+            callback_rx.next().await.ok_or_else(|| {
+                agent_client_protocol::Error::internal_error().data("v2 proxy callback did not run")
+            })?;
+            peer_done_rx.await.map_err(|_| {
+                agent_client_protocol::Error::internal_error().data("raw peer stopped early")
+            })
+        });
+
+    let peer = async move {
+        let initialize_id = agent_client_protocol::schema::v1::RequestId::Number(1);
+        let initialize = v2::InitializeProxyRequest::new(v2::InitializeRequest::new(
+            ProtocolVersion::V2,
+            v2::Implementation::new("same-batch-client", env!("CARGO_PKG_VERSION")),
+        ));
+        peer.tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+                "_proxy/initialize".to_owned(),
+                serde_json::to_value(initialize).expect("initialize request should serialize"),
+                initialize_id.clone(),
+            )?))
+            .expect("proxy should accept initialization");
+
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Response(
+            agent_client_protocol::schema::v1::Response::Result { id, result },
+        ))) = peer.rx.next().await
+        else {
+            panic!("expected the proxy initialize response");
+        };
+        assert_eq!(id, initialize_id);
+        let initialize_response = v2::InitializeResponse::from_value("_proxy/initialize", result)?;
+        assert_eq!(initialize_response.protocol_version, ProtocolVersion::V2);
+
+        let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
+        peer.tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+                "session/new".to_owned(),
+                serde_json::to_value(v2::NewSessionRequest::new("/same-batch-v2-session"))
+                    .expect("session request should serialize"),
+                upstream_id.clone(),
+            )?))
+            .expect("proxy should accept session/new");
+
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(forwarded))) =
+            peer.rx.next().await
+        else {
+            panic!("expected a forwarded session/new request");
+        };
+        let successor = SuccessorMessage::<v2::NewSessionRequest>::parse_message(
+            forwarded.method.as_ref(),
+            &forwarded.params,
+        )?;
+        assert_eq!(
+            successor.message.cwd,
+            v2::AbsolutePath::new("/same-batch-v2-session")
+        );
+
+        let response = RawJsonRpcMessage::response(
+            forwarded.id,
+            Ok(serde_json::to_value(setup_response).expect("session response should serialize")),
+        );
+        let update = SuccessorMessage {
+            message: v2::UpdateSessionNotification::new(
+                notification_session_id,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
+                    v2::RunningStateUpdate::new(),
+                )),
+            ),
+            meta: None,
+        }
+        .to_untyped_message()?;
+        let (method, params) = update.into_parts();
+        let notification = RawJsonRpcMessage::notification(method, params)?;
+        let batch = TransportBatch::from_messages([response, notification])
+            .expect("test response batch should be non-empty");
+        peer.tx
+            .unbounded_send(TransportFrame::Batch(batch))
+            .expect("proxy should accept the response batch");
+
+        let mut saw_response = false;
+        let mut saw_update = false;
+        for _ in 0..2 {
+            let Some(TransportFrame::Single(message)) = peer.rx.next().await else {
+                panic!("expected a forwarded session response and update");
+            };
+            match message {
+                RawJsonRpcMessage::Response(
+                    agent_client_protocol::schema::v1::Response::Result { id, result },
+                ) => {
+                    assert_eq!(id, upstream_id);
+                    let response = v2::NewSessionResponse::from_value("session/new", result)?;
+                    assert_eq!(response.session_id, session_id);
+                    saw_response = true;
+                }
+                RawJsonRpcMessage::Notification(notification) => {
+                    let update = v2::UpdateSessionNotification::parse_message(
+                        notification.method.as_ref(),
+                        &notification.params,
+                    )?;
+                    assert_eq!(update.session_id, session_id);
+                    assert!(matches!(
+                        update.update,
+                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_))
+                    ));
+                    saw_update = true;
+                }
+                message => panic!("unexpected proxy output: {message:?}"),
+            }
+        }
+        assert!(saw_response);
+        assert!(saw_update);
+        peer_done_tx
+            .send(())
+            .map_err(|()| agent_client_protocol::Error::internal_error())
+    };
+
+    tokio::time::timeout(TIMEOUT, async { futures::try_join!(proxy, peer) })
+        .await
+        .expect("same-batch v2 session update was not routed")
+        .expect("v2 proxy session connection failed");
 }

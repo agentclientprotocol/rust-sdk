@@ -21,10 +21,10 @@
 //! This example uses stable ACP protocol v1. The draft protocol v2 feature
 //! provides a command-only `V2Session` API and receives updates and interactive
 //! requests through typed connection handlers because prompt acceptance and
-//! inbound traffic are independent. Per-session MCP attachment is available
-//! with both v2 and MCP-over-ACP features and remains active for the connection
-//! lifetime after successful setup; global proxy attachment and proxy-session
-//! helpers remain v1-only.
+//! inbound traffic are independent. With both v2 and MCP-over-ACP features,
+//! `Proxy.v2()` supports global MCP attachment and `V2SessionBuilder` supports
+//! per-session attachment plus non-blocking proxy setup. Successful
+//! attachments remain active for the connection lifetime.
 //!
 //! Here's a minimal example that initializes a v1 connection, creates a
 //! session, and sends a prompt:

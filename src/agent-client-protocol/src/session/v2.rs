@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{future::Future, path::Path};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
 use futures::{
@@ -7,9 +7,9 @@ use futures::{
 };
 
 use crate::{
-    Agent, DynamicHandlerGuard, SentRequest, V2ConnectionTo,
+    Agent, Client, DynamicHandlerGuard, Responder, SentRequest, V2ConnectionTo,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
-    role::HasPeer,
+    role::{HasPeer, acp::ProxySessionMessages},
     schema::v2,
 };
 
@@ -128,13 +128,12 @@ where
 /// Protocol v2 acknowledges `session/prompt` independently from inbound
 /// session updates. Register typed [`v2::UpdateSessionNotification`] and
 /// session request handlers on [`crate::Builder`] before connecting, then use
-/// [`Self::start_session`] to create the command-only [`V2Session`] handle.
+/// [`Self::start_session`] to create the command-only [`V2Session`] handle or
+/// `on_proxy_session_start` to forward setup through a proxy.
 ///
 /// With both the `unstable_protocol_v2` and `unstable_mcp_over_acp` features,
-/// [`Self::with_mcp_server`] attaches an MCP server to the new session.
-/// Proxy-session helpers remain available only through the stable protocol v1
-/// [`crate::SessionBuilder`].
-#[must_use = "call `start_session` to send the `session/new` request"]
+/// `with_mcp_server` attaches an MCP server to the new session.
+#[must_use = "call `start_session` or `on_proxy_session_start` to send the `session/new` request"]
 #[derive(Debug)]
 pub struct V2SessionBuilder<Counterpart, Run = NullRun>
 where
@@ -192,6 +191,92 @@ where
         })
     }
 
+    fn send_new_session(self, ordered: bool) -> SentRequest<v2::NewSessionResponse>
+    where
+        Run: 'static,
+    {
+        let Self {
+            connection,
+            request,
+            dynamic_handler_registrations,
+            run,
+        } = self;
+        let raw_connection = connection.raw_connection().clone();
+
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        {
+            if dynamic_handler_registrations.is_empty() {
+                drop(run);
+                if ordered {
+                    raw_connection.send_ordered_request_to(Agent, request)
+                } else {
+                    raw_connection.send_request_to(Agent, request)
+                }
+            } else {
+                let handlers_ready = raw_connection.dynamic_handler_barrier();
+                let (runner_started_tx, runner_started_rx) = oneshot::channel();
+                let (promotion_tx, promotion_rx) = oneshot::channel();
+                let runner_started = match raw_connection.spawn(run_pending_mcp_attachment(
+                    raw_connection.clone(),
+                    run,
+                    runner_started_tx,
+                    promotion_rx,
+                )) {
+                    Ok(()) => Either::Left(async move {
+                        runner_started_rx.await.map_err(|error| {
+                            crate::util::internal_error(format!(
+                                "MCP runner stopped before its initial poll: {error}"
+                            ))
+                        })?
+                    }),
+                    Err(error) => Either::Right(future::ready(Err(error))),
+                };
+                let readiness = async move {
+                    future::try_join(handlers_ready, runner_started).await?;
+                    Ok(())
+                };
+                let response_hook = move |_response: &v2::NewSessionResponse| {
+                    promotion_tx.send(()).map_err(|()| {
+                        crate::util::internal_error(
+                            "MCP runner stopped before session setup completed",
+                        )
+                    })?;
+                    dynamic_handler_registrations
+                        .into_iter()
+                        .for_each(DynamicHandlerGuard::detach);
+                    Ok(())
+                };
+
+                if ordered {
+                    raw_connection.send_ordered_request_to_with_response_hook_after(
+                        Agent,
+                        request,
+                        readiness,
+                        response_hook,
+                    )
+                } else {
+                    raw_connection.send_request_to_with_response_hook_after(
+                        Agent,
+                        request,
+                        readiness,
+                        response_hook,
+                    )
+                }
+            }
+        }
+
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        {
+            drop(dynamic_handler_registrations);
+            drop(run);
+            if ordered {
+                raw_connection.send_ordered_request_to(Agent, request)
+            } else {
+                raw_connection.send_request_to(Agent, request)
+            }
+        }
+    }
+
     /// Send `session/new` and return its independently consumable request.
     ///
     /// The successful result contains both a cloneable command handle and the
@@ -208,75 +293,62 @@ where
     where
         Run: 'static,
     {
-        let Self {
-            connection,
-            request,
-            dynamic_handler_registrations,
-            run,
-        } = self;
-        let session_connection = connection.clone();
-        let raw_connection = connection.raw_connection().clone();
-
-        #[cfg(feature = "unstable_mcp_over_acp")]
-        let sent_request = if dynamic_handler_registrations.is_empty() {
-            drop(run);
-            raw_connection.send_request_to(Agent, request)
-        } else {
-            let handlers_ready = raw_connection.dynamic_handler_barrier();
-            let (runner_started_tx, runner_started_rx) = oneshot::channel();
-            let (promotion_tx, promotion_rx) = oneshot::channel();
-            let runner_started = match raw_connection.spawn(run_pending_mcp_attachment(
-                raw_connection.clone(),
-                run,
-                runner_started_tx,
-                promotion_rx,
-            )) {
-                Ok(()) => Either::Left(async move {
-                    runner_started_rx.await.map_err(|error| {
-                        crate::util::internal_error(format!(
-                            "MCP runner stopped before its initial poll: {error}"
-                        ))
-                    })?
-                }),
-                Err(error) => Either::Right(future::ready(Err(error))),
-            };
-            let readiness = async move {
-                future::try_join(handlers_ready, runner_started).await?;
-                Ok(())
-            };
-
-            raw_connection.send_request_to_with_response_hook_after(
-                Agent,
-                request,
-                readiness,
-                move |_response| {
-                    promotion_tx.send(()).map_err(|()| {
-                        crate::util::internal_error(
-                            "MCP runner stopped before session setup completed",
-                        )
-                    })?;
-                    dynamic_handler_registrations
-                        .into_iter()
-                        .for_each(DynamicHandlerGuard::detach);
-                    Ok(())
-                },
-            )
-        };
-
-        #[cfg(not(feature = "unstable_mcp_over_acp"))]
-        let sent_request = {
-            drop(dynamic_handler_registrations);
-            drop(run);
-            raw_connection.send_request_to(Agent, request)
-        };
-
-        sent_request.map(move |response| {
+        let session_connection = self.connection.clone();
+        self.send_new_session(false).map(move |response| {
             let session = V2Session {
                 session_id: response.session_id.clone(),
                 connection: session_connection,
             };
             Ok(OpenedV2Session { session, response })
         })
+    }
+
+    /// Start a protocol v2 session through a proxy and forward its response.
+    ///
+    /// The downstream request is ordered and inherits cancellation from the
+    /// upstream request. On success, this helper installs session routing before
+    /// later inbound traffic is processed, forwards the complete response, and
+    /// spawns `op` with an [`OpenedV2Session`] containing the command-only
+    /// session handle plus the complete setup response. Inbound updates and
+    /// interactive requests remain independent connection traffic.
+    ///
+    /// The callback runs outside the ordered response barrier, so it may wait
+    /// for later connection traffic without deadlocking the dispatch loop.
+    pub fn on_proxy_session_start<F, Fut>(
+        self,
+        responder: Responder<v2::NewSessionResponse>,
+        op: F,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Client>,
+        Run: 'static,
+        F: FnOnce(OpenedV2Session<Counterpart, v2::NewSessionResponse>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
+    {
+        let session_connection = self.connection.clone();
+        self.send_new_session(true)
+            .forward_cancellation_from(responder.cancellation())
+            .on_receiving_ok_result(responder, async move |response, responder| {
+                let session_id = response.session_id.clone();
+                let raw_connection = session_connection.raw_connection();
+                let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
+                    crate::schema::v1::SessionId::from(session_id.clone()),
+                )) {
+                    Ok(route) => route,
+                    Err(error) => return responder.respond_with_error(error),
+                };
+
+                let opened = OpenedV2Session {
+                    session: V2Session {
+                        session_id,
+                        connection: session_connection.clone(),
+                    },
+                    response: response.clone(),
+                };
+                responder.respond(response)?;
+                route.detach();
+                raw_connection.spawn(async move { op(opened).await })
+            })
     }
 }
 

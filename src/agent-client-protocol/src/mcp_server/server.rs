@@ -26,6 +26,9 @@ use crate::{
     util::MatchDispatchFrom,
 };
 
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+use crate::{JsonRpcMessage, UntypedMessage};
+
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::role::HasPeer;
 
@@ -39,9 +42,10 @@ use crate::schema::v1::ForkSessionRequest;
 /// connected directly as a standalone MCP component. With the
 /// `unstable_mcp_over_acp` feature, servers can instead be attached to ACP
 /// session setup through `Builder::with_mcp_server` or
-/// `SessionBuilder::with_mcp_server`. Draft protocol v2 supports per-session
-/// attachment through `V2SessionBuilder::with_mcp_server` when
-/// `unstable_protocol_v2` is also enabled.
+/// `SessionBuilder::with_mcp_server`. When `unstable_protocol_v2` is also
+/// enabled, `Proxy.v2().with_mcp_server` attaches a server globally to draft
+/// v2 setup requests and `V2SessionBuilder::with_mcp_server` attaches one to a
+/// single new v2 session.
 ///
 /// # Creating an MCP Server
 ///
@@ -188,19 +192,109 @@ where
         }
     }
 
+    fn declaration(&self) -> crate::schema::v2::McpServer {
+        crate::schema::v2::McpServer::Acp(crate::schema::v2::McpServerAcp::new(
+            self.connect.name(),
+            crate::schema::v2::McpServerAcpId::from(self.server_id.clone()),
+        ))
+    }
+
+    fn append_declaration(&self, request: &mut crate::schema::v2::NewSessionRequest) {
+        request.mcp_servers.push(self.declaration());
+    }
+
+    fn validate_session_setup(request: &UntypedMessage) -> Result<bool, crate::Error> {
+        match request.method() {
+            "session/new" => {
+                crate::schema::v2::NewSessionRequest::parse_message(
+                    request.method(),
+                    request.params(),
+                )?;
+                Ok(true)
+            }
+            "session/resume" => {
+                crate::schema::v2::ResumeSessionRequest::parse_message(
+                    request.method(),
+                    request.params(),
+                )?;
+                Ok(true)
+            }
+            #[cfg(feature = "unstable_session_fork")]
+            "session/fork" => {
+                crate::schema::v2::ForkSessionRequest::parse_message(
+                    request.method(),
+                    request.params(),
+                )?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    fn append_declaration_to_raw(&self, request: &mut UntypedMessage) -> Result<(), crate::Error> {
+        let serde_json::Value::Object(params) = &mut request.params else {
+            return Err(
+                crate::Error::invalid_params().data("session setup parameters must be an object")
+            );
+        };
+        let declaration =
+            serde_json::to_value(self.declaration()).map_err(crate::Error::into_internal_error)?;
+        match params.get_mut("mcpServers") {
+            Some(serde_json::Value::Array(servers)) => servers.push(declaration),
+            Some(value) => *value = serde_json::Value::Array(vec![declaration]),
+            None => {
+                params.insert(
+                    "mcpServers".to_string(),
+                    serde_json::Value::Array(vec![declaration]),
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Attach this server to a draft protocol v2 `session/new` request.
     pub fn into_dynamic_handler(
         self,
         request: &mut crate::schema::v2::NewSessionRequest,
         cx: &crate::V2ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
-        request.mcp_servers.push(crate::schema::v2::McpServer::Acp(
-            crate::schema::v2::McpServerAcp::new(
-                self.connect.name(),
-                crate::schema::v2::McpServerAcpId::new(self.server_id.0),
-            ),
-        ));
+        self.append_declaration(request);
         cx.add_dynamic_handler(self.active_session)
+    }
+}
+
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for V2McpSessionHandler<Counterpart>
+where
+    Counterpart: HasPeer<Client> + HasPeer<Agent>,
+{
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        cx: ConnectionTo<Counterpart>,
+    ) -> Result<Handled<Dispatch>, crate::Error> {
+        MatchDispatchFrom::new(message, &cx)
+            .if_request_from(Client, async |mut request: UntypedMessage, responder| {
+                if !Self::validate_session_setup(&request)? {
+                    return Ok(Handled::No {
+                        message: (request, responder),
+                        retry: false,
+                    });
+                }
+
+                self.append_declaration_to_raw(&mut request)?;
+                Ok(Handled::No {
+                    message: (request, responder),
+                    retry: false,
+                })
+            })
+            .await
+            .otherwise_delegate(&mut self.active_session)
+            .await
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        format!("V2McpServer({})", self.connect.name())
     }
 }
 
@@ -348,5 +442,169 @@ where
             })
             .connect_to(client)
             .await
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "unstable_mcp_over_acp",
+    feature = "unstable_protocol_v2"
+))]
+mod tests {
+    use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    use super::V2McpSessionHandler;
+    use crate::{
+        Conductor, DynConnectTo, Error, UntypedMessage,
+        mcp_server::{McpConnectionTo, McpServerConnect},
+        role,
+        schema::{
+            v1::McpServerAcpId,
+            v2::{self, McpServer},
+        },
+    };
+
+    struct UnusedMcpConnect;
+
+    impl McpServerConnect<Conductor> for UnusedMcpConnect {
+        fn name(&self) -> String {
+            "global-v2-server".to_owned()
+        }
+
+        fn connect(&self, _context: McpConnectionTo<Conductor>) -> DynConnectTo<role::mcp::Client> {
+            panic!("declaration tests must not connect to the MCP server")
+        }
+    }
+
+    fn handler() -> V2McpSessionHandler<Conductor> {
+        V2McpSessionHandler::new(
+            McpServerAcpId::new("global-v2-server-id"),
+            Arc::new(UnusedMcpConnect),
+        )
+    }
+
+    fn existing_server() -> McpServer {
+        McpServer::Other(v2::OtherMcpServer::new(
+            "_future_transport",
+            BTreeMap::from([("futureOption".to_owned(), json!({ "nested": true }))]),
+        ))
+    }
+
+    fn meta() -> v2::Meta {
+        v2::Meta::from_iter([("preserved".to_owned(), json!({ "nested": true }))])
+    }
+
+    fn assert_raw_append_preserves_params(
+        handler: &V2McpSessionHandler<Conductor>,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<v2::McpServerAcpId, Error> {
+        let mut params = serde_json::to_value(params)?;
+        let Value::Object(params_object) = &mut params else {
+            panic!("session setup params should serialize as an object");
+        };
+        params_object.insert(
+            "_futureSessionField".to_owned(),
+            json!({ "must": ["remain", "untouched"] }),
+        );
+
+        let mut expected = params.clone();
+        expected
+            .get_mut("mcpServers")
+            .and_then(Value::as_array_mut)
+            .expect("test request should contain mcpServers")
+            .push(serde_json::to_value(handler.declaration())?);
+
+        let mut request = UntypedMessage::new(method, params)?;
+        assert!(V2McpSessionHandler::<Conductor>::validate_session_setup(
+            &request
+        )?);
+        handler.append_declaration_to_raw(&mut request)?;
+
+        assert_eq!(
+            request.params, expected,
+            "global attachment must only append its declaration"
+        );
+
+        let appended = request
+            .params
+            .get("mcpServers")
+            .and_then(Value::as_array)
+            .and_then(|servers| servers.last())
+            .cloned()
+            .expect("global declaration should be appended");
+        match serde_json::from_value::<McpServer>(appended)? {
+            McpServer::Acp(server) => {
+                assert_eq!(server.name, "global-v2-server");
+                Ok(server.server_id)
+            }
+            server => panic!("expected an ACP server declaration, got {server:?}"),
+        }
+    }
+
+    #[test]
+    fn v2_global_mcp_declaration_preserves_all_session_setup_params() -> Result<(), Error> {
+        let handler = handler();
+        let cwd = PathBuf::from("/tmp/global-v2-mcp");
+        let additional_directory = PathBuf::from("/tmp/global-v2-mcp-additional");
+        let session_id = v2::SessionId::new("session-to-resume");
+        let existing_server = existing_server();
+
+        let new_server_id = assert_raw_append_preserves_params(
+            &handler,
+            "session/new",
+            v2::NewSessionRequest::new(cwd.clone())
+                .additional_directories([additional_directory.clone()])
+                .mcp_servers(vec![existing_server.clone()])
+                .meta(meta()),
+        )?;
+
+        let resume_server_id = assert_raw_append_preserves_params(
+            &handler,
+            "session/resume",
+            v2::ResumeSessionRequest::new(session_id.clone(), cwd.clone())
+                .additional_directories([additional_directory.clone()])
+                .mcp_servers(vec![existing_server.clone()])
+                .replay_from(v2::ReplayFrom::Start(
+                    v2::ReplayFromStart::new().meta(meta()),
+                ))
+                .meta(meta()),
+        )?;
+        assert_eq!(resume_server_id, new_server_id);
+
+        #[cfg(feature = "unstable_session_fork")]
+        {
+            let fork_server_id = assert_raw_append_preserves_params(
+                &handler,
+                "session/fork",
+                v2::ForkSessionRequest::new(session_id, cwd)
+                    .additional_directories([additional_directory])
+                    .mcp_servers(vec![existing_server])
+                    .meta(meta()),
+            )?;
+            assert_eq!(fork_server_id, new_server_id);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn v2_global_mcp_handler_ignores_non_setup_requests() -> Result<(), Error> {
+        let request = UntypedMessage::new(
+            "session/prompt",
+            json!({
+                "sessionId": "session-to-prompt",
+                "prompt": []
+            }),
+        )?;
+
+        assert!(!V2McpSessionHandler::<Conductor>::validate_session_setup(
+            &request
+        )?);
+        assert_eq!(request.method(), "session/prompt");
+        Ok(())
     }
 }

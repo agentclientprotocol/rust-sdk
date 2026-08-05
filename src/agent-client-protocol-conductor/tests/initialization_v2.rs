@@ -203,13 +203,13 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
         let sequence = self.sequence;
 
         Proxy
-            .builder()
+            .v2()
             .name("v2-passthrough-proxy")
             .on_receive_request_from(
                 Client,
                 async move |request: v2::InitializeProxyRequest,
                             responder,
-                            cx: ConnectionTo<Conductor>| {
+                            cx: V2ConnectionTo<Conductor>| {
                     assert_eq!(
                         sequence.fetch_add(1, Ordering::SeqCst),
                         0,
@@ -226,7 +226,7 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
                 Client,
                 async move |request: v2::NewSessionRequest,
                             responder,
-                            cx: ConnectionTo<Conductor>| {
+                            cx: V2ConnectionTo<Conductor>| {
                     cx.send_request_to(Agent, request)
                         .forward_response_to(responder)
                 },
@@ -510,6 +510,41 @@ async fn v2_proxy_initialize_precedes_agent_initialize() -> Result<(), Error> {
 }
 
 #[tokio::test]
+async fn v2_tracing_without_user_proxies_uses_version_neutral_bridge() -> Result<(), Error> {
+    let request = initialize_request();
+    let response = initialize_response();
+    let sequence = Arc::new(AtomicUsize::new(0));
+    let agent = recording_agent(request.clone(), response.clone(), Arc::clone(&sequence), 0);
+    let components = ProxiesAndAgent::new(agent);
+    let (trace_tx, _trace_rx) = mpsc::unbounded();
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+
+    Client
+        .v2()
+        .name("v2-editor")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", components)
+                .trace_to(trace_tx)
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, async move |cx| {
+            let received = cx.send_request(request).block_task().await?;
+            assert_eq!(received, response);
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(sequence.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn v2_nested_proxy_instantiator_cannot_change_selected_version() -> Result<(), Error> {
     let request = initialize_request();
     let response = initialize_response();
@@ -654,6 +689,316 @@ async fn v2_session_new_preserves_request_and_response_through_proxy() -> Result
         })
         .await?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn v2_proxy_session_helper_preserves_response_and_routes_later_updates() -> Result<(), Error>
+{
+    let initialize_request = initialize_request();
+    let initialize_response = initialize_response();
+    let session_id = v2::SessionId::new("v2-helper-session");
+    let session_response = v2::NewSessionResponse::new(session_id.clone())
+        .config_options(vec![v2::SessionConfigOption::boolean(
+            "thinking", "Thinking", true,
+        )])
+        .meta(meta("response", "proxy-helper-response"));
+    let expected_callback_response = session_response.clone();
+    let agent_initialize_response = initialize_response.clone();
+    let agent_session_response = session_response.clone();
+    let agent_session_id = session_id.clone();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async move |_request: v2::InitializeRequest, responder, _cx| {
+                responder.respond(agent_initialize_response.clone())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: v2::NewSessionRequest, responder, cx| {
+                responder.respond(agent_session_response.clone())?;
+                cx.send_notification(v2::UpdateSessionNotification::new(
+                    agent_session_id.clone(),
+                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
+                        v2::RunningStateUpdate::new(),
+                    )),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let (callback_tx, mut callback_rx) = mpsc::unbounded();
+    let proxy = Proxy.v2().on_receive_request_from(
+        Client,
+        async move |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+            let callback_tx = callback_tx.clone();
+            cx.build_session_from(request).on_proxy_session_start(
+                responder,
+                move |opened| async move {
+                    callback_tx
+                        .unbounded_send((
+                            opened.session().session_id().clone(),
+                            opened.response().clone(),
+                        ))
+                        .map_err(Error::into_internal_error)
+                },
+            )
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let (update_tx, mut update_rx) = mpsc::unbounded();
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification, _cx| {
+                update_tx
+                    .unbounded_send(update)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", ProxiesAndAgent::new(agent).proxy(proxy))
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, async move |cx| {
+            cx.send_request(initialize_request).block_task().await?;
+
+            let received = cx
+                .send_request(v2::NewSessionRequest::new("/v2-helper-session"))
+                .block_task()
+                .await?;
+            assert_eq!(received, session_response);
+
+            let (callback_session_id, callback_response) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), callback_rx.next())
+                    .await
+                    .expect("proxy session callback should not hang")
+                    .ok_or_else(|| Error::internal_error().data("proxy callback channel closed"))?;
+            assert_eq!(callback_session_id, session_id);
+            assert_eq!(callback_response, expected_callback_response);
+
+            let update = tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
+                .await
+                .expect("post-response session update should not hang")
+                .ok_or_else(|| Error::internal_error().data("session update channel closed"))?;
+            assert_eq!(update.session_id, session_id);
+            assert!(matches!(
+                update.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_))
+            ));
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test]
+async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() -> Result<(), Error>
+{
+    let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+    let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |_request: v2::InitializeRequest, responder, _cx| {
+                responder.respond(initialize_response())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::NewSessionRequest, responder, cx| {
+                if AsRef::<std::path::Path>::as_ref(&request.cwd).ends_with("park-session") {
+                    parked_id_tx
+                        .unbounded_send(responder.id().clone())
+                        .map_err(Error::into_internal_error)?;
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let result = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<v2::NewSessionResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(result)
+                    })?;
+                    return Ok(());
+                }
+
+                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                    "normal-session",
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |cancel: v1::CancelRequestNotification, _cx| {
+                cancel_tx
+                    .unbounded_send(cancel.request_id)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+    let proxy = Proxy.v2().on_receive_request_from(
+        Client,
+        async |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+            cx.build_session_from(request)
+                .on_proxy_session_start(responder, |_opened| async { Ok(()) })
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let client_request_id = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Client
+            .v2()
+            .with_spawned(|_cx| async move {
+                ConductorImpl::new_agent(
+                    "v2-cancellation-conductor",
+                    ProxiesAndAgent::new(agent).proxy(proxy),
+                )
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+            })
+            .connect_with(transport, async move |cx| {
+                cx.send_request(initialize_request()).block_task().await?;
+
+                let pending = cx.send_request(v2::NewSessionRequest::new("/park-session"));
+                let client_request_id = pending.id().clone();
+                pending.cancel()?;
+                let error = pending
+                    .block_task()
+                    .await
+                    .expect_err("cancelled v2 session/new should fail");
+                assert_eq!(i32::from(error.code), -32800);
+
+                let response = cx
+                    .send_request(v2::NewSessionRequest::new("/normal-session"))
+                    .block_task()
+                    .await?;
+                assert_eq!(response.session_id, v2::SessionId::new("normal-session"));
+                Ok(client_request_id)
+            }),
+    )
+    .await
+    .expect("v2 proxy cancellation test timed out")?;
+
+    let parked_id = tokio::time::timeout(std::time::Duration::from_secs(2), parked_id_rx.next())
+        .await
+        .expect("agent should observe the forwarded request")
+        .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
+    assert_ne!(
+        parked_id, client_request_id,
+        "each proxy hop must allocate its own request ID"
+    );
+    let cancelled_id = tokio::time::timeout(std::time::Duration::from_secs(2), cancel_rx.next())
+        .await
+        .expect("agent should observe the reissued cancellation")
+        .ok_or_else(|| Error::internal_error().data("cancellation channel closed"))?;
+    assert_eq!(cancelled_id, parked_id);
+    assert!(
+        cancel_rx.try_recv().is_err(),
+        "the downstream hop must receive exactly one cancellation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn v2_proxy_session_helper_forwards_invalid_success_without_closing_connection()
+-> Result<(), Error> {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let agent_attempts = Arc::clone(&attempts);
+    let agent = Agent
+        .builder()
+        .without_acp_version_guard()
+        .on_receive_request(
+            async move |request: UntypedMessage,
+                        responder: agent_client_protocol::Responder<serde_json::Value>,
+                        _cx| {
+                match request.method() {
+                    "initialize" => responder.respond(
+                        serde_json::to_value(initialize_response())
+                            .map_err(Error::into_internal_error)?,
+                    ),
+                    "session/new" if agent_attempts.fetch_add(1, Ordering::SeqCst) == 0 => {
+                        responder.respond(serde_json::json!({
+                            "_futureResponseField": {
+                                "preserved": false,
+                            },
+                        }))
+                    }
+                    "session/new" => responder.respond(serde_json::json!({
+                        "sessionId": "recovered-session",
+                        "_futureResponseField": {
+                            "preserved": true,
+                        },
+                    })),
+                    method => responder.respond_with_error(
+                        Error::method_not_found().data(format!("unexpected method `{method}`")),
+                    ),
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let proxy_callback_count = Arc::clone(&callback_count);
+    let proxy = Proxy.v2().on_receive_request_from(
+        Client,
+        async move |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+            let callback_count = Arc::clone(&proxy_callback_count);
+            cx.build_session_from(request).on_proxy_session_start(
+                responder,
+                move |_opened| async move {
+                    callback_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    run_with_conductor(ProxiesAndAgent::new(agent).proxy(proxy), async move |cx| {
+        cx.send_request(initialize_request()).block_task().await?;
+
+        let error = cx
+            .send_request(v2::NewSessionRequest::new("/malformed-session"))
+            .block_task()
+            .await
+            .expect_err("a malformed downstream success must be rejected");
+        assert!(
+            error.to_string().contains("sessionId"),
+            "unexpected malformed response error: {error:?}"
+        );
+
+        let response = cx
+            .send_request(v2::NewSessionRequest::new("/recovered-session"))
+            .block_task()
+            .await?;
+        assert_eq!(response.session_id, v2::SessionId::new("recovered-session"));
+        Ok(())
+    })
+    .await?;
+
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        callback_count.load(Ordering::SeqCst),
+        1,
+        "the callback must run only for the valid setup"
+    );
     Ok(())
 }
 
