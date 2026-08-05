@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.0.0...v2.1.0) - 2026-08-05
+
+### Added
+
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(acp)* Add v2 session MCP attachment ([#303](https://github.com/agentclientprotocol/rust-sdk/pull/303))
+- *(conductor)* add v2 proxy initialization ([#302](https://github.com/agentclientprotocol/rust-sdk/pull/302))
+- *(acp)* expose unstable LLM provider methods ([#298](https://github.com/agentclientprotocol/rust-sdk/pull/298))
+- *(unstable-v2)* Better v2 session builders ([#295](https://github.com/agentclientprotocol/rust-sdk/pull/295))
+- *(acp)* expose unstable plan operations ([#297](https://github.com/agentclientprotocol/rust-sdk/pull/297))
+- *(acp)* expose unstable tool-call names ([#296](https://github.com/agentclientprotocol/rust-sdk/pull/296))
+
+### Fixed
+
+- *(acp)* Allow v2 initialize with future params ([#304](https://github.com/agentclientprotocol/rust-sdk/pull/304))
+- *(acp)* preserve same-version initialize fields ([#299](https://github.com/agentclientprotocol/rust-sdk/pull/299))
+- *(acp)* Support WASI builds ([#294](https://github.com/agentclientprotocol/rust-sdk/pull/294))
+
 ### Added
 
 - *(unstable)* Expose programmatic tool-call names through the
