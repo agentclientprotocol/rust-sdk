@@ -15,16 +15,16 @@ version-aligned as part of the coordinated release but do not impose that public
 constraint. The rmcp integration moves to 3.x because both `agent-client-protocol` and `rmcp` are
 public dependencies in its API:
 
-| Crate                                | Coordinated release |
-| ------------------------------------ | ------------------- |
-| `agent-client-protocol`              | 2.x                 |
-| `agent-client-protocol-derive`       | 2.x                 |
-| `agent-client-protocol-conductor`    | 2.x                 |
-| `agent-client-protocol-cookbook`     | 2.x                 |
-| `agent-client-protocol-http`         | 2.x                 |
-| `agent-client-protocol-polyfill`     | 2.x                 |
-| `agent-client-protocol-trace-viewer` | 2.x                 |
-| `agent-client-protocol-rmcp`         | 3.x                 |
+| Crate | Coordinated release |
+| --- | --- |
+| `agent-client-protocol` | 2.x |
+| `agent-client-protocol-derive` | 2.x |
+| `agent-client-protocol-conductor` | 2.x |
+| `agent-client-protocol-cookbook` | 2.x |
+| `agent-client-protocol-http` | 2.x |
+| `agent-client-protocol-polyfill` | 2.x |
+| `agent-client-protocol-trace-viewer` | 2.x |
+| `agent-client-protocol-rmcp` | 3.x |
 
 ## Notifications cannot receive error responses
 
@@ -118,11 +118,11 @@ channel adapter may still override `into_channel_and_future` to avoid an interme
 `ResponseRouter` completes a local pending request; it does not send a new JSON-RPC response.
 Its methods have therefore been renamed:
 
-| 1.x                           | 2.0                         |
-| ----------------------------- | --------------------------- |
-| `respond_with_result`         | `route_with_result`         |
-| `respond`                     | `route`                     |
-| `respond_with_error`          | `route_with_error`          |
+| 1.x | 2.0 |
+| --- | --- |
+| `respond_with_result` | `route_with_result` |
+| `respond` | `route` |
+| `respond_with_error` | `route_with_error` |
 | `respond_with_internal_error` | `route_with_internal_error` |
 
 `Responder` still uses `respond*`, because it sends the response to an incoming request.
@@ -185,14 +185,14 @@ the connection, replace `run_indefinitely()` with `detach()`. Detaching no longe
 Builder extensions implementing `RunWithConnectionTo` run alongside the connection; they do not
 respond to an individual JSON-RPC request. The builder method now reflects that distinction:
 
-| 1.x                       | 2.0                    |
-| ------------------------- | ---------------------- |
+| 1.x | 2.0 |
+| --- | --- |
 | `Builder::with_responder` | `Builder::with_runner` |
 
 The conductor crate applies the same terminology to its public background task:
 
-| 1.x                                                   | 2.0                                                |
-| ----------------------------------------------------- | -------------------------------------------------- |
+| 1.x | 2.0 |
+| --- | --- |
 | `agent_client_protocol_conductor::ConductorResponder` | `agent_client_protocol_conductor::ConductorRunner` |
 
 This is a type rename only; custom code that names the conductor task should update its imports
@@ -203,9 +203,9 @@ and type references.
 The combined matchers operate on `Dispatch` values, which can represent requests, notifications,
 or responses. Their method names now reflect that input:
 
-| 1.x                                  | 2.0                                   |
-| ------------------------------------ | ------------------------------------- |
-| `MatchDispatch::if_message`          | `MatchDispatch::if_dispatch`          |
+| 1.x | 2.0 |
+| --- | --- |
+| `MatchDispatch::if_message` | `MatchDispatch::if_dispatch` |
 | `MatchDispatchFrom::if_message_from` | `MatchDispatchFrom::if_dispatch_from` |
 
 ## Connection and session accessors borrow
@@ -253,22 +253,22 @@ use:
 The low-level SDK-local `McpConnectRequest`, `McpConnectResponse`, `McpOverAcpMessage`, and
 `McpDisconnectNotification` types were removed. Use the feature-gated schema types instead:
 
-| 1.x SDK-local type               | 2.0 schema type                                                |
-| -------------------------------- | -------------------------------------------------------------- |
-| `McpConnectRequest`              | `schema::v1::ConnectMcpRequest`                                |
-| `McpConnectResponse`             | `schema::v1::ConnectMcpResponse`                               |
-| `McpOverAcpMessage` request      | `schema::v1::MessageMcpRequest`                                |
-| `McpOverAcpMessage` notification | `schema::v1::MessageMcpNotification`                           |
-| `McpDisconnectNotification`      | `schema::v1::DisconnectMcpRequest` and `DisconnectMcpResponse` |
+| 1.x SDK-local type | 2.0 schema type |
+| --- | --- |
+| `McpConnectRequest` | `schema::v1::ConnectMcpRequest` |
+| `McpConnectResponse` | `schema::v1::ConnectMcpResponse` |
+| `McpOverAcpMessage` request | `schema::v1::MessageMcpRequest` |
+| `McpOverAcpMessage` notification | `schema::v1::MessageMcpNotification` |
+| `McpDisconnectNotification` | `schema::v1::DisconnectMcpRequest` and `DisconnectMcpResponse` |
 
 The public method-name constants moved to the schema's generated method-name
 tables:
 
-| 1.x SDK-local constant               | 2.0 schema constant                                                                                       |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------- |
-| `METHOD_MCP_CONNECT_REQUEST`         | `schema::v1::CLIENT_METHOD_NAMES.mcp_connect`                                                             |
-| `METHOD_MCP_MESSAGE`                 | `schema::v1::CLIENT_METHOD_NAMES.mcp_message` or `AGENT_METHOD_NAMES.mcp_message`, depending on direction |
-| `METHOD_MCP_DISCONNECT_NOTIFICATION` | `schema::v1::CLIENT_METHOD_NAMES.mcp_disconnect`                                                          |
+| 1.x SDK-local constant | 2.0 schema constant |
+| --- | --- |
+| `METHOD_MCP_CONNECT_REQUEST` | `schema::v1::CLIENT_METHOD_NAMES.mcp_connect` |
+| `METHOD_MCP_MESSAGE` | `schema::v1::CLIENT_METHOD_NAMES.mcp_message` or `AGENT_METHOD_NAMES.mcp_message`, depending on direction |
+| `METHOD_MCP_DISCONNECT_NOTIFICATION` | `schema::v1::CLIENT_METHOD_NAMES.mcp_disconnect` |
 
 Code using `Builder::with_mcp_server` or `SessionBuilder::with_mcp_server` continues to attach the
 high-level server in the same place; the emitted declaration and wire methods change. Global
@@ -350,6 +350,9 @@ are included in the SDK 2.0 migration rather than treated as stable-v1 wire chan
 - Terminal state is represented by `Terminal`, `TerminalUpdate`, `TerminalOutput`,
   `TerminalOutputChunk`, and `TerminalExitStatus`. `SessionUpdate` also has terminal update and
   output-chunk variants, so exhaustive matches must handle the new variants.
+- The experimental `v2::conversion` module and its cross-version helpers have been removed.
+  Implement v1 and v2 handlers separately, and translate only application-owned shared state
+  where the application's semantics define a faithful mapping.
 
 ## `SentRequest::map` accepts arbitrary output
 

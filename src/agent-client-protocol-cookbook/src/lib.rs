@@ -20,8 +20,10 @@
 //! # Building Proxies
 //!
 //! A proxy sits between client and agent, intercepting and optionally modifying
-//! messages. The most common use case is adding MCP tools. Use [`Proxy.builder()`](agent_client_protocol::Proxy)
-//! to build proxy connections.
+//! messages. The most common use case is adding MCP tools. Use
+//! [`Proxy.builder()`](agent_client_protocol::Proxy) for stable protocol v1
+//! proxy connections. With the core SDK's `unstable_protocol_v2` feature, use
+//! `Proxy.v2()` for a draft-v2-only proxy.
 //!
 //! **Important:** Proxies don't run standalone—they need the [`agent-client-protocol-conductor`] to
 //! orchestrate the connection between client, proxies, and agent. See
@@ -439,7 +441,8 @@ pub mod global_mcp_server {
     //! for all sessions. The server is added to the connection's handler chain and
     //! automatically injects itself into every supported session setup request.
     //! This pattern requires the core SDK's `unstable_mcp_over_acp` feature (or
-    //! the rmcp crate's matching passthrough feature).
+    //! the rmcp crate's matching passthrough feature). Draft v2 additionally
+    //! requires `unstable_protocol_v2`.
     //!
     //! # When to use
     //!
@@ -488,6 +491,16 @@ pub mod global_mcp_server {
     //! }
     //!
     //! let proxy = MyProxy { mcp_server };
+    //! ```
+    //!
+    //! The example uses stable protocol v1. A draft v2 proxy selects its API
+    //! before attaching the server:
+    //!
+    //! ```rust,ignore
+    //! Proxy.v2()
+    //!     .with_mcp_server(mcp_server)
+    //!     .connect_to(conductor)
+    //!     .await?;
     //! ```
     //!
     //! # Using rmcp
@@ -551,9 +564,11 @@ pub mod global_mcp_server {
     //! handler. It:
     //!
     //! 1. Intercepts session setup requests and adds a schema-native
-    //!    `McpServer::Acp` declaration with one connection-scoped server ID,
-    //!    reused in each request's `mcp_servers` list (`session/new`,
-    //!    `session/load`, `session/resume`, and feature-gated `session/fork`)
+    //!    `McpServer::Acp` declaration with one connection-scoped server ID.
+    //!    V1 injects it into `session/new`, `session/load`, `session/resume`,
+    //!    and feature-gated `session/fork`; v2 injects it into
+    //!    `session/new`, `session/resume`, and feature-gated `session/fork`
+    //!    while preserving unrelated request fields
     //! 2. Passes the modified request through to the next handler
     //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
     //!
@@ -568,7 +583,8 @@ pub mod per_session_mcp_server {
     //! Use this pattern when each session needs its own MCP server instance
     //! with access to session-specific context like the working directory.
     //! It requires the core SDK's `unstable_mcp_over_acp` feature (or the rmcp
-    //! crate's matching passthrough feature).
+    //! crate's matching passthrough feature). Draft v2 additionally requires
+    //! `unstable_protocol_v2`.
     //!
     //! # When to use
     //!
@@ -576,7 +592,7 @@ pub mod per_session_mcp_server {
     //! - You want eventual active-session tracking that does not need to precede later traffic
     //! - Tools need to customize behavior based on session parameters
     //!
-    //! # Basic pattern with `on_proxy_session_start`
+    //! # Stable v1 pattern with `on_proxy_session_start`
     //!
     //! The most common pattern intercepts [`NewSessionRequest`], extracts context,
     //! creates a per-session MCP server, and uses [`on_proxy_session_start`] to
@@ -639,7 +655,46 @@ pub mod per_session_mcp_server {
     //! ID-keyed state, preinstall a gate or placeholder that later handlers
     //! await, then populate it from the callback.
     //!
-    //! # Alternative: spawning `start_session_proxy`
+    //! # Draft v2 pattern
+    //!
+    //! `Proxy.v2()` exposes the same non-blocking setup shape with v2 schema
+    //! types. Its `V2SessionBuilder::on_proxy_session_start` callback receives
+    //! an `OpenedV2Session`, not just a session ID, so it retains both the
+    //! command-only handle and the complete `NewSessionResponse`:
+    //!
+    //! ```rust,ignore
+    //! use agent_client_protocol::schema::v2;
+    //!
+    //! Proxy.v2()
+    //!     .on_receive_request_from(
+    //!         Client,
+    //!         async |request: v2::NewSessionRequest, responder, connection| {
+    //!             let workspace_path = request.cwd.clone();
+    //!             let mcp_server = build_workspace_server(workspace_path);
+    //!
+    //!             connection
+    //!                 .build_session_from(request)
+    //!                 .with_mcp_server(mcp_server)?
+    //!                 .on_proxy_session_start(responder, async move |opened| {
+    //!                     let (session, setup_response) = opened.into_parts();
+    //!                     tracing::info!(
+    //!                         session_id = %session.session_id(),
+    //!                         ?setup_response,
+    //!                         "Session started"
+    //!                     );
+    //!                     Ok(())
+    //!                 })
+    //!         },
+    //!         agent_client_protocol::on_receive_request!(),
+    //!     );
+    //! ```
+    //!
+    //! The helper forwards upstream cancellation and the complete setup
+    //! response, and installs session routing before later inbound traffic.
+    //! The callback runs outside that ordering barrier. V2 updates and
+    //! interactive requests remain independent connection traffic.
+    //!
+    //! # Stable v1 alternative: spawning `start_session_proxy`
     //!
     //! If you need the linear [`start_session_proxy`] API, move it into a
     //! spawned task. Awaiting it directly in the request handler would block

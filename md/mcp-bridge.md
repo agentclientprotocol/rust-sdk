@@ -19,6 +19,20 @@ Native MCP-over-ACP requires the core SDK's `unstable_mcp_over_acp` feature. The
 polyfill enables that feature on its core dependency, so applications using the
 polyfill receive it through Cargo feature unification.
 
+The polyfill supports stable protocol v1 by default. To place it in a draft-v2
+conductor chain, enable `unstable_protocol_v2` on both the conductor and
+polyfill dependencies:
+
+```toml
+agent-client-protocol-conductor = { version = "...", features = ["unstable_protocol_v2"] }
+agent-client-protocol-polyfill = { version = "...", features = ["unstable_protocol_v2"] }
+```
+
+The feature makes this concrete compatibility proxy recognize v2
+initialization, capability, session setup, and `mcp/*` wire types. It does not
+add high-level v2 global MCP attachment or proxy-session helpers to the core
+SDK; those remain v1-only.
+
 ## Placement
 
 Insert the polyfill immediately before the final agent that lacks native
@@ -37,17 +51,23 @@ ConductorImpl::new_agent("conductor", components)
     .await?;
 ```
 
-The application proxy can attach a high-level
-`agent_client_protocol::mcp_server::McpServer`. The SDK advertises it in
-session setup requests as `McpServer::Acp`; callers do not need to construct a
-transport placeholder themselves.
+For v1, the application proxy can attach a high-level
+`agent_client_protocol::mcp_server::McpServer`. The SDK advertises it in session
+setup requests as `McpServer::Acp`; callers do not need to construct a transport
+placeholder themselves. In a v2 chain, a version-aware proxy currently supplies
+the `schema::v2::McpServer::Acp` declaration directly because the high-level
+global proxy attachment helpers remain v1-only.
 
-During initialization, the polyfill forwards the request to its successor and
-sets `agentCapabilities.mcpCapabilities.acp` in the response seen upstream when
-the successor advertises HTTP MCP support. In this chain position that
-capability means the chain can consume native MCP-over-ACP declarations through
-the adapter; it does not imply that the final agent implements the transport
-itself.
+During initialization, the polyfill forwards the request to its successor. When
+the successor advertises HTTP MCP support, the polyfill advertises native ACP
+MCP support in the response seen upstream:
+
+- v1 sets `agentCapabilities.mcpCapabilities.acp` to `true`.
+- v2 adds the `capabilities.session.mcp.acp` marker.
+
+In this chain position that capability means the chain can consume native
+MCP-over-ACP declarations through the adapter; it does not imply that the final
+agent implements the transport itself.
 
 If the successor already advertises native ACP MCP support, the polyfill leaves
 the capability, declarations, and `mcp/message` traffic unchanged. If it
@@ -56,8 +76,8 @@ support and rejects any native declaration that is nevertheless supplied.
 
 ## Transformation
 
-For each `McpServer::Acp` entry in `session/new`, `session/load`,
-`session/resume`, or feature-gated `session/fork`, the polyfill:
+For each schema-selected `McpServer::Acp` entry in a session setup request, the
+polyfill:
 
 1. Creates or reuses a connection-scoped localhost bridge endpoint for the
    `serverId` and replaces the declaration with the HTTP transport for the
@@ -72,11 +92,17 @@ For each `McpServer::Acp` entry in `session/new`, `session/load`,
    the connection from the bridge.
 
 Enable the polyfill crate's `unstable_session_fork` feature when adapting fork
-requests.
+requests. Stable v1 setup includes `session/new`, `session/load`, and
+`session/resume`; draft v2 includes `session/new` and `session/resume`. Both
+versions include `session/fork` when `unstable_session_fork` is enabled.
+
+Declarations using another transport are left unchanged, including extension
+transports represented by v2's `McpServer::Other`.
 
 Endpoints are cached by `serverId` across session setup requests on the ACP
 connection. The output declaration is rebuilt for each occurrence, preserving
-that occurrence's `name` and `_meta` even when its endpoint is reused.
+that occurrence's `name`, `_meta`, and other unmodified extension fields even
+when its endpoint is reused.
 
 The native wire envelopes are documented in the [SDK Protocol
 Reference](./protocol.md#native-mcp-over-acp).

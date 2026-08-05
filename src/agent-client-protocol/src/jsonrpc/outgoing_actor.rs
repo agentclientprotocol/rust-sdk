@@ -87,6 +87,7 @@ pub(super) async fn outgoing_protocol_actor(
                 id,
                 method,
                 untyped,
+                remote_style,
                 readiness,
             } => {
                 // Requests register their response destination synchronously
@@ -116,7 +117,8 @@ pub(super) async fn outgoing_protocol_actor(
                 }
 
                 let request = match protocol_compat
-                    .outgoing_message(untyped)
+                    .outgoing_message(untyped, remote_style)
+                    .and_then(|untyped| remote_style.transform_outgoing_message(untyped))
                     .and_then(|untyped| untyped.into_raw_jsonrpc_message(Some(id.clone())))
                 {
                     Ok(request) => request,

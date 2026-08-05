@@ -44,7 +44,7 @@ agent-client-protocol-schema = { version = "=1.6.0", features = ["tracing"] }
 tokio = { version = "1.52", default-features = false }
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
 tokio-util = { version = "0.7", features = ["compat"] }
-async-tungstenite = { version = "0.34.1", default-features = false, features = ["tokio-rustls-webpki-roots"] }
+async-tungstenite = { version = "0.35.0", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive", "rc"] }
@@ -97,7 +97,7 @@ regex = "1.12.2"
 
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
-let-underscore = "warn"
+let_underscore = "warn"
 missing_debug_implementations = "warn"
 # missing_docs = "warn"
 nonstandard_style = { level = "warn", priority = -1 }

@@ -620,12 +620,9 @@ fn rewrite_initialize_params(
             Ok(())
         }
         AgentProtocol::V2 => {
-            parse_initialize_params::<v2::InitializeRequest>(params)?;
-            params.insert(
-                "protocolVersion".into(),
-                serde_json::to_value(ProtocolVersion::V2)
-                    .map_err(crate::Error::into_internal_error)?,
-            );
+            let mut initialize = parse_initialize_params::<v2::InitializeRequest>(params)?;
+            initialize.protocol_version = ProtocolVersion::V2;
+            *params = serialize_initialize_params(initialize)?;
             Ok(())
         }
     }
@@ -1317,9 +1314,27 @@ impl Role for Proxy {
 }
 
 impl Proxy {
-    /// Create a connection builder for a proxy.
+    /// Create a stable protocol v1 connection builder for a proxy.
+    ///
+    /// Use `Proxy::v2` for a protocol-v2-only proxy with typed callbacks and
+    /// wire validation. Protocol-routing infrastructure that deliberately
+    /// selects a version itself can disable the guard with
+    /// `Builder::without_acp_version_guard`.
     pub fn builder(self) -> Builder<Proxy, NullHandler, NullRun> {
         Builder::new(self)
+    }
+
+    /// Create a proxy builder that uses the ACP protocol v2 API.
+    ///
+    /// This builder requires `_proxy/initialize` to select protocol v2.
+    /// Fluent callbacks receive [`crate::V2ConnectionTo<Conductor>`], while
+    /// low-level custom handlers and runners retain the protocol-neutral
+    /// [`ConnectionTo`] interface.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature.
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub fn v2(self) -> V2Builder<Proxy, NullHandler, NullRun> {
+        self.builder().v2_proxy()
     }
 }
 

@@ -1033,6 +1033,32 @@ async fn client_protocol_connector_does_not_require_v1_representability_for_v2_a
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn client_protocol_connector_reconnects_when_v2_initialize_has_future_fields()
+-> Result<(), Error> {
+    let connections = Arc::new(AtomicUsize::new(0));
+    let agent_connections = Arc::clone(&connections);
+
+    Client
+        .protocol_connector()
+        .with_v1(|| InitializingV1Client::new("v1-reconnected-session"))
+        .with_v2(|| FutureInitializeV2Client)
+        .connect_to(move || {
+            agent_connections.fetch_add(1, Ordering::SeqCst);
+            Agent
+                .protocol_router()
+                .with_v1(v1_agent_with_session("v1-reconnected-session"))
+        })
+        .await?;
+
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        2,
+        "future v2 fields must disable reuse of the normalized v1 connection"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn client_protocol_connector_does_not_retry_after_v2_initialize_rejection()
 -> Result<(), Error> {
     Client

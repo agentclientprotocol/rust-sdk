@@ -19,12 +19,12 @@ of requests or notifications. See [Transport Architecture: JSON-RPC Batch
 Behavior](./transport-architecture.md#json-rpc-batch-behavior) for the complete
 rules.
 
-By default, `Client.builder()` and `Agent.builder()` continue to expose the
-stable v1 API and advertise protocol v1. To use the v2 API for a connection,
-construct the builder with `Client.v2()` or `Agent.v2()`. Fluent typed handlers,
-spawned tasks, close callbacks, and `connect_with` receive
-`V2ConnectionTo<_>`, so the protocol version is reflected in the high-level
-Rust API as well as on the wire:
+By default, `Client.builder()`, `Agent.builder()`, and `Proxy.builder()`
+continue to expose the stable v1 API. To use the v2 API for a connection,
+construct the builder with `Client.v2()`, `Agent.v2()`, or `Proxy.v2()`.
+Fluent typed handlers, spawned tasks, close callbacks, and `connect_with`
+receive `V2ConnectionTo<_>`, so the protocol version is reflected in the
+high-level Rust API as well as on the wire:
 
 ```rust
 use agent_client_protocol::schema::{ProtocolVersion, v2};
@@ -215,13 +215,62 @@ Runners may continue asynchronous initialization; custom connectors must be
 able to queue connections and messages once constructed. A successful setup
 promotes the attachment to the connection lifetime; any setup failure cleans it
 up. This attachment requires both `unstable_protocol_v2` and
-`unstable_mcp_over_acp`. Global proxy attachment and proxy-session helpers
-remain v1-only.
+`unstable_mcp_over_acp`.
+
+A v2 proxy can instead attach one server globally with
+`Proxy.v2().with_mcp_server(...)`. The proxy reuses one connection-scoped
+server ID and adds its declaration to v2 `session/new`, `session/resume`, and
+feature-gated `session/fork` requests. It modifies only the `mcpServers` field,
+preserving unrelated setup fields and extensions for downstream handlers.
+
+`V2SessionBuilder::on_proxy_session_start` is the non-blocking setup helper for
+a v2 proxy:
+
+```rust,ignore
+use agent_client_protocol::schema::v2;
+use agent_client_protocol::{Client, Proxy};
+
+Proxy
+    .v2()
+    .on_receive_request_from(
+        Client,
+        async |request: v2::NewSessionRequest, responder, cx| {
+            cx.build_session_from(request)
+                .with_mcp_server(session_server)?
+                .on_proxy_session_start(responder, async |opened| {
+                    let (session, setup_response) = opened.into_parts();
+                    record_session(session.session_id(), setup_response);
+                    Ok(())
+                })
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+```
+
+The helper forwards request cancellation, sends an ordered downstream
+`session/new`, installs session routing before later inbound traffic is
+dispatched, and forwards the complete `NewSessionResponse`. It then spawns the
+callback outside the ordering barrier with an `OpenedV2Session` containing the
+command-only session handle and complete setup response. Updates and
+interactive requests remain independent connection traffic and should still
+be handled by typed callbacks on `Proxy.v2()`.
 
 If an application wants stream ergonomics, it can fan typed updates out from
 the connection handler with an explicit buffering and subscriber policy.
 
 ## Conductor and proxy initialization
+
+Proxy authors should make the version boundary explicit. `Proxy.builder()` is
+the stable v1 builder, while `Proxy.v2()` is v2-only and requires
+`_proxy/initialize` to select protocol v2. A proxy built for one version rejects
+the other version instead of parsing it through a permissive schema.
+
+Raw routing infrastructure is the exception. If a component deliberately
+selects and validates the version itself, it can use
+`Proxy.builder().without_acp_version_guard()` and keep protocol-neutral
+`ConnectionTo` callbacks. This disables the SDK's automatic version guard and
+is not a substitute for selecting `Proxy.v2()` in an ordinary v2 proxy
+implementation.
 
 Enable `unstable_protocol_v2` on `agent-client-protocol-conductor` to carry a v2
 connection through a conductor proxy chain. The conductor inspects the raw
@@ -250,6 +299,22 @@ selected implementation even if an instantiator attempts to change it, and
 validates the final agent's initialize response against that selection.
 The proxy connection also routes v2 `session/new` requests and responses
 without interpreting them as v1 payloads.
+
+### MCP compatibility polyfill
+
+The concrete
+`agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill` can
+participate in a v2 conductor chain when its `unstable_protocol_v2` feature is
+enabled. It selects v1 or v2 from `_proxy/initialize`, uses that version's MCP
+capability and wire types, and adapts native `McpServer::Acp` declarations in
+v2 `session/new`, `session/resume`, and feature-gated `session/fork` requests.
+Other declarations and unrelated request fields remain unchanged. See
+[MCP-over-ACP Compatibility Bridge](./mcp-bridge.md) for placement and feature
+configuration.
+
+This feature extends the concrete compatibility proxy only. The core SDK's
+global MCP attachment and proxy-session helpers support v1 and v2 independently,
+as described above.
 
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 

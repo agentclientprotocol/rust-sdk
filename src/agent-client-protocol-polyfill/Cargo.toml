@@ -13,6 +13,7 @@ categories = ["development-tools"]
 
 [features]
 default = []
+unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 unstable_session_fork = ["agent-client-protocol/unstable_session_fork"]
 
 [dependencies]

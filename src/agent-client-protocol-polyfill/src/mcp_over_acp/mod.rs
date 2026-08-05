@@ -1,8 +1,12 @@
 //! MCP-over-ACP compatibility proxy.
 //!
-//! This proxy adapts schema-native [`McpServer::Acp`] declarations for agents that do not
+//! This proxy adapts schema-native `McpServer::Acp` declarations for agents that do not
 //! support the ACP MCP transport. It replaces those declarations with loopback HTTP bridges and
 //! relays `mcp/connect`, `mcp/message`, and `mcp/disconnect` over ACP.
+//!
+//! Stable protocol v1 is supported by default. Enable the crate's
+//! `unstable_protocol_v2` feature to use the same proxy in a draft-v2 conductor
+//! chain.
 //!
 //! # Usage
 //!
@@ -17,62 +21,37 @@
 
 mod actor;
 pub(crate) mod http;
+mod protocol;
 
 use std::collections::HashMap;
 
 use agent_client_protocol::{
-    Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, Handled, Proxy, Responder,
-    UntypedMessage,
-    schema::{
-        InitializeProxyRequest,
-        v1::{
-            AgentNotification, AgentRequest, ConnectMcpRequest, ConnectMcpResponse,
-            DisconnectMcpRequest, DisconnectMcpResponse, LoadSessionRequest, McpConnectionId,
-            McpServer, McpServerAcp, McpServerHttp, MessageMcpNotification, MessageMcpRequest,
-            NewSessionRequest, ResumeSessionRequest,
-        },
-    },
+    Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
+    Proxy, Responder, UntypedMessage, is_cancel_request_notification, util::MatchDispatchFrom,
 };
 use futures::{SinkExt, channel::mpsc, channel::oneshot};
+use serde_json::Value;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
 use self::actor::BridgeConnectionActor;
-
-#[cfg(feature = "unstable_session_fork")]
-use agent_client_protocol::schema::v1::ForkSessionRequest;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DownstreamMcpMode {
-    #[default]
-    Unknown,
-    Native,
-    HttpAdapter,
-    Unavailable,
-}
-
-impl DownstreamMcpMode {
-    fn from_capabilities(http: bool, acp: bool) -> Self {
-        if acp {
-            Self::Native
-        } else if http {
-            Self::HttpAdapter
-        } else {
-            Self::Unavailable
-        }
-    }
-}
+use self::protocol::{
+    DownstreamMcpMode, NativeMcpMessage, NativeServer, PolyfillProtocol, native_params_into_value,
+};
 
 /// Internal messages for the polyfill's bridge management.
 #[derive(Debug)]
 pub(crate) enum BridgeMessage {
-    /// Record which MCP transport the successor can consume.
-    SetDownstreamMode(DownstreamMcpMode),
+    /// Record the selected ACP schema and which MCP transport the successor can consume.
+    SetProtocol {
+        protocol: PolyfillProtocol,
+        downstream_mode: DownstreamMcpMode,
+    },
 
     /// Transform the MCP declarations for one session setup request.
     TransformServers {
-        servers: Vec<McpServer>,
-        response_tx: oneshot::Sender<Result<Vec<McpServer>, agent_client_protocol::Error>>,
+        servers: Vec<Value>,
+        response_tx: oneshot::Sender<Result<Vec<Value>, agent_client_protocol::Error>>,
     },
 
     /// A new TCP connection was accepted and needs a native MCP connection ID.
@@ -85,7 +64,7 @@ pub(crate) enum BridgeMessage {
     /// A native MCP connection ID was received; spawn the actor and store its sender.
     ConnectionEstablished {
         server_id: String,
-        connection_id: McpConnectionId,
+        connection_id: String,
         actor: BridgeConnectionActor,
         connection: BridgeConnection,
     },
@@ -101,14 +80,12 @@ pub(crate) enum BridgeMessage {
 
     /// An MCP server request received over ACP for the local agent's MCP client.
     ServerToClientRequest {
-        request: MessageMcpRequest,
+        request: NativeMcpMessage,
         responder: Responder,
     },
 
     /// An MCP server notification received over ACP for the local agent's MCP client.
-    ServerToClientNotification {
-        notification: MessageMcpNotification,
-    },
+    ServerToClientNotification { notification: NativeMcpMessage },
 
     /// The local MCP bridge disconnected.
     Disconnected { connection_id: String },
@@ -152,152 +129,190 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
     ) -> Result<(), agent_client_protocol::Error> {
         let (bridge_tx, bridge_rx) = mpsc::channel(128);
 
-        let builder = Proxy
-            .builder()
+        let proxy = Proxy.builder();
+        #[cfg(feature = "unstable_protocol_v2")]
+        let proxy = proxy.without_acp_version_guard();
+
+        proxy
             .name("mcp-over-acp-polyfill")
             .with_runner(BridgeRunner {
                 bridge_tx: bridge_tx.clone(),
                 bridge_rx,
+                protocol: None,
                 downstream_mode: DownstreamMcpMode::Unknown,
                 listeners: BridgeListeners::default(),
                 bridge_connections: HashMap::new(),
             })
-            .on_receive_request_from(
-                Client,
-                {
-                    let bridge_tx = bridge_tx.clone();
-                    async move |request: InitializeProxyRequest,
-                                responder,
-                                cx: ConnectionTo<Conductor>| {
-                        let mut response_bridge_tx = bridge_tx.clone();
-                        cx.send_request_to(Agent, request.initialize)
-                            .on_receiving_result(async move |result| {
-                                let result = match result {
-                                    Ok(mut response) => {
-                                        let capabilities =
-                                            &mut response.agent_capabilities.mcp_capabilities;
-                                        let mode = DownstreamMcpMode::from_capabilities(
-                                            capabilities.http,
-                                            capabilities.acp,
-                                        );
-                                        response_bridge_tx
-                                            .send(BridgeMessage::SetDownstreamMode(mode))
-                                            .await
-                                            .map_err(
-                                                agent_client_protocol::Error::into_internal_error,
-                                            )?;
-                                        if mode == DownstreamMcpMode::HttpAdapter {
-                                            capabilities.acp = true;
-                                        }
-                                        Ok(response)
-                                    }
-                                    Err(error) => Err(error),
-                                };
-                                responder.respond_with_result(result)
-                            })
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_request_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |mut request: NewSessionRequest,
-                                responder,
-                                cx: ConnectionTo<Conductor>| {
-                        transform_session_servers(&mut request.mcp_servers, &mut bridge_tx).await?;
-                        cx.send_request_to(Agent, request)
-                            .forward_response_to(responder)
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_request_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |mut request: LoadSessionRequest,
-                                responder,
-                                cx: ConnectionTo<Conductor>| {
-                        transform_session_servers(&mut request.mcp_servers, &mut bridge_tx).await?;
-                        cx.send_request_to(Agent, request)
-                            .forward_response_to(responder)
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_request_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |mut request: ResumeSessionRequest,
-                                responder,
-                                cx: ConnectionTo<Conductor>| {
-                        transform_session_servers(&mut request.mcp_servers, &mut bridge_tx).await?;
-                        cx.send_request_to(Agent, request)
-                            .forward_response_to(responder)
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            );
-
-        #[cfg(feature = "unstable_session_fork")]
-        let builder = builder.on_receive_request_from(
-            Client,
-            {
-                let mut bridge_tx = bridge_tx.clone();
-                async move |mut request: ForkSessionRequest,
-                            responder,
-                            cx: ConnectionTo<Conductor>| {
-                    transform_session_servers(&mut request.mcp_servers, &mut bridge_tx).await?;
-                    cx.send_request_to(Agent, request)
-                        .forward_response_to(responder)
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
-
-        builder
-            .on_receive_request_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |request: MessageMcpRequest, responder, _cx| {
-                        bridge_tx
-                            .send(BridgeMessage::ServerToClientRequest {
-                                request,
-                                responder: responder.erase_to_json(),
-                            })
-                            .await
-                            .map_err(agent_client_protocol::Error::into_internal_error)?;
-                        Ok(Handled::Yes)
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_notification_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |notification: MessageMcpNotification, _cx| {
-                        bridge_tx
-                            .send(BridgeMessage::ServerToClientNotification { notification })
-                            .await
-                            .map_err(agent_client_protocol::Error::into_internal_error)
-                    }
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
+            .with_handler(PolyfillHandler {
+                protocol: None,
+                bridge_tx,
+            })
             .connect_to(client)
             .await
     }
 }
 
+#[derive(Debug)]
+struct PolyfillHandler {
+    protocol: Option<PolyfillProtocol>,
+    bridge_tx: mpsc::Sender<BridgeMessage>,
+}
+
+impl HandleDispatchFrom<Conductor> for PolyfillHandler {
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        cx: ConnectionTo<Conductor>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        MatchDispatchFrom::new(message, &cx)
+            .if_dispatch_from(Client, async |message: Dispatch| {
+                self.handle_client_dispatch(message, &cx).await
+            })
+            .await
+            .done()
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        self
+    }
+}
+
+impl PolyfillHandler {
+    async fn handle_client_dispatch(
+        &mut self,
+        message: Dispatch,
+        cx: &ConnectionTo<Conductor>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        match message {
+            Dispatch::Request(request, responder) => {
+                self.handle_client_request(request, responder, cx).await
+            }
+            Dispatch::Notification(notification) => {
+                self.handle_client_notification(notification).await
+            }
+            message @ Dispatch::Response(_, _) => Ok(Handled::No {
+                message,
+                retry: false,
+            }),
+        }
+    }
+
+    async fn handle_client_request(
+        &mut self,
+        mut request: UntypedMessage,
+        responder: Responder,
+        cx: &ConnectionTo<Conductor>,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        if request.method() == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY {
+            if self.protocol.is_some() {
+                return Err(agent_client_protocol::Error::invalid_request()
+                    .data("MCP-over-ACP polyfill was already initialized"));
+            }
+            let protocol = PolyfillProtocol::from_initialize_request(&request)?;
+            self.protocol = Some(protocol);
+            request.method = "initialize".to_string();
+
+            let sent = cx.send_request_to(Agent, request);
+            let sent = sent.forward_cancellation_from(responder.cancellation());
+            let mut bridge_tx = self.bridge_tx.clone();
+            sent.on_receiving_result(async move |result| {
+                let result = match result {
+                    Ok(response) => {
+                        adapt_initialize_response(protocol, response, &mut bridge_tx).await
+                    }
+                    Err(error) => Err(error),
+                };
+                responder.respond_with_result(result)
+            })?;
+            return Ok(Handled::Yes);
+        }
+
+        let Some(protocol) = self.protocol else {
+            return Ok(Handled::No {
+                message: Dispatch::Request(request, responder),
+                retry: false,
+            });
+        };
+
+        if protocol.is_session_setup_method(request.method()) {
+            protocol.validate_session_setup_request(&request)?;
+            transform_session_servers(&mut request, &mut self.bridge_tx).await?;
+            cx.send_request_to(Agent, request)
+                .forward_response_to(responder)?;
+            return Ok(Handled::Yes);
+        }
+
+        if request.method() == "mcp/message" {
+            let request = protocol.parse_message_request(request)?;
+            self.bridge_tx
+                .send(BridgeMessage::ServerToClientRequest { request, responder })
+                .await
+                .map_err(agent_client_protocol::Error::into_internal_error)?;
+            return Ok(Handled::Yes);
+        }
+
+        Ok(Handled::No {
+            message: Dispatch::Request(request, responder),
+            retry: false,
+        })
+    }
+
+    async fn handle_client_notification(
+        &mut self,
+        notification: UntypedMessage,
+    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+        let Some(protocol) = self.protocol else {
+            return Ok(Handled::No {
+                message: Dispatch::Notification(notification),
+                retry: false,
+            });
+        };
+
+        if notification.method() == "mcp/message" {
+            let notification = protocol.parse_message_notification(notification)?;
+            self.bridge_tx
+                .send(BridgeMessage::ServerToClientNotification { notification })
+                .await
+                .map_err(agent_client_protocol::Error::into_internal_error)?;
+            return Ok(Handled::Yes);
+        }
+
+        Ok(Handled::No {
+            message: Dispatch::Notification(notification),
+            retry: false,
+        })
+    }
+}
+
+async fn adapt_initialize_response(
+    protocol: PolyfillProtocol,
+    mut response: Value,
+    bridge_tx: &mut mpsc::Sender<BridgeMessage>,
+) -> Result<Value, agent_client_protocol::Error> {
+    let downstream_mode = protocol.transform_initialize_response(&mut response)?;
+    bridge_tx
+        .send(BridgeMessage::SetProtocol {
+            protocol,
+            downstream_mode,
+        })
+        .await
+        .map_err(agent_client_protocol::Error::into_internal_error)?;
+    Ok(response)
+}
+
 async fn transform_session_servers(
-    servers: &mut Vec<McpServer>,
+    request: &mut UntypedMessage,
     bridge_tx: &mut mpsc::Sender<BridgeMessage>,
 ) -> Result<(), agent_client_protocol::Error> {
+    let Some(servers) = request
+        .params
+        .as_object_mut()
+        .and_then(|params| params.get_mut("mcpServers"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+
     let (response_tx, response_rx) = oneshot::channel();
     bridge_tx
         .send(BridgeMessage::TransformServers {
@@ -323,11 +338,12 @@ struct BridgeListener {
 }
 
 impl BridgeListener {
-    fn declaration(&self, server: McpServerAcp) -> McpServer {
-        McpServer::Http(
-            McpServerHttp::new(server.name, format!("http://127.0.0.1:{}", self.tcp_port))
-                .meta(server.meta),
-        )
+    fn declaration(
+        &self,
+        protocol: PolyfillProtocol,
+        server: NativeServer,
+    ) -> Result<Value, agent_client_protocol::Error> {
+        server.http_declaration(protocol, format!("http://127.0.0.1:{}", self.tcp_port))
     }
 }
 
@@ -335,12 +351,16 @@ impl BridgeListeners {
     async fn transform_servers(
         &mut self,
         connection: &ConnectionTo<Conductor>,
-        servers: Vec<McpServer>,
+        protocol: PolyfillProtocol,
+        servers: Vec<Value>,
         bridge_tx: &mpsc::Sender<BridgeMessage>,
-    ) -> Result<Vec<McpServer>, agent_client_protocol::Error> {
+    ) -> Result<Vec<Value>, agent_client_protocol::Error> {
         let mut transformed = Vec::with_capacity(servers.len());
         for server in servers {
-            transformed.push(self.transform_server(connection, server, bridge_tx).await?);
+            transformed.push(
+                self.transform_server(connection, protocol, server, bridge_tx)
+                    .await?,
+            );
         }
         Ok(transformed)
     }
@@ -348,22 +368,23 @@ impl BridgeListeners {
     async fn transform_server(
         &mut self,
         connection: &ConnectionTo<Conductor>,
-        server: McpServer,
+        protocol: PolyfillProtocol,
+        server: Value,
         bridge_tx: &mpsc::Sender<BridgeMessage>,
-    ) -> Result<McpServer, agent_client_protocol::Error> {
-        let McpServer::Acp(acp_server) = server else {
+    ) -> Result<Value, agent_client_protocol::Error> {
+        let Some(native_server) = protocol.native_server(server.clone()) else {
             return Ok(server);
         };
-        let server_id = acp_server.server_id.to_string();
+        let server_id = native_server.server_id.clone();
 
         info!(
-            server_name = %acp_server.name,
+            server_name = %native_server.name,
             server_id,
             "detected native MCP-over-ACP server; creating compatibility bridge"
         );
 
         if let Some(listener) = self.listeners.get(&server_id) {
-            return Ok(listener.declaration(acp_server));
+            return listener.declaration(protocol, native_server);
         }
 
         let tcp_listener = TcpListener::bind("127.0.0.1:0")
@@ -387,7 +408,7 @@ impl BridgeListeners {
             }
         })?;
 
-        let declaration = listener.declaration(acp_server);
+        let declaration = listener.declaration(protocol, native_server)?;
         self.listeners.insert(server_id, listener);
         Ok(declaration)
     }
@@ -406,6 +427,7 @@ struct ActiveBridgeConnection {
 struct BridgeRunner {
     bridge_tx: mpsc::Sender<BridgeMessage>,
     bridge_rx: mpsc::Receiver<BridgeMessage>,
+    protocol: Option<PolyfillProtocol>,
     downstream_mode: DownstreamMcpMode,
     listeners: BridgeListeners,
     bridge_connections: HashMap<String, ActiveBridgeConnection>,
@@ -414,6 +436,7 @@ struct BridgeRunner {
 impl std::fmt::Debug for BridgeRunner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BridgeRunner")
+            .field("protocol", &self.protocol)
             .field("downstream_mode", &self.downstream_mode)
             .field("listeners", &self.listeners.listeners.len())
             .field("bridge_connections", &self.bridge_connections.len())
@@ -430,29 +453,37 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
 
         while let Some(message) = self.bridge_rx.next().await {
             match message {
-                BridgeMessage::SetDownstreamMode(mode) => {
-                    self.downstream_mode = mode;
+                BridgeMessage::SetProtocol {
+                    protocol,
+                    downstream_mode,
+                } => {
+                    self.protocol = Some(protocol);
+                    self.downstream_mode = downstream_mode;
                 }
 
                 BridgeMessage::TransformServers {
                     servers,
                     response_tx,
                 } => {
-                    let result = match self.downstream_mode {
-                        DownstreamMcpMode::Native => Ok(servers),
-                        DownstreamMcpMode::HttpAdapter => {
+                    let result = match (self.protocol, self.downstream_mode) {
+                        (Some(_), DownstreamMcpMode::Native) => Ok(servers),
+                        (Some(protocol), DownstreamMcpMode::HttpAdapter) => {
                             self.listeners
-                                .transform_servers(&connection, servers, &self.bridge_tx)
+                                .transform_servers(&connection, protocol, servers, &self.bridge_tx)
                                 .await
                         }
-                        DownstreamMcpMode::Unavailable => reject_native_servers(
+                        (Some(protocol), DownstreamMcpMode::Unavailable) => reject_native_servers(
+                            protocol,
                             servers,
                             "the downstream agent supports neither native nor HTTP MCP transport",
                         ),
-                        DownstreamMcpMode::Unknown => reject_native_servers(
+                        (Some(protocol), DownstreamMcpMode::Unknown) => reject_native_servers(
+                            protocol,
                             servers,
                             "MCP transport capabilities are unavailable before initialize",
                         ),
+                        (None, _) => Err(agent_client_protocol::Error::invalid_request()
+                            .data("MCP transport capabilities are unavailable before initialize")),
                     };
                     drop(response_tx.send(result));
                 }
@@ -462,29 +493,32 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     actor,
                     connection: bridge,
                 } => {
-                    let request =
-                        AgentRequest::ConnectMcpRequest(ConnectMcpRequest::new(server_id.clone()));
+                    let Some(protocol) = self.protocol else {
+                        warn!(
+                            server_id,
+                            "cannot open MCP bridge before ACP initialization"
+                        );
+                        self.listeners.remove(&server_id);
+                        continue;
+                    };
+                    let request = protocol.connect_request(server_id.clone())?;
                     let mut bridge_tx = self.bridge_tx.clone();
                     let scheduled = connection
                         .send_request_to(Client, request)
                         .on_receiving_result(async move |result| {
                             let message = match result {
-                                Ok(response) => {
-                                    match serde_json::from_value::<ConnectMcpResponse>(response) {
-                                        Ok(ConnectMcpResponse { connection_id, .. }) => {
-                                            BridgeMessage::ConnectionEstablished {
-                                                server_id,
-                                                connection_id,
-                                                actor,
-                                                connection: bridge,
-                                            }
-                                        }
-                                        Err(error) => {
-                                            warn!(?error, "invalid response to mcp/connect");
-                                            BridgeMessage::ConnectionFailed { server_id }
-                                        }
+                                Ok(response) => match protocol.connect_response_id(response) {
+                                    Ok(connection_id) => BridgeMessage::ConnectionEstablished {
+                                        server_id,
+                                        connection_id,
+                                        actor,
+                                        connection: bridge,
+                                    },
+                                    Err(error) => {
+                                        warn!(?error, "invalid response to mcp/connect");
+                                        BridgeMessage::ConnectionFailed { server_id }
                                     }
-                                }
+                                },
                                 Err(error) => {
                                     warn!(?error, "mcp/connect failed");
                                     BridgeMessage::ConnectionFailed { server_id }
@@ -504,7 +538,6 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     actor,
                     connection: bridge,
                 } => {
-                    let connection_id = connection_id.to_string();
                     self.bridge_connections.insert(
                         connection_id.clone(),
                         ActiveBridgeConnection { server_id, bridge },
@@ -519,64 +552,89 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                 BridgeMessage::ClientToServer {
                     connection_id,
                     message,
-                } => match message {
-                    Dispatch::Request(message, responder) => {
-                        match message_mcp_request(connection_id, message) {
-                            Ok(request) => {
-                                let pending = connection.send_request_to(
-                                    Client,
-                                    AgentRequest::MessageMcpRequest(request),
-                                );
-                                if let Err(error) = pending.forward_response_to(responder) {
-                                    warn!(?error, "could not forward local MCP request response");
+                } => {
+                    let Some(protocol) = self.protocol else {
+                        let rejection = match message {
+                            Dispatch::Request(_, responder) => responder
+                                .respond_with_internal_error(
+                                    "ACP protocol is unavailable before initialize",
+                                ),
+                            Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(()),
+                        };
+                        if let Err(error) = rejection {
+                            debug!(?error, "could not reject MCP request before initialize");
+                        }
+                        continue;
+                    };
+
+                    match message {
+                        Dispatch::Request(message, responder) => {
+                            match protocol.message_request(connection_id, message) {
+                                Ok(request) => {
+                                    let pending = connection.send_request_to(Client, request);
+                                    if let Err(error) = pending.forward_response_to(responder) {
+                                        warn!(
+                                            ?error,
+                                            "could not forward local MCP request response"
+                                        );
+                                    }
                                 }
-                            }
-                            Err(error) => {
-                                if let Err(send_error) = responder.respond_with_error(error) {
-                                    debug!(?send_error, "could not reject malformed MCP request");
+                                Err(error) => {
+                                    if let Err(send_error) = responder.respond_with_error(error) {
+                                        debug!(
+                                            ?send_error,
+                                            "could not reject malformed MCP request"
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                    Dispatch::Notification(message) => {
-                        match message_mcp_notification(connection_id, message) {
-                            Ok(notification) => {
-                                if let Err(error) = connection.send_notification_to(
-                                    Client,
-                                    AgentNotification::MessageMcpNotification(notification),
-                                ) {
+                        Dispatch::Notification(message) => {
+                            match local_mcp_notification(protocol, connection_id, message) {
+                                Ok(Some(notification)) => {
+                                    if let Err(error) =
+                                        connection.send_notification_to(Client, notification)
+                                    {
+                                        warn!(?error, "could not forward local MCP notification");
+                                    }
+                                }
+                                Ok(None) => {
+                                    debug!(
+                                        "not tunneling hop-scoped MCP cancellation through mcp/message"
+                                    );
+                                }
+                                Err(error) => {
                                     warn!(?error, "could not forward local MCP notification");
                                 }
                             }
-                            Err(error) => {
-                                warn!(?error, "discarding malformed local MCP notification");
+                        }
+                        Dispatch::Response(result, router) => {
+                            if let Err(error) = router.route_with_result(result) {
+                                debug!(?error, "could not route MCP client response");
                             }
                         }
                     }
-                    Dispatch::Response(result, router) => {
-                        if let Err(error) = router.route_with_result(result) {
-                            debug!(?error, "could not route MCP client response");
-                        }
-                    }
-                },
+                }
 
                 BridgeMessage::ServerToClientRequest { request, responder } => {
                     match self.downstream_mode {
                         DownstreamMcpMode::Native => {
-                            let pending = connection
-                                .send_request_to(Agent, AgentRequest::MessageMcpRequest(request));
+                            let pending = connection.send_request_to(Agent, request.raw);
                             if let Err(error) = pending.forward_response_to(responder) {
                                 debug!(?error, "could not forward native MCP request");
                             }
                         }
                         DownstreamMcpMode::HttpAdapter => {
-                            let connection_id = request.connection_id.to_string();
+                            let connection_id = request.connection_id;
                             let Some(active) = self.bridge_connections.get_mut(&connection_id)
                             else {
                                 respond_unknown_connection(responder, &connection_id);
                                 continue;
                             };
-                            let message = message_mcp_request_to_untyped(request);
+                            let message = UntypedMessage {
+                                method: request.method,
+                                params: native_params_into_value(request.params),
+                            };
                             if let Some(message) = active
                                 .bridge
                                 .try_send(Dispatch::Request(message, responder))
@@ -609,15 +667,14 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                 BridgeMessage::ServerToClientNotification { notification } => {
                     match self.downstream_mode {
                         DownstreamMcpMode::Native => {
-                            if let Err(error) = connection.send_notification_to(
-                                Agent,
-                                AgentNotification::MessageMcpNotification(notification),
-                            ) {
+                            if let Err(error) =
+                                connection.send_notification_to(Agent, notification.raw)
+                            {
                                 debug!(?error, "could not forward native MCP notification");
                             }
                         }
                         DownstreamMcpMode::HttpAdapter => {
-                            let connection_id = notification.connection_id.to_string();
+                            let connection_id = notification.connection_id;
                             let Some(active) = self.bridge_connections.get_mut(&connection_id)
                             else {
                                 debug!(
@@ -626,7 +683,10 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                                 );
                                 continue;
                             };
-                            let message = message_mcp_notification_to_untyped(notification);
+                            let message = UntypedMessage {
+                                method: notification.method,
+                                params: native_params_into_value(notification.params),
+                            };
                             if active
                                 .bridge
                                 .try_send(Dispatch::Notification(message))
@@ -648,16 +708,18 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     };
                     self.listeners.remove(&active.server_id);
 
-                    let request = AgentRequest::DisconnectMcpRequest(DisconnectMcpRequest::new(
-                        connection_id,
-                    ));
+                    let Some(protocol) = self.protocol else {
+                        debug!("could not disconnect MCP bridge before ACP initialization");
+                        continue;
+                    };
+                    let request = protocol.disconnect_request(connection_id)?;
                     let scheduled = connection
                         .send_request_to(Client, request)
-                        .on_receiving_result(async |result| {
+                        .on_receiving_result(async move |result| {
                             match result {
                                 Ok(response) => {
                                     if let Err(error) =
-                                        serde_json::from_value::<DisconnectMcpResponse>(response)
+                                        protocol.validate_disconnect_response(response)
                                     {
                                         warn!(?error, "invalid response to mcp/disconnect");
                                     }
@@ -681,70 +743,31 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
     }
 }
 
+fn local_mcp_notification(
+    protocol: PolyfillProtocol,
+    connection_id: String,
+    message: UntypedMessage,
+) -> Result<Option<UntypedMessage>, agent_client_protocol::Error> {
+    if is_cancel_request_notification(&message) {
+        return Ok(None);
+    }
+    protocol
+        .message_notification(connection_id, message)
+        .map(Some)
+}
+
 fn reject_native_servers(
-    servers: Vec<McpServer>,
+    protocol: PolyfillProtocol,
+    servers: Vec<Value>,
     reason: &'static str,
-) -> Result<Vec<McpServer>, agent_client_protocol::Error> {
+) -> Result<Vec<Value>, agent_client_protocol::Error> {
     if servers
         .iter()
-        .any(|server| matches!(server, McpServer::Acp(_)))
+        .any(|server| protocol.native_server(server.clone()).is_some())
     {
         Err(agent_client_protocol::Error::invalid_params().data(reason))
     } else {
         Ok(servers)
-    }
-}
-
-fn into_mcp_params(
-    params: serde_json::Value,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, agent_client_protocol::Error> {
-    match params {
-        serde_json::Value::Null => Ok(None),
-        serde_json::Value::Object(params) => Ok(Some(params)),
-        params => Err(
-            agent_client_protocol::Error::invalid_params().data(serde_json::json!({
-                "reason": "MCP message params must be an object or null",
-                "params": params,
-            })),
-        ),
-    }
-}
-
-fn message_mcp_request(
-    connection_id: String,
-    message: UntypedMessage,
-) -> Result<MessageMcpRequest, agent_client_protocol::Error> {
-    let (method, params) = message.into_parts();
-    let mut request = MessageMcpRequest::new(connection_id, method);
-    request.params = into_mcp_params(params)?;
-    Ok(request)
-}
-
-fn message_mcp_notification(
-    connection_id: String,
-    message: UntypedMessage,
-) -> Result<MessageMcpNotification, agent_client_protocol::Error> {
-    let (method, params) = message.into_parts();
-    let mut notification = MessageMcpNotification::new(connection_id, method);
-    notification.params = into_mcp_params(params)?;
-    Ok(notification)
-}
-
-fn message_mcp_request_to_untyped(request: MessageMcpRequest) -> UntypedMessage {
-    UntypedMessage {
-        method: request.method,
-        params: request
-            .params
-            .map_or(serde_json::Value::Null, serde_json::Value::Object),
-    }
-}
-
-fn message_mcp_notification_to_untyped(notification: MessageMcpNotification) -> UntypedMessage {
-    UntypedMessage {
-        method: notification.method,
-        params: notification
-            .params
-            .map_or(serde_json::Value::Null, serde_json::Value::Object),
     }
 }
 
@@ -766,16 +789,17 @@ mod tests {
     use std::collections::HashMap;
 
     use agent_client_protocol::{
-        Client, Conductor, Dispatch, ErrorCode, Handled, Proxy,
+        Conductor, Dispatch, ErrorCode, Proxy, UntypedMessage,
         schema::v1::{
             McpServer, McpServerAcp, McpServerHttp, MessageMcpNotification, MessageMcpRequest,
         },
     };
-    use futures::{SinkExt, StreamExt, channel::mpsc};
+    use futures::{StreamExt, channel::mpsc};
 
     use super::{
-        ActiveBridgeConnection, BridgeConnection, BridgeListener, BridgeListeners, BridgeMessage,
-        BridgeRunner, DownstreamMcpMode, reject_native_servers,
+        ActiveBridgeConnection, BridgeConnection, BridgeListener, BridgeListeners, BridgeRunner,
+        DownstreamMcpMode, PolyfillHandler, PolyfillProtocol, local_mcp_notification,
+        reject_native_servers,
     };
 
     #[test]
@@ -784,10 +808,28 @@ mod tests {
         let first_meta = serde_json::Map::from_iter([("source".into(), "first".into())]);
         let second_meta = serde_json::Map::from_iter([("source".into(), "second".into())]);
 
-        let first =
-            listener.declaration(McpServerAcp::new("first", "shared").meta(first_meta.clone()));
-        let second =
-            listener.declaration(McpServerAcp::new("second", "shared").meta(second_meta.clone()));
+        let first = PolyfillProtocol::V1
+            .native_server(
+                serde_json::to_value(McpServer::Acp(
+                    McpServerAcp::new("first", "shared").meta(first_meta.clone()),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        let second = PolyfillProtocol::V1
+            .native_server(
+                serde_json::to_value(McpServer::Acp(
+                    McpServerAcp::new("second", "shared").meta(second_meta.clone()),
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+        let first: McpServer =
+            serde_json::from_value(listener.declaration(PolyfillProtocol::V1, first).unwrap())
+                .unwrap();
+        let second: McpServer =
+            serde_json::from_value(listener.declaration(PolyfillProtocol::V1, second).unwrap())
+                .unwrap();
 
         let McpServer::Http(first) = first else {
             panic!("expected HTTP declaration")
@@ -824,18 +866,68 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_mode_rejects_only_native_declarations() {
-        let standard = vec![McpServer::Http(McpServerHttp::new(
-            "remote",
-            "https://example.com/mcp",
-        ))];
+    fn local_cancellation_is_not_tunneled_as_an_mcp_message() {
+        let cancellation = UntypedMessage {
+            method: "$/cancel_request".to_string(),
+            params: serde_json::json!({
+                "requestId": "loopback-request"
+            }),
+        };
         assert_eq!(
-            reject_native_servers(standard.clone(), "unsupported").unwrap(),
+            local_mcp_notification(
+                PolyfillProtocol::V1,
+                "native-connection".to_string(),
+                cancellation,
+            )
+            .expect("cancellation filtering should not fail"),
+            None
+        );
+
+        let notification = UntypedMessage {
+            method: "notifications/progress".to_string(),
+            params: serde_json::json!({
+                "progressToken": "token",
+                "progress": 0.5
+            }),
+        };
+        let wrapped = local_mcp_notification(
+            PolyfillProtocol::V1,
+            "native-connection".to_string(),
+            notification,
+        )
+        .expect("the notification should serialize")
+        .expect("ordinary MCP notifications should be forwarded");
+        assert_eq!(wrapped.method, "mcp/message");
+        assert_eq!(
+            wrapped.params["connectionId"],
+            serde_json::json!("native-connection")
+        );
+        assert_eq!(
+            wrapped.params["method"],
+            serde_json::json!("notifications/progress")
+        );
+    }
+
+    #[test]
+    fn unavailable_mode_rejects_only_native_declarations() {
+        let standard = vec![
+            serde_json::to_value(McpServer::Http(McpServerHttp::new(
+                "remote",
+                "https://example.com/mcp",
+            )))
+            .unwrap(),
+        ];
+        assert_eq!(
+            reject_native_servers(PolyfillProtocol::V1, standard.clone(), "unsupported").unwrap(),
             standard
         );
 
         let error = reject_native_servers(
-            vec![McpServer::Acp(McpServerAcp::new("native", "server-1"))],
+            PolyfillProtocol::V1,
+            vec![
+                serde_json::to_value(McpServer::Acp(McpServerAcp::new("native", "server-1")))
+                    .unwrap(),
+            ],
             "unsupported",
         )
         .expect_err("native declarations require a downstream transport");
@@ -862,40 +954,15 @@ mod tests {
             .with_runner(BridgeRunner {
                 bridge_tx: bridge_tx.clone(),
                 bridge_rx,
+                protocol: Some(PolyfillProtocol::V1),
                 downstream_mode: DownstreamMcpMode::HttpAdapter,
                 listeners: BridgeListeners::default(),
                 bridge_connections,
             })
-            .on_receive_request_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx.clone();
-                    async move |request: MessageMcpRequest, responder, _cx| {
-                        bridge_tx
-                            .send(BridgeMessage::ServerToClientRequest {
-                                request,
-                                responder: responder.erase_to_json(),
-                            })
-                            .await
-                            .map_err(agent_client_protocol::Error::into_internal_error)?;
-                        Ok(Handled::Yes)
-                    }
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_notification_from(
-                Client,
-                {
-                    let mut bridge_tx = bridge_tx;
-                    async move |notification: MessageMcpNotification, _cx| {
-                        bridge_tx
-                            .send(BridgeMessage::ServerToClientNotification { notification })
-                            .await
-                            .map_err(agent_client_protocol::Error::into_internal_error)
-                    }
-                },
-                agent_client_protocol::on_receive_notification!(),
-            );
+            .with_handler(PolyfillHandler {
+                protocol: Some(PolyfillProtocol::V1),
+                bridge_tx,
+            });
 
         Conductor
             .builder()
