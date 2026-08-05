@@ -300,6 +300,21 @@ validates the final agent's initialize response against that selection.
 The proxy connection also routes v2 `session/new` requests and responses
 without interpreting them as v1 payloads.
 
+### MCP compatibility polyfill
+
+The concrete
+`agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill` can
+participate in a v2 conductor chain when its `unstable_protocol_v2` feature is
+enabled. It selects v1 or v2 from `_proxy/initialize`, uses that version's MCP
+capability and wire types, and adapts native `McpServer::Acp` declarations in
+v2 `session/new`, `session/resume`, and feature-gated `session/fork` requests.
+Other declarations and unrelated request fields remain unchanged. See
+[MCP-over-ACP Compatibility Bridge](./mcp-bridge.md) for placement and feature
+configuration.
+
+This feature extends the concrete compatibility proxy only. Global MCP
+attachment and proxy-session helpers in the core SDK remain v1-only.
+
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
 - A v2 client advertises protocol v2 as its latest supported version.

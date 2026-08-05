@@ -43,9 +43,15 @@ agent-client-protocol-test.workspace = true
 yopo.workspace = true
 expect-test.workspace = true
 regex.workspace = true
-rmcp = { workspace = true, features = ["client", "server", "transport-io", "transport-child-process"] }
+rmcp = { workspace = true, features = [
+    "client",
+    "server",
+    "transport-io",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+] }
 schemars.workspace = true
-agent-client-protocol-polyfill.workspace = true
+agent-client-protocol-polyfill = { workspace = true, features = ["unstable_protocol_v2"] }
 
 [lints]
 workspace = true
