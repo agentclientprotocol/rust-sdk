@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.0.0...agent-client-protocol-rmcp-v3.0.1) - 2026-08-05
+
+### Other
+
+- updated the following local packages: agent-client-protocol
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v2.0.1...agent-client-protocol-rmcp-v3.0.0) - 2026-07-23
 
 ### Breaking changes
