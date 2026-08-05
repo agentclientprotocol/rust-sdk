@@ -97,7 +97,7 @@ regex = "1.12.2"
 
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }
-let-underscore = "warn"
+let_underscore = "warn"
 missing_debug_implementations = "warn"
 # missing_docs = "warn"
 nonstandard_style = { level = "warn", priority = -1 }
