@@ -19,8 +19,17 @@
   per-session MCP attachment while preserving independent response
   consumption. MCP routes are installed and runners begin executing before
   `session/new` is published; successful attachments remain active for the
-  connection lifetime. Global proxy attachment and proxy-session helpers
-  remain v1-only.
+  connection lifetime. `V2SessionBuilder::on_proxy_session_start` forwards the
+  complete setup response, preserves cancellation, installs session routing
+  before later inbound traffic, and then spawns user work with the
+  `OpenedV2Session`.
+- *(unstable-v2)* Add `Proxy::v2()` as the draft-v2-only proxy builder while
+  keeping `Proxy::builder()` on stable v1. With `unstable_mcp_over_acp`,
+  `Proxy.v2().with_mcp_server(...)` injects a connection-scoped MCP server
+  declaration into v2 new, resume, and feature-gated fork setup requests while
+  preserving unrelated fields. Version-neutral routing infrastructure can
+  continue to use `Builder::without_acp_version_guard` when it owns raw
+  version selection and validation.
 - *(unstable-v2)* Expose protocol-neutral dynamic handler registration on
   `V2ConnectionTo`.
 - *(unstable-v2)* Add `ConnectionTo::spawn_connection_with_context` for raw

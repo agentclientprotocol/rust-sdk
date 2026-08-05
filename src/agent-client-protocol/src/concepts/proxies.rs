@@ -14,10 +14,24 @@
 //! Unlike simpler links, there's no default peer - you must always specify
 //! which direction you're communicating with.
 //!
+//! # Choosing a Protocol Version
+//!
+//! `Proxy::builder` creates a stable protocol v1 proxy. With the
+//! `unstable_protocol_v2` feature, `Proxy.v2()` creates a v2-only proxy whose
+//! fluent callbacks receive `V2ConnectionTo<Conductor>`. The builder
+//! validates `_proxy/initialize` and later traffic against the selected
+//! version.
+//!
+//! Low-level routing infrastructure that deliberately selects and validates a
+//! raw protocol version itself can use
+//! `Proxy.builder().without_acp_version_guard()`. Disabling the guard is an
+//! explicit version-neutral escape hatch, not the ordinary way to author a v2
+//! proxy.
+//!
 //! # Default Forwarding
 //!
 //! By default, [`Proxy`] forwards all messages it doesn't handle.
-//! This means a minimal proxy that does nothing is just:
+//! This means a minimal stable v1 proxy that does nothing is just:
 //!
 //! ```
 //! # use agent_client_protocol::{Proxy, Conductor, ConnectTo};
@@ -65,6 +79,7 @@
 //! (available in all sessions) or per-session.
 //!
 //! These ACP attachment APIs require the `unstable_mcp_over_acp` feature.
+//! Draft v2 attachment additionally requires `unstable_protocol_v2`.
 //!
 //! ## Global MCP Server
 //!
@@ -81,6 +96,21 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! For draft v2, select the v2 proxy builder before attaching the global
+//! server:
+//!
+//! ```rust,ignore
+//! Proxy.v2()
+//!     .with_mcp_server(my_mcp_server)
+//!     .connect_to(transport)
+//!     .await?;
+//! ```
+//!
+//! The v1 builder injects the declaration into new, load, resume, and
+//! feature-gated fork requests. The v2 builder injects it into new, resume,
+//! and feature-gated fork requests while preserving unrelated setup fields.
+//! Both reuse one connection-scoped server ID.
 //!
 //! ## Per-Session MCP Server
 //!
@@ -105,6 +135,33 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! The corresponding v2 proxy uses `Proxy.v2()`, a
+//! `schema::v2::NewSessionRequest`, and the same fluent session-builder shape.
+//! Its `V2SessionBuilder::on_proxy_session_start` callback receives an
+//! `OpenedV2Session` containing both the command-only v2 session handle and the
+//! complete `NewSessionResponse`:
+//!
+//! ```rust,ignore
+//! Proxy.v2()
+//!     .on_receive_request_from(
+//!         Client,
+//!         async |request: schema::v2::NewSessionRequest, responder, cx| {
+//!             cx.build_session_from(request)
+//!                 .with_mcp_server(my_mcp_server)?
+//!                 .on_proxy_session_start(responder, async |opened| {
+//!                     let (session, response) = opened.into_parts();
+//!                     track_session(session.session_id(), response);
+//!                     Ok(())
+//!                 })
+//!         },
+//!         agent_client_protocol::on_receive_request!(),
+//!     );
+//! ```
+//!
+//! The setup helper installs session routing and forwards the complete response
+//! before spawning the callback. Later updates and interactive requests remain
+//! independent traffic handled by typed connection callbacks.
 //!
 //! # The Conductor
 //!
@@ -138,6 +195,8 @@
 //! | Task | Approach |
 //! |------|----------|
 //! | Forward everything | Just `connect_to(transport)` |
+//! | Author a v1 or v2 proxy | `Proxy.builder()` or `Proxy.v2()` |
+//! | Route versions yourself | `without_acp_version_guard` on the raw proxy builder |
 //! | Intercept specific messages | `on_receive_*_from` with explicit peers |
 //! | Add global tools | `with_mcp_server` on builder |
 //! | Add per-session tools | `with_mcp_server` on session builder |

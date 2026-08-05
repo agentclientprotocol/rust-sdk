@@ -779,12 +779,16 @@ where
         // passes through messages but which can trigger the
         // tracing events.
         if self.trace_handle.is_some() && num_proxies == 0 {
+            let trace_proxy = Proxy.builder();
+            #[cfg(feature = "unstable_protocol_v2")]
+            let trace_proxy = trace_proxy.without_acp_version_guard();
+
             self.connect_to_proxy(
                 &client,
                 0,
                 ComponentIndex::Client,
                 ComponentIndex::Agent,
-                Proxy.builder(),
+                trace_proxy,
             )?;
         } else {
             // Spawn each proxy component

@@ -129,8 +129,11 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
     ) -> Result<(), agent_client_protocol::Error> {
         let (bridge_tx, bridge_rx) = mpsc::channel(128);
 
-        Proxy
-            .builder()
+        let proxy = Proxy.builder();
+        #[cfg(feature = "unstable_protocol_v2")]
+        let proxy = proxy.without_acp_version_guard();
+
+        proxy
             .name("mcp-over-acp-polyfill")
             .with_runner(BridgeRunner {
                 bridge_tx: bridge_tx.clone(),

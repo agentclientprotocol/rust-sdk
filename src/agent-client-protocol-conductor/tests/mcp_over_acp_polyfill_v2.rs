@@ -124,7 +124,7 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
         let disconnect_count = Arc::clone(&self.disconnect_count);
 
         Proxy
-            .builder()
+            .v2()
             .name("native-v2-mcp-provider")
             .on_receive_request_from(
                 Agent,

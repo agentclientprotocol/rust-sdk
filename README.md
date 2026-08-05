@@ -23,11 +23,14 @@ Native MCP-over-ACP support is currently opt-in through the core crate's
 `unstable_mcp_over_acp` feature. Standalone MCP servers need no ACP transport
 feature; the rmcp integration exposes a matching passthrough feature when those
 servers are attached to ACP. Stable protocol v1 supports per-session and global
-proxy attachment. Per-session attachment through the draft `V2SessionBuilder`
-is also available when both `unstable_protocol_v2` and
-`unstable_mcp_over_acp` are enabled. Successful v2 attachments remain active
-for the connection lifetime; global proxy attachment and proxy-session helpers
-remain v1-only.
+proxy attachment. Draft protocol v2 supports the same two attachment scopes
+when both `unstable_protocol_v2` and `unstable_mcp_over_acp` are enabled:
+`Proxy.v2().with_mcp_server(...)` injects a global declaration into each
+supported session setup request, while
+`V2SessionBuilder::with_mcp_server(...)` attaches a server to one new session.
+Successful v2 attachments remain active for the connection lifetime, and
+`V2SessionBuilder::on_proxy_session_start` forwards a proxied setup response
+without coupling later session events to that response.
 
 **Proxy orchestration**
 
@@ -48,6 +51,12 @@ remain v1-only.
 - **Draft protocol v2** setup, version-typed connections, and high-level
   session usage are covered in
   [Protocol V2](./md/protocol-v2.md).
+
+`Client.builder()`, `Agent.builder()`, and `Proxy.builder()` remain stable-v1
+entry points; their `.v2()` counterparts select the draft-v2 API. Raw proxy
+routing infrastructure that selects and validates a version itself can use
+`without_acp_version_guard`, but ordinary v2 proxy implementations should use
+`Proxy.v2()`.
 
 ## Integrations
 
