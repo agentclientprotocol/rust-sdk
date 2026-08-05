@@ -350,14 +350,9 @@ are included in the SDK 2.0 migration rather than treated as stable-v1 wire chan
 - Terminal state is represented by `Terminal`, `TerminalUpdate`, `TerminalOutput`,
   `TerminalOutputChunk`, and `TerminalExitStatus`. `SessionUpdate` also has terminal update and
   output-chunk variants, so exhaustive matches must handle the new variants.
-- Conversion helpers are now generic and fallible. Replace `v2_to_v1(value)` and
-  `v1_to_v2(value)` with `try_v2_to_v1::<_, Target>(value)` and
-  `try_v1_to_v2::<_, Target>(value)`. Use `try_v2_to_v1_many::<_, Target>(value)` when one v2
-  update may become several v1 updates.
-- The bespoke `IntoV1`, `IntoV1Many`, and `IntoV2` conversion traits have been removed. Use the
-  standard `TryFrom`/`TryInto` traits for fallible conversions, `From`/`Into` for infallible
-  conversions, or the helper functions above.
-- `v2::SessionCapabilities::into_v1()` is now `try_into_v1_parts()`.
+- The experimental `v2::conversion` module and its cross-version helpers have been removed.
+  Implement v1 and v2 handlers separately, and translate only application-owned shared state
+  where the application's semantics define a faithful mapping.
 
 ## `SentRequest::map` accepts arbitrary output
 

@@ -1,7 +1,5 @@
 #![cfg(feature = "unstable_tool_call_name")]
 
-#[cfg(feature = "unstable_protocol_v2")]
-use agent_client_protocol::schema::v1::ToolCallUpdate as V1ToolCallUpdate;
 use agent_client_protocol::schema::v1::{ToolCall, ToolCallUpdateFields};
 use serde_json::json;
 
@@ -27,28 +25,15 @@ fn v1_tool_call_name_serializes_and_updates() {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
-fn tool_call_name_preserves_v2_patch_semantics() {
-    use agent_client_protocol::schema::{
-        MaybeUndefined,
-        v2::{
-            ToolCallUpdate,
-            conversion::{try_v1_to_v2, try_v2_to_v1},
-        },
-    };
+fn v2_tool_call_name_has_patch_semantics() {
+    use agent_client_protocol::schema::{MaybeUndefined, v2::ToolCallUpdate};
 
-    let named: ToolCallUpdate =
-        try_v1_to_v2(ToolCall::new("call_1", "Read configuration").name("read_file")).unwrap();
+    let named = ToolCallUpdate::new("call_1").name("read_file");
     assert_eq!(named.name, MaybeUndefined::Value("read_file".to_string()));
 
-    let omitted: ToolCallUpdate =
-        try_v1_to_v2(V1ToolCallUpdate::new("call_1", ToolCallUpdateFields::new())).unwrap();
+    let omitted = ToolCallUpdate::new("call_1");
     assert_eq!(omitted.name, MaybeUndefined::Undefined);
 
     let cleared = ToolCallUpdate::new("call_1").name(None::<String>);
     assert_eq!(cleared.name, MaybeUndefined::Null);
-    let error = try_v2_to_v1::<_, V1ToolCallUpdate>(cleared).unwrap_err();
-    assert_eq!(
-        error.message(),
-        "v2 ToolCallUpdate.name with null value cannot be represented in v1"
-    );
 }

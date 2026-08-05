@@ -312,8 +312,9 @@ Other declarations and unrelated request fields remain unchanged. See
 [MCP-over-ACP Compatibility Bridge](./mcp-bridge.md) for placement and feature
 configuration.
 
-This feature extends the concrete compatibility proxy only. Global MCP
-attachment and proxy-session helpers in the core SDK remain v1-only.
+This feature extends the concrete compatibility proxy only. The core SDK's
+global MCP attachment and proxy-session helpers support v1 and v2 independently,
+as described above.
 
 The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 
@@ -383,9 +384,10 @@ The protocol router reads the initial `initialize` request, selects the
 highest configured protocol version that is compatible with the requested
 version, and then hands the connection to that implementation. If only v2 is
 configured, v1 clients are rejected without changing the fluent API. The router
-does not convert messages between v1 and v2 after routing. For compatibility,
-the initial frame may be a batch whose first call-shaped entry is `initialize`;
-the router preserves the complete frame when handing it to the selected
+normalizes a v2 initialize request when selecting a v1 implementation, but does
+not convert messages between v1 and v2 after routing. For compatibility, the
+initial frame may be a batch whose first call-shaped entry is `initialize`; the
+router preserves the complete frame when handing it to the selected
 implementation. Response-only frames before initialization are ignored.
 
 Clients use a connector because fallback may require opening a new transport.
@@ -416,6 +418,10 @@ agent:
   connection.
 - If the agent rejects the v2 initialize request, the error is surfaced. A
   rejected initialize is not treated as permission to retry with v1.
+
+The reuse probe is conservative: if parsing and serializing the raw v2 request
+would change any parameter, reuse is disabled and fallback opens a fresh
+connection. That does not turn an otherwise valid v2 request into an error.
 
 ## Draft schema changes in schema 1.5 and 1.6
 
