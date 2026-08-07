@@ -36,7 +36,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
-          target: wasm32-wasip1,wasm32-wasip2
+          target: wasm32-wasip1,wasm32-wasip2,wasm32-unknown-unknown
 
       - name: Check with MSRV
         run: |
@@ -59,7 +59,7 @@ jobs:
         with:
           toolchain: nightly,stable
           components: rustfmt,clippy
-          target: wasm32-wasip1,wasm32-wasip2
+          target: wasm32-wasip1,wasm32-wasip2,wasm32-unknown-unknown
 
       - name: Check formatting
         run: cargo fmt -- --check
