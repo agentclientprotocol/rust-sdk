@@ -1,4 +1,8 @@
-use std::time::Duration;
+use std::{
+    io,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use agent_client_protocol::{
     ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
@@ -20,6 +24,20 @@ use agent_client_protocol::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+const SENSITIVE_SESSION_UPDATE_CONTENT: &str = "TOP_SECRET_SESSION_UPDATE_SENTINEL";
+
+#[derive(Clone)]
+struct SharedLogWriter(Arc<Mutex<Vec<u8>>>);
+
+impl io::Write for SharedLogWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut *self.0.lock().unwrap(), buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut *self.0.lock().unwrap())
+    }
+}
 
 // Compile-time regressions for the callback future bounds on the two non-blocking
 // session helpers. The callbacks themselves are `'static`, but their future
@@ -99,6 +117,17 @@ mod callback_future_lifetimes {
 
 #[tokio::test(flavor = "current_thread")]
 async fn on_session_start_callback_can_consume_later_session_messages() {
+    let logs = Arc::new(Mutex::new(Vec::new()));
+    let writer = SharedLogWriter(logs.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("agent_client_protocol::session=trace")
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let _guard = tracing::dispatcher::set_default(&dispatch);
+
     let session_id = SessionId::new("ordered-session");
     let new_session_id = session_id.clone();
     let prompt_session_id = session_id.clone();
@@ -121,7 +150,7 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
                 connection.send_notification(SessionNotification::new(
                     request.session_id,
                     SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new("ordered response"),
+                        TextContent::new(SENSITIVE_SESSION_UPDATE_CONTENT),
                     ))),
                 ))?;
                 responder.respond(PromptResponse::new(StopReason::EndTurn))
@@ -146,7 +175,7 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
             let text = result_rx
                 .await
                 .map_err(|_| agent_client_protocol::Error::internal_error())?;
-            assert_eq!(text, "ordered response");
+            assert_eq!(text, SENSITIVE_SESSION_UPDATE_CONTENT);
             Ok(())
         });
 
@@ -154,6 +183,16 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
         .await
         .expect("session callback deadlocked the incoming dispatch loop")
         .expect("session connection failed");
+
+    let logs = String::from_utf8(logs.lock().unwrap().clone()).unwrap();
+    assert!(
+        logs.contains("read_to_string update"),
+        "session update trace was not captured:\n{logs}"
+    );
+    assert!(
+        !logs.contains(SENSITIVE_SESSION_UPDATE_CONTENT),
+        "session update content leaked into logs:\n{logs}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

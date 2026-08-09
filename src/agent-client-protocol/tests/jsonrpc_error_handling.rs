@@ -16,6 +16,49 @@ use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+const SENSITIVE_SERIALIZER_ERROR: &str = "TOP_SECRET_SERIALIZER_ERROR_SENTINEL";
+
+#[derive(Clone, Copy)]
+struct FailingSerializer;
+
+impl Serialize for FailingSerializer {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        Err(serde::ser::Error::custom(SENSITIVE_SERIALIZER_ERROR))
+    }
+}
+
+#[test]
+fn json_cast_serialization_errors_do_not_echo_serializer_text() {
+    let parse_error =
+        agent_client_protocol::util::json_cast::<_, serde_json::Value>(FailingSerializer)
+            .expect_err("the custom serializer should fail");
+    assert_eq!(
+        parse_error.code,
+        agent_client_protocol::ErrorCode::ParseError
+    );
+    assert_eq!(
+        parse_error.data,
+        Some(serde_json::json!({"phase": "serialization"}))
+    );
+    assert!(!format!("{parse_error:?}").contains(SENSITIVE_SERIALIZER_ERROR));
+
+    let params_error =
+        agent_client_protocol::util::json_cast_params::<_, serde_json::Value>(FailingSerializer)
+            .expect_err("the custom parameter serializer should fail");
+    assert_eq!(
+        params_error.code,
+        agent_client_protocol::ErrorCode::InternalError
+    );
+    assert_eq!(
+        params_error.data,
+        Some(serde_json::json!({"phase": "serialization"}))
+    );
+    assert!(!format!("{params_error:?}").contains(SENSITIVE_SERIALIZER_ERROR));
+}
+
 /// Test helper to block and wait for a JSON-RPC response.
 async fn recv<T: JsonRpcResponse + Send>(
     response: SentRequest<T>,
@@ -783,10 +826,6 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
                     "code": -32602,
                     "message": "Invalid params",
                     "data": {
-                      "error": "missing field `message`",
-                      "json": {
-                        "content": "hello"
-                      },
                       "phase": "deserialization"
                     }
                   }
