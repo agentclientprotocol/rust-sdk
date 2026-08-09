@@ -13,6 +13,73 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::connection::ConnectionRegistry;
 
+/// Finite resource limits for an ACP WebSocket connection.
+///
+/// Frame and message limits are enforced by the WebSocket transport. The lower
+/// JSON-RPC request limit applies to one complete WebSocket text value, including
+/// an entire JSON-RPC batch. An oversized call, or every response-bearing entry
+/// in an oversized mixed batch, is rejected without forwarding any part of that
+/// text value. Correlated errors leave the physical connection available for
+/// other sessions when the bounded error response fits `max_message_size`;
+/// otherwise the connection closes with WebSocket code 1009.
+/// Limits apply per connection; concurrent connections and later protocol
+/// parsing can multiply total process memory use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WebSocketLimits {
+    max_frame_size: usize,
+    max_message_size: usize,
+    max_json_rpc_request_size: usize,
+}
+
+impl WebSocketLimits {
+    /// Creates finite hard frame/message limits and a lower soft request limit.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any limit is zero or if `max_json_rpc_request_size` exceeds
+    /// `max_message_size`.
+    #[must_use]
+    pub const fn new(
+        max_frame_size: usize,
+        max_message_size: usize,
+        max_json_rpc_request_size: usize,
+    ) -> Self {
+        assert!(max_frame_size > 0, "max_frame_size must be positive");
+        assert!(max_message_size > 0, "max_message_size must be positive");
+        assert!(
+            max_json_rpc_request_size > 0,
+            "max_json_rpc_request_size must be positive"
+        );
+        assert!(
+            max_json_rpc_request_size <= max_message_size,
+            "soft request limit must not exceed hard message limit"
+        );
+        Self {
+            max_frame_size,
+            max_message_size,
+            max_json_rpc_request_size,
+        }
+    }
+
+    /// Returns the maximum accepted WebSocket frame size in bytes.
+    #[must_use]
+    pub const fn max_frame_size(self) -> usize {
+        self.max_frame_size
+    }
+
+    /// Returns the maximum accepted reassembled WebSocket message size in bytes.
+    #[must_use]
+    pub const fn max_message_size(self) -> usize {
+        self.max_message_size
+    }
+
+    /// Returns the maximum text value or aggregate batch size before correlated rejection.
+    #[must_use]
+    pub const fn max_json_rpc_request_size(self) -> usize {
+        self.max_json_rpc_request_size
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
     pub path: String,
@@ -85,17 +152,20 @@ impl CorsOptions {
 struct ServerState {
     registry: Arc<ConnectionRegistry>,
     cors: CorsOptions,
+    websocket_limits: Option<WebSocketLimits>,
 }
 
 pub struct AcpHttpServer {
     registry: Arc<ConnectionRegistry>,
     options: ServerOptions,
+    websocket_limits: Option<WebSocketLimits>,
 }
 
 impl std::fmt::Debug for AcpHttpServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AcpHttpServer")
             .field("options", &self.options)
+            .field("websocket_limits", &self.websocket_limits)
             .finish_non_exhaustive()
     }
 }
@@ -109,12 +179,25 @@ impl AcpHttpServer {
         Self {
             registry: Arc::new(ConnectionRegistry::new(Arc::new(factory))),
             options: ServerOptions::default(),
+            websocket_limits: None,
         }
     }
 
     #[must_use]
     pub fn with_options(mut self, options: ServerOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Opts into finite WebSocket and JSON-RPC request limits.
+    ///
+    /// Without this builder, the server retains its existing WebSocket defaults.
+    /// For example, call this with
+    /// `WebSocketLimits::new(64 * 1024 * 1024, 64 * 1024 * 1024, 32 * 1024 * 1024)`
+    /// to set 64 MiB hard transport limits and a 32 MiB soft request limit.
+    #[must_use]
+    pub fn with_websocket_limits(mut self, limits: WebSocketLimits) -> Self {
+        self.websocket_limits = Some(limits);
         self
     }
 
@@ -125,6 +208,7 @@ impl AcpHttpServer {
         let state = ServerState {
             registry: registry.clone(),
             cors: cors.clone(),
+            websocket_limits: self.websocket_limits,
         };
 
         let mut router = Router::new()
@@ -187,7 +271,13 @@ async fn handle_get(
             {
                 return (StatusCode::FORBIDDEN, "WebSocket origin not allowed").into_response();
             }
-            crate::websocket_server::handle_ws_upgrade(state.registry, ws)
+            let ws = if let Some(limits) = state.websocket_limits {
+                ws.max_frame_size(limits.max_frame_size())
+                    .max_message_size(limits.max_message_size())
+            } else {
+                ws
+            };
+            crate::websocket_server::handle_ws_upgrade(state.registry, ws, state.websocket_limits)
         }
         Err(_) => crate::http_server::handle_get(state.registry, request).await,
     }

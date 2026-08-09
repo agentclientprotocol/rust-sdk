@@ -1,22 +1,354 @@
-use std::sync::Arc;
+use std::{
+    error::Error as _,
+    fmt,
+    io::{self, Write as _},
+    sync::Arc,
+};
 
-use agent_client_protocol::{RawJsonRpcMessage, TransportFrame};
+use agent_client_protocol::{
+    Error as AcpError, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId,
+};
 use axum::{
-    extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUpgrade, close_code},
     http::HeaderValue,
     response::Response,
 };
 use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, trace, warn};
+use tungstenite::error::CapacityError;
 
 use crate::{
     connection::{ConnectionRegistry, OutboundLease},
-    protocol::{HEADER_CONNECTION_ID, session_id_from_message},
+    protocol::HEADER_CONNECTION_ID,
+    server::WebSocketLimits,
 };
+
+enum OversizedRequests {
+    Single(RequestId),
+    Batch {
+        response: BoundedSoftLimitResponse,
+        request_count: usize,
+    },
+}
+
+enum JsonRpcElement {
+    Request(RequestId),
+    Notification,
+    Response,
+    Invalid,
+}
+
+struct BatchSoftLimitSeed {
+    actual_bytes: usize,
+    max_request_bytes: usize,
+    max_response_bytes: usize,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for BatchSoftLimitSeed {
+    type Value = Option<OversizedRequests>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(BatchSoftLimitVisitor {
+            actual_bytes: self.actual_bytes,
+            max_request_bytes: self.max_request_bytes,
+            max_response_bytes: self.max_response_bytes,
+        })
+    }
+}
+
+struct BatchSoftLimitVisitor {
+    actual_bytes: usize,
+    max_request_bytes: usize,
+    max_response_bytes: usize,
+}
+
+impl<'de> serde::de::Visitor<'de> for BatchSoftLimitVisitor {
+    type Value = Option<OversizedRequests>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON-RPC batch")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut writer = BoundedJsonWriter::new(self.max_response_bytes);
+        let mut entry_count = 0usize;
+        let mut request_count = 0usize;
+        while let Some(raw) = sequence.next_element::<&serde_json::value::RawValue>()? {
+            entry_count = entry_count.saturating_add(1);
+            if writer.too_long().is_some() {
+                continue;
+            }
+            let request_id = match classify_json_rpc_element(raw.get()) {
+                Ok(JsonRpcElement::Request(request_id)) => Some(request_id),
+                Ok(JsonRpcElement::Notification | JsonRpcElement::Response) => None,
+                Ok(JsonRpcElement::Invalid) | Err(_) => Some(RequestId::Null),
+            };
+            let Some(request_id) = request_id else {
+                continue;
+            };
+
+            request_count = request_count.saturating_add(1);
+            let separator = if request_count == 1 { b"[" } else { b"," };
+            if writer.write_all(separator).is_err() {
+                continue;
+            }
+            let response =
+                payload_too_large_response(request_id, self.actual_bytes, self.max_request_bytes);
+            if let Err(error) = serde_json::to_writer(&mut writer, &response)
+                && writer.too_long().is_none()
+            {
+                return Err(<A::Error as serde::de::Error>::custom(error));
+            }
+        }
+
+        if entry_count == 0 {
+            return Ok(Some(OversizedRequests::Single(RequestId::Null)));
+        }
+        if request_count == 0 {
+            return Ok(None);
+        }
+        if writer.too_long().is_none() {
+            drop(writer.write_all(b"]"));
+        }
+        let response = match writer.too_long() {
+            Some(too_long) => too_long,
+            None => writer.finish(),
+        };
+        Ok(Some(OversizedRequests::Batch {
+            response,
+            request_count,
+        }))
+    }
+}
+
+struct JsonRpcElementVisitor;
+
+impl<'de> serde::de::Visitor<'de> for JsonRpcElementVisitor {
+    type Value = JsonRpcElement;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON-RPC object")
+    }
+
+    fn visit_map<A>(self, mut object: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        let mut jsonrpc_valid = false;
+        let mut method_present = false;
+        let mut method_valid = false;
+        let mut id = None;
+        let mut params_valid = true;
+        let mut result_present = false;
+        let mut error_present = false;
+
+        while let Some(key) = object.next_key::<String>()? {
+            match key.as_str() {
+                "jsonrpc" => {
+                    let raw = object.next_value::<&serde_json::value::RawValue>()?;
+                    jsonrpc_valid = serde_json::from_str::<String>(raw.get())
+                        .is_ok_and(|version| version == "2.0");
+                }
+                "method" => {
+                    method_present = true;
+                    let raw = object.next_value::<&serde_json::value::RawValue>()?;
+                    method_valid = first_non_whitespace_byte(raw.get()) == Some(b'"');
+                }
+                "id" => {
+                    let raw = object.next_value::<&serde_json::value::RawValue>()?;
+                    id = Some(serde_json::from_str::<RequestId>(raw.get()).ok());
+                }
+                "params" => {
+                    let raw = object.next_value::<&serde_json::value::RawValue>()?;
+                    params_valid = match first_non_whitespace_byte(raw.get()) {
+                        Some(b'{' | b'[') => true,
+                        Some(b'n') => raw.get().trim() == "null",
+                        _ => false,
+                    };
+                }
+                "result" => {
+                    result_present = true;
+                    object.next_value::<serde::de::IgnoredAny>()?;
+                }
+                "error" => {
+                    error_present = true;
+                    object.next_value::<serde::de::IgnoredAny>()?;
+                }
+                _ => {
+                    object.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+
+        if !method_present && (result_present || error_present) {
+            return Ok(JsonRpcElement::Response);
+        }
+        if !jsonrpc_valid || !method_valid || result_present || error_present || !params_valid {
+            return Ok(JsonRpcElement::Invalid);
+        }
+        match id {
+            Some(Some(request_id)) => Ok(JsonRpcElement::Request(request_id)),
+            Some(None) => Ok(JsonRpcElement::Invalid),
+            None => Ok(JsonRpcElement::Notification),
+        }
+    }
+}
+
+enum BoundedSoftLimitResponse {
+    Text(String),
+    TooLong {
+        actual_bytes: usize,
+        max_bytes: usize,
+    },
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    max_bytes: usize,
+    overflow_at: Option<usize>,
+}
+
+impl BoundedJsonWriter {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(max_bytes.min(1_024)),
+            max_bytes,
+            overflow_at: None,
+        }
+    }
+
+    fn too_long(&self) -> Option<BoundedSoftLimitResponse> {
+        self.overflow_at
+            .map(|actual_bytes| BoundedSoftLimitResponse::TooLong {
+                actual_bytes,
+                max_bytes: self.max_bytes,
+            })
+    }
+
+    fn finish(self) -> BoundedSoftLimitResponse {
+        BoundedSoftLimitResponse::Text(
+            String::from_utf8(self.bytes).expect("serde_json always emits valid UTF-8"),
+        )
+    }
+}
+
+impl io::Write for BoundedJsonWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let attempted_bytes = self.bytes.len().saturating_add(buffer.len());
+        if attempted_bytes > self.max_bytes {
+            self.overflow_at = Some(attempted_bytes);
+            return Err(io::Error::other(
+                "serialized JSON-RPC response exceeds configured limit",
+            ));
+        }
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn first_non_whitespace_byte(text: &str) -> Option<u8> {
+    text.as_bytes()
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+}
+
+fn classify_json_rpc_element(text: &str) -> Result<JsonRpcElement, serde_json::Error> {
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let element = serde::Deserializer::deserialize_map(&mut deserializer, JsonRpcElementVisitor)?;
+    deserializer.end()?;
+    Ok(element)
+}
+
+fn oversized_requests(
+    text: &str,
+    max_request_bytes: usize,
+    max_response_bytes: usize,
+) -> Option<OversizedRequests> {
+    if text.len() <= max_request_bytes {
+        return None;
+    }
+
+    match first_non_whitespace_byte(text)? {
+        b'{' => match classify_json_rpc_element(text).ok()? {
+            JsonRpcElement::Request(request_id) => Some(OversizedRequests::Single(request_id)),
+            JsonRpcElement::Invalid => Some(OversizedRequests::Single(RequestId::Null)),
+            JsonRpcElement::Notification | JsonRpcElement::Response => None,
+        },
+        b'[' => {
+            let mut deserializer = serde_json::Deserializer::from_str(text);
+            let requests = serde::de::DeserializeSeed::deserialize(
+                BatchSoftLimitSeed {
+                    actual_bytes: text.len(),
+                    max_request_bytes,
+                    max_response_bytes,
+                },
+                &mut deserializer,
+            )
+            .ok()?;
+            deserializer.end().ok()?;
+            requests
+        }
+        _ => None,
+    }
+}
+
+fn payload_too_large_response(
+    request_id: RequestId,
+    actual_bytes: usize,
+    max_bytes: usize,
+) -> RawJsonRpcMessage {
+    let error = AcpError::new(-32600, "JSON-RPC request exceeds configured size limit").data(
+        serde_json::json!({
+            "kind": "payload_too_large",
+            "max_bytes": max_bytes,
+            "actual_bytes": actual_bytes,
+        }),
+    );
+    RawJsonRpcMessage::response(request_id, Err(error))
+}
+
+fn serialize_soft_limit_response(
+    request_id: RequestId,
+    actual_bytes: usize,
+    max_request_bytes: usize,
+    max_response_bytes: usize,
+) -> Result<BoundedSoftLimitResponse, serde_json::Error> {
+    let mut writer = BoundedJsonWriter::new(max_response_bytes);
+    let response = payload_too_large_response(request_id, actual_bytes, max_request_bytes);
+    if let Err(error) = serde_json::to_writer(&mut writer, &response) {
+        return match writer.too_long() {
+            Some(too_long) => Ok(too_long),
+            None => Err(error),
+        };
+    }
+    Ok(writer.finish())
+}
+
+fn message_too_long(error: &axum::Error) -> Option<(usize, usize)> {
+    let error = error.source()?.downcast_ref::<tungstenite::Error>()?;
+    match error {
+        tungstenite::Error::Capacity(CapacityError::MessageTooLong { size, max_size }) => {
+            Some((*size, *max_size))
+        }
+        _ => None,
+    }
+}
 
 pub(crate) fn handle_ws_upgrade(
     registry: Arc<ConnectionRegistry>,
     ws: WebSocketUpgrade,
+    websocket_limits: Option<WebSocketLimits>,
 ) -> Response {
     let connection_id = ConnectionRegistry::next_connection_id();
     let conn_id_for_handler = connection_id.clone();
@@ -32,6 +364,7 @@ pub(crate) fn handle_ws_upgrade(
             registry_for_handler,
             conn_id_for_handler,
             connection,
+            websocket_limits,
         )
         .await;
     });
@@ -47,6 +380,7 @@ async fn run_ws(
     registry: Arc<ConnectionRegistry>,
     connection_id: String,
     connection: Arc<crate::connection::Connection>,
+    websocket_limits: Option<WebSocketLimits>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     let Some(mut outbound_rx) = connection.subscribe_all_outbound() else {
@@ -67,6 +401,7 @@ async fn run_ws(
         &mut closed,
         &connection_id,
         &connection,
+        websocket_limits,
     )
     .await;
 
@@ -83,6 +418,7 @@ async fn run_ws_message_loop(
     closed: &mut tokio::sync::watch::Receiver<bool>,
     connection_id: &str,
     connection: &crate::connection::Connection,
+    websocket_limits: Option<WebSocketLimits>,
 ) {
     loop {
         if *closed.borrow() {
@@ -112,12 +448,13 @@ async fn run_ws_message_loop(
                 match msg_result {
                     Some(Ok(WsMessage::Text(text))) => {
                         if !forward_client_text(
-                            text.to_string(),
+                            text.as_str(),
                             ws_tx,
                             outbound_rx,
                             closed,
                             connection_id,
                             connection,
+                            websocket_limits,
                         )
                         .await
                         {
@@ -133,7 +470,29 @@ async fn run_ws_message_loop(
                         warn!(connection_id = %connection_id, "Ignoring binary message (ACP uses text)");
                     }
                     Some(Err(e)) => {
-                        error!(connection_id = %connection_id, "WebSocket error: {e}");
+                        if let Some((actual_bytes, max_bytes)) = message_too_long(&e) {
+                            error!(
+                                connection_id = %connection_id,
+                                actual_bytes,
+                                max_bytes,
+                                error_category = "message_too_long",
+                                "Closing WebSocket because an inbound message exceeded the hard limit"
+                            );
+                            let close = CloseFrame {
+                                code: close_code::SIZE,
+                                reason: "message exceeds configured WebSocket limit".into(),
+                            };
+                            if let Err(close_error) =
+                                ws_tx.send(WsMessage::Close(Some(close))).await
+                            {
+                                warn!(
+                                    connection_id = %connection_id,
+                                    "Failed to send WebSocket close 1009: {close_error}"
+                                );
+                            }
+                        } else {
+                            error!(connection_id = %connection_id, "WebSocket error: {e}");
+                        }
                         break;
                     }
                     None => break,
@@ -144,23 +503,105 @@ async fn run_ws_message_loop(
 }
 
 async fn forward_client_text<S>(
-    text: String,
+    text: &str,
     ws_tx: &mut S,
     outbound_rx: &mut OutboundLease,
     closed: &mut tokio::sync::watch::Receiver<bool>,
     connection_id: &str,
     connection: &crate::connection::Connection,
+    websocket_limits: Option<WebSocketLimits>,
 ) -> bool
 where
     S: futures::Sink<WsMessage> + Unpin,
 {
-    trace!(connection_id = %connection_id, payload = %text, "Client → Agent: {} bytes", text.len());
-    let frame = TransportFrame::parse_json(&text);
-    if let TransportFrame::Single(parsed) = &frame
-        && let Some(sid) = session_id_from_message(parsed)
-        && let RawJsonRpcMessage::Request(req) = parsed
+    if let Some(limits) = websocket_limits
+        && let Some(requests) = oversized_requests(
+            text,
+            limits.max_json_rpc_request_size(),
+            limits.max_message_size(),
+        )
     {
-        trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
+        let actual_bytes = text.len();
+        let max_bytes = limits.max_json_rpc_request_size();
+        let response = match requests {
+            OversizedRequests::Single(request_id) => {
+                warn!(
+                    connection_id = %connection_id,
+                    actual_bytes,
+                    max_bytes,
+                    error_category = "payload_too_large",
+                    "Rejecting oversized JSON-RPC request"
+                );
+                serialize_soft_limit_response(
+                    request_id,
+                    actual_bytes,
+                    max_bytes,
+                    limits.max_message_size(),
+                )
+            }
+            OversizedRequests::Batch {
+                response,
+                request_count,
+            } => {
+                if matches!(&response, BoundedSoftLimitResponse::Text(_)) {
+                    warn!(
+                        connection_id = %connection_id,
+                        actual_bytes,
+                        max_bytes,
+                        request_count,
+                        error_category = "payload_too_large",
+                        "Rejecting oversized JSON-RPC request batch"
+                    );
+                } else {
+                    warn!(
+                        connection_id = %connection_id,
+                        actual_bytes,
+                        max_bytes,
+                        error_category = "payload_too_large",
+                        "Rejecting oversized JSON-RPC request batch"
+                    );
+                }
+                Ok(response)
+            }
+        };
+        let response = match response {
+            Ok(BoundedSoftLimitResponse::Text(response)) => response,
+            Ok(BoundedSoftLimitResponse::TooLong {
+                actual_bytes,
+                max_bytes,
+            }) => {
+                error!(
+                    connection_id = %connection_id,
+                    actual_bytes,
+                    max_bytes,
+                    error_category = "soft_limit_response_too_long",
+                    "Closing WebSocket because the bounded soft-limit response exceeded the hard limit"
+                );
+                let close = CloseFrame {
+                    code: close_code::SIZE,
+                    reason: "generated response exceeds configured WebSocket limit".into(),
+                };
+                if ws_tx.send(WsMessage::Close(Some(close))).await.is_err() {
+                    warn!(connection_id = %connection_id, "Failed to send WebSocket close 1009");
+                }
+                return false;
+            }
+            Err(e) => {
+                error!(connection_id = %connection_id, "Failed to serialize payload-too-large response: {e}");
+                return false;
+            }
+        };
+        if connection.enqueue_websocket_text(response).is_err() {
+            error!(connection_id = %connection_id, "WebSocket outbound mailbox closed");
+            return false;
+        }
+        return true;
+    }
+
+    trace!(connection_id = %connection_id, "Client → Agent: {} bytes", text.len());
+    let mut frame = TransportFrame::parse_json(text);
+    if let TransportFrame::Malformed { error, .. } = &mut frame {
+        error.data = None;
     }
     if connection.send_frame_to_agent(frame).is_err() {
         error!(connection_id = %connection_id, "Agent channel closed");
@@ -223,7 +664,7 @@ async fn send_outbound_text<S>(ws_tx: &mut S, text: String, connection_id: &str)
 where
     S: futures::Sink<WsMessage> + Unpin,
 {
-    trace!(connection_id = %connection_id, payload = %text, "Agent → Client: {} bytes", text.len());
+    trace!(connection_id = %connection_id, "Agent → Client: {} bytes", text.len());
     if ws_tx.send(WsMessage::Text(text.into())).await.is_err() {
         error!(connection_id = %connection_id, "WebSocket send failed");
         false

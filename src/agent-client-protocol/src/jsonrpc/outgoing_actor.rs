@@ -8,11 +8,27 @@ use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
 
+fn outgoing_message_kind(message: &OutgoingMessage) -> &'static str {
+    match message {
+        OutgoingMessage::CloseAfterDraining { .. } => "close_after_draining",
+        OutgoingMessage::BatchDispatchComplete { .. } => "batch_dispatch_complete",
+        OutgoingMessage::BatchHandlerAttemptComplete { .. } => "batch_handler_attempt_complete",
+        OutgoingMessage::AbandonedBatchResponse { .. } => "abandoned_batch_response",
+        OutgoingMessage::Request { .. } => "request",
+        OutgoingMessage::Notification { .. } => "notification",
+        OutgoingMessage::Response { .. } => "response",
+        OutgoingMessage::UncorrelatedErrorResponse { .. } => "uncorrelated_error_response",
+    }
+}
+
 pub(crate) fn send_raw_message(
     tx: &OutgoingMessageTx,
     message: OutgoingMessage,
 ) -> Result<(), crate::Error> {
-    tracing::debug!(?message, ?tx, "send_raw_message");
+    tracing::debug!(
+        message_kind = outgoing_message_kind(&message),
+        "send_raw_message"
+    );
     tx.unbounded_send(message)
         .map_err(crate::util::internal_error)
 }
@@ -33,7 +49,10 @@ pub(super) async fn outgoing_protocol_actor(
     let mut drain_waiters = Vec::new();
 
     while let Some(message) = outgoing_rx.next().await {
-        tracing::debug!(?message, "outgoing_protocol_actor");
+        tracing::debug!(
+            message_kind = outgoing_message_kind(&message),
+            "outgoing_protocol_actor"
+        );
 
         // Create the message to be sent over the transport
         let (json_rpc_message, destination) = match message {
@@ -66,7 +85,6 @@ pub(super) async fn outgoing_protocol_actor(
                 destination,
             } => {
                 tracing::warn!(
-                    ?id,
                     %method,
                     "Completing abandoned JSON-RPC batch request with Internal Error"
                 );
@@ -101,9 +119,8 @@ pub(super) async fn outgoing_protocol_actor(
                     && let Err(error) = readiness.await
                 {
                     tracing::warn!(
-                        ?id,
                         %method,
-                        ?error,
+                        error_code = ?&error.code,
                         "Outgoing request readiness failed"
                     );
                     if let Some(pending_reply) = pending_replies.remove(&id) {
@@ -123,7 +140,7 @@ pub(super) async fn outgoing_protocol_actor(
                 {
                     Ok(request) => request,
                     Err(error) => {
-                        tracing::warn!(?id, %method, ?error, "Failed to prepare outgoing request");
+                        tracing::warn!(%method, error_code = ?&error.code, "Failed to prepare outgoing request");
                         if let Some(pending_reply) = pending_replies.remove(&id) {
                             pending_reply.fail(error);
                         }
@@ -149,7 +166,7 @@ pub(super) async fn outgoing_protocol_actor(
                     Ok(messages) => messages,
                     Err(error) => {
                         tracing::warn!(
-                            ?error,
+                            error_code = ?&error.code,
                             "Dropping outgoing notification after preparation failed"
                         );
                         continue;
@@ -161,7 +178,7 @@ pub(super) async fn outgoing_protocol_actor(
                         Ok(message) => message,
                         Err(error) => {
                             tracing::warn!(
-                                ?error,
+                                error_code = ?&error.code,
                                 "Dropping outgoing notification after serialization failed"
                             );
                             continue;
@@ -180,11 +197,11 @@ pub(super) async fn outgoing_protocol_actor(
                 destination,
             } => match protocol_compat.outgoing_response(&method, response) {
                 Ok(value) => {
-                    tracing::debug!(?id, "Sending success response");
+                    tracing::debug!(%method, "Sending success response");
                     (RawJsonRpcMessage::response(id, Ok(value)), destination)
                 }
                 Err(error) => {
-                    tracing::warn!(?id, %method, ?error, "Sending error response");
+                    tracing::warn!(%method, error_code = ?&error.code, "Sending error response");
                     (RawJsonRpcMessage::response(id, Err(error)), destination)
                 }
             },
