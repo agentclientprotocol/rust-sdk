@@ -92,6 +92,55 @@ struct ProxyWithMcpAndHandler {
     config: Arc<HandlerConfig>,
 }
 
+struct RestoredSessionMcpProxy;
+
+fn restored_session_server()
+-> McpServer<Conductor, impl agent_client_protocol::RunWithConnectionTo<Conductor>> {
+    McpServer::builder("test-server")
+        .tool_fn_mut(
+            "echo",
+            "Echoes back the input",
+            async |params: EchoParams, _cx| {
+                Ok(EchoOutput {
+                    result: format!("Echo: {}", params.message),
+                })
+            },
+            agent_client_protocol::tool_fn_mut!(),
+        )
+        .build()
+}
+
+impl ConnectTo<Conductor> for RestoredSessionMcpProxy {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        Proxy
+            .builder()
+            .name("restored-session-mcp")
+            .on_receive_request_from(
+                Client,
+                async |request: LoadSessionRequest, responder, cx| {
+                    cx.build_restored_session_from(request)
+                        .with_mcp_server(restored_session_server())?
+                        .on_proxy_session_start(responder, async |_session_id| Ok(()))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request_from(
+                Client,
+                async |request: ResumeSessionRequest, responder, cx| {
+                    cx.build_restored_session_from(request)
+                        .with_mcp_server(restored_session_server())?
+                        .on_proxy_session_start(responder, async |_session_id| Ok(()))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(client)
+            .await
+    }
+}
+
 impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
     async fn connect_to(
         self,
@@ -320,6 +369,46 @@ async fn test_mcp_server_injected_into_all_session_setup_requests()
     assert!(
         server_ids.windows(2).all(|ids| ids[0] == ids[1]),
         "a global MCP server should keep one advertised server ID"
+    );
+
+    Ok(())
+}
+
+/// Restored sessions can each receive an independently scoped MCP server.
+#[tokio::test]
+async fn test_per_session_mcp_server_attached_to_load_and_resume()
+-> Result<(), agent_client_protocol::Error> {
+    let setup_requests = Arc::new(SetupRequests::default());
+    let proxy = DynConnectTo::<Conductor>::new(RestoredSessionMcpProxy);
+    let agent = DynConnectTo::<Client>::new(SimpleAgent {
+        setup_requests: setup_requests.clone(),
+    });
+
+    run_test(vec![proxy], agent, async |connection_to_editor| {
+        recv(connection_to_editor.send_request(InitializeRequest::new(ProtocolVersion::V1)))
+            .await?;
+
+        let cwd = PathBuf::from("/tmp");
+        recv(connection_to_editor.send_request(LoadSessionRequest::new(
+            SessionId::new("loaded-session"),
+            cwd.clone(),
+        )))
+        .await?;
+        recv(connection_to_editor.send_request(ResumeSessionRequest::new(
+            SessionId::new("resumed-session"),
+            cwd,
+        )))
+        .await?;
+
+        Ok(())
+    })
+    .await?;
+
+    let server_ids = setup_requests.server_ids.lock().unwrap();
+    assert_eq!(server_ids.len(), 2);
+    assert_ne!(
+        server_ids[0], server_ids[1],
+        "each restored session should advertise its own MCP server ID"
     );
 
     Ok(())

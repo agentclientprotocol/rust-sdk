@@ -12,6 +12,27 @@ use crate::{
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
+pub(crate) trait McpSessionSetupRequest {
+    fn mcp_servers_mut(&mut self) -> &mut Vec<SchemaMcpServer>;
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+macro_rules! impl_mcp_session_setup_request {
+    ($($request:ty),+ $(,)?) => {
+        $(
+            impl McpSessionSetupRequest for $request {
+                fn mcp_servers_mut(&mut self) -> &mut Vec<SchemaMcpServer> {
+                    &mut self.mcp_servers
+                }
+            }
+        )+
+    };
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_mcp_session_setup_request!(NewSessionRequest, LoadSessionRequest, ResumeSessionRequest);
+
+#[cfg(feature = "unstable_mcp_over_acp")]
 use uuid::Uuid;
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -313,15 +334,16 @@ where
     /// will no longer be received, so you need to keep this value alive as long as the session
     /// is in use. You can also invoke [`DynamicHandlerGuard::detach`] if you
     /// want to keep the handler registered for the life of the connection.
-    pub fn into_dynamic_handler(
+    pub fn into_dynamic_handler<Request>(
         self,
-        request: &mut NewSessionRequest,
+        request: &mut Request,
         cx: &ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error>
     where
         Counterpart: HasPeer<Agent>,
+        Request: McpSessionSetupRequest,
     {
-        self.append_declaration(&mut request.mcp_servers);
+        self.append_declaration(request.mcp_servers_mut());
         cx.add_dynamic_handler(self.active_session)
     }
 }
