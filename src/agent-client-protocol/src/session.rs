@@ -10,9 +10,9 @@ use crate::{
     },
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v1::{
-        ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-        PromptResponse, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-        StopReason,
+        ContentBlock, ContentChunk, LoadSessionRequest, NewSessionRequest, NewSessionResponse,
+        PromptRequest, PromptResponse, ResumeSessionRequest, SessionId, SessionModeState,
+        SessionNotification, SessionUpdate, StopReason,
     },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
@@ -75,6 +75,23 @@ where
         SessionBuilder::new(self, request)
     }
 
+    /// Stable protocol v1 builder for restoring an existing session through a proxy.
+    ///
+    /// This accepts either a [`LoadSessionRequest`] or [`ResumeSessionRequest`].
+    /// Use [`RestoredSessionBuilder::with_mcp_server`] to attach a server only to
+    /// this restored session, then
+    /// [`RestoredSessionBuilder::on_proxy_session_start`] to forward setup and
+    /// install session routing.
+    pub fn build_restored_session_from<Request>(
+        &self,
+        request: Request,
+    ) -> RestoredSessionBuilder<Counterpart, Request, NullRun>
+    where
+        Request: RestoredSessionRequest,
+    {
+        RestoredSessionBuilder::new(self, request)
+    }
+
     /// Given a session response received from the agent,
     /// attach a handler to process messages related to this session
     /// and let you access them.
@@ -114,6 +131,152 @@ where
         })
     }
 }
+
+/// A stable protocol v1 request that restores an existing session.
+///
+/// This trait is implemented by [`LoadSessionRequest`] and
+/// [`ResumeSessionRequest`].
+pub trait RestoredSessionRequest: crate::JsonRpcRequest + Send + 'static {
+    /// The session being restored.
+    fn session_id(&self) -> &SessionId;
+}
+
+impl RestoredSessionRequest for LoadSessionRequest {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+impl RestoredSessionRequest for ResumeSessionRequest {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+/// Stable protocol v1 builder for restoring a session through a proxy.
+///
+/// The builder attaches per-session MCP servers and installs SDK-owned session
+/// routing while forwarding either `session/load` or `session/resume`.
+#[must_use = "call `on_proxy_session_start` to restore the session"]
+#[derive(Debug)]
+pub struct RestoredSessionBuilder<Counterpart, Request, Run = NullRun>
+where
+    Counterpart: HasPeer<Agent>,
+    Request: RestoredSessionRequest,
+    Run: RunWithConnectionTo<Counterpart>,
+{
+    connection: ConnectionTo<Counterpart>,
+    request: Request,
+    dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
+    run: Run,
+}
+
+impl<Counterpart, Request> RestoredSessionBuilder<Counterpart, Request, NullRun>
+where
+    Counterpart: HasPeer<Agent>,
+    Request: RestoredSessionRequest,
+{
+    fn new(connection: &ConnectionTo<Counterpart>, request: Request) -> Self {
+        Self {
+            connection: connection.clone(),
+            request,
+            dynamic_handler_registrations: Vec::new(),
+            run: NullRun,
+        }
+    }
+}
+
+impl<Counterpart, Request, R> RestoredSessionBuilder<Counterpart, Request, R>
+where
+    Counterpart: HasPeer<Agent>,
+    Request: RestoredSessionRequest,
+    R: RunWithConnectionTo<Counterpart>,
+{
+    /// Restore a proxy session and run a closure with its session ID.
+    ///
+    /// Session routing and attached MCP handlers are installed before the
+    /// setup request is sent. On success, they remain active for the lifetime
+    /// of the connection and the complete setup response is forwarded to the
+    /// client. On failure, the pending handlers are removed.
+    pub fn on_proxy_session_start<F, Fut>(
+        self,
+        responder: Responder<Request::Response>,
+        op: F,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Client>,
+        R: 'static,
+        F: FnOnce(SessionId) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
+    {
+        ensure_v1_session_protocol(&self.connection)?;
+
+        let Self {
+            connection,
+            request,
+            dynamic_handler_registrations,
+            run,
+        } = self;
+        let session_id = request.session_id().clone();
+        let session_route =
+            connection.add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?;
+
+        connection
+            .send_ordered_request_to(Agent, request)
+            .forward_cancellation_from(responder.cancellation())
+            .on_receiving_ok_result(responder, {
+                let connection = connection.clone();
+                async move |response, responder| {
+                    responder.respond(response)?;
+                    connection.spawn(run.run_with_connection_to(connection.clone()))?;
+                    dynamic_handler_registrations
+                        .into_iter()
+                        .for_each(DynamicHandlerGuard::detach);
+                    session_route.detach();
+                    connection.spawn(async move { op(session_id).await })
+                }
+            })
+    }
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+macro_rules! impl_restored_session_mcp {
+    ($($request:ty),+ $(,)?) => {
+        $(
+            impl<Counterpart, R> RestoredSessionBuilder<Counterpart, $request, R>
+            where
+                Counterpart: HasPeer<Agent>,
+                R: RunWithConnectionTo<Counterpart>,
+            {
+                /// Attach an MCP server only to this restored session.
+                pub fn with_mcp_server<McpRun>(
+                    mut self,
+                    mcp_server: McpServer<Counterpart, McpRun>,
+                ) -> Result<
+                    RestoredSessionBuilder<Counterpart, $request, ChainRun<R, McpRun>>,
+                    crate::Error,
+                >
+                where
+                    McpRun: RunWithConnectionTo<Counterpart>,
+                {
+                    let (handler, mcp_run) = mcp_server.into_handler_and_runner();
+                    self.dynamic_handler_registrations.push(
+                        handler.into_dynamic_handler(&mut self.request, &self.connection)?,
+                    );
+                    Ok(RestoredSessionBuilder {
+                        connection: self.connection,
+                        request: self.request,
+                        dynamic_handler_registrations: self.dynamic_handler_registrations,
+                        run: ChainRun::new(self.run, mcp_run),
+                    })
+                }
+            }
+        )+
+    };
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl_restored_session_mcp!(LoadSessionRequest, ResumeSessionRequest);
 
 /// Stable protocol v1 session builder for a new session request.
 /// Allows you to add MCP servers or set other details for this session.

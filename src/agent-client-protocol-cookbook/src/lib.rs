@@ -655,6 +655,31 @@ pub mod per_session_mcp_server {
     //! ID-keyed state, preinstall a gate or placeholder that later handlers
     //! await, then populate it from the callback.
     //!
+    //! # Restoring stable v1 sessions
+    //!
+    //! `session/load` and `session/resume` can attach a new per-session server
+    //! through the corresponding restore builder:
+    //!
+    //! ```rust,ignore
+    //! Proxy.builder()
+    //!     .on_receive_request_from(
+    //!         Client,
+    //!         async |request: LoadSessionRequest, responder, connection| {
+    //!             connection
+    //!                 .build_restored_session_from(request)
+    //!                 .with_mcp_server(build_workspace_server())?
+    //!                 .on_proxy_session_start(responder, async |session_id| {
+    //!                     tracing::info!(%session_id, "Session restored");
+    //!                     Ok(())
+    //!                 })
+    //!         },
+    //!         agent_client_protocol::on_receive_request!(),
+    //!     );
+    //! ```
+    //!
+    //! Use the same pattern with `ResumeSessionRequest`. Each invocation gets
+    //! its own MCP server ID and SDK-managed session route.
+    //!
     //! # Draft v2 pattern
     //!
     //! `Proxy.v2()` exposes the same non-blocking setup shape with v2 schema

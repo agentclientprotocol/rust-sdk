@@ -110,6 +110,29 @@
 //!
 //! See the cookbook for detailed MCP server examples.
 //!
+//! A proxy restoring a v1 session can attach a fresh MCP server to that
+//! session with `build_restored_session_from`. The same builder accepts
+//! `LoadSessionRequest` and `ResumeSessionRequest`:
+//!
+//! ```rust,ignore
+//! Proxy.builder().on_receive_request_from(
+//!     Client,
+//!     async |request: LoadSessionRequest, responder, cx| {
+//!         cx.build_restored_session_from(request)
+//!             .with_mcp_server(session_tools())?
+//!             .on_proxy_session_start(responder, async |session_id| {
+//!                 track_session(session_id);
+//!                 Ok(())
+//!             })
+//!     },
+//!     agent_client_protocol::on_receive_request!(),
+//! );
+//! ```
+//!
+//! The SDK installs session routing and the MCP handler before forwarding the
+//! restore request. Successful handlers remain active for the connection
+//! lifetime; failed restore requests remove the pending handlers.
+//!
 //! # Non-Blocking Session Start
 //!
 //! If you're inside an `on_receive_*` callback and need to start a session,

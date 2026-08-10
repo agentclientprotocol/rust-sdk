@@ -4,6 +4,9 @@
 
 ### Added
 
+- *(unstable)* Add `ConnectionTo::build_restored_session_from` for attaching
+  per-session MCP servers while proxying stable-v1 `session/load` and
+  `session/resume` requests.
 - *(unstable)* Expose programmatic tool-call names through the
   `unstable_tool_call_name` feature.
 - *(unstable)* Expose v1 and draft-v2 plan operations through the
