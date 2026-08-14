@@ -30,8 +30,10 @@ agent-client-protocol-polyfill = { version = "...", features = ["unstable_protoc
 
 The feature makes this concrete compatibility proxy recognize v2
 initialization, capability, session setup, and `mcp/*` wire types. It does not
-add high-level v2 global MCP attachment or proxy-session helpers to the core
-SDK; those remain v1-only.
+change the core attachment API. `Proxy.v2().with_mcp_server(...)` provides
+connection-global attachment, and `V2SessionBuilder::with_mcp_server(...)`
+provides per-new-session attachment. The polyfill adapts their native
+declarations when the final agent supports only HTTP MCP.
 
 ## Placement
 
@@ -51,12 +53,13 @@ ConductorImpl::new_agent("conductor", components)
     .await?;
 ```
 
-For v1, the application proxy can attach a high-level
+The application proxy can attach a high-level
 `agent_client_protocol::mcp_server::McpServer`. The SDK advertises it in session
 setup requests as `McpServer::Acp`; callers do not need to construct a transport
-placeholder themselves. In a v2 chain, a version-aware proxy currently supplies
-the `schema::v2::McpServer::Acp` declaration directly because the high-level
-global proxy attachment helpers remain v1-only.
+placeholder themselves. In v2, `Proxy.v2().with_mcp_server(...)` provides
+connection-global attachment and `V2SessionBuilder::with_mcp_server(...)`
+provides per-new-session attachment. The polyfill translates those native
+declarations at the final compatibility boundary.
 
 During initialization, the polyfill forwards the request to its successor. When
 the successor advertises HTTP MCP support, the polyfill advertises native ACP

@@ -127,28 +127,68 @@ impl ConnectTo<Conductor> for McpOverAcpPolyfill {
         self,
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
-        let (bridge_tx, bridge_rx) = mpsc::channel(128);
-
-        let proxy = Proxy.builder();
         #[cfg(feature = "unstable_protocol_v2")]
-        let proxy = proxy.without_acp_version_guard();
+        {
+            Proxy
+                .protocol_router()
+                .with_v1(McpOverAcpProxy(PolyfillProtocol::V1))
+                .with_v2(McpOverAcpProxy(PolyfillProtocol::V2))
+                .connect_to(client)
+                .await
+        }
 
-        proxy
-            .name("mcp-over-acp-polyfill")
-            .with_runner(BridgeRunner {
-                bridge_tx: bridge_tx.clone(),
-                bridge_rx,
-                protocol: None,
-                downstream_mode: DownstreamMcpMode::Unknown,
-                listeners: BridgeListeners::default(),
-                bridge_connections: HashMap::new(),
-            })
-            .with_handler(PolyfillHandler {
-                protocol: None,
-                bridge_tx,
-            })
-            .connect_to(client)
-            .await
+        #[cfg(not(feature = "unstable_protocol_v2"))]
+        {
+            McpOverAcpProxy(PolyfillProtocol::V1)
+                .connect_to(client)
+                .await
+        }
+    }
+}
+
+#[derive(Debug)]
+struct McpOverAcpProxy(PolyfillProtocol);
+
+impl ConnectTo<Conductor> for McpOverAcpProxy {
+    async fn connect_to(
+        self,
+        client: impl ConnectTo<Proxy>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let (bridge_tx, bridge_rx) = mpsc::channel(128);
+        let runner = BridgeRunner {
+            bridge_tx: bridge_tx.clone(),
+            bridge_rx,
+            protocol: None,
+            downstream_mode: DownstreamMcpMode::Unknown,
+            listeners: BridgeListeners::default(),
+            bridge_connections: HashMap::new(),
+        };
+        let handler = PolyfillHandler {
+            protocol: None,
+            bridge_tx,
+        };
+
+        match self.0 {
+            PolyfillProtocol::V1 => {
+                Proxy
+                    .builder()
+                    .name("mcp-over-acp-polyfill")
+                    .with_runner(runner)
+                    .with_handler(handler)
+                    .connect_to(client)
+                    .await
+            }
+            #[cfg(feature = "unstable_protocol_v2")]
+            PolyfillProtocol::V2 => {
+                Proxy
+                    .v2()
+                    .name("mcp-over-acp-polyfill")
+                    .with_runner(runner)
+                    .with_handler(handler)
+                    .connect_to(client)
+                    .await
+            }
+        }
     }
 }
 

@@ -406,7 +406,7 @@ impl AgentProtocolRouter {
 #[cfg(feature = "unstable_protocol_v2")]
 impl ConnectTo<Client> for AgentProtocolRouter {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), crate::Error> {
-        let supported = SupportedAgentProtocols {
+        let supported = SupportedProtocols {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
@@ -442,13 +442,13 @@ impl ConnectTo<Client> for AgentProtocolRouter {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentProtocol {
+enum SelectedProtocol {
     V1,
     V2,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-impl AgentProtocol {
+impl SelectedProtocol {
     fn take_agent(self, agent: AgentProtocolRouter) -> Option<DynConnectTo<Client>> {
         match self {
             Self::V1 => agent.v1,
@@ -470,7 +470,7 @@ impl AgentProtocol {
         }
     }
 
-    fn unsupported_error(self, supported: SupportedAgentProtocols) -> crate::Error {
+    fn unsupported_error(self, supported: SupportedProtocols) -> crate::Error {
         crate::Error::invalid_request().data(format!(
             "ACP protocol version {} is not configured; this endpoint supports {}",
             self.name(),
@@ -481,23 +481,33 @@ impl AgentProtocol {
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SupportedAgentProtocols {
+struct SupportedProtocols {
     v1: bool,
     v2: bool,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-impl SupportedAgentProtocols {
-    fn highest_compatible(self, requested: ProtocolVersion) -> Option<AgentProtocol> {
+impl SupportedProtocols {
+    fn highest_compatible(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
         if self.v2 && requested >= ProtocolVersion::V2 {
-            return Some(AgentProtocol::V2);
+            return Some(SelectedProtocol::V2);
         }
 
         if self.v1 && requested >= ProtocolVersion::V1 {
-            return Some(AgentProtocol::V1);
+            return Some(SelectedProtocol::V1);
         }
 
         None
+    }
+
+    fn exact(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
+        if self.v1 && requested == ProtocolVersion::V1 {
+            Some(SelectedProtocol::V1)
+        } else if self.v2 && requested == ProtocolVersion::V2 {
+            Some(SelectedProtocol::V2)
+        } else {
+            None
+        }
     }
 
     fn description(self) -> String {
@@ -513,8 +523,8 @@ impl SupportedAgentProtocols {
 #[cfg(feature = "unstable_protocol_v2")]
 fn select_agent_protocol(
     message: &mut RawJsonRpcMessage,
-    supported: SupportedAgentProtocols,
-) -> Result<AgentProtocol, crate::Error> {
+    supported: SupportedProtocols,
+) -> Result<SelectedProtocol, crate::Error> {
     let RawJsonRpcMessage::Request(request) = message else {
         return Err(
             crate::Error::invalid_request().data("first ACP message must be an initialize request")
@@ -596,17 +606,17 @@ fn normalize_v2_initialize_params_for_reuse(
 fn rewrite_initialize_params(
     params: &mut serde_json::Map<String, serde_json::Value>,
     requested: ProtocolVersion,
-    selected: AgentProtocol,
+    selected: SelectedProtocol,
 ) -> Result<(), crate::Error> {
     // Validate exact-version initialization without replacing its raw
     // parameters. Reserializing through the SDK's pinned schema would discard
     // fields added by newer compatible peers.
     if requested == selected.version() {
         match selected {
-            AgentProtocol::V1 => {
+            SelectedProtocol::V1 => {
                 parse_initialize_params::<InitializeRequest>(params)?;
             }
-            AgentProtocol::V2 => {
+            SelectedProtocol::V2 => {
                 parse_initialize_params::<v2::InitializeRequest>(params)?;
             }
         }
@@ -614,12 +624,12 @@ fn rewrite_initialize_params(
     }
 
     match selected {
-        AgentProtocol::V1 => {
+        SelectedProtocol::V1 => {
             debug_assert!(requested >= ProtocolVersion::V2);
             *params = normalize_v2_initialize_params_for_v1(params, false)?;
             Ok(())
         }
-        AgentProtocol::V2 => {
+        SelectedProtocol::V2 => {
             let mut initialize = parse_initialize_params::<v2::InitializeRequest>(params)?;
             initialize.protocol_version = ProtocolVersion::V2;
             *params = serialize_initialize_params(initialize)?;
@@ -855,8 +865,8 @@ fn json_object_contains(
 #[cfg(feature = "unstable_protocol_v2")]
 fn highest_compatible_agent_protocol(
     requested: ProtocolVersion,
-    supported: SupportedAgentProtocols,
-) -> Result<AgentProtocol, crate::Error> {
+    supported: SupportedProtocols,
+) -> Result<SelectedProtocol, crate::Error> {
     supported.highest_compatible(requested).ok_or_else(|| {
         crate::Error::invalid_request().data(format!(
             "unsupported ACP protocol version {requested}; this endpoint supports {}",
@@ -1336,6 +1346,147 @@ impl Proxy {
     pub fn v2(self) -> V2Builder<Proxy, NullHandler, NullRun> {
         self.builder().v2_proxy()
     }
+
+    /// Create a router that chooses between configured proxy implementations.
+    ///
+    /// Add implementations with [`ProxyProtocolRouter::with_v1`] and
+    /// [`ProxyProtocolRouter::with_v2`]. The router reads the initial
+    /// `_proxy/initialize` request, selects the implementation for that exact
+    /// protocol version, and hands over the complete initial transport frame.
+    /// It does not downgrade proxy traffic or convert later messages.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature while protocol v2
+    /// stabilizes.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn protocol_router(self) -> ProxyProtocolRouter {
+        ProxyProtocolRouter::new()
+    }
+}
+
+/// Proxy component that routes each connection to a configured protocol implementation.
+///
+/// Use [`Proxy::protocol_router`] to start the builder, then add stable-v1 and
+/// draft-v2 proxy implementations independently. Unlike
+/// [`AgentProtocolRouter`], this router requires an exact version match: the
+/// conductor has already selected and canonicalized the wire protocol before
+/// sending `_proxy/initialize` to a proxy.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Default)]
+pub struct ProxyProtocolRouter {
+    v1: Option<DynConnectTo<Conductor>>,
+    v2: Option<DynConnectTo<Conductor>>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ProxyProtocolRouter {
+    /// Create an empty proxy protocol router.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Return this router with a stable ACP v1 proxy implementation.
+    #[must_use]
+    pub fn with_v1(mut self, proxy: impl ConnectTo<Conductor>) -> Self {
+        self.v1 = Some(DynConnectTo::new(proxy));
+        self
+    }
+
+    /// Return this router with a draft ACP v2 proxy implementation.
+    #[must_use]
+    pub fn with_v2(mut self, proxy: impl ConnectTo<Conductor>) -> Self {
+        self.v2 = Some(DynConnectTo::new(proxy));
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ConnectTo<Conductor> for ProxyProtocolRouter {
+    async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), crate::Error> {
+        let supported = SupportedProtocols {
+            v1: self.v1.is_some(),
+            v2: self.v2.is_some(),
+        };
+        let mut conductor = RunningProtocolPeer::new(conductor);
+        let (first_frame, conductor, selected) = loop {
+            let Some((mut frame, next_conductor)) = conductor.next_frame().await? else {
+                return Ok(());
+            };
+            let message = match initialize_message_mut(&mut frame) {
+                Ok(Some(message)) => message,
+                Ok(None) => {
+                    conductor = next_conductor;
+                    continue;
+                }
+                Err(error) => return reject_initialize(next_conductor, &frame, error).await,
+            };
+            let selected = match select_proxy_protocol(message, supported) {
+                Ok(selected) => selected,
+                Err(error) => return reject_initialize(next_conductor, &frame, error).await,
+            };
+            break (frame, next_conductor, selected);
+        };
+        let Some(proxy) = selected.take_proxy(self) else {
+            let error = selected.unsupported_error(supported);
+            return reject_initialize(conductor, &first_frame, error).await;
+        };
+
+        let proxy = RunningProtocolPeer::new(proxy);
+        proxy.send_frame(first_frame)?;
+        pipe_protocol_peers_until_closed(conductor, proxy).await
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl SelectedProtocol {
+    fn take_proxy(self, proxy: ProxyProtocolRouter) -> Option<DynConnectTo<Conductor>> {
+        match self {
+            Self::V1 => proxy.v1,
+            Self::V2 => proxy.v2,
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+fn select_proxy_protocol(
+    message: &RawJsonRpcMessage,
+    supported: SupportedProtocols,
+) -> Result<SelectedProtocol, crate::Error> {
+    let RawJsonRpcMessage::Request(request) = message else {
+        return Err(crate::Error::invalid_request()
+            .data("first ACP proxy message must be an `_proxy/initialize` request"));
+    };
+
+    if request.method.as_ref() != METHOD_INITIALIZE_PROXY {
+        return Err(crate::Error::invalid_request()
+            .data("first ACP proxy request must be `_proxy/initialize`"));
+    }
+
+    let Some(RawJsonRpcParams::Object(params)) = &request.params else {
+        return Err(invalid_initialize_protocol_version());
+    };
+    let Some(protocol_version) = params.get("protocolVersion") else {
+        return Err(invalid_initialize_protocol_version());
+    };
+    let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
+        .map_err(|_| invalid_initialize_protocol_version())?;
+    let selected = supported.exact(requested).ok_or_else(|| {
+        crate::Error::invalid_request().data(format!(
+            "unsupported ACP protocol version {requested}; this proxy supports {}",
+            supported.description()
+        ))
+    })?;
+
+    match selected {
+        SelectedProtocol::V1 => {
+            parse_initialize_params::<crate::schema::InitializeProxyRequest>(params)?;
+        }
+        SelectedProtocol::V2 => {
+            parse_initialize_params::<v2::InitializeProxyRequest>(params)?;
+        }
+    }
+    Ok(selected)
 }
 
 impl HasPeer<Proxy> for Proxy {

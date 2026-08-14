@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Route v1 and v2 initialization through strict version-specific proxy
+  builders instead of disabling the ACP version guard.
 - Forward MCP request cancellation hop by hop instead of tunneling the
   loopback connection's `$/cancel_request` ID inside `mcp/message`.
 

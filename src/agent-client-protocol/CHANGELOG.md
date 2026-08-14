@@ -4,6 +4,10 @@
 
 ### Added
 
+- *(unstable-v2)* Add `Proxy::protocol_router` and `ProxyProtocolRouter` to
+  compose strict v1 and v2 proxy implementations behind one connection.
+  Routing requires the exact version selected by the conductor and preserves
+  the complete initial transport frame.
 - *(unstable)* Expose programmatic tool-call names through the
   `unstable_tool_call_name` feature.
 - *(unstable)* Expose v1 and draft-v2 plan operations through the

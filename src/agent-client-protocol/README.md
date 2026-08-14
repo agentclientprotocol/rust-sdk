@@ -46,8 +46,9 @@ Draft protocol v2 is opt-in through `unstable_protocol_v2`. `Client.v2()`,
 high-level, command-only session helpers because prompt acceptance and inbound
 traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
-`Proxy.builder()` remains the stable v1 entry point; raw routing infrastructure
-that selects and validates the version itself can use
+`Proxy.builder()` remains the stable v1 entry point. Use
+`Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
+implementations as one component; custom raw routing infrastructure can use
 `Proxy.builder().without_acp_version_guard()`.
 
 ## MCP Server Attachment

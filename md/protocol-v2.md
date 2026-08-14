@@ -265,8 +265,15 @@ the stable v1 builder, while `Proxy.v2()` is v2-only and requires
 `_proxy/initialize` to select protocol v2. A proxy built for one version rejects
 the other version instead of parsing it through a permissive schema.
 
-Raw routing infrastructure is the exception. If a component deliberately
-selects and validates the version itself, it can use
+When one component must expose independently authored v1 and v2 proxies,
+compose them with
+`Proxy.protocol_router().with_v1(v1_proxy).with_v2(v2_proxy)`. The conductor
+has already selected and canonicalized the protocol before
+`_proxy/initialize`, so the proxy router requires an exact v1 or v2 match,
+preserves the complete initial transport frame, and does not downgrade or
+convert later traffic.
+
+Components implementing their own raw version selector can use
 `Proxy.builder().without_acp_version_guard()` and keep protocol-neutral
 `ConnectionTo` callbacks. This disables the SDK's automatic version guard and
 is not a substitute for selecting `Proxy.v2()` in an ordinary v2 proxy
@@ -281,14 +288,17 @@ request, `info`, `capabilities`, metadata, and unknown extension fields
 therefore retain their wire shape across conductor-controlled rewrites. A proxy
 implementation can still deliberately replace the request it forwards.
 
-As with the core protocol router, an exact v2 request can retain unknown raw
-fields, while a request for a later compatible version is canonicalized through
-the selected v2 schema before component instantiation.
+An exact v2 request can retain unknown raw fields, while a request for a later
+compatible version is canonicalized through the selected v2 schema before
+component instantiation.
 
 Proxy implementations use
 `agent_client_protocol::schema::v2::InitializeProxyRequest`; its response is the
 v2 `InitializeResponse`. The flat `schema::InitializeProxyRequest` remains the
-stable v1 type. Static conductor component providers support both versions.
+stable v1 type. Static conductor component providers can carry either selected
+schema, but each supplied component must support that version. Use
+`Agent.protocol_router()` or `Proxy.protocol_router()` when a static component
+has separate implementations.
 Custom `InstantiateProxiesAndAgent` and `InstantiateProxies` implementations
 opt into v2 by implementing their feature-gated v2 method; the default rejects
 v2 rather than interpreting it as v1. Returning the initialize request
@@ -331,8 +341,9 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   match. The SDK does not convert traffic between v1 and v2.
 
 That means v1 and v2 implementations still need separate handlers.
-`Agent.v2()` and `Client.v2()` are v2-only. While protocol v2 stabilizes, the
-`unstable_protocol_v2` crate feature also exposes `Agent.protocol_router()` and
+`Agent.v2()`, `Client.v2()`, and `Proxy.v2()` are v2-only. While protocol v2
+stabilizes, the `unstable_protocol_v2` crate feature also exposes
+`Agent.protocol_router()`, `Proxy.protocol_router()`, and
 `Client.protocol_connector()` for composing version-specific implementations.
 
 Agents can add protocol implementations independently, which makes it easy for
@@ -380,7 +391,7 @@ agent
 # }
 ```
 
-The protocol router reads the initial `initialize` request, selects the
+The agent protocol router reads the initial `initialize` request, selects the
 highest configured protocol version that is compatible with the requested
 version, and then hands the connection to that implementation. If only v2 is
 configured, v1 clients are rejected without changing the fluent API. The router
@@ -389,6 +400,12 @@ not convert messages between v1 and v2 after routing. For compatibility, the
 initial frame may be a batch whose first call-shaped entry is `initialize`; the
 router preserves the complete frame when handing it to the selected
 implementation. Response-only frames before initialization are ignored.
+
+The proxy protocol router reads `_proxy/initialize` after the conductor has
+selected the chain's wire version. It therefore requires an exact configured
+v1 or v2 implementation instead of negotiating or downgrading. It validates
+the selected schema, then hands the complete, unchanged initial frame to that
+strict implementation.
 
 Clients use a connector because fallback may require opening a new transport.
 Both client implementations and the agent transport are factories:
@@ -428,8 +445,8 @@ connection. That does not turn an otherwise valid v2 request into an error.
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors; renamed
 `DiffPatch.diff` to `DiffPatch.text`; and added terminal state and output update
-types. The next schema dependency update removes the former schema-wide v1/v2
-conversion API: versioned implementations should remain separate, with
+types. Schema 1.6 removed the former schema-wide v1/v2 conversion API:
+versioned implementations should remain separate, with
 purpose-specific adapters at runtime boundaries where the required state and
 policy are available. These are draft API changes rather than stable v1 wire
 changes. See [Migrating to
