@@ -199,7 +199,10 @@ Lifecycle-sensitive calls should normally be sent individually. As a
 compatibility measure, `AgentProtocolRouter` can select a v1 or v2 agent when
 the first call-shaped entry is `initialize`, while preserving the original
 frame for the selected implementation. Response-only frames received before
-initialization are ignored. `ClientProtocolConnector` starts each attempted
+initialization are ignored. `ProxyProtocolRouter` provides the analogous
+boundary after conductor selection: it requires an exact v1 or v2
+`_proxy/initialize` match and preserves the complete initial frame without
+cross-version conversion. `ClientProtocolConnector` starts each attempted
 client implementation with an individual `initialize` request.
 
 ## Message Flow

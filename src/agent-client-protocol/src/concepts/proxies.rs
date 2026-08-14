@@ -22,8 +22,12 @@
 //! validates `_proxy/initialize` and later traffic against the selected
 //! version.
 //!
-//! Low-level routing infrastructure that deliberately selects and validates a
-//! raw protocol version itself can use
+//! Use `Proxy.protocol_router()` to package separate v1 and v2 implementations
+//! behind one `ConnectTo<Conductor>` component. It dispatches the
+//! conductor-selected `_proxy/initialize` version exactly and performs no
+//! cross-version conversion.
+//!
+//! Low-level infrastructure implementing custom raw version routing can use
 //! `Proxy.builder().without_acp_version_guard()`. Disabling the guard is an
 //! explicit version-neutral escape hatch, not the ordinary way to author a v2
 //! proxy.
@@ -196,7 +200,8 @@
 //! |------|----------|
 //! | Forward everything | Just `connect_to(transport)` |
 //! | Author a v1 or v2 proxy | `Proxy.builder()` or `Proxy.v2()` |
-//! | Route versions yourself | `without_acp_version_guard` on the raw proxy builder |
+//! | Package v1 and v2 implementations | `Proxy.protocol_router().with_v1(...).with_v2(...)` |
+//! | Implement custom raw routing | `without_acp_version_guard` on the raw proxy builder |
 //! | Intercept specific messages | `on_receive_*_from` with explicit peers |
 //! | Add global tools | `with_mcp_server` on builder |
 //! | Add per-session tools | `with_mcp_server` on session builder |

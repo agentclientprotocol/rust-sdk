@@ -23,7 +23,8 @@
 //! messages. The most common use case is adding MCP tools. Use
 //! [`Proxy.builder()`](agent_client_protocol::Proxy) for stable protocol v1
 //! proxy connections. With the core SDK's `unstable_protocol_v2` feature, use
-//! `Proxy.v2()` for a draft-v2-only proxy.
+//! `Proxy.v2()` for a draft-v2-only proxy, or `Proxy.protocol_router()` to
+//! expose separate strict v1 and v2 implementations as one component.
 //!
 //! **Important:** Proxies don't run standalone—they need the [`agent-client-protocol-conductor`] to
 //! orchestrate the connection between client, proxies, and agent. See

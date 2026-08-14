@@ -56,9 +56,12 @@ extension fields from being interpreted as a permissive v1 request and dropped.
 An exact-version request whose typed value is unchanged keeps its original raw
 parameters, including unknown extensions. A request for a later compatible
 protocol version selects v2 and is canonicalized through the selected v2
-schema, matching the core protocol router.
+schema.
 The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
-proxy vectors accept both versions. Custom instantiators can implement the
+proxy vectors can carry either selected schema, but each supplied component
+must support that version. Use `Agent.protocol_router()` or
+`Proxy.protocol_router()` when a static component has separate implementations.
+Custom instantiators can implement the
 feature-gated `instantiate_v2_proxies_and_agent` or `instantiate_v2_proxies`
 method; their default implementation rejects v2 with a JSON-RPC response and
 leaves the connection in a failed state that rejects later traffic. A modified

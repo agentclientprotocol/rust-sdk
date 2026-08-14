@@ -53,10 +53,10 @@ without coupling later session events to that response.
   [Protocol V2](./md/protocol-v2.md).
 
 `Client.builder()`, `Agent.builder()`, and `Proxy.builder()` remain stable-v1
-entry points; their `.v2()` counterparts select the draft-v2 API. Raw proxy
-routing infrastructure that selects and validates a version itself can use
-`without_acp_version_guard`, but ordinary v2 proxy implementations should use
-`Proxy.v2()`.
+entry points; their `.v2()` counterparts select the draft-v2 API. With
+`unstable_protocol_v2`, use `Proxy.protocol_router()` to expose separate strict
+v1 and v2 proxy implementations as one component. Custom raw routing
+infrastructure can use `without_acp_version_guard`.
 
 ## Integrations
 
