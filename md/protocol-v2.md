@@ -83,7 +83,10 @@ Stable callbacks receive `ConnectionTo<_>` and expose the protocol v1
 Callbacks installed through `Client.v2()` receive `V2ConnectionTo<_>` and expose
 the v2 `build_session*` and `resume_session*` helpers. The shared names describe
 the same lifecycle operations while the connection type selects their schema
-and return types at compile time.
+and return types at compile time. The `resume_session*` helpers return a
+`V2ResumeSessionBuilder`; call `start_session` to publish the request and obtain
+an `OpenedV2Session` containing the command handle and complete
+`ResumeSessionResponse`.
 
 Low-level custom `with_handler` and `with_runner` implementations continue to
 receive the protocol-neutral `ConnectionTo<_>`, and generic `send_request`
@@ -173,6 +176,10 @@ V2 deliberately separates prompt submission from session observation:
   Its `OpenedV2Session` result keeps the command handle separate from the
   complete `NewSessionResponse` represented by the linked schema, rather than
   reconstructing a selected subset of its fields.
+- `V2ConnectionTo::resume_session` and `resume_session_from` return a
+  `V2ResumeSessionBuilder`. Its `start_session` method publishes
+  `session/resume` and returns an `OpenedV2Session` containing the complete
+  `ResumeSessionResponse` without reconstructing it.
 - `V2Session` is a cloneable command handle containing only the session ID and
   connection. It does not own, buffer, or unregister inbound messages.
 - Register typed `UpdateSessionNotification` and `RequestPermissionRequest`
@@ -201,20 +208,23 @@ V2 deliberately separates prompt submission from session observation:
   cached on the command handle.
 
 Install connection handlers before `session/new` and `session/resume` requests.
-This is especially important for `resume_session_from`: replay updates
-precede the resume response on the wire, so preinstalled typed handlers observe
-them in order. If a handler forwards updates to another task, the application
-is responsible for any additional projection-drained barrier it needs before
-treating replay as locally applied.
+This is especially important before calling `start_session` on a
+`V2ResumeSessionBuilder`: replay updates precede the resume response on the
+wire, so preinstalled typed handlers observe them in order. If a handler
+forwards updates to another task, the application is responsible for any
+additional projection-drained barrier it needs before treating replay as
+locally applied.
 
 Dropping command handles has no network or inbound-routing side effect. For a
-session created with `V2SessionBuilder::with_mcp_server`, the SDK installs the
-MCP routes and initially polls their runner tasks before publishing
-`session/new`, so the agent can connect to those servers during session setup.
-Runners may continue asynchronous initialization; custom connectors must be
-able to queue connections and messages once constructed. A successful setup
-promotes the attachment to the connection lifetime; any setup failure cleans it
-up. This attachment requires both `unstable_protocol_v2` and
+session configured with `V2SessionBuilder::with_mcp_server` or
+`V2ResumeSessionBuilder::with_mcp_server`, the SDK installs the MCP routes and
+initially polls their runner tasks before publishing `session/new` or
+`session/resume`, so the agent can connect to those servers during setup or
+resume replay. Runners may continue asynchronous initialization; custom
+connectors must be able to queue connections and messages once constructed. A
+successful setup promotes the attachment to the connection lifetime; a setup
+failure, including an error response after cancellation, cleans up the pending
+attachment. This attachment requires both `unstable_protocol_v2` and
 `unstable_mcp_over_acp`.
 
 A v2 proxy can instead attach one server globally with
@@ -223,8 +233,9 @@ server ID and adds its declaration to v2 `session/new`, `session/resume`, and
 feature-gated `session/fork` requests. It modifies only the `mcpServers` field,
 preserving unrelated setup fields and extensions for downstream handlers.
 
-`V2SessionBuilder::on_proxy_session_start` is the non-blocking setup helper for
-a v2 proxy:
+`V2SessionBuilder::on_proxy_session_start` and
+`V2ResumeSessionBuilder::on_proxy_session_start` are the non-blocking setup
+helpers for a v2 proxy:
 
 ```rust,ignore
 use agent_client_protocol::schema::v2;
@@ -247,13 +258,21 @@ Proxy
     );
 ```
 
-The helper forwards request cancellation, sends an ordered downstream
-`session/new`, installs session routing before later inbound traffic is
-dispatched, and forwards the complete `NewSessionResponse`. It then spawns the
-callback outside the ordering barrier with an `OpenedV2Session` containing the
-command-only session handle and complete setup response. Updates and
-interactive requests remain independent connection traffic and should still
-be handled by typed callbacks on `Proxy.v2()`.
+Both helpers forward request cancellation, send an ordered downstream setup
+request, and forward the complete operation-specific response without
+reconstruction. For `session/new`, routing is installed when its response makes
+the new session ID available and before later inbound traffic is dispatched.
+For `session/resume`, the ID is already known, so routing and any per-session
+MCP attachment are ready before the downstream request is published. Replay
+updates can therefore be forwarded upstream before the complete
+`ResumeSessionResponse`, as required by the protocol. A failed or cancelled
+downstream response drops pending routing and MCP attachment; successful setup
+keeps them for the connection lifetime. A cancellation signal itself remains
+advisory: it is forwarded downstream while the helper awaits that response.
+The helper then spawns the callback outside the ordering barrier with an
+`OpenedV2Session` containing the command-only session handle and complete setup
+response. Updates and interactive requests remain independent connection
+traffic and should still be handled by typed callbacks on `Proxy.v2()`.
 
 If an application wants stream ergonomics, it can fan typed updates out from
 the connection handler with an explicit buffering and subscriber policy.

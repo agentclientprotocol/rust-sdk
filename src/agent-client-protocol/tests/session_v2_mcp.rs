@@ -436,6 +436,200 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         .expect("v2 MCP attachment test timed out")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -> Result<(), Error>
+{
+    let (server_id_tx, mut server_id_rx) = mpsc::unbounded();
+    let (round_trip_trigger_tx, mut round_trip_trigger_rx) = mpsc::unbounded();
+    let (round_trip_tx, mut round_trip_rx) = mpsc::unbounded();
+    let first_round_trip_tx = round_trip_tx.clone();
+    let session_id = v2::SessionId::new("v2-resumed-mcp-session");
+    let expected_session_id = session_id.clone();
+    let resume_cwd = cwd()?;
+    let expected_resume_cwd = v2::AbsolutePath::new(resume_cwd.clone());
+    let additional_directory = resume_cwd.join("additional");
+    let expected_additional_directory = v2::AbsolutePath::new(additional_directory.clone());
+    let existing_mcp_server = v2::McpServer::Other(v2::OtherMcpServer::new(
+        "_test_transport",
+        BTreeMap::from([("extension".to_owned(), json!({"preserved": true}))]),
+    ));
+    let expected_existing_mcp_server = existing_mcp_server.clone();
+    let replay_meta = Map::from_iter([("replay".to_owned(), json!({"preserved": true}))]);
+    let expected_replay_meta = replay_meta.clone();
+    let setup_meta = Map::from_iter([("setup".to_owned(), json!({"preserved": true}))]);
+    let expected_setup_meta = setup_meta.clone();
+    let expected_response = v2::ResumeSessionResponse::new().meta(Map::from_iter([(
+        "response".to_owned(),
+        json!({"preserved": true}),
+    )]));
+    let agent_response = expected_response.clone();
+
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ResumeSessionRequest,
+                        responder: Responder<v2::ResumeSessionResponse>,
+                        connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, expected_session_id);
+                assert_eq!(request.cwd, expected_resume_cwd);
+                assert_eq!(
+                    request.additional_directories,
+                    vec![expected_additional_directory.clone()]
+                );
+                assert!(matches!(
+                    request.replay_from.as_ref(),
+                    Some(v2::ReplayFrom::Start(start))
+                        if start.meta.as_ref() == Some(&expected_replay_meta)
+                ));
+                assert_eq!(request.meta.as_ref(), Some(&expected_setup_meta));
+                let server = match request.mcp_servers.as_slice() {
+                    [existing, v2::McpServer::Acp(server)]
+                        if existing == &expected_existing_mcp_server =>
+                    {
+                        server
+                    }
+                    servers => {
+                        panic!("expected the existing declaration followed by ACP, got {servers:?}")
+                    }
+                };
+                assert_eq!(server.name, "v2-echo");
+                let server_id = server.server_id.clone();
+                server_id_tx
+                    .unbounded_send(server_id.clone())
+                    .map_err(Error::into_internal_error)?;
+                let round_trip_connection = connection.clone();
+                let first_round_trip_tx = first_round_trip_tx.clone();
+                let agent_response = agent_response.clone();
+                connection.spawn(async move {
+                    match run_mcp_round_trip(&round_trip_connection, &server_id, 1).await {
+                        Ok(round_trip) => {
+                            first_round_trip_tx
+                                .unbounded_send(Ok(round_trip))
+                                .map_err(Error::into_internal_error)?;
+                            responder.respond(agent_response)
+                        }
+                        Err(error) => {
+                            first_round_trip_tx
+                                .unbounded_send(Err(error.clone()))
+                                .map_err(Error::into_internal_error)?;
+                            responder.respond_with_error(error)
+                        }
+                    }
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .with_spawned(move |connection: V2ConnectionTo<Client>| async move {
+            let server_id = server_id_rx.next().await.ok_or_else(|| {
+                Error::internal_error().data("session/resume did not advertise an MCP server")
+            })?;
+            let mut sequence = 1;
+
+            while round_trip_trigger_rx.next().await.is_some() {
+                sequence += 1;
+                let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
+                let failed = result.is_err();
+                round_trip_tx
+                    .unbounded_send(result)
+                    .map_err(Error::into_internal_error)?;
+                if failed {
+                    break;
+                }
+            }
+            Ok(())
+        });
+
+    let test = async move {
+        let (context_tx, mut context_rx) = mpsc::unbounded();
+        let (notice_tx, mut notice_rx) = mpsc::unbounded();
+        let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
+        let (runner_started_tx, runner_started_rx) = oneshot::channel();
+        let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
+        let runner_started = Arc::new(AtomicBool::new(false));
+
+        Client
+            .v2()
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let mcp_server = McpServer::<Agent, _>::new(
+                    EchoMcpConnect {
+                        context_tx,
+                        notice_tx,
+                        runner_started: runner_started.clone(),
+                        dropped_tx: Mutex::new(Some(connector_dropped_tx)),
+                    },
+                    ProbeRunner {
+                        started: runner_started.clone(),
+                        started_tx: Some(runner_started_tx),
+                        dropped_tx: Some(runner_dropped_tx),
+                    },
+                );
+                let pending_session = connection
+                    .resume_session_from(
+                        v2::ResumeSessionRequest::new(session_id.clone(), resume_cwd)
+                            .additional_directories([additional_directory])
+                            .mcp_servers(vec![existing_mcp_server])
+                            .replay_from(v2::ReplayFrom::Start(
+                                v2::ReplayFromStart::new().meta(replay_meta),
+                            ))
+                            .meta(setup_meta),
+                    )
+                    .with_mcp_server(mcp_server)?
+                    .start_session();
+
+                runner_started_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+                assert!(
+                    runner_started.load(Ordering::Acquire),
+                    "the MCP runner must be first-polled before session/resume is published"
+                );
+
+                assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+
+                let opened = pending_session.block_task().await?;
+                assert_eq!(opened.session().session_id(), &session_id);
+                assert_eq!(opened.response(), &expected_response);
+                let session = opened.into_session();
+                let remaining_session = session.clone();
+                drop(session);
+                drop(remaining_session);
+
+                round_trip_trigger_tx
+                    .unbounded_send(())
+                    .map_err(Error::into_internal_error)?;
+                assert_round_trip(2, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+
+                Ok(())
+            })
+            .await?;
+
+        connector_dropped_rx
+            .await
+            .map_err(Error::into_internal_error)?;
+        runner_dropped_rx.await.map_err(Error::into_internal_error)
+    };
+
+    tokio::time::timeout(TIMEOUT, test)
+        .await
+        .expect("v2 resume MCP attachment test timed out")
+}
+
 struct DropTrackedMcpConnect {
     dropped_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -566,6 +760,98 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connection()
+-> Result<(), Error> {
+    let session_resume_seen = Arc::new(AtomicBool::new(false));
+    let agent_session_resume_seen = session_resume_seen.clone();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: v2::ResumeSessionRequest,
+                        responder: Responder<v2::ResumeSessionResponse>,
+                        _connection: V2ConnectionTo<Client>| {
+                agent_session_resume_seen.store(true, Ordering::Release);
+                responder.respond(v2::ResumeSessionResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: ConnectionProbeRequest,
+                   responder: Responder<ConnectionProbeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(ConnectionProbeResponse {
+                    nonce: request.nonce,
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let test = async move {
+        let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
+
+        Client
+            .v2()
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let error = connection
+                    .resume_session(v2::SessionId::new("resume-not-published"), cwd()?)
+                    .with_mcp_server(McpServer::<Agent, _>::new(
+                        DropTrackedMcpConnect {
+                            dropped_tx: Mutex::new(Some(connector_dropped_tx)),
+                        },
+                        ImmediateErrorRunner,
+                    ))?
+                    .start_session()
+                    .block_task()
+                    .await
+                    .expect_err("the runner should reject resume before publication");
+                assert_eq!(error.code, ErrorCode::InternalError);
+                assert_eq!(error.data, Some(json!("runner failed before publication")));
+
+                connector_dropped_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+
+                let nonce = "connection-remains-open-after-resume".to_owned();
+                let response = connection
+                    .send_request(ConnectionProbeRequest {
+                        nonce: nonce.clone(),
+                    })
+                    .block_task()
+                    .await?;
+                assert_eq!(response.nonce, nonce);
+                Ok(())
+            })
+            .await?;
+
+        assert!(
+            !session_resume_seen.load(Ordering::Acquire),
+            "session/resume must not be published when runner startup fails"
+        );
+        Ok(())
+    };
+
+    tokio::time::timeout(TIMEOUT, test)
+        .await
+        .expect("immediate v2 resume MCP runner failure test timed out")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Error> {
     let runner_started = Arc::new(AtomicBool::new(false));
     let runner_started_before_request = runner_started.clone();
@@ -659,4 +945,103 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
     tokio::time::timeout(TIMEOUT, test)
         .await
         .expect("rejected v2 MCP session cleanup test timed out")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Error> {
+    let runner_started = Arc::new(AtomicBool::new(false));
+    let runner_started_before_request = runner_started.clone();
+    let expected_session_id = v2::SessionId::new("rejected-v2-resume");
+    let agent_expected_session_id = expected_session_id.clone();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ResumeSessionRequest,
+                        responder: Responder<v2::ResumeSessionResponse>,
+                        _connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, agent_expected_session_id);
+                assert!(matches!(
+                    request.mcp_servers.as_slice(),
+                    [v2::McpServer::Acp(server)] if server.name == "rejected-v2-mcp"
+                ));
+                assert!(
+                    runner_started_before_request.load(Ordering::Acquire),
+                    "the MCP runner must be first-polled before session/resume is published"
+                );
+                responder
+                    .respond_with_error(Error::invalid_params().data("rejecting v2 MCP resume"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let test = async move {
+        let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
+        let (runner_started_tx, runner_started_rx) = oneshot::channel();
+        let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
+
+        Client
+            .v2()
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let pending_session = connection
+                    .resume_session(expected_session_id, cwd()?)
+                    .with_mcp_server(McpServer::<Agent, _>::new(
+                        DropTrackedMcpConnect {
+                            dropped_tx: Mutex::new(Some(connector_dropped_tx)),
+                        },
+                        ProbeRunner {
+                            started: runner_started.clone(),
+                            started_tx: Some(runner_started_tx),
+                            dropped_tx: Some(runner_dropped_tx),
+                        },
+                    ))?
+                    .start_session();
+
+                runner_started_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+                assert!(
+                    runner_started.load(Ordering::Acquire),
+                    "a rejected resume's MCP runner must start before session/resume"
+                );
+
+                let error = pending_session
+                    .block_task()
+                    .await
+                    .expect_err("the agent should reject session/resume");
+                assert_eq!(error.code, ErrorCode::InvalidParams);
+
+                runner_dropped_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+                assert!(
+                    runner_started.load(Ordering::Acquire),
+                    "the rejected resume's MCP runner must have been first-polled"
+                );
+                connector_dropped_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+                Ok(())
+            })
+            .await
+    };
+
+    tokio::time::timeout(TIMEOUT, test)
+        .await
+        .expect("rejected v2 resume MCP cleanup test timed out")
 }

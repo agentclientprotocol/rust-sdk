@@ -273,10 +273,12 @@ tables:
 Code using `Builder::with_mcp_server` or `SessionBuilder::with_mcp_server` continues to attach the
 high-level server in the same place; the emitted declaration and wire methods change. Global
 builder attachment advertises the same server ID on `session/new`, `session/load`,
-`session/resume`, and feature-gated `session/fork`. Per-session attachment remains specific to
-`session/new`. Do not construct an HTTP server with an `acp:` URL. If the final agent accepts HTTP
-but not native ACP MCP servers, insert `McpOverAcpPolyfill` immediately before it. The polyfill now
-consumes native `McpServer::Acp` declarations and adapts only its final-agent-facing side.
+`session/resume`, and feature-gated `session/fork`. Stable v1 per-session attachment remains
+specific to `session/new`; draft v2 additionally supports per-session resume attachment through
+`V2ResumeSessionBuilder::with_mcp_server`. Do not construct an HTTP server with an `acp:` URL. If
+the final agent accepts HTTP but not native ACP MCP servers, insert `McpOverAcpPolyfill`
+immediately before it. The polyfill now consumes native `McpServer::Acp` declarations and adapts
+only its final-agent-facing side.
 
 The polyfill's public `BridgeMode` enum and `McpOverAcpPolyfill::stdio` were removed because the
 required conductor `mcp` helper subcommand no longer exists. The polyfill has one supported mode;

@@ -17,16 +17,20 @@
   cloneable command handles, configuration, close, and session-wide
   cancellation. `Client.v2()` and `Agent.v2()` callbacks receive a
   `V2ConnectionTo` whose unversioned `build_session*` and `resume_session*`
-  methods expose only the v2 lifecycle. Session updates and interactive
-  requests remain on typed connection handlers. With
-  `unstable_mcp_over_acp`, `V2SessionBuilder::with_mcp_server` adds native
-  per-session MCP attachment while preserving independent response
-  consumption. MCP routes are installed and runners begin executing before
-  `session/new` is published; successful attachments remain active for the
-  connection lifetime. `V2SessionBuilder::on_proxy_session_start` forwards the
-  complete setup response, preserves cancellation, installs session routing
-  before later inbound traffic, and then spawns user work with the
-  `OpenedV2Session`.
+  methods expose only the v2 lifecycle. The resume helpers return a
+  `V2ResumeSessionBuilder`, so `session/resume` is not published until
+  `start_session` or `on_proxy_session_start` is called. Session updates and
+  interactive requests remain on typed connection handlers. With
+  `unstable_mcp_over_acp`, both session builders support native per-session MCP
+  attachment while preserving independent response consumption. MCP routes
+  are installed and runners begin executing before the setup request is
+  published; successful attachments remain active for the connection lifetime
+  while setup failures, including cancellation error responses, clean up
+  pending state. The builders' `on_proxy_session_start` helpers forward the
+  complete setup response and cancellation, install routing before later
+  inbound traffic, and then spawn user work with the `OpenedV2Session`. Resume
+  routing is ready before request publication so replay can precede the
+  response as required by the protocol.
 - *(unstable-v2)* Add `Proxy::v2()` as the draft-v2-only proxy builder while
   keeping `Proxy::builder()` on stable v1. With `unstable_mcp_over_acp`,
   `Proxy.v2().with_mcp_server(...)` injects a connection-scoped MCP server

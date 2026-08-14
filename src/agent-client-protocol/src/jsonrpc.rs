@@ -2103,7 +2103,7 @@ struct RequestReadiness {
 }
 
 impl RequestReadiness {
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     fn new(future: impl Future<Output = Result<(), crate::Error>> + Send + 'static) -> Self {
         Self {
             future: future.boxed(),
@@ -3966,7 +3966,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Send a request and run a synchronous side effect when its valid success
     /// response is routed, after `before_send` completes and independently
     /// from how the returned request is eventually consumed.
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn send_request_to_with_response_hook_after<
         Peer: Role,
         Req: JsonRpcRequest,
@@ -3995,7 +3995,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Send an ordered request with readiness and valid-success hooks.
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn send_ordered_request_to_with_response_hook_after<
         Peer: Role,
         Req: JsonRpcRequest,
@@ -4262,19 +4262,23 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         handler: impl HandleDispatchFrom<Counterpart> + 'static,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
         let uuid = Uuid::new_v4();
+        let active = Arc::new(AtomicBool::new(true));
         self.dynamic_handler_tx
             .unbounded_send(DynamicHandlerMessage::AddDynamicHandler(
                 uuid,
-                Box::new(handler),
+                Box::new(GuardedDynamicHandler {
+                    active: active.clone(),
+                    handler,
+                }),
             ))
             .map_err(crate::util::internal_error)?;
 
-        Ok(DynamicHandlerGuard::new(uuid, self.clone()))
+        Ok(DynamicHandlerGuard::new(uuid, active, self.clone()))
     }
 
     /// Wait until every dynamic-handler update queued before this call has
     /// been applied by the incoming protocol actor.
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn dynamic_handler_barrier(&self) -> BoxFuture<'static, Result<(), crate::Error>> {
         let (acknowledgment_tx, acknowledgment_rx) = oneshot::channel();
         if let Err(error) =
@@ -4305,21 +4309,53 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 }
 
+struct GuardedDynamicHandler<Handler> {
+    active: Arc<AtomicBool>,
+    handler: Handler,
+}
+
+impl<Counterpart, Handler> HandleDispatchFrom<Counterpart> for GuardedDynamicHandler<Handler>
+where
+    Counterpart: Role,
+    Handler: HandleDispatchFrom<Counterpart>,
+{
+    async fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        connection: ConnectionTo<Counterpart>,
+    ) -> Result<Handled<Dispatch>, crate::Error> {
+        if !self.active.load(Ordering::Acquire) {
+            return Ok(Handled::No {
+                message,
+                retry: false,
+            });
+        }
+        self.handler.handle_dispatch_from(message, connection).await
+    }
+
+    fn describe_chain(&self) -> impl Debug {
+        self.handler.describe_chain()
+    }
+}
+
 /// A guard that keeps a dynamic message handler registered.
 ///
-/// Dropping the guard unregisters the handler. Use [`detach`](Self::detach) to
-/// keep the handler registered for the remaining lifetime of the connection.
+/// Dropping the guard immediately deactivates the handler and queues its
+/// removal from the connection. Use [`detach`](Self::detach) to keep the
+/// handler registered for the remaining lifetime of the connection.
 #[must_use = "dropping this guard unregisters the dynamic handler"]
 #[derive(Debug)]
 pub struct DynamicHandlerGuard<R: Role> {
     uuid: Option<Uuid>,
+    active: Arc<AtomicBool>,
     cx: ConnectionTo<R>,
 }
 
 impl<R: Role> DynamicHandlerGuard<R> {
-    fn new(uuid: Uuid, cx: ConnectionTo<R>) -> Self {
+    fn new(uuid: Uuid, active: Arc<AtomicBool>, cx: ConnectionTo<R>) -> Self {
         Self {
             uuid: Some(uuid),
+            active,
             cx,
         }
     }
@@ -4337,6 +4373,7 @@ impl<R: Role> DynamicHandlerGuard<R> {
 impl<R: Role> Drop for DynamicHandlerGuard<R> {
     fn drop(&mut self) {
         if let Some(uuid) = self.uuid {
+            self.active.store(false, Ordering::Release);
             self.cx.remove_dynamic_handler(uuid);
         }
     }
@@ -6770,7 +6807,23 @@ mod tests {
         )
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    struct ClaimingDynamicHandler;
+
+    impl HandleDispatchFrom<crate::role::UntypedRole> for ClaimingDynamicHandler {
+        async fn handle_dispatch_from(
+            &mut self,
+            _message: Dispatch,
+            _connection: ConnectionTo<crate::role::UntypedRole>,
+        ) -> Result<Handled<Dispatch>, crate::Error> {
+            Ok(Handled::Yes)
+        }
+
+        fn describe_chain(&self) -> impl Debug {
+            "ClaimingDynamicHandler"
+        }
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
     fn connection_for_response_hook_tests() -> (
         ConnectionTo<crate::role::UntypedRole>,
         mpsc::UnboundedReceiver<OutgoingMessage>,
@@ -6798,7 +6851,7 @@ mod tests {
         )
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     fn route_test_response(
         request_id: RequestId,
         pending_replies: &PendingReplies,
@@ -6817,7 +6870,7 @@ mod tests {
             .expect("response should route to the pending request");
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn response_hook_runs_when_success_is_routed_before_consumption() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
@@ -6852,7 +6905,7 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn response_hook_skips_errors_but_outlives_a_dropped_consumer() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
@@ -6906,7 +6959,7 @@ mod tests {
         assert!(dropped_hook_ran.load(Ordering::Acquire));
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn response_hook_failure_replaces_the_success_result() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
@@ -6930,7 +6983,7 @@ mod tests {
         assert_eq!(error.data, Some(serde_json::json!("response hook failed")));
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn outgoing_request_waits_for_readiness_before_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
@@ -6980,7 +7033,7 @@ mod tests {
         drop(sent);
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn outgoing_request_readiness_failure_rejects_without_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
@@ -7166,7 +7219,30 @@ mod tests {
         }
     }
 
-    #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+    #[test]
+    fn dropping_dynamic_handler_guard_deactivates_queued_handler_immediately() {
+        let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
+        let guard = connection
+            .add_dynamic_handler(ClaimingDynamicHandler)
+            .expect("dynamic handler should register");
+        let mut handler = match next_dynamic_handler_message(&mut receiver) {
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, handler)) => handler,
+            other => panic!("expected handler registration, got {other:?}"),
+        };
+
+        drop(guard);
+
+        let message = Dispatch::Notification(
+            UntypedMessage::new("stale", serde_json::json!({}))
+                .expect("test notification should serialize"),
+        );
+        let handled =
+            futures::executor::block_on(handler.dyn_handle_dispatch_from(message, connection))
+                .expect("inactive handler should decline cleanly");
+        assert!(matches!(handled, Handled::No { retry: false, .. }));
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn dynamic_handler_barrier_acknowledges_prior_messages() {
         let (connection, mut receiver) = connection_with_dynamic_handler_receiver();

@@ -27,10 +27,11 @@ proxy attachment. Draft protocol v2 supports the same two attachment scopes
 when both `unstable_protocol_v2` and `unstable_mcp_over_acp` are enabled:
 `Proxy.v2().with_mcp_server(...)` injects a global declaration into each
 supported session setup request, while
-`V2SessionBuilder::with_mcp_server(...)` attaches a server to one new session.
-Successful v2 attachments remain active for the connection lifetime, and
-`V2SessionBuilder::on_proxy_session_start` forwards a proxied setup response
-without coupling later session events to that response.
+`V2SessionBuilder::with_mcp_server(...)` attaches a server to one new session
+and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one while resuming.
+Successful v2 attachments remain active for the connection lifetime, and both
+builders expose `on_proxy_session_start` to forward proxied setup without
+coupling later session events to that response.
 
 **Proxy orchestration**
 

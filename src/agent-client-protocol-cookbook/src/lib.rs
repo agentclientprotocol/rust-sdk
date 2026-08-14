@@ -659,9 +659,11 @@ pub mod per_session_mcp_server {
     //! # Draft v2 pattern
     //!
     //! `Proxy.v2()` exposes the same non-blocking setup shape with v2 schema
-    //! types. Its `V2SessionBuilder::on_proxy_session_start` callback receives
-    //! an `OpenedV2Session`, not just a session ID, so it retains both the
-    //! command-only handle and the complete `NewSessionResponse`:
+    //! types. `V2SessionBuilder` handles `session/new`, while
+    //! `V2ResumeSessionBuilder` handles `session/resume`. Their
+    //! `on_proxy_session_start` callbacks receive an `OpenedV2Session`, not
+    //! just a session ID, so they retain both the command-only handle and the
+    //! complete operation-specific response:
     //!
     //! ```rust,ignore
     //! use agent_client_protocol::schema::v2;
@@ -690,10 +692,33 @@ pub mod per_session_mcp_server {
     //!     );
     //! ```
     //!
-    //! The helper forwards upstream cancellation and the complete setup
-    //! response, and installs session routing before later inbound traffic.
-    //! The callback runs outside that ordering barrier. V2 updates and
-    //! interactive requests remain independent connection traffic.
+    //! Resume uses the same terminal helper after constructing the per-session
+    //! server from the resume request:
+    //!
+    //! ```rust,ignore
+    //! Proxy.v2()
+    //!     .on_receive_request_from(
+    //!         Client,
+    //!         async |request: v2::ResumeSessionRequest, responder, connection| {
+    //!             let mcp_server = build_workspace_server(request.cwd.clone());
+    //!             connection
+    //!                 .resume_session_from(request)
+    //!                 .with_mcp_server(mcp_server)?
+    //!                 .on_proxy_session_start(responder, async move |opened| {
+    //!                     tracing::info!(session_id = %opened.session().session_id(), "Session resumed");
+    //!                     Ok(())
+    //!                 })
+    //!         },
+    //!         agent_client_protocol::on_receive_request!(),
+    //!     );
+    //! ```
+    //!
+    //! Both helpers forward upstream cancellation and the complete setup
+    //! response. New-session routing is installed before later inbound
+    //! traffic; resume routing and MCP readiness are established before the
+    //! request is published so replay can precede its response. The callback
+    //! runs outside the ordering barrier. V2 updates and interactive requests
+    //! remain independent connection traffic.
     //!
     //! # Stable v1 alternative: spawning `start_session_proxy`
     //!

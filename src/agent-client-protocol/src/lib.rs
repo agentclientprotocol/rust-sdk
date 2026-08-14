@@ -22,9 +22,11 @@
 //! provides a command-only `V2Session` API and receives updates and interactive
 //! requests through typed connection handlers because prompt acceptance and
 //! inbound traffic are independent. With both v2 and MCP-over-ACP features,
-//! `Proxy.v2()` supports global MCP attachment and `V2SessionBuilder` supports
-//! per-session attachment plus non-blocking proxy setup. Successful
-//! attachments remain active for the connection lifetime.
+//! `Proxy.v2()` supports global MCP attachment, while `V2SessionBuilder` and
+//! `V2ResumeSessionBuilder` support per-session attachment plus non-blocking
+//! proxy setup. Per-session MCP routes and runners are ready before a setup
+//! request is published, as is proxy session routing for resume replay;
+//! successful attachments remain active for the connection lifetime.
 //!
 //! Here's a minimal example that initializes a v1 connection, creates a
 //! session, and sends a prompt:

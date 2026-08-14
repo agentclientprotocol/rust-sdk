@@ -7,9 +7,12 @@
 //! The examples below use the stable protocol v1 `SessionBuilder` and
 //! `ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
 //! through `Client.v2()` receive `V2ConnectionTo` and its `build_session*`,
-//! `V2SessionBuilder`, and command-only `V2Session` APIs. V2
-//! prompt responses acknowledge acceptance independently; receive session-wide
-//! updates and interactive requests through typed connection handlers.
+//! `V2SessionBuilder`, `resume_session*`, `V2ResumeSessionBuilder`, and
+//! command-only `V2Session` APIs. The v2 resume helpers return a builder and do
+//! not publish `session/resume` until `start_session` or
+//! `on_proxy_session_start` is called. V2 prompt responses acknowledge
+//! acceptance independently; receive session-wide updates and interactive
+//! requests through typed connection handlers.
 //!
 //! # Creating a Session
 //!
@@ -86,9 +89,13 @@
 //!
 //! MCP attachment requires the `unstable_mcp_over_acp` feature. Standalone MCP
 //! servers remain available without it. Draft protocol v2 per-session
-//! attachment uses `V2SessionBuilder::with_mcp_server` and additionally
-//! requires `unstable_protocol_v2`; successful v2 attachments remain active
-//! for the connection lifetime.
+//! attachment uses `V2SessionBuilder::with_mcp_server` for new sessions or
+//! `V2ResumeSessionBuilder::with_mcp_server` for resumed sessions and
+//! additionally requires `unstable_protocol_v2`. The SDK installs the routes
+//! and initially polls the runners before publishing the setup request, so the
+//! agent can use them during setup or resume replay. Successful attachments
+//! remain active for the connection lifetime; setup failures, including an
+//! error response after cancellation, clean up the pending attachment.
 //!
 //! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -141,11 +148,11 @@
 //! order setup before messages already processed. See [Ordering](super::ordering)
 //! for details.
 //!
-//! For a draft v2 proxy, use
-//! `V2SessionBuilder::on_proxy_session_start` instead. It forwards the complete
-//! `NewSessionResponse` and then spawns the callback with an
+//! For a draft v2 proxy, use `V2SessionBuilder::on_proxy_session_start` or
+//! `V2ResumeSessionBuilder::on_proxy_session_start` instead. Each forwards the
+//! complete operation-specific response and then spawns the callback with an
 //! `OpenedV2Session`, so the callback keeps both the command-only session handle
-//! and the operation-specific response:
+//! and that exact response:
 //!
 //! ```rust,ignore
 //! Proxy.v2()
@@ -163,10 +170,15 @@
 //!     );
 //! ```
 //!
-//! The downstream request inherits upstream cancellation. Session routing is
-//! installed before later inbound traffic is dispatched, but user work runs
-//! outside that ordering barrier. V2 session updates and interactive requests
-//! remain independent traffic handled by typed connection callbacks.
+//! For `session/resume`, the builder installs and acknowledges session routing
+//! before publishing the downstream request, allowing replay updates to be
+//! forwarded before the resume response. The downstream request inherits
+//! upstream cancellation. An unsuccessful downstream response drops pending
+//! routing and MCP attachment; successful setup keeps those routes for the
+//! connection lifetime. The cancellation signal itself remains advisory while
+//! the helper awaits that response. User work runs outside the ordering
+//! barrier. V2 session updates and interactive requests remain independent
+//! traffic handled by typed connection callbacks.
 //!
 //! # Next Steps
 //!

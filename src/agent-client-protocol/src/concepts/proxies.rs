@@ -163,9 +163,14 @@
 //!     );
 //! ```
 //!
-//! The setup helper installs session routing and forwards the complete response
-//! before spawning the callback. Later updates and interactive requests remain
-//! independent traffic handled by typed connection callbacks.
+//! For `schema::v2::ResumeSessionRequest`, use
+//! `cx.resume_session_from(request)` and the resulting
+//! `V2ResumeSessionBuilder` in the same shape. Resume routing and any
+//! per-session MCP attachment are ready before the downstream request is
+//! published, allowing replay to precede the complete response. Both setup
+//! helpers forward that operation's response before spawning the callback.
+//! Later updates and interactive requests remain independent traffic handled
+//! by typed connection callbacks.
 //!
 //! # The Conductor
 //!
