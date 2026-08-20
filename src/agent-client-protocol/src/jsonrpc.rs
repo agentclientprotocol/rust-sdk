@@ -2485,10 +2485,7 @@ impl RequestCancellationRegistry {
                 )
                 .is_some()
             {
-                tracing::debug!(
-                    ?id,
-                    "peer reused the ID of a request that is still in flight"
-                );
+                tracing::debug!("peer reused the ID of a request that is still in flight");
             }
             generation
         };
@@ -4487,9 +4484,8 @@ impl Drop for ResponderDropGuard {
             },
         ) {
             tracing::debug!(
-                id = ?self.id,
                 method = %self.method,
-                ?error,
+                error_code = ?&error.code,
                 "could not complete abandoned JSON-RPC batch response slot"
             );
         }
@@ -4632,7 +4628,7 @@ impl<T: JsonRpcResponse> Responder<T> {
         mut self,
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, "respond called");
+        tracing::debug!(method = %self.method, "respond called");
         self.drop_guard.disarm();
         (self.send_fn)(response)
     }
@@ -4649,7 +4645,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 
     /// Respond to the JSON-RPC request with an error.
     pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, ?error, "respond_with_error called");
+        tracing::debug!(method = %self.method, error_code = ?&error.code, "respond_with_error called");
         self.respond_with_result(Err(error))
     }
 
@@ -4834,7 +4830,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route an error response to the waiting task.
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, ?error, "error routed to awaiter");
+        tracing::debug!(id = ?self.id, error_code = ?&error.code, "error routed to awaiter");
         self.route_with_result(Err(error))
     }
 }
@@ -5068,24 +5064,21 @@ impl Dispatch {
     /// * `Ok(Ok(typed))` if this dispatch matches the requested type for its variant
     /// * `Ok(Err(self))` if it does not match the requested type for its variant
     /// * `Err` if its method matches the requested type but parsing fails
-    #[tracing::instrument(skip(self), fields(Request = ?std::any::type_name::<Req>(), Notif = ?std::any::type_name::<Notif>()), level = "trace", ret)]
+    #[tracing::instrument(skip(self), fields(Request = ?std::any::type_name::<Req>(), Notif = ?std::any::type_name::<Notif>()), level = "trace")]
     pub(crate) fn into_typed_dispatch<Req: JsonRpcRequest, Notif: JsonRpcNotification>(
         self,
     ) -> Result<Result<Dispatch<Req, Notif>, Dispatch>, crate::Error> {
-        tracing::debug!(
-            message = ?self,
-            "into_typed_dispatch"
-        );
+        tracing::debug!(method = %self.method(), "into_typed_dispatch");
         match self {
             Dispatch::Request(message, responder) => {
                 if Req::matches_method(&message.method) {
                     match Req::parse_message(&message.method, &message.params) {
                         Ok(req) => {
-                            tracing::trace!(?req, "parsed ok");
+                            tracing::trace!("request parsed");
                             Ok(Ok(Dispatch::Request(req, responder.cast())))
                         }
                         Err(err) => {
-                            tracing::trace!(?err, "parse error");
+                            tracing::trace!(error_code = ?&err.code, "parse error");
                             Err(err)
                         }
                     }
@@ -5099,11 +5092,11 @@ impl Dispatch {
                 if Notif::matches_method(&message.method) {
                     match Notif::parse_message(&message.method, &message.params) {
                         Ok(notif) => {
-                            tracing::trace!(?notif, "parse ok");
+                            tracing::trace!("notification parsed");
                             Ok(Ok(Dispatch::Notification(notif)))
                         }
                         Err(err) => {
-                            tracing::trace!(?err, "parse error");
+                            tracing::trace!(error_code = ?&err.code, "parse error");
                             Err(err)
                         }
                     }
@@ -5121,11 +5114,14 @@ impl Dispatch {
                         Ok(value) => {
                             match <Req::Response as JsonRpcResponse>::from_value(method, value) {
                                 Ok(parsed) => {
-                                    tracing::trace!(?parsed, "parse ok");
+                                    tracing::trace!(
+                                        response_type = std::any::type_name::<Req::Response>(),
+                                        "parse ok"
+                                    );
                                     Ok(parsed)
                                 }
                                 Err(err) => {
-                                    tracing::trace!(?err, "parse error");
+                                    tracing::trace!(error_code = ?&err.code, "parse error");
                                     return Err(err);
                                 }
                             }

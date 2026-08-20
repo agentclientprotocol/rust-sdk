@@ -629,7 +629,11 @@ where
         let mut output = String::new();
         loop {
             let update = self.read_update().await?;
-            tracing::trace!(?update, "read_to_string update");
+            let update_kind = match &update {
+                SessionMessage::SessionMessage(_) => "session_message",
+                SessionMessage::StopReason(_) => "stop_reason",
+            };
+            tracing::trace!(update_kind, "read_to_string update");
             match update {
                 SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
                     .if_notification(async |notif: SessionNotification| match notif.update {
@@ -767,7 +771,7 @@ where
     ) -> Result<Handled<Dispatch>, crate::Error> {
         // If this is a message for our session, grab it.
         tracing::trace!(
-            ?message,
+            method = %message.method(),
             handler_session_id = ?self.session_id,
             "ActiveSessionHandler::handle_dispatch"
         );
