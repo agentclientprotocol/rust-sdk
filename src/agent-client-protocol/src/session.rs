@@ -11,8 +11,8 @@ use crate::{
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-        PromptResponse, SessionId, SessionModeState, SessionNotification, SessionUpdate,
-        StopReason,
+        PromptResponse, SessionConfigOption, SessionId, SessionModeState, SessionNotification,
+        SessionUpdate, StopReason,
     },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
@@ -93,6 +93,7 @@ where
         let NewSessionResponse {
             session_id,
             modes,
+            config_options,
             meta,
             ..
         } = response;
@@ -104,6 +105,7 @@ where
         Ok(ActiveSession {
             session_id,
             modes,
+            config_options,
             meta,
             update_rx,
             update_tx,
@@ -526,6 +528,7 @@ where
     update_rx: mpsc::UnboundedReceiver<SessionMessage>,
     update_tx: mpsc::UnboundedSender<SessionMessage>,
     modes: Option<SessionModeState>,
+    config_options: Option<Vec<SessionConfigOption>>,
     meta: Option<serde_json::Map<String, serde_json::Value>>,
     connection: ConnectionTo<Link>,
 
@@ -573,6 +576,11 @@ where
         self.modes.as_ref()
     }
 
+    /// Access the initial session configuration options returned by the agent.
+    pub fn config_options(&self) -> Option<&[SessionConfigOption]> {
+        self.config_options.as_deref()
+    }
+
     /// Access meta data from session response.
     pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         self.meta.as_ref()
@@ -585,6 +593,7 @@ where
     pub fn response(&self) -> NewSessionResponse {
         NewSessionResponse::new(self.session_id.clone())
             .modes(self.modes.clone())
+            .config_options(self.config_options.clone())
             .meta(self.meta.clone())
     }
 
@@ -697,6 +706,7 @@ where
             mcp_handler_registrations,
             // These fields are not needed for proxying
             modes: _,
+            config_options: _,
             meta: _,
             _runner,
         } = self;

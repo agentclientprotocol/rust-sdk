@@ -5,7 +5,9 @@ use agent_client_protocol::{
     SessionMessage, TransportBatch, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-        PromptResponse, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
+        PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigSelectOption, SessionId, SessionNotification, SessionUpdate, StopReason,
+        TextContent,
     },
 };
 use futures::{StreamExt as _, channel::oneshot};
@@ -167,6 +169,53 @@ mod callback_future_lifetimes {
             .fork_session_from(request)
             .on_proxy_session_start(responder, v2_proxy_fork_callback::<'a>())
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_session_preserves_config_options_from_new_session_response() {
+    let config_options = vec![
+        SessionConfigOption::select(
+            "model",
+            "Model",
+            "sonnet",
+            vec![
+                SessionConfigSelectOption::new("sonnet", "Sonnet"),
+                SessionConfigSelectOption::new("opus", "Opus"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Model),
+    ];
+    let expected_response =
+        NewSessionResponse::new("config-options-session").config_options(config_options.clone());
+    let agent_response = expected_response.clone();
+
+    let agent = Agent.builder().on_receive_request(
+        async move |_request: NewSessionRequest,
+                    responder: Responder<NewSessionResponse>,
+                    _connection: ConnectionTo<Client>| {
+            responder.respond(agent_response.clone())
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let client = Client
+        .builder()
+        .connect_with(agent, async move |connection| {
+            let session = connection
+                .build_session_cwd()?
+                .block_task()
+                .start_session()
+                .await?;
+
+            assert_eq!(session.config_options(), Some(config_options.as_slice()));
+            assert_eq!(session.response(), expected_response);
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("session setup timed out")
+        .expect("session connection failed");
 }
 
 #[tokio::test(flavor = "current_thread")]
