@@ -160,6 +160,33 @@ where
         V2SessionBuilder::new(self, request)
     }
 
+    /// Build an unstable draft protocol v2 `session/fork` request.
+    ///
+    /// This helper is available with the `unstable_session_fork` feature. Call
+    /// [`V2ForkSessionBuilder::start_session`] to publish the request and
+    /// obtain a command handle for the newly created fork.
+    #[cfg(feature = "unstable_session_fork")]
+    pub fn fork_session(
+        &self,
+        session_id: impl Into<v2::SessionId>,
+        cwd: impl AsRef<Path>,
+    ) -> V2ForkSessionBuilder<Counterpart> {
+        self.fork_session_from(v2::ForkSessionRequest::new(session_id, cwd.as_ref()))
+    }
+
+    /// Build an unstable draft protocol v2 `session/fork` request from an
+    /// existing request.
+    ///
+    /// This helper is available with the `unstable_session_fork` feature. Call
+    /// [`V2ForkSessionBuilder::start_session`] to publish the request.
+    #[cfg(feature = "unstable_session_fork")]
+    pub fn fork_session_from(
+        &self,
+        request: v2::ForkSessionRequest,
+    ) -> V2ForkSessionBuilder<Counterpart> {
+        V2ForkSessionBuilder::new(self, request)
+    }
+
     /// Build a draft protocol v2 `session/resume` request.
     ///
     /// Use [`Self::resume_session_from`] to request history replay or set
@@ -324,6 +351,176 @@ where
     {
         let session_connection = self.connection.clone();
         self.send_new_session(true)
+            .forward_cancellation_from(responder.cancellation())
+            .on_receiving_ok_result(responder, async move |response, responder| {
+                let session_id = response.session_id.clone();
+                let raw_connection = session_connection.raw_connection();
+                let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
+                    crate::schema::v1::SessionId::from(session_id.clone()),
+                )) {
+                    Ok(route) => route,
+                    Err(error) => return responder.respond_with_error(error),
+                };
+
+                let opened = OpenedV2Session {
+                    session: V2Session {
+                        session_id,
+                        connection: session_connection.clone(),
+                    },
+                    response: response.clone(),
+                };
+                responder.respond(response)?;
+                route.detach();
+                raw_connection.spawn(async move { op(opened).await })
+            })
+    }
+}
+
+/// Builder for an unstable draft protocol v2 `session/fork` request.
+///
+/// A successful fork creates a new independent session whose ID comes from the
+/// [`v2::ForkSessionResponse`]. Register typed
+/// [`v2::UpdateSessionNotification`] and interactive request handlers on
+/// [`crate::Builder`] before connecting, then use [`Self::start_session`] to
+/// obtain a command handle for the fork or `on_proxy_session_start` to forward
+/// setup through a proxy.
+///
+/// This type is available with the `unstable_session_fork` feature. With
+/// `unstable_mcp_over_acp` as well, `with_mcp_server` attaches an MCP server to
+/// the forked session.
+#[cfg(feature = "unstable_session_fork")]
+#[must_use = "call `start_session` or `on_proxy_session_start` to send the `session/fork` request"]
+#[derive(Debug)]
+pub struct V2ForkSessionBuilder<Counterpart, Run = NullRun>
+where
+    Counterpart: HasPeer<Agent>,
+    Run: RunWithConnectionTo<Counterpart>,
+{
+    connection: V2ConnectionTo<Counterpart>,
+    request: v2::ForkSessionRequest,
+    dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
+    run: Run,
+}
+
+#[cfg(feature = "unstable_session_fork")]
+impl<Counterpart> V2ForkSessionBuilder<Counterpart, NullRun>
+where
+    Counterpart: HasPeer<Agent>,
+{
+    fn new(connection: &V2ConnectionTo<Counterpart>, request: v2::ForkSessionRequest) -> Self {
+        Self {
+            connection: connection.clone(),
+            request,
+            dynamic_handler_registrations: Vec::new(),
+            run: NullRun,
+        }
+    }
+}
+
+#[cfg(feature = "unstable_session_fork")]
+impl<Counterpart, Run> V2ForkSessionBuilder<Counterpart, Run>
+where
+    Counterpart: HasPeer<Agent>,
+    Run: RunWithConnectionTo<Counterpart>,
+{
+    /// Attach an MCP server to this forked protocol v2 session.
+    ///
+    /// This method is available when `unstable_mcp_over_acp` is enabled in
+    /// addition to `unstable_protocol_v2` and `unstable_session_fork`. MCP
+    /// routes are installed and their runner tasks receive an initial poll
+    /// before `session/fork` is published, allowing the agent to connect while
+    /// handling session setup. A successful attachment remains active for the
+    /// lifetime of the connection.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn with_mcp_server<McpRun>(
+        mut self,
+        mcp_server: McpServer<Counterpart, McpRun>,
+    ) -> Result<V2ForkSessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
+    where
+        McpRun: RunWithConnectionTo<Counterpart>,
+    {
+        let (handler, mcp_run) = mcp_server.into_v2_handler_and_runner();
+        self.dynamic_handler_registrations
+            .push(handler.into_dynamic_handler(&mut self.request.mcp_servers, &self.connection)?);
+        Ok(V2ForkSessionBuilder {
+            connection: self.connection,
+            request: self.request,
+            dynamic_handler_registrations: self.dynamic_handler_registrations,
+            run: ChainRun::new(self.run, mcp_run),
+        })
+    }
+
+    fn send_fork_session(self, ordered: bool) -> SentRequest<v2::ForkSessionResponse>
+    where
+        Run: 'static,
+    {
+        let Self {
+            connection,
+            request,
+            dynamic_handler_registrations,
+            run,
+        } = self;
+        send_session_setup(
+            connection,
+            request,
+            dynamic_handler_registrations,
+            run,
+            ordered,
+        )
+    }
+
+    /// Send `session/fork` and return its independently consumable request.
+    ///
+    /// The successful result contains both a cloneable command handle for the
+    /// newly created fork and the complete [`v2::ForkSessionResponse`]. Consume
+    /// the returned request with [`SentRequest::block_task`],
+    /// [`SentRequest::on_receiving_result`], or another explicit [`SentRequest`]
+    /// completion mode.
+    ///
+    /// Attached MCP routes are installed and their runner tasks begin
+    /// executing before the request is published. A valid success response
+    /// promotes them to the connection lifetime independently from how this
+    /// request handle is consumed; setup errors clean up the pending
+    /// attachment.
+    pub fn start_session(self) -> SentRequest<OpenedV2Session<Counterpart, v2::ForkSessionResponse>>
+    where
+        Run: 'static,
+    {
+        let session_connection = self.connection.clone();
+        self.send_fork_session(false).map(move |response| {
+            let session = V2Session {
+                session_id: response.session_id.clone(),
+                connection: session_connection,
+            };
+            Ok(OpenedV2Session { session, response })
+        })
+    }
+
+    /// Fork a protocol v2 session through a proxy and forward its response.
+    ///
+    /// The downstream request is ordered and inherits cancellation from the
+    /// upstream request. On success, this helper obtains the new session ID
+    /// from the response, installs session routing before later inbound traffic
+    /// is processed, forwards the complete response, and spawns `op` with an
+    /// [`OpenedV2Session`] containing the fork's command handle and response.
+    /// Inbound updates and interactive requests remain independent connection
+    /// traffic.
+    ///
+    /// The callback runs outside the ordered response barrier, so it may wait
+    /// for later connection traffic without deadlocking the dispatch loop.
+    pub fn on_proxy_session_start<F, Fut>(
+        self,
+        responder: Responder<v2::ForkSessionResponse>,
+        op: F,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Client>,
+        Run: 'static,
+        F: FnOnce(OpenedV2Session<Counterpart, v2::ForkSessionResponse>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
+    {
+        let session_connection = self.connection.clone();
+        self.send_fork_session(true)
             .forward_cancellation_from(responder.cancellation())
             .on_receiving_ok_result(responder, async move |response, responder| {
                 let session_id = response.session_id.clone();

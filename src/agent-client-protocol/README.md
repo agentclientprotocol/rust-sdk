@@ -51,6 +51,26 @@ connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rus
 implementations as one component; custom raw routing infrastructure can use
 `Proxy.builder().without_acp_version_guard()`.
 
+### Runnable draft-v2 pair
+
+The `simple_agent_v2` example implements the complete baseline session
+lifecycle, and `v2_one_shot_client` demonstrates the split prompt lifecycle:
+the prompt response acknowledges acceptance, while output and completion arrive
+through `session/update` notifications.
+
+```bash
+cargo build -p agent-client-protocol \
+  --features unstable_protocol_v2 \
+  --examples
+
+./target/debug/examples/v2_one_shot_client \
+  --command ./target/debug/examples/simple_agent_v2 \
+  "Hello from ACP v2"
+```
+
+See the [Runnable Protocol V2 Quickstart](https://agentclientprotocol.github.io/rust-sdk/protocol-v2-quickstart.html)
+for the lifecycle invariants to preserve when adapting these examples.
+
 ## MCP Server Attachment
 
 The runtime-agnostic `mcp_server` module can build and directly serve standalone
@@ -64,8 +84,10 @@ protocol v2 supports both scopes when both unstable features are enabled:
 `Proxy.v2().with_mcp_server(...)` injects a global server into supported setup
 requests, `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
 `session/new`, and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one
-to a single `session/resume`. Successful attachments remain active for the
-connection lifetime. A v2 proxy can forward either setup operation with the
+to a single `session/resume`. With `unstable_session_fork`,
+`V2ForkSessionBuilder::with_mcp_server(...)` attaches one to a single
+`session/fork`. Successful attachments remain active for the connection
+lifetime. A v2 proxy can forward any of these setup operations with the
 builder's `on_proxy_session_start`; updates and interactive requests remain
 independent connection traffic.
 
@@ -74,7 +96,7 @@ independent connection traffic.
 See the [crate documentation](https://docs.rs/agent-client-protocol) for:
 
 - **[Cookbook](https://docs.rs/agent-client-protocol-cookbook)** — Patterns for building clients, proxies, and agents
-- **[Examples](https://github.com/agentclientprotocol/rust-sdk/tree/main/src/agent-client-protocol/examples)** — Working code you can run
+- **[Examples](https://github.com/agentclientprotocol/rust-sdk/tree/main/src/agent-client-protocol/examples)** — Runnable stable-v1 and draft-v2 clients and agents
 
 ## Related Crates
 

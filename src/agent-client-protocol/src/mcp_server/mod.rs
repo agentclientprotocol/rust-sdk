@@ -8,8 +8,10 @@
 //! attachment and per-session attachment. V2 uses
 //! `Proxy.v2().with_mcp_server(...)` or
 //! `V2SessionBuilder::with_mcp_server(...)` for new sessions and
-//! `V2ResumeSessionBuilder::with_mcp_server(...)` for resumed sessions, and
-//! additionally requires `unstable_protocol_v2`.
+//! `V2ResumeSessionBuilder::with_mcp_server(...)` for resumed sessions. With
+//! `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server(...)`
+//! attaches a server to a forked session. V2 attachment additionally requires
+//! `unstable_protocol_v2`.
 //!
 //! ## Building MCP servers with tools
 //!

@@ -46,7 +46,9 @@ use crate::schema::v1::ForkSessionRequest;
 /// enabled, `Proxy.v2().with_mcp_server` attaches a server globally to draft
 /// v2 setup requests. `V2SessionBuilder::with_mcp_server` attaches one to a
 /// single new v2 session, while `V2ResumeSessionBuilder::with_mcp_server`
-/// attaches one to a single resumed session.
+/// attaches one to a single resumed session. With `unstable_session_fork`,
+/// `V2ForkSessionBuilder::with_mcp_server` attaches one to a single forked
+/// session.
 ///
 /// # Creating an MCP Server
 ///

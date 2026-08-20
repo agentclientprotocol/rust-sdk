@@ -14,8 +14,9 @@ categories = ["development-tools"]
 [dependencies]
 
 [dev-dependencies]
-agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
+agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp", "unstable_protocol_v2"] }
 agent-client-protocol-rmcp.workspace = true
+futures.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true

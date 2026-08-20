@@ -165,12 +165,15 @@
 //!
 //! For `schema::v2::ResumeSessionRequest`, use
 //! `cx.resume_session_from(request)` and the resulting
-//! `V2ResumeSessionBuilder` in the same shape. Resume routing and any
-//! per-session MCP attachment are ready before the downstream request is
-//! published, allowing replay to precede the complete response. Both setup
-//! helpers forward that operation's response before spawning the callback.
-//! Later updates and interactive requests remain independent traffic handled
-//! by typed connection callbacks.
+//! `V2ResumeSessionBuilder` in the same shape. With
+//! `unstable_session_fork`, use `cx.fork_session_from(request)` and
+//! `V2ForkSessionBuilder` for `ForkSessionRequest`; the returned session and
+//! installed route use the new ID from `ForkSessionResponse`, not the source
+//! session ID. Resume routing and any per-session MCP attachment are ready
+//! before the downstream request is published, allowing replay to precede the
+//! complete response. All setup helpers forward that operation's response
+//! before spawning the callback. Later updates and interactive requests remain
+//! independent traffic handled by typed connection callbacks.
 //!
 //! # The Conductor
 //!

@@ -65,6 +65,7 @@ version = "2.0.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
+ "futures",
  "rmcp",
  "schemars 1.2.2",
  "serde",

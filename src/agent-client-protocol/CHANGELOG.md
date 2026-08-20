@@ -4,6 +4,11 @@
 
 ### Added
 
+- *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The
+  agent implements the complete baseline session lifecycle; the client handles
+  permissions, projects chunk and snapshot updates by message ID, and waits for
+  the matching idle state. Add a compiled cookbook recipe and mdbook quickstart
+  for the same lifecycle.
 - *(unstable-v2)* Add `Proxy::protocol_router` and `ProxyProtocolRouter` to
   compose strict v1 and v2 proxy implementations behind one connection.
   Routing requires the exact version selected by the conductor and preserves
@@ -13,23 +18,25 @@
 - *(unstable)* Expose v1 and draft-v2 plan operations through the
   `unstable_plan_operations` feature.
 - *(unstable-v2)* Add high-level protocol v2 session builders and handles with
-  independent prompt-acceptance requests, create and resume setup responses,
-  cloneable command handles, configuration, close, and session-wide
-  cancellation. `Client.v2()` and `Agent.v2()` callbacks receive a
-  `V2ConnectionTo` whose unversioned `build_session*` and `resume_session*`
-  methods expose only the v2 lifecycle. The resume helpers return a
-  `V2ResumeSessionBuilder`, so `session/resume` is not published until
-  `start_session` or `on_proxy_session_start` is called. Session updates and
-  interactive requests remain on typed connection handlers. With
-  `unstable_mcp_over_acp`, both session builders support native per-session MCP
-  attachment while preserving independent response consumption. MCP routes
-  are installed and runners begin executing before the setup request is
-  published; successful attachments remain active for the connection lifetime
-  while setup failures, including cancellation error responses, clean up
-  pending state. The builders' `on_proxy_session_start` helpers forward the
-  complete setup response and cancellation, install routing before later
-  inbound traffic, and then spawn user work with the `OpenedV2Session`. Resume
-  routing is ready before request publication so replay can precede the
+  independent prompt-acceptance requests, create, resume, and feature-gated
+  fork setup responses, cloneable command handles, configuration, close, and
+  session-wide cancellation. `Client.v2()` and `Agent.v2()` callbacks receive
+  a `V2ConnectionTo` whose unversioned `build_session*`, `resume_session*`, and
+  feature-gated `fork_session*` methods expose only the v2 lifecycle. Resume
+  and fork return `V2ResumeSessionBuilder` and `V2ForkSessionBuilder`, so their
+  requests are not published until `start_session` or
+  `on_proxy_session_start` is called. Session updates and interactive requests
+  remain on typed connection handlers. With `unstable_mcp_over_acp`, all
+  available session builders support native per-session MCP attachment while
+  preserving independent response consumption. MCP routes are installed and
+  runners begin executing before the setup request is published; successful
+  attachments remain active for the connection lifetime while setup failures,
+  including cancellation error responses, clean up pending state. The
+  builders' `on_proxy_session_start` helpers forward the complete setup
+  response and cancellation, install routing before later inbound traffic, and
+  then spawn user work with the `OpenedV2Session`. New and fork builders use
+  the response session ID for the installed route and returned command handle;
+  resume routing is ready before request publication so replay can precede the
   response as required by the protocol.
 - *(unstable-v2)* Add `Proxy::v2()` as the draft-v2-only proxy builder while
   keeping `Proxy::builder()` on stable v1. With `unstable_mcp_over_acp`,
@@ -59,6 +66,12 @@
 
 ### Fixed
 
+- *(unstable-v2)* Require native v2 client and agent connections to complete
+  their single initialization handshake before sending or accepting other
+  protocol traffic. Reject initialization in the wrong direction and reject
+  reinitialization after a successful handshake while allowing retries after an
+  initialization error. Protocol-level request cancellation remains available
+  while initialization is in progress.
 - *(unstable-v2)* Preserve unknown initialize fields when the protocol router
   hands a same-version connection to its selected implementation.
 - *(unstable-v2)* Do not retain unhandled v2 session messages for a dynamic v1
