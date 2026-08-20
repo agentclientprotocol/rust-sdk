@@ -159,7 +159,7 @@ impl Write for DebugLogWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         if !self.buffer.is_empty() {
-            let line = self.buffer.drain(..).collect::<Vec<_>>();
+            let line = std::mem::take(&mut self.buffer);
             let line_str = String::from_utf8_lossy(&line);
             self.logger.write_tracing_log(&line_str);
         }

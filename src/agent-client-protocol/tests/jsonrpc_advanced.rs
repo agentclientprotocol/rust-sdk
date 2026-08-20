@@ -13,7 +13,11 @@ use agent_client_protocol::{
 use futures::channel::{mpsc, oneshot};
 use futures::{AsyncRead, AsyncWrite, StreamExt as _};
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, time::Duration};
+use std::{
+    future::{Future, ready},
+    marker::PhantomData,
+    time::Duration,
+};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to block and wait for a JSON-RPC response.
@@ -215,28 +219,30 @@ struct AfterResponseCollector {
 }
 
 impl HandleDispatchFrom<UntypedRole> for AfterResponseCollector {
-    async fn handle_dispatch_from(
+    fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
         _connection: ConnectionTo<UntypedRole>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
-        if let Dispatch::Notification(notification) = &message
-            && AfterResponseNotification::matches_method(&notification.method)
-        {
-            let notification = AfterResponseNotification::parse_message(
-                &notification.method,
-                &notification.params,
-            )?;
-            self.notification_tx
-                .unbounded_send(notification.value)
-                .map_err(agent_client_protocol::Error::into_internal_error)?;
-            return Ok(Handled::Yes);
-        }
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
+        ready((|| {
+            if let Dispatch::Notification(notification) = &message
+                && AfterResponseNotification::matches_method(&notification.method)
+            {
+                let notification = AfterResponseNotification::parse_message(
+                    &notification.method,
+                    &notification.params,
+                )?;
+                self.notification_tx
+                    .unbounded_send(notification.value)
+                    .map_err(agent_client_protocol::Error::into_internal_error)?;
+                return Ok(Handled::Yes);
+            }
 
-        Ok(Handled::No {
-            message,
-            retry: false,
-        })
+            Ok(Handled::No {
+                message,
+                retry: false,
+            })
+        })())
     }
 
     fn describe_chain(&self) -> impl std::fmt::Debug {

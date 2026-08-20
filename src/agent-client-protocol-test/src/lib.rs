@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use agent_client_protocol::*;
 use serde::{Deserialize, Serialize};
 
@@ -11,8 +13,13 @@ pub mod testy;
 pub struct MockTransport;
 
 impl<R: Role> ConnectTo<R> for MockTransport {
-    async fn connect_to(self, _client: impl ConnectTo<R::Counterpart>) -> Result<(), Error> {
-        panic!("MockTransport should never be used in running code - it's only for doctests")
+    fn connect_to(
+        self,
+        _client: impl ConnectTo<R::Counterpart>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        std::future::poll_fn(|_| {
+            panic!("MockTransport should never be used in running code - it's only for doctests")
+        })
     }
 }
 

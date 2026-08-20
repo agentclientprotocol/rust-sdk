@@ -5,11 +5,14 @@
 //! one consolidated response array, while requests and notifications initiated
 //! by the SDK remain individual messages.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    future::{Future, ready},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
 };
-use std::time::Duration;
 
 use agent_client_protocol::{
     Agent, ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom,
@@ -128,12 +131,12 @@ impl JsonRpcNotification for TestNotification {}
 struct RetryErrorHandler;
 
 impl HandleDispatchFrom<UntypedRole> for RetryErrorHandler {
-    async fn handle_dispatch_from(
+    fn handle_dispatch_from(
         &mut self,
         _message: Dispatch,
         _connection: ConnectionTo<UntypedRole>,
-    ) -> Result<Handled<Dispatch>, Error> {
-        Err(Error::internal_error().data("retry handler error won"))
+    ) -> impl Future<Output = Result<Handled<Dispatch>, Error>> + Send {
+        ready(Err(Error::internal_error().data("retry handler error won")))
     }
 
     fn describe_chain(&self) -> impl std::fmt::Debug {

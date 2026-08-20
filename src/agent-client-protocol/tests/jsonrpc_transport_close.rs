@@ -1,7 +1,8 @@
 //! Regression tests for incoming transport closure.
 
 use std::{
-    future, io,
+    future::{self, Future},
+    io,
     panic::{RefUnwindSafe, UnwindSafe},
     sync::{
         Arc, Mutex,
@@ -160,8 +161,11 @@ where
 }
 
 impl<R: Role> ConnectTo<R> for ImmediateClient {
-    async fn connect_to(self, _client: impl ConnectTo<R::Counterpart>) -> Result<(), Error> {
-        Ok(())
+    fn connect_to(
+        self,
+        _client: impl ConnectTo<R::Counterpart>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        future::ready(Ok(()))
     }
 }
 

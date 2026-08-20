@@ -1,6 +1,7 @@
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{
+    future::{Future, ready},
     path::PathBuf,
     sync::{
         Arc,
@@ -300,8 +301,13 @@ impl ConnectTo<Agent> for InitializingV1Client {
 struct RejectingV1Client;
 
 impl ConnectTo<Agent> for RejectingV1Client {
-    async fn connect_to(self, _agent: impl ConnectTo<Client>) -> Result<(), Error> {
-        Err(Error::internal_error().data("v1 client fallback should not run"))
+    fn connect_to(
+        self,
+        _agent: impl ConnectTo<Client>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        ready(Err(
+            Error::internal_error().data("v1 client fallback should not run")
+        ))
     }
 }
 

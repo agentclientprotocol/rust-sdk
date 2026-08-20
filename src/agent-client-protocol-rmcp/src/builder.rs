@@ -1,6 +1,6 @@
 //! MCP server builder for creating MCP servers.
 
-use std::{marker::PhantomData, pin::pin, sync::Arc};
+use std::{future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
 use futures::future::{BoxFuture, Either};
 use futures_concurrency::future::TryJoin;
@@ -345,18 +345,18 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
         }
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+    ) -> impl Future<Output = Result<rmcp::model::ListToolsResult, ErrorData>> + Send {
         // Return only enabled tools
         let tools: Vec<_> = self
             .data
             .enabled_tools()
             .map(|tool| make_tool_model(tool.metadata()))
             .collect();
-        Ok(ListToolsResult::with_all_items(tools))
+        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
     }
 
     fn get_info(&self) -> rmcp::model::ServerInfo {

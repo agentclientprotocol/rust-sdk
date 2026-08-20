@@ -6816,12 +6816,12 @@ mod tests {
     struct ClaimingDynamicHandler;
 
     impl HandleDispatchFrom<crate::role::UntypedRole> for ClaimingDynamicHandler {
-        async fn handle_dispatch_from(
+        fn handle_dispatch_from(
             &mut self,
             _message: Dispatch,
             _connection: ConnectionTo<crate::role::UntypedRole>,
-        ) -> Result<Handled<Dispatch>, crate::Error> {
-            Ok(Handled::Yes)
+        ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
+            future::ready(Ok(Handled::Yes))
         }
 
         fn describe_chain(&self) -> impl Debug {

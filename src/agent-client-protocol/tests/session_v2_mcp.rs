@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    future::{Future, ready},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -852,8 +853,13 @@ impl McpServerConnect<Agent> for DropTrackedMcpConnect {
 struct ImmediateErrorRunner;
 
 impl RunWithConnectionTo<Agent> for ImmediateErrorRunner {
-    async fn run_with_connection_to(self, _connection: ConnectionTo<Agent>) -> Result<(), Error> {
-        Err(Error::internal_error().data("runner failed before publication"))
+    fn run_with_connection_to(
+        self,
+        _connection: ConnectionTo<Agent>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        ready(Err(
+            Error::internal_error().data("runner failed before publication")
+        ))
     }
 }
 

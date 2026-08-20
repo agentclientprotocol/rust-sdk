@@ -908,7 +908,7 @@ where
 
     // The feature-off implementation awaits typed dispatch matchers; the v2
     // implementation is intentionally raw and completes synchronously.
-    #[allow(clippy::unused_async)]
+    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn forward_message_from_client_to_proxy(
         &mut self,
         target_component_index: usize,
@@ -988,7 +988,7 @@ where
     /// running as a proxy).
     // The feature-off implementation awaits typed dispatch matchers; the v2
     // implementation is intentionally raw and completes synchronously.
-    #[allow(clippy::unused_async)]
+    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn forward_message_to_agent(
         &mut self,
         _client_connection: ConnectionTo<Host::Counterpart>,

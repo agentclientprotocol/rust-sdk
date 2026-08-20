@@ -10,7 +10,10 @@
 //! - Test handlers report observed cancellations through in-process channels,
 //!   which the test awaits (with a timeout) instead of sleeping.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    future::{Future, ready},
+    sync::{Arc, Mutex},
+};
 
 use agent_client_protocol::{
     Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcRequest,
@@ -151,15 +154,15 @@ impl Role for WrappedHost {
         RoleId::from_singleton(self)
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Self>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
+        ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn counterpart(&self) -> Self::Counterpart {
@@ -174,15 +177,15 @@ impl Role for WrappedCounterpart {
         RoleId::from_singleton(self)
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Self>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
+        ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn counterpart(&self) -> Self::Counterpart {
@@ -197,15 +200,15 @@ impl Role for WrappedSuccessor {
         RoleId::from_singleton(self)
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Self>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
+        ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn counterpart(&self) -> Self::Counterpart {
@@ -220,15 +223,15 @@ impl Role for WrappedSuccessorCounterpart {
         RoleId::from_singleton(self)
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Self>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
+        ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn counterpart(&self) -> Self::Counterpart {
@@ -2040,26 +2043,29 @@ struct CancelCollector {
 }
 
 impl HandleDispatchFrom<UntypedRole> for CancelCollector {
-    async fn handle_dispatch_from(
+    fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
         _connection: ConnectionTo<UntypedRole>,
-    ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send {
         if let Dispatch::Notification(notification) = &message
             && CancelRequestNotification::matches_method(&notification.method)
         {
-            let cancel = CancelRequestNotification::parse_message(
+            let cancel = match CancelRequestNotification::parse_message(
                 &notification.method,
                 &notification.params,
-            )?;
+            ) {
+                Ok(cancel) => cancel,
+                Err(error) => return ready(Err(error)),
+            };
             self.tx.unbounded_send(cancel.request_id).unwrap();
-            return Ok(Handled::Yes);
+            return ready(Ok(Handled::Yes));
         }
 
-        Ok(Handled::No {
+        ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn describe_chain(&self) -> impl std::fmt::Debug {

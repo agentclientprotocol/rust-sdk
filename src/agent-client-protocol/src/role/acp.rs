@@ -1,4 +1,4 @@
-use std::{fmt::Debug, hash::Hash};
+use std::{fmt::Debug, future::Future, hash::Hash};
 
 #[cfg(feature = "unstable_protocol_v2")]
 use futures::{StreamExt as _, future};
@@ -49,15 +49,15 @@ impl Role for Client {
         Builder::new(self).v1_client()
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Client>,
-    ) -> Result<Handled<Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn role_id(&self) -> RoleId {
@@ -1303,15 +1303,15 @@ pub struct Proxy;
 impl Role for Proxy {
     type Counterpart = Conductor;
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: crate::Dispatch,
         _connection: crate::ConnectionTo<Self>,
-    ) -> Result<crate::Handled<crate::Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<crate::Handled<crate::Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn role_id(&self) -> RoleId {

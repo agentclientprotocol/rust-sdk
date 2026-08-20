@@ -33,11 +33,11 @@ pub trait RunWithConnectionTo<Counterpart: Role>: Send {
 pub struct NullRun;
 
 impl<Counterpart: Role> RunWithConnectionTo<Counterpart> for NullRun {
-    async fn run_with_connection_to(
+    fn run_with_connection_to(
         self,
         _cx: ConnectionTo<Counterpart>,
-    ) -> Result<(), crate::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 

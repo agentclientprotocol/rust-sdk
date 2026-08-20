@@ -1473,10 +1473,15 @@ mod tests {
     }
 
     impl WsSink for RecordingWsSink {
-        async fn send(&mut self, message: WsMessage) -> Result<(), String> {
-            self.0
-                .unbounded_send(message)
-                .map_err(|error| error.to_string())
+        fn send(
+            &mut self,
+            message: WsMessage,
+        ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+            std::future::ready(
+                self.0
+                    .unbounded_send(message)
+                    .map_err(|error| error.to_string()),
+            )
         }
     }
 

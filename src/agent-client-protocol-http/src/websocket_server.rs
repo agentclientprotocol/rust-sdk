@@ -240,7 +240,7 @@ mod tests {
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};
-    use futures::{StreamExt as _, future::BoxFuture};
+    use futures::future::BoxFuture;
     use serde_json::json;
     use tokio::{
         net::TcpListener,
