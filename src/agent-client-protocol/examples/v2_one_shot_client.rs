@@ -185,14 +185,14 @@ mod tests {
         let mut projection = AgentTextProjection::default();
 
         projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "hel".into(),
+            "hello ".into(),
             message_id.clone(),
         )));
         projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "lo".into(),
+            "world".into(),
             message_id.clone(),
         )));
-        assert_eq!(projection.text(), "hello");
+        assert_eq!(projection.text(), "hello world");
 
         projection.apply(v2::SessionUpdate::AgentMessage(
             v2::AgentMessage::new(message_id.clone()).content(vec!["replacement".into()]),
