@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.0.0...agent-client-protocol-http-v2.1.0) - 2026-08-20
+
+### Added
+
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+
+### Fixed
+
+- *(http)* Preserve outbound messages for slow streams ([#292](https://github.com/agentclientprotocol/rust-sdk/pull/292))
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
 
 ### Breaking changes
