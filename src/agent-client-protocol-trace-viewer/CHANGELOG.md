@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v2.0.0...agent-client-protocol-trace-viewer-v2.1.0) - 2026-08-20
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v1.3.0...agent-client-protocol-trace-viewer-v2.0.0) - 2026-07-23
 
 ### Changed
