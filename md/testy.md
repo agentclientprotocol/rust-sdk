@@ -42,11 +42,11 @@ Plain-text commands:
 - `content` emits prompt/content-focused updates, including every stable `ContentBlock` variant.
 - `tool_calls` emits tool call create and update flows.
 - `callbacks` sends every stable agent-to-client request.
-- `elicitations` sends only unstable elicitation requests when built with default features.
+- `elicitations` sends only elicitation requests.
 - `cancel_status` reports whether `session/cancel` has been received.
 - `full` runs all stable scenarios in deterministic order.
 
-With default features, `callbacks` and `full` also run unstable protocol coverage.
+`callbacks` and `full` also run the elicitation coverage.
 
 JSON command form:
 
@@ -69,8 +69,10 @@ The `full` scenario sends every stable agent-to-client callback request:
 It also emits the stable session update variants, including message chunks, tool calls, plans,
 available commands, mode/config/session info, and usage.
 
-With default features, `elicitations`, `callbacks`, and `full` cover `elicitation/create` form mode,
+`elicitations`, `callbacks`, and `full` cover `elicitation/create` form mode,
 URL mode, session scope, request scope, accept, decline, cancel, and `elicitation/complete`.
+If the client does not advertise form elicitation, the scenario returns a deterministic
+invalid-params prompt error before sending an elicitation request.
 If the client advertises form elicitation but not URL elicitation, the URL part returns a
 deterministic invalid-params prompt error.
 

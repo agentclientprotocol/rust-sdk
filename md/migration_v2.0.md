@@ -342,8 +342,8 @@ Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 ## Draft v2 schema updates
 
 The optional `unstable_protocol_v2` surface now tracks
-`agent-client-protocol-schema` 1.6. The changes accumulated across schema 1.5
-and 1.6 are included in the SDK 2.0 migration because this API is explicitly
+`agent-client-protocol-schema` 1.7. The changes accumulated across schema 1.5
+through 1.7 are included in the SDK 2.0 migration because this API is explicitly
 unstable, rather than treated as stable-v1 wire changes.
 
 - Many values that were plain `String` or `PathBuf` fields are semantic newtypes, including

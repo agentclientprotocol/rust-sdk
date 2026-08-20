@@ -777,7 +777,6 @@ mod initialize_normalization_tests {
         assert_eq!(normalized, params);
     }
 
-    #[cfg(feature = "unstable_auth_methods")]
     #[test]
     fn null_v2_terminal_marker_meta_is_omitted_before_v1_normalization() {
         let mut params = v2_initialize_params();
@@ -800,7 +799,6 @@ mod initialize_normalization_tests {
         );
     }
 
-    #[cfg(feature = "unstable_auth_methods")]
     #[test]
     fn terminal_marker_metadata_disables_reuse_but_not_v1_routing() {
         let mut params = v2_initialize_params();

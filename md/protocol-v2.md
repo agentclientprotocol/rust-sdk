@@ -437,12 +437,12 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Draft schema changes in schema 1.5 and 1.6
+## Draft schema changes in schema 1.5 through 1.7
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors; renamed
 `DiffPatch.diff` to `DiffPatch.text`; and added terminal state and output update
-types. Schema 1.6 removed the former schema-wide v1/v2 conversion API:
+types. Schema 1.7 removed the former schema-wide v1/v2 conversion API:
 versioned implementations should remain separate, with
 purpose-specific adapters at runtime boundaries where the required state and
 policy are available. These are draft API changes rather than stable v1 wire
@@ -455,3 +455,9 @@ the separate `unstable_tool_call_name` feature. Draft v2 users must enable both
 `unstable_protocol_v2` and `unstable_tool_call_name`. In v2, an omitted name
 leaves the existing value unchanged, `null` clears it, and a string replaces
 it. V1 cannot express the explicit v2 `null` clear operation.
+
+Schema 1.7 stabilizes elicitation and terminal authentication, so neither
+surface requires its former SDK feature flag. It also adds context compaction
+updates behind `unstable_session_compaction`; the SDK carries them through its
+existing typed `session/update` routing in both protocol versions. V1 clients
+advertise compaction support through `ClientSessionCapabilities::compaction`.

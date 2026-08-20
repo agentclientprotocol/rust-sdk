@@ -31,7 +31,6 @@ use agent_client_protocol::schema::v1::{
     ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput, UsageUpdate, WriteTextFileRequest,
 };
-#[cfg(feature = "unstable")]
 use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, ElicitationAction,
     ElicitationCapabilities, ElicitationFormMode, ElicitationRequestScope, ElicitationSchema,
@@ -43,7 +42,6 @@ use agent_client_protocol::{
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "unstable")]
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -103,16 +101,15 @@ pub enum TestyScenario {
     Content,
     /// Emits tool-call create/update notifications with content, diff, and locations.
     ToolCalls,
-    /// Sends every stable agent-to-client request and any enabled unstable callback coverage.
+    /// Sends every stable agent-to-client request.
     Callbacks,
-    /// Runs unstable elicitation coverage without the stable callback requests.
-    #[cfg(feature = "unstable")]
+    /// Runs elicitation coverage without the other stable callback requests.
     Elicitations,
     /// Reports whether the session has received a `session/cancel` notification.
     CancelStatus,
     /// Waits for `session/cancel` before completing.
     WaitForCancel,
-    /// Runs all stable scenarios and any enabled unstable coverage in a deterministic order.
+    /// Runs all stable scenarios in a deterministic order.
     Full,
 }
 
@@ -123,7 +120,6 @@ impl TestyScenario {
             Self::Content,
             Self::ToolCalls,
             Self::Callbacks,
-            #[cfg(feature = "unstable")]
             Self::Elicitations,
             Self::CancelStatus,
             Self::WaitForCancel,
@@ -137,7 +133,6 @@ impl TestyScenario {
             "content" => Some(Self::Content),
             "tool_calls" | "tool calls" | "tools" => Some(Self::ToolCalls),
             "callbacks" | "client_callbacks" | "client callbacks" => Some(Self::Callbacks),
-            #[cfg(feature = "unstable")]
             "elicitations" | "elicitation" | "elicit" => Some(Self::Elicitations),
             "cancel_status" | "cancel status" | "cancel" => Some(Self::CancelStatus),
             "wait_for_cancel" | "wait for cancel" => Some(Self::WaitForCancel),
@@ -152,7 +147,6 @@ impl TestyScenario {
             Self::Content => "content",
             Self::ToolCalls => "tool_calls",
             Self::Callbacks => "callbacks",
-            #[cfg(feature = "unstable")]
             Self::Elicitations => "elicitations",
             Self::CancelStatus => "cancel_status",
             Self::WaitForCancel => "wait_for_cancel",
@@ -184,7 +178,6 @@ struct TestyState {
     next_message_id: u64,
     next_tool_call_id: u64,
     authenticated_methods: HashSet<String>,
-    #[cfg(feature = "unstable")]
     client_elicitation_capabilities: Option<ElicitationCapabilities>,
 }
 
@@ -196,7 +189,6 @@ impl Default for TestyState {
             next_message_id: 1,
             next_tool_call_id: 1,
             authenticated_methods: HashSet::new(),
-            #[cfg(feature = "unstable")]
             client_elicitation_capabilities: None,
         }
     }
@@ -431,12 +423,9 @@ impl Testy {
         request: InitializeRequest,
         responder: Responder<InitializeResponse>,
     ) -> Result<(), agent_client_protocol::Error> {
-        #[cfg(feature = "unstable")]
-        {
-            self.lock_state()
-                .client_elicitation_capabilities
-                .clone_from(&request.client_capabilities.elicitation);
-        }
+        self.lock_state()
+            .client_elicitation_capabilities
+            .clone_from(&request.client_capabilities.elicitation);
 
         responder.respond(
             InitializeResponse::new(request.protocol_version)
@@ -445,12 +434,18 @@ impl Testy {
         )
     }
 
-    #[cfg(feature = "unstable")]
+    fn client_supports_form_elicitation(&self) -> bool {
+        self.lock_state()
+            .client_elicitation_capabilities
+            .as_ref()
+            .is_some_and(ElicitationCapabilities::supports_form)
+    }
+
     fn client_supports_url_elicitation(&self) -> bool {
         self.lock_state()
             .client_elicitation_capabilities
             .as_ref()
-            .is_some_and(|capabilities| capabilities.url.is_some())
+            .is_some_and(ElicitationCapabilities::supports_url)
     }
 
     fn handle_authenticate(
@@ -734,13 +729,11 @@ impl Testy {
             TestyScenario::Callbacks => {
                 self.exercise_client_callbacks(session_id, connection, report)
                     .await?;
-                #[cfg(feature = "unstable")]
                 if !self.is_cancelled(session_id) {
                     self.exercise_elicitations(session_id, connection, report)
                         .await?;
                 }
             }
-            #[cfg(feature = "unstable")]
             TestyScenario::Elicitations => {
                 if self.is_cancelled(session_id) {
                     report.push("elicitations: cancelled".to_string());
@@ -799,7 +792,6 @@ impl Testy {
                 }
                 self.exercise_client_callbacks(session_id, connection, report)
                     .await?;
-                #[cfg(feature = "unstable")]
                 if !self.is_cancelled(session_id) {
                     self.exercise_elicitations(session_id, connection, report)
                         .await?;
@@ -1151,13 +1143,16 @@ impl Testy {
         }
     }
 
-    #[cfg(feature = "unstable")]
     async fn exercise_elicitations(
         &self,
         session_id: &SessionId,
         connection: &ConnectionTo<Client>,
         report: &mut Vec<String>,
     ) -> Result<(), agent_client_protocol::Error> {
+        if !self.client_supports_form_elicitation() {
+            return Err(form_elicitation_unsupported_error());
+        }
+
         let tool_call_id = self.next_tool_call_id("testy-elicit-tool");
         let form_accept = CreateElicitationRequest::new(
             ElicitationFormMode::new(
@@ -1277,7 +1272,6 @@ impl Testy {
         Ok(())
     }
 
-    #[cfg(feature = "unstable")]
     async fn request_elicitation_report_until_cancelled(
         &self,
         session_id: &SessionId,
@@ -1688,61 +1682,34 @@ fn parse_command(input_text: &str) -> TestyCommand {
 }
 
 fn help_text() -> String {
-    let unstable = cfg!(feature = "unstable");
     let scenarios = TestyScenario::all()
         .into_iter()
         .map(TestyScenario::name)
         .collect::<Vec<_>>()
         .join(", ");
-    let mut text = format!(
+    format!(
         "Testy commands: help, greet, echo <message>, {scenarios}. JSON command form: {}",
         TestyCommand::RunScenario {
             scenario: TestyScenario::Full
         }
         .to_prompt()
-    );
-    if unstable {
-        text.push_str(
-            ". Unstable mode is enabled: callbacks and full include unstable elicitation coverage",
-        );
-    }
-    text
+    )
 }
 
 fn available_commands() -> Vec<AvailableCommand> {
-    let unstable = cfg!(feature = "unstable");
-    let full_description = if unstable {
-        "Run every stable and enabled unstable Testy scenario"
-    } else {
-        "Run every stable Testy scenario"
-    };
-    let callbacks_description = if unstable {
-        "Exercise stable and enabled unstable agent-to-client requests"
-    } else {
-        "Exercise agent-to-client requests"
-    };
+    let full_command = AvailableCommand::new("full", "Run every stable Testy scenario").input(
+        AvailableCommandInput::Unstructured(UnstructuredCommandInput::new(
+            "optional scenario arguments",
+        )),
+    );
 
-    let full_command =
-        AvailableCommand::new("full", full_description).input(AvailableCommandInput::Unstructured(
-            UnstructuredCommandInput::new("optional scenario arguments"),
-        ));
-    let callbacks_command = AvailableCommand::new("callbacks", callbacks_description);
-
-    #[cfg(feature = "unstable")]
-    {
-        vec![
-            full_command,
-            callbacks_command,
-            AvailableCommand::new("elicitations", "Exercise unstable elicitation requests"),
-        ]
-    }
-    #[cfg(not(feature = "unstable"))]
-    {
-        vec![full_command, callbacks_command]
-    }
+    vec![
+        full_command,
+        AvailableCommand::new("callbacks", "Exercise agent-to-client requests"),
+        AvailableCommand::new("elicitations", "Exercise elicitation requests"),
+    ]
 }
 
-#[cfg(feature = "unstable")]
 fn testy_elicitation_schema() -> ElicitationSchema {
     ElicitationSchema::new()
         .title("Testy elicitation form")
@@ -1775,7 +1742,6 @@ fn testy_elicitation_schema() -> ElicitationSchema {
         )
 }
 
-#[cfg(feature = "unstable")]
 fn elicitation_action_summary(action: &ElicitationAction) -> String {
     match action {
         ElicitationAction::Accept(action) => {
@@ -1788,7 +1754,6 @@ fn elicitation_action_summary(action: &ElicitationAction) -> String {
     }
 }
 
-#[cfg(feature = "unstable")]
 fn elicitation_cancelled(agent: &Testy, session_id: &SessionId, report: &mut Vec<String>) -> bool {
     if agent.is_cancelled(session_id) {
         report.push("elicitations: cancelled".to_string());
@@ -1798,7 +1763,10 @@ fn elicitation_cancelled(agent: &Testy, session_id: &SessionId, report: &mut Vec
     }
 }
 
-#[cfg(feature = "unstable")]
+fn form_elicitation_unsupported_error() -> agent_client_protocol::Error {
+    invalid_params("client does not support form elicitation")
+}
+
 fn url_elicitation_unsupported_error() -> agent_client_protocol::Error {
     invalid_params("client does not support URL elicitation")
 }
@@ -2120,7 +2088,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "unstable")]
     #[test]
     fn parse_command_accepts_elicitation_prompt_aliases() {
         for input in ["elicitations", "elicitation", "elicit"] {

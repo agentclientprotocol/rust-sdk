@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable_elicitation")]
-
 use agent_client_protocol::schema::v1::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
