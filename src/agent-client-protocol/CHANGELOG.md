@@ -66,6 +66,10 @@
 
 ### Fixed
 
+- Preserve stable v1 `NewSessionResponse::config_options` on `ActiveSession`,
+  expose them through `ActiveSession::config_options`, and include them in
+  reconstructed and proxied session responses.
+  ([#301](https://github.com/agentclientprotocol/rust-sdk/issues/301))
 - *(unstable-v2)* Require native v2 client and agent connections to complete
   their single initialization handshake before sending or accepting other
   protocol traffic. Reject initialization in the wrong direction and reject
