@@ -46,6 +46,9 @@ unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_tool_call_name = ["agent-client-protocol-schema/unstable_tool_call_name"]
 unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
 
+# uuid on wasm32-unknown-unknown requires a source of randomness using one of the js, rng-getrandom, or rng-rand features
+uuid-js = ["uuid/js"]
+
 [dependencies]
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-derive.workspace = true
