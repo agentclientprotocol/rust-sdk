@@ -214,6 +214,80 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .expect("v2 session connection failed");
 }
 
+#[cfg(feature = "unstable_session_fork")]
+#[tokio::test(flavor = "current_thread")]
+async fn v2_fork_builder_uses_the_forked_response_id_and_preserves_the_response() {
+    let source_session_id = v2::SessionId::new("source-session");
+    let forked_session_id = v2::SessionId::new("forked-session");
+    let fork_cwd = cwd().expect("test cwd should be available");
+    let expected_cwd = v2::AbsolutePath::new(fork_cwd.clone());
+    let config_option = v2::SessionConfigOption::boolean("thinking", "Thinking", true);
+    let response_meta = serde_json::Map::from_iter([(
+        "extension".to_owned(),
+        serde_json::json!({"preserved": true}),
+    )]);
+    let expected_response = v2::ForkSessionResponse::new(forked_session_id.clone())
+        .config_options(vec![config_option])
+        .meta(response_meta);
+    let agent_response = expected_response.clone();
+    let agent_source_session_id = source_session_id.clone();
+
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(
+                    v2::InitializeResponse::new(request.protocol_version, implementation())
+                        .capabilities(v2::AgentCapabilities::new().session(
+                            v2::SessionCapabilities::new().fork(v2::SessionForkCapabilities::new()),
+                        )),
+                )
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ForkSessionRequest,
+                        responder: Responder<v2::ForkSessionResponse>,
+                        _connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, agent_source_session_id);
+                assert_eq!(request.cwd, expected_cwd);
+                responder.respond(agent_response.clone())
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let client = Client.v2().connect_with(agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation(),
+            ))
+            .block_task()
+            .await?;
+
+        let opened = connection
+            .fork_session(source_session_id.clone(), fork_cwd)
+            .start_session()
+            .block_task()
+            .await?;
+        assert_eq!(opened.session().session_id(), &forked_session_id);
+        assert_ne!(opened.session().session_id(), &source_session_id);
+        assert_eq!(opened.response(), &expected_response);
+
+        let (session, response) = opened.into_parts();
+        assert_eq!(session.session_id(), &forked_session_id);
+        assert_eq!(response, expected_response);
+        Ok(())
+    });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("v2 fork builder test timed out")
+        .expect("v2 fork builder test failed");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_session_cancellation_completes_at_cancelled_idle() {
     let agent = Agent

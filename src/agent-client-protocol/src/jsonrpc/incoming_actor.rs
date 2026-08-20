@@ -441,9 +441,9 @@ fn dispatch_from_message<Counterpart: Role>(
         .expect("well-formed JSON");
 
     if let Some(id) = id {
-        let message = protocol_compat.incoming_message(message)?;
         let response_destination =
             response_destination.expect("incoming requests always have a response destination");
+        let message = protocol_compat.incoming_request(&id, message)?;
         Ok(vec![Dispatch::Request(
             message,
             Responder::new(

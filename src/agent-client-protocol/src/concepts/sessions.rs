@@ -8,8 +8,9 @@
 //! `ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
 //! through `Client.v2()` receive `V2ConnectionTo` and its `build_session*`,
 //! `V2SessionBuilder`, `resume_session*`, `V2ResumeSessionBuilder`, and
-//! command-only `V2Session` APIs. The v2 resume helpers return a builder and do
-//! not publish `session/resume` until `start_session` or
+//! command-only `V2Session` APIs. With `unstable_session_fork`, it also exposes
+//! `fork_session*` and `V2ForkSessionBuilder`. The v2 resume and fork helpers
+//! return builders and do not publish their requests until `start_session` or
 //! `on_proxy_session_start` is called. V2 prompt responses acknowledge
 //! acceptance independently; receive session-wide updates and interactive
 //! requests through typed connection handlers.
@@ -90,12 +91,14 @@
 //! MCP attachment requires the `unstable_mcp_over_acp` feature. Standalone MCP
 //! servers remain available without it. Draft protocol v2 per-session
 //! attachment uses `V2SessionBuilder::with_mcp_server` for new sessions or
-//! `V2ResumeSessionBuilder::with_mcp_server` for resumed sessions and
-//! additionally requires `unstable_protocol_v2`. The SDK installs the routes
-//! and initially polls the runners before publishing the setup request, so the
-//! agent can use them during setup or resume replay. Successful attachments
-//! remain active for the connection lifetime; setup failures, including an
-//! error response after cancellation, clean up the pending attachment.
+//! `V2ResumeSessionBuilder::with_mcp_server` for resumed sessions. With
+//! `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server` provides the
+//! same attachment for forked sessions. These APIs additionally require
+//! `unstable_protocol_v2`. The SDK installs the routes and initially polls the
+//! runners before publishing the setup request, so the agent can use them
+//! during setup or resume replay. Successful attachments remain active for the
+//! connection lifetime; setup failures, including an error response after
+//! cancellation, clean up the pending attachment.
 //!
 //! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -149,10 +152,11 @@
 //! for details.
 //!
 //! For a draft v2 proxy, use `V2SessionBuilder::on_proxy_session_start` or
-//! `V2ResumeSessionBuilder::on_proxy_session_start` instead. Each forwards the
-//! complete operation-specific response and then spawns the callback with an
-//! `OpenedV2Session`, so the callback keeps both the command-only session handle
-//! and that exact response:
+//! `V2ResumeSessionBuilder::on_proxy_session_start` instead. The feature-gated
+//! `V2ForkSessionBuilder` exposes the same helper. Each forwards the complete
+//! operation-specific response and then spawns the callback with an
+//! `OpenedV2Session`, so the callback keeps both the command-only session
+//! handle and that exact response:
 //!
 //! ```rust,ignore
 //! Proxy.v2()
@@ -170,7 +174,10 @@
 //!     );
 //! ```
 //!
-//! For `session/resume`, the builder installs and acknowledges session routing
+//! For `session/new` and feature-gated `session/fork`, the builder installs
+//! routing with the newly allocated response session ID before later inbound
+//! traffic is dispatched. For `session/resume`, the builder installs and
+//! acknowledges session routing
 //! before publishing the downstream request, allowing replay updates to be
 //! forwarded before the resume response. The downstream request inherits
 //! upstream cancellation. An unsuccessful downstream response drops pending

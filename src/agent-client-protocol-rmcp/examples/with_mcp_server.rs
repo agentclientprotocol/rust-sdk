@@ -63,6 +63,7 @@ impl ExampleMcpServer {
     }
 }
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for ExampleMcpServer {
     fn get_info(&self) -> ServerInfo {

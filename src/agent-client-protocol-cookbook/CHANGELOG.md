@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a compiled draft-v2 one-shot prompt recipe that handles initialization,
+  permissions, message patch projection, prompt acceptance, idle completion,
+  and session close.
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v1.3.0...agent-client-protocol-cookbook-v2.0.0) - 2026-07-23
 
 ### Changed

@@ -15,6 +15,14 @@ categories = ["development-tools"]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[[example]]
+name = "simple_agent_v2"
+required-features = ["unstable_protocol_v2"]
+
+[[example]]
+name = "v2_one_shot_client"
+required-features = ["unstable_protocol_v2"]
+
 [features]
 default = []
 

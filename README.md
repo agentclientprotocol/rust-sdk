@@ -29,9 +29,10 @@ when both `unstable_protocol_v2` and `unstable_mcp_over_acp` are enabled:
 supported session setup request, while
 `V2SessionBuilder::with_mcp_server(...)` attaches a server to one new session
 and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one while resuming.
-Successful v2 attachments remain active for the connection lifetime, and both
-builders expose `on_proxy_session_start` to forward proxied setup without
-coupling later session events to that response.
+With `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server(...)`
+attaches one while forking. Successful v2 attachments remain active for the
+connection lifetime, and all three builders expose `on_proxy_session_start` to
+forward proxied setup without coupling later session events to that response.
 
 **Proxy orchestration**
 
@@ -50,8 +51,9 @@ coupling later session events to that response.
 - **API reference** for individual crates is on [docs.rs/agent-client-protocol](https://docs.rs/agent-client-protocol).
 - **Design and architecture documentation** lives in the mdbook at [agentclientprotocol.github.io/rust-sdk](https://agentclientprotocol.github.io/rust-sdk/). Source is in [`md/`](./md/).
 - **Draft protocol v2** setup, version-typed connections, and high-level
-  session usage are covered in
-  [Protocol V2](./md/protocol-v2.md).
+  session usage are covered in [Protocol V2](./md/protocol-v2.md). To run a
+  complete v2 agent/client pair first, use the
+  [Runnable V2 Quickstart](./md/protocol-v2-quickstart.md).
 
 `Client.builder()`, `Agent.builder()`, and `Proxy.builder()` remain stable-v1
 entry points; their `.v2()` counterparts select the draft-v2 API. With
@@ -66,7 +68,7 @@ infrastructure can use `without_acp_version_guard`.
 - [Clients](https://agentclientprotocol.com/overview/clients)
 - Official Libraries
   - **Kotlin**: [`acp-kotlin`](https://github.com/agentclientprotocol/kotlin-sdk) – supports JVM, other targets are in progress
-  - **Rust**: [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) - See the [agent](./src/agent-client-protocol/examples/simple_agent.rs) and [client](./src/agent-client-protocol/examples/yolo_one_shot_client.rs) examples
+  - **Rust**: [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) - See the stable-v1 [agent](./src/agent-client-protocol/examples/simple_agent.rs) and [client](./src/agent-client-protocol/examples/yolo_one_shot_client.rs), or the draft-v2 [agent](./src/agent-client-protocol/examples/simple_agent_v2.rs) and [client](./src/agent-client-protocol/examples/v2_one_shot_client.rs) examples
   - **TypeScript**: [`@agentclientprotocol/sdk`](https://www.npmjs.com/package/@agentclientprotocol/sdk) - See [examples/](https://github.com/agentclientprotocol/typescript-sdk/tree/main/src/examples)
 - [Community Libraries](https://agentclientprotocol.com/libraries/community)
 

@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    future::{Future, ready},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -38,12 +39,13 @@ fn implementation() -> v2::Implementation {
 }
 
 fn initialize_response(protocol_version: ProtocolVersion) -> v2::InitializeResponse {
-    v2::InitializeResponse::new(protocol_version, implementation()).capabilities(
-        v2::AgentCapabilities::new().session(
-            v2::SessionCapabilities::new()
-                .mcp(v2::McpCapabilities::new().acp(v2::McpAcpCapabilities::new())),
-        ),
-    )
+    let session_capabilities = v2::SessionCapabilities::new()
+        .mcp(v2::McpCapabilities::new().acp(v2::McpAcpCapabilities::new()));
+    #[cfg(feature = "unstable_session_fork")]
+    let session_capabilities = session_capabilities.fork(v2::SessionForkCapabilities::new());
+
+    v2::InitializeResponse::new(protocol_version, implementation())
+        .capabilities(v2::AgentCapabilities::new().session(session_capabilities))
 }
 
 fn object(value: Value) -> Map<String, Value> {
@@ -436,6 +438,197 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         .expect("v2 MCP attachment test timed out")
 }
 
+#[cfg(feature = "unstable_session_fork")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> Result<(), Error> {
+    let (server_id_tx, mut server_id_rx) = mpsc::unbounded();
+    let (round_trip_trigger_tx, mut round_trip_trigger_rx) = mpsc::unbounded();
+    let (round_trip_tx, mut round_trip_rx) = mpsc::unbounded();
+    let first_round_trip_tx = round_trip_tx.clone();
+    let source_session_id = v2::SessionId::new("v2-source-mcp-session");
+    let expected_source_session_id = source_session_id.clone();
+    let forked_session_id = v2::SessionId::new("v2-forked-mcp-session");
+    let expected_forked_session_id = forked_session_id.clone();
+    let fork_cwd = cwd()?;
+    let expected_fork_cwd = v2::AbsolutePath::new(fork_cwd.clone());
+    let additional_directory = fork_cwd.join("additional");
+    let expected_additional_directory = v2::AbsolutePath::new(additional_directory.clone());
+    let existing_mcp_server = v2::McpServer::Other(v2::OtherMcpServer::new(
+        "_test_transport",
+        BTreeMap::from([("extension".to_owned(), json!({"preserved": true}))]),
+    ));
+    let expected_existing_mcp_server = existing_mcp_server.clone();
+    let setup_meta = Map::from_iter([("setup".to_owned(), json!({"preserved": true}))]);
+    let expected_setup_meta = setup_meta.clone();
+    let expected_response = v2::ForkSessionResponse::new(forked_session_id.clone())
+        .config_options(vec![v2::SessionConfigOption::boolean(
+            "thinking", "Thinking", true,
+        )])
+        .meta(Map::from_iter([(
+            "response".to_owned(),
+            json!({"preserved": true}),
+        )]));
+    let agent_response = expected_response.clone();
+
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ForkSessionRequest,
+                        responder: Responder<v2::ForkSessionResponse>,
+                        connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, expected_source_session_id);
+                assert_eq!(request.cwd, expected_fork_cwd);
+                assert_eq!(
+                    request.additional_directories,
+                    vec![expected_additional_directory.clone()]
+                );
+                assert_eq!(request.meta.as_ref(), Some(&expected_setup_meta));
+                let server = match request.mcp_servers.as_slice() {
+                    [existing, v2::McpServer::Acp(server)]
+                        if existing == &expected_existing_mcp_server =>
+                    {
+                        server
+                    }
+                    servers => {
+                        panic!("expected the existing declaration followed by ACP, got {servers:?}")
+                    }
+                };
+                assert_eq!(server.name, "v2-echo");
+                let server_id = server.server_id.clone();
+                server_id_tx
+                    .unbounded_send(server_id.clone())
+                    .map_err(Error::into_internal_error)?;
+                let round_trip_connection = connection.clone();
+                let first_round_trip_tx = first_round_trip_tx.clone();
+                let agent_response = agent_response.clone();
+                connection.spawn(async move {
+                    match run_mcp_round_trip(&round_trip_connection, &server_id, 1).await {
+                        Ok(round_trip) => {
+                            first_round_trip_tx
+                                .unbounded_send(Ok(round_trip))
+                                .map_err(Error::into_internal_error)?;
+                            responder.respond(agent_response)
+                        }
+                        Err(error) => {
+                            first_round_trip_tx
+                                .unbounded_send(Err(error.clone()))
+                                .map_err(Error::into_internal_error)?;
+                            responder.respond_with_error(error)
+                        }
+                    }
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .with_spawned(move |connection: V2ConnectionTo<Client>| async move {
+            let server_id = server_id_rx.next().await.ok_or_else(|| {
+                Error::internal_error().data("session/fork did not advertise an MCP server")
+            })?;
+            let mut sequence = 1;
+
+            while round_trip_trigger_rx.next().await.is_some() {
+                sequence += 1;
+                let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
+                let failed = result.is_err();
+                round_trip_tx
+                    .unbounded_send(result)
+                    .map_err(Error::into_internal_error)?;
+                if failed {
+                    break;
+                }
+            }
+            Ok(())
+        });
+
+    let test = async move {
+        let (context_tx, mut context_rx) = mpsc::unbounded();
+        let (notice_tx, mut notice_rx) = mpsc::unbounded();
+        let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
+        let (runner_started_tx, runner_started_rx) = oneshot::channel();
+        let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
+        let runner_started = Arc::new(AtomicBool::new(false));
+
+        Client
+            .v2()
+            .connect_with(agent, async move |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+
+                let mcp_server = McpServer::<Agent, _>::new(
+                    EchoMcpConnect {
+                        context_tx,
+                        notice_tx,
+                        runner_started: runner_started.clone(),
+                        dropped_tx: Mutex::new(Some(connector_dropped_tx)),
+                    },
+                    ProbeRunner {
+                        started: runner_started.clone(),
+                        started_tx: Some(runner_started_tx),
+                        dropped_tx: Some(runner_dropped_tx),
+                    },
+                );
+                let pending_session = connection
+                    .fork_session_from(
+                        v2::ForkSessionRequest::new(source_session_id.clone(), fork_cwd)
+                            .additional_directories([additional_directory])
+                            .mcp_servers(vec![existing_mcp_server])
+                            .meta(setup_meta),
+                    )
+                    .with_mcp_server(mcp_server)?
+                    .start_session();
+
+                runner_started_rx
+                    .await
+                    .map_err(Error::into_internal_error)?;
+                assert!(
+                    runner_started.load(Ordering::Acquire),
+                    "the MCP runner must be first-polled before session/fork is published"
+                );
+
+                assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+
+                let opened = pending_session.block_task().await?;
+                assert_eq!(opened.session().session_id(), &expected_forked_session_id);
+                assert_ne!(opened.session().session_id(), &source_session_id);
+                assert_eq!(opened.response(), &expected_response);
+                let session = opened.into_session();
+                let remaining_session = session.clone();
+                drop(session);
+                drop(remaining_session);
+
+                round_trip_trigger_tx
+                    .unbounded_send(())
+                    .map_err(Error::into_internal_error)?;
+                assert_round_trip(2, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+
+                Ok(())
+            })
+            .await?;
+
+        connector_dropped_rx
+            .await
+            .map_err(Error::into_internal_error)?;
+        runner_dropped_rx.await.map_err(Error::into_internal_error)
+    };
+
+    tokio::time::timeout(TIMEOUT, test)
+        .await
+        .expect("v2 fork MCP attachment test timed out")
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -> Result<(), Error>
 {
@@ -660,8 +853,13 @@ impl McpServerConnect<Agent> for DropTrackedMcpConnect {
 struct ImmediateErrorRunner;
 
 impl RunWithConnectionTo<Agent> for ImmediateErrorRunner {
-    async fn run_with_connection_to(self, _connection: ConnectionTo<Agent>) -> Result<(), Error> {
-        Err(Error::internal_error().data("runner failed before publication"))
+    fn run_with_connection_to(
+        self,
+        _connection: ConnectionTo<Agent>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        ready(Err(
+            Error::internal_error().data("runner failed before publication")
+        ))
     }
 }
 

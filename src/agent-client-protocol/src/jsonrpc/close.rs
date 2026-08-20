@@ -29,11 +29,11 @@ pub trait HandleConnectionClose<Counterpart: Role>: Send {
 pub struct NullClose;
 
 impl<Counterpart: Role> HandleConnectionClose<Counterpart> for NullClose {
-    async fn handle_connection_close(
+    fn handle_connection_close(
         self,
         _connection: ConnectionTo<Counterpart>,
-    ) -> Result<(), crate::Error> {
-        Ok(())
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+        std::future::ready(Ok(()))
     }
 }
 

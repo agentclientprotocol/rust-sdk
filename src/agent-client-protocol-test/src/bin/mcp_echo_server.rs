@@ -48,6 +48,7 @@ impl EchoServer {
     }
 }
 
+#[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for EchoServer {
     fn get_info(&self) -> ServerInfo {

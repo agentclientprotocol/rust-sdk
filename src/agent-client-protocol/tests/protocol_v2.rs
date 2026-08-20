@@ -1,6 +1,7 @@
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::{
+    future::{Future, ready},
     path::PathBuf,
     sync::{
         Arc,
@@ -12,9 +13,9 @@ use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
     ConnectTo, ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
-    HandleDispatchFrom, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, NullHandler, Proxy,
-    RawJsonRpcMessage, Role, RunWithConnectionTo, TransportFrame, UntypedMessage, UntypedRole,
-    V2Builder, V2ConnectionTo,
+    HandleDispatchFrom, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    NullHandler, Proxy, RawJsonRpcMessage, Role, RunWithConnectionTo, TransportFrame,
+    UntypedMessage, UntypedRole, V2Builder, V2ConnectionTo,
 };
 use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
@@ -34,6 +35,13 @@ struct ForeignInitializeRequest {
 struct ForeignInitializeResponse {
     #[serde(rename = "protocolVersion")]
     protocol_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "initialize", response = Value)]
+struct RawInitializeRequest {
+    #[serde(flatten)]
+    params: Map<String, Value>,
 }
 
 struct ForeignPeer;
@@ -293,8 +301,13 @@ impl ConnectTo<Agent> for InitializingV1Client {
 struct RejectingV1Client;
 
 impl ConnectTo<Agent> for RejectingV1Client {
-    async fn connect_to(self, _agent: impl ConnectTo<Client>) -> Result<(), Error> {
-        Err(Error::internal_error().data("v1 client fallback should not run"))
+    fn connect_to(
+        self,
+        _agent: impl ConnectTo<Client>,
+    ) -> impl Future<Output = Result<(), Error>> + Send {
+        ready(Err(
+            Error::internal_error().data("v1 client fallback should not run")
+        ))
     }
 }
 
@@ -669,76 +682,356 @@ fn v2_extension_enum_parsing_preserves_method_prefix() -> Result<(), Error> {
     Ok(())
 }
 
+fn assert_v2_client_request_mapping<Req>(
+    method: &str,
+    request: Req,
+    response: Value,
+    request_variant: impl FnOnce(v2::ClientRequest) -> bool,
+    response_variant: impl FnOnce(v2::AgentResponse) -> bool,
+) -> Result<(), Error>
+where
+    Req: JsonRpcRequest + Serialize,
+    Req::Response: JsonRpcResponse,
+{
+    let params = json_value(request)?;
+    let request = Req::parse_message(method, &params)?;
+    assert_eq!(request.method(), method);
+    assert_eq!(request.to_untyped_message()?.method(), method);
+    let request = v2::ClientRequest::parse_message(method, &params)?;
+    assert_eq!(request.method(), method);
+    assert_eq!(request.to_untyped_message()?.method(), method);
+    assert!(request_variant(request));
+
+    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
+    assert!(response_variant(v2::AgentResponse::from_value(
+        method, response
+    )?));
+    Ok(())
+}
+
+fn assert_v2_agent_request_mapping<Req>(
+    method: &str,
+    request: Req,
+    response: Value,
+    request_variant: impl FnOnce(v2::AgentRequest) -> bool,
+    response_variant: impl FnOnce(v2::ClientResponse) -> bool,
+) -> Result<(), Error>
+where
+    Req: JsonRpcRequest + Serialize,
+    Req::Response: JsonRpcResponse,
+{
+    let params = json_value(request)?;
+    let request = Req::parse_message(method, &params)?;
+    assert_eq!(request.method(), method);
+    assert_eq!(request.to_untyped_message()?.method(), method);
+    let request = v2::AgentRequest::parse_message(method, &params)?;
+    assert_eq!(request.method(), method);
+    assert_eq!(request.to_untyped_message()?.method(), method);
+    assert!(request_variant(request));
+
+    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
+    assert!(response_variant(v2::ClientResponse::from_value(
+        method, response
+    )?));
+    Ok(())
+}
+
+fn assert_v2_client_notification_mapping<Notif>(
+    method: &str,
+    notification: Notif,
+    notification_variant: impl FnOnce(v2::ClientNotification) -> bool,
+) -> Result<(), Error>
+where
+    Notif: JsonRpcNotification + Serialize,
+{
+    let params = json_value(notification)?;
+    let notification = Notif::parse_message(method, &params)?;
+    assert_eq!(notification.method(), method);
+    assert_eq!(notification.to_untyped_message()?.method(), method);
+    let notification = v2::ClientNotification::parse_message(method, &params)?;
+    assert_eq!(notification.method(), method);
+    assert_eq!(notification.to_untyped_message()?.method(), method);
+    assert!(notification_variant(notification));
+    Ok(())
+}
+
+fn assert_v2_agent_notification_mapping<Notif>(
+    method: &str,
+    notification: Notif,
+    notification_variant: impl FnOnce(v2::AgentNotification) -> bool,
+) -> Result<(), Error>
+where
+    Notif: JsonRpcNotification + Serialize,
+{
+    let params = json_value(notification)?;
+    let notification = Notif::parse_message(method, &params)?;
+    assert_eq!(notification.method(), method);
+    assert_eq!(notification.to_untyped_message()?.method(), method);
+    let notification = v2::AgentNotification::parse_message(method, &params)?;
+    assert_eq!(notification.method(), method);
+    assert_eq!(notification.to_untyped_message()?.method(), method);
+    assert!(notification_variant(notification));
+    Ok(())
+}
+
 #[test]
-fn v2_schema_1_4_method_names_are_jsonrpc_mapped() -> Result<(), Error> {
-    fn assert_request<Req: JsonRpcRequest>() {}
-    fn assert_notification<Notif: agent_client_protocol::JsonRpcNotification>() {}
+fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
+    macro_rules! assert_client_request {
+        ($request:ident, $response:ident, $method:literal, $request_value:expr, $response_value:expr) => {
+            assert_v2_client_request_mapping::<v2::$request>(
+                $method,
+                $request_value,
+                json_value($response_value)?,
+                |request| matches!(request, v2::ClientRequest::$request(_)),
+                |response| matches!(response, v2::AgentResponse::$response(_)),
+            )?;
+        };
+    }
 
-    assert_request::<v2::LoginAuthRequest>();
-    assert_request::<v2::LogoutAuthRequest>();
-    assert_notification::<v2::CancelRequestNotification>();
-    assert_notification::<v2::CancelSessionNotification>();
-    assert_notification::<v2::UpdateSessionNotification>();
+    macro_rules! assert_agent_request {
+        ($request:ident, $response:ident, $method:literal, $request_value:expr, $response_value:expr) => {
+            assert_v2_agent_request_mapping::<v2::$request>(
+                $method,
+                $request_value,
+                json_value($response_value)?,
+                |request| matches!(request, v2::AgentRequest::$request(_)),
+                |response| matches!(response, v2::ClientResponse::$response(_)),
+            )?;
+        };
+    }
 
-    let login_params = serde_json::json!({ "methodId": "browser" });
-    let login = v2::LoginAuthRequest::parse_message("auth/login", &login_params)?;
-    assert_eq!(login.method(), "auth/login");
-    let client_request = v2::ClientRequest::parse_message("auth/login", &login_params)?;
-    assert!(matches!(
-        client_request,
-        v2::ClientRequest::LoginAuthRequest(_)
-    ));
-    let login_response = v2::AgentResponse::from_value("auth/login", serde_json::json!({}))?;
-    assert!(matches!(
-        login_response,
-        v2::AgentResponse::LoginAuthResponse(_)
-    ));
+    assert_client_request!(
+        InitializeRequest,
+        InitializeResponse,
+        "initialize",
+        v2_initialize_request(ProtocolVersion::V2),
+        v2::InitializeResponse::new(ProtocolVersion::V2, v2_implementation())
+    );
+    assert_client_request!(
+        LoginAuthRequest,
+        LoginAuthResponse,
+        "auth/login",
+        v2::LoginAuthRequest::new("browser"),
+        v2::LoginAuthResponse::new()
+    );
+    assert_client_request!(
+        LogoutAuthRequest,
+        LogoutAuthResponse,
+        "auth/logout",
+        v2::LogoutAuthRequest::new(),
+        v2::LogoutAuthResponse::new()
+    );
+    assert_client_request!(
+        NewSessionRequest,
+        NewSessionResponse,
+        "session/new",
+        v2::NewSessionRequest::new(cwd()?),
+        v2::NewSessionResponse::new("new-session")
+    );
+    assert_client_request!(
+        ListSessionsRequest,
+        ListSessionsResponse,
+        "session/list",
+        v2::ListSessionsRequest::new(),
+        v2::ListSessionsResponse::new(Vec::new())
+    );
+    assert_client_request!(
+        DeleteSessionRequest,
+        DeleteSessionResponse,
+        "session/delete",
+        v2::DeleteSessionRequest::new("session-1"),
+        v2::DeleteSessionResponse::new()
+    );
+    assert_client_request!(
+        ResumeSessionRequest,
+        ResumeSessionResponse,
+        "session/resume",
+        v2::ResumeSessionRequest::new("session-1", cwd()?),
+        v2::ResumeSessionResponse::new()
+    );
+    assert_client_request!(
+        CloseSessionRequest,
+        CloseSessionResponse,
+        "session/close",
+        v2::CloseSessionRequest::new("session-1"),
+        v2::CloseSessionResponse::new()
+    );
+    assert_client_request!(
+        SetSessionConfigOptionRequest,
+        SetSessionConfigOptionResponse,
+        "session/set_config_option",
+        v2::SetSessionConfigOptionRequest::new("session-1", "model", "model-1"),
+        v2::SetSessionConfigOptionResponse::new(Vec::new())
+    );
+    assert_client_request!(
+        PromptRequest,
+        PromptResponse,
+        "session/prompt",
+        v2::PromptRequest::new("session-1", Vec::new()),
+        v2::PromptResponse::new()
+    );
 
-    let logout = v2::LogoutAuthRequest::parse_message("auth/logout", &serde_json::json!({}))?;
-    assert_eq!(logout.method(), "auth/logout");
-    let client_request = v2::ClientRequest::parse_message("auth/logout", &serde_json::json!({}))?;
-    assert!(matches!(
-        client_request,
-        v2::ClientRequest::LogoutAuthRequest(_)
-    ));
-    let logout_response = v2::AgentResponse::from_value("auth/logout", serde_json::json!({}))?;
-    assert!(matches!(
-        logout_response,
-        v2::AgentResponse::LogoutAuthResponse(_)
-    ));
+    #[cfg(feature = "unstable_session_fork")]
+    assert_client_request!(
+        ForkSessionRequest,
+        ForkSessionResponse,
+        "session/fork",
+        v2::ForkSessionRequest::new("session-1", cwd()?),
+        v2::ForkSessionResponse::new("forked-session")
+    );
 
-    let cancel_params = serde_json::json!({ "requestId": "req-1" });
+    #[cfg(feature = "unstable_llm_providers")]
+    {
+        assert_client_request!(
+            ListProvidersRequest,
+            ListProvidersResponse,
+            "providers/list",
+            v2::ListProvidersRequest::new(),
+            v2::ListProvidersResponse::new(Vec::new())
+        );
+        assert_client_request!(
+            SetProviderRequest,
+            SetProviderResponse,
+            "providers/set",
+            v2::SetProviderRequest::new(
+                "provider-1",
+                v2::LlmProtocol::OpenAi,
+                "https://example.com"
+            ),
+            v2::SetProviderResponse::new()
+        );
+        assert_client_request!(
+            DisableProviderRequest,
+            DisableProviderResponse,
+            "providers/disable",
+            v2::DisableProviderRequest::new("provider-1"),
+            v2::DisableProviderResponse::new()
+        );
+    }
+
+    assert_v2_client_notification_mapping(
+        "session/cancel",
+        v2::CancelSessionNotification::new("session-1"),
+        |notification| {
+            matches!(
+                notification,
+                v2::ClientNotification::CancelSessionNotification(_)
+            )
+        },
+    )?;
+
+    assert_agent_request!(
+        RequestPermissionRequest,
+        RequestPermissionResponse,
+        "session/request_permission",
+        v2::RequestPermissionRequest::new("session-1", "Run command?", Vec::new()),
+        v2::RequestPermissionResponse::new(v2::RequestPermissionOutcome::Cancelled)
+    );
+
+    let update = v2::UpdateSessionNotification::new(
+        "session-1",
+        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
+    );
+    assert_v2_agent_notification_mapping("session/update", update, |notification| {
+        matches!(
+            notification,
+            v2::AgentNotification::UpdateSessionNotification(_)
+        )
+    })?;
+
+    #[cfg(feature = "unstable_elicitation")]
+    {
+        assert_agent_request!(
+            CreateElicitationRequest,
+            CreateElicitationResponse,
+            "elicitation/create",
+            v2::CreateElicitationRequest::new(
+                v2::ElicitationFormMode::new(
+                    v2::ElicitationSessionScope::new("session-1"),
+                    v2::ElicitationSchema::new(),
+                ),
+                "Choose a value",
+            ),
+            v2::CreateElicitationResponse::new(v2::ElicitationAction::Decline)
+        );
+        assert_v2_agent_notification_mapping(
+            "elicitation/complete",
+            v2::CompleteElicitationNotification::new("elicitation-1"),
+            |notification| {
+                matches!(
+                    notification,
+                    v2::AgentNotification::CompleteElicitationNotification(_)
+                )
+            },
+        )?;
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    {
+        fn message_response() -> Result<v2::MessageMcpResponse, Error> {
+            serde_json::from_value(serde_json::json!({ "tools": [] }))
+                .map_err(Error::into_internal_error)
+        }
+
+        assert_client_request!(
+            MessageMcpRequest,
+            MessageMcpResponse,
+            "mcp/message",
+            v2::MessageMcpRequest::new("connection-1", "tools/list"),
+            message_response()?
+        );
+        assert_v2_client_notification_mapping(
+            "mcp/message",
+            v2::MessageMcpNotification::new("connection-1", "notifications/tools/list"),
+            |notification| {
+                matches!(
+                    notification,
+                    v2::ClientNotification::MessageMcpNotification(_)
+                )
+            },
+        )?;
+
+        assert_agent_request!(
+            ConnectMcpRequest,
+            ConnectMcpResponse,
+            "mcp/connect",
+            v2::ConnectMcpRequest::new("server-1"),
+            v2::ConnectMcpResponse::new("connection-1")
+        );
+        assert_agent_request!(
+            MessageMcpRequest,
+            MessageMcpResponse,
+            "mcp/message",
+            v2::MessageMcpRequest::new("connection-1", "tools/list"),
+            message_response()?
+        );
+        assert_agent_request!(
+            DisconnectMcpRequest,
+            DisconnectMcpResponse,
+            "mcp/disconnect",
+            v2::DisconnectMcpRequest::new("connection-1"),
+            v2::DisconnectMcpResponse::new()
+        );
+        assert_v2_agent_notification_mapping(
+            "mcp/message",
+            v2::MessageMcpNotification::new("connection-1", "notifications/tools/list"),
+            |notification| {
+                matches!(
+                    notification,
+                    v2::AgentNotification::MessageMcpNotification(_)
+                )
+            },
+        )?;
+    }
+
+    let cancel_params = json_value(v2::CancelRequestNotification::new(String::from(
+        "request-1",
+    )))?;
     let cancel = v2::CancelRequestNotification::parse_message("$/cancel_request", &cancel_params)?;
     assert_eq!(cancel.method(), "$/cancel_request");
-    let protocol_notification =
-        v2::ProtocolLevelNotification::parse_message("$/cancel_request", &cancel_params)?;
     assert!(matches!(
-        protocol_notification,
+        v2::ProtocolLevelNotification::parse_message("$/cancel_request", &cancel_params)?,
         v2::ProtocolLevelNotification::CancelRequestNotification(_)
-    ));
-
-    let session_cancel_params = serde_json::json!({ "sessionId": "session-1" });
-    let session_cancel =
-        v2::CancelSessionNotification::parse_message("session/cancel", &session_cancel_params)?;
-    assert_eq!(session_cancel.method(), "session/cancel");
-    let client_notification =
-        v2::ClientNotification::parse_message("session/cancel", &session_cancel_params)?;
-    assert!(matches!(
-        client_notification,
-        v2::ClientNotification::CancelSessionNotification(_)
-    ));
-
-    let update_params = serde_json::json!({
-        "sessionId": "session-1",
-        "update": { "sessionUpdate": "_custom" }
-    });
-    let update = v2::UpdateSessionNotification::parse_message("session/update", &update_params)?;
-    assert_eq!(update.method(), "session/update");
-    let agent_notification =
-        v2::AgentNotification::parse_message("session/update", &update_params)?;
-    assert!(matches!(
-        agent_notification,
-        v2::AgentNotification::UpdateSessionNotification(_)
     ));
 
     Ok(())
@@ -746,10 +1039,7 @@ fn v2_schema_1_4_method_names_are_jsonrpc_mapped() -> Result<(), Error> {
 
 #[cfg(feature = "unstable_mcp_over_acp")]
 #[test]
-fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
-    fn assert_request<Req: JsonRpcRequest>() {}
-    fn assert_notification<Notif: agent_client_protocol::JsonRpcNotification>() {}
-
+fn mcp_over_acp_v1_variants_are_jsonrpc_mapped() -> Result<(), Error> {
     macro_rules! assert_message_mapping {
         ($ty:ty, $method:literal, $params:expr, $pattern:pat) => {{
             let message = <$ty as JsonRpcMessage>::parse_message($method, &$params)?;
@@ -765,11 +1055,6 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
             assert!(matches!(response, $pattern));
         }};
     }
-
-    assert_request::<v2::ConnectMcpRequest>();
-    assert_request::<v2::MessageMcpRequest>();
-    assert_request::<v2::DisconnectMcpRequest>();
-    assert_notification::<v2::MessageMcpNotification>();
 
     assert_message_mapping!(
         v1::ClientRequest,
@@ -836,101 +1121,6 @@ fn mcp_over_acp_variants_are_jsonrpc_mapped() -> Result<(), Error> {
             "notifications/tools/list"
         ))?,
         v1::AgentNotification::MessageMcpNotification(_)
-    );
-
-    assert_message_mapping!(
-        v2::MessageMcpRequest,
-        "mcp/message",
-        json_value(v2::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        v2::MessageMcpRequest { .. }
-    );
-    assert_message_mapping!(
-        v2::MessageMcpNotification,
-        "mcp/message",
-        json_value(v2::MessageMcpNotification::new(
-            "conn-1",
-            "notifications/tools/list"
-        ))?,
-        v2::MessageMcpNotification { .. }
-    );
-    assert_message_mapping!(
-        v2::ConnectMcpRequest,
-        "mcp/connect",
-        json_value(v2::ConnectMcpRequest::new("server-1"))?,
-        v2::ConnectMcpRequest { .. }
-    );
-    assert_message_mapping!(
-        v2::DisconnectMcpRequest,
-        "mcp/disconnect",
-        json_value(v2::DisconnectMcpRequest::new("conn-1"))?,
-        v2::DisconnectMcpRequest { .. }
-    );
-
-    assert_message_mapping!(
-        v2::ClientRequest,
-        "mcp/message",
-        json_value(v2::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        v2::ClientRequest::MessageMcpRequest(_)
-    );
-    assert_response_mapping!(
-        v2::AgentResponse,
-        "mcp/message",
-        serde_json::json!({ "tools": [] }),
-        v2::AgentResponse::MessageMcpResponse(_)
-    );
-    assert_message_mapping!(
-        v2::ClientNotification,
-        "mcp/message",
-        json_value(v2::MessageMcpNotification::new(
-            "conn-1",
-            "notifications/tools/list"
-        ))?,
-        v2::ClientNotification::MessageMcpNotification(_)
-    );
-    assert_message_mapping!(
-        v2::AgentRequest,
-        "mcp/connect",
-        json_value(v2::ConnectMcpRequest::new("server-1"))?,
-        v2::AgentRequest::ConnectMcpRequest(_)
-    );
-    assert_message_mapping!(
-        v2::AgentRequest,
-        "mcp/message",
-        json_value(v2::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        v2::AgentRequest::MessageMcpRequest(_)
-    );
-    assert_message_mapping!(
-        v2::AgentRequest,
-        "mcp/disconnect",
-        json_value(v2::DisconnectMcpRequest::new("conn-1"))?,
-        v2::AgentRequest::DisconnectMcpRequest(_)
-    );
-    assert_response_mapping!(
-        v2::ClientResponse,
-        "mcp/connect",
-        json_value(v2::ConnectMcpResponse::new("conn-1"))?,
-        v2::ClientResponse::ConnectMcpResponse(_)
-    );
-    assert_response_mapping!(
-        v2::ClientResponse,
-        "mcp/message",
-        serde_json::json!({ "tools": [] }),
-        v2::ClientResponse::MessageMcpResponse(_)
-    );
-    assert_response_mapping!(
-        v2::ClientResponse,
-        "mcp/disconnect",
-        serde_json::json!({}),
-        v2::ClientResponse::DisconnectMcpResponse(_)
-    );
-    assert_message_mapping!(
-        v2::AgentNotification,
-        "mcp/message",
-        json_value(v2::MessageMcpNotification::new(
-            "conn-1",
-            "notifications/tools/list"
-        ))?,
-        v2::AgentNotification::MessageMcpNotification(_)
     );
 
     Ok(())
@@ -1000,6 +1190,316 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
             Ok(())
         })
         .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_client_does_not_send_session_requests_before_initialization() -> Result<(), Error> {
+    let handler_ran = Arc::new(AtomicBool::new(false));
+    let handler_flag = Arc::clone(&handler_ran);
+    let agent = Agent
+        .builder()
+        .without_acp_version_guard()
+        .on_receive_request(
+            async move |_request: v2::NewSessionRequest, responder, _cx| {
+                handler_flag.store(true, Ordering::SeqCst);
+                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                    "unexpected-session",
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await
+                .expect_err("v2 clients must initialize before session requests");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("initialization must complete"), "{error:?}");
+            Ok(())
+        })
+        .await?;
+
+    assert!(!handler_ran.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_rejects_session_requests_before_initialization() -> Result<(), Error> {
+    let handler_ran = Arc::new(AtomicBool::new(false));
+    let handler_flag = Arc::clone(&handler_ran);
+    let agent = Agent.v2().on_receive_request(
+        async move |_request: v2::NewSessionRequest, responder, _cx| {
+            handler_flag.store(true, Ordering::SeqCst);
+            responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                "unexpected-session",
+            )))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    Client
+        .builder()
+        .without_acp_version_guard()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await
+                .expect_err("v2 agents must reject session requests before initialization");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("initialization must complete"), "{error:?}");
+            Ok(())
+        })
+        .await?;
+
+    assert!(!handler_ran.load(Ordering::SeqCst));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_rejects_reinitialization_without_losing_ready_state() -> Result<(), Error> {
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async move |initialize: v2::InitializeRequest, responder, _cx| {
+                initialize_counter.fetch_add(1, Ordering::SeqCst);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v2::NewSessionRequest, responder, _cx| {
+                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                    "ready-session",
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    Client
+        .builder()
+        .without_acp_version_guard()
+        .connect_with(agent, async |cx| {
+            cx.send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("v2 agents must reject reinitialization");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("only be initialized once"), "{error:?}");
+
+            let session = cx
+                .send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await?;
+            assert_eq!(session.session_id.0.as_ref(), "ready-session");
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_can_retry_after_batched_initialize_responder_is_dropped() -> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent.v2().on_receive_request(
+        async move |initialize: v2::InitializeRequest, responder, _cx| {
+            if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                drop(responder);
+                Ok(())
+            } else {
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut client_reader = BufReader::new(client_reader);
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!([{
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": json_value(v2_initialize_request(ProtocolVersion::V2))?,
+        }]),
+    )
+    .await?;
+
+    let abandoned = read_wire_json(&mut client_reader).await?;
+    let abandoned = abandoned
+        .as_array()
+        .and_then(|responses| responses.first())
+        .ok_or_else(|| Error::internal_error().data("expected initialize error batch"))?;
+    assert_eq!(abandoned["id"], 1);
+    assert_eq!(abandoned["error"]["code"], -32603);
+    assert!(
+        abandoned["error"]["data"]
+            .as_str()
+            .is_some_and(|data| data.contains("dropped its responder")),
+        "{abandoned:?}"
+    );
+
+    write_wire_json(
+        &mut client_writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "initialize",
+            "params": json_value(v2_initialize_request(ProtocolVersion::V2))?,
+        }),
+    )
+    .await?;
+
+    let retry = read_wire_json(&mut client_reader).await?;
+    assert_eq!(retry["id"], 2);
+    assert_eq!(retry["result"]["protocolVersion"], 2);
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
+
+    client_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    agent_task
+        .await
+        .map_err(agent_client_protocol::util::internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_client_can_retry_after_malformed_initialize_success() -> Result<(), Error> {
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent
+        .builder()
+        .without_acp_version_guard()
+        .on_receive_request(
+            async move |_initialize: RawInitializeRequest, responder, _cx| {
+                if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    responder.respond(serde_json::json!({
+                        "protocolVersion": ProtocolVersion::V2,
+                    }))
+                } else {
+                    responder.respond(json_value(v2_initialize_response_with_session(
+                        ProtocolVersion::V2,
+                    ))?)
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("a malformed v2 initialize success must fail typed decoding");
+            let data = error
+                .data
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_default();
+            assert!(data.contains("info"), "{error:?}");
+
+            let retry = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            assert_eq!(retry.protocol_version, ProtocolVersion::V2);
+            assert!(retry.capabilities.session.is_some());
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_can_retry_after_malformed_initialize_success() -> Result<(), Error> {
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent.v2().on_receive_request(
+        async move |_initialize: RawInitializeRequest, responder, _cx| {
+            if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                responder.respond(serde_json::json!({
+                    "protocolVersion": ProtocolVersion::V2,
+                }))
+            } else {
+                responder.respond(json_value(v2_initialize_response_with_session(
+                    ProtocolVersion::V2,
+                ))?)
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    Client
+        .builder()
+        .without_acp_version_guard()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("a malformed v2 initialize success must become a wire error");
+            let data = error
+                .data
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_default();
+            assert!(data.contains("info"), "{error:?}");
+
+            let retry = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            assert_eq!(retry.protocol_version, ProtocolVersion::V2);
+            assert!(retry.capabilities.session.is_some());
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -24,9 +24,11 @@
 //! inbound traffic are independent. With both v2 and MCP-over-ACP features,
 //! `Proxy.v2()` supports global MCP attachment, while `V2SessionBuilder` and
 //! `V2ResumeSessionBuilder` support per-session attachment plus non-blocking
-//! proxy setup. Per-session MCP routes and runners are ready before a setup
-//! request is published, as is proxy session routing for resume replay;
-//! successful attachments remain active for the connection lifetime.
+//! proxy setup. With `unstable_session_fork`, `V2ForkSessionBuilder` provides
+//! the same shape for forked sessions and uses the response's new session ID.
+//! Per-session MCP routes and runners are ready before a setup request is
+//! published, as is proxy session routing for resume replay; successful
+//! attachments remain active for the connection lifetime.
 //!
 //! Here's a minimal example that initializes a v1 connection, creates a
 //! session, and sends a prompt:

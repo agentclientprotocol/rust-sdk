@@ -33,8 +33,10 @@ initialization, capability, session setup, and `mcp/*` wire types. It does not
 change the core attachment API. `Proxy.v2().with_mcp_server(...)` provides
 connection-global attachment. `V2SessionBuilder::with_mcp_server(...)` and
 `V2ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
-for new and resumed sessions respectively. The polyfill adapts their native
-declarations when the final agent supports only HTTP MCP.
+for new and resumed sessions respectively. With `unstable_session_fork`,
+`V2ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
+attachment. The polyfill adapts their native declarations when the final agent
+supports only HTTP MCP.
 
 ## Placement
 
@@ -60,8 +62,10 @@ setup requests as `McpServer::Acp`; callers do not need to construct a transport
 placeholder themselves. In v2, `Proxy.v2().with_mcp_server(...)` provides
 connection-global attachment. `V2SessionBuilder::with_mcp_server(...)` and
 `V2ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
-for new and resumed sessions respectively. The polyfill translates those
-native declarations at the final compatibility boundary.
+for new and resumed sessions respectively. With `unstable_session_fork`,
+`V2ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
+attachment. The polyfill translates those native declarations at the final
+compatibility boundary.
 
 During initialization, the polyfill forwards the request to its successor. When
 the successor advertises HTTP MCP support, the polyfill advertises native ACP

@@ -1164,8 +1164,11 @@ impl<
     ///
     /// This is intended for protocol-routing infrastructure that has already
     /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. Most clients should use [`Client::v2`](crate::Client::v2),
-    /// which also exposes the version-typed [`V2ConnectionTo`] API.
+    /// its callbacks. The guarded child must still send and receive the
+    /// `initialize` round trip; a router that consumes initialization itself
+    /// must use [`Builder::without_acp_version_guard`] for the selected child.
+    /// Most clients should use [`Client::v2`](crate::Client::v2), which also
+    /// exposes the version-typed [`V2ConnectionTo`] API.
     pub fn with_v2_protocol_guard(mut self) -> Self {
         self.protocol_mode = ProtocolMode::v2_client();
         self
@@ -1183,8 +1186,11 @@ impl<
     ///
     /// This is intended for protocol-routing infrastructure that has already
     /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. Most agents should use [`Agent::v2`](crate::Agent::v2),
-    /// which also exposes the version-typed [`V2ConnectionTo`] API.
+    /// its callbacks. The guarded child must still receive and answer the
+    /// `initialize` request; a router that consumes initialization itself must
+    /// use [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// agents should use [`Agent::v2`](crate::Agent::v2), which also exposes the
+    /// version-typed [`V2ConnectionTo`] API.
     pub fn with_v2_protocol_guard(mut self) -> Self {
         self.protocol_mode = ProtocolMode::v2_agent();
         self
@@ -6810,12 +6816,12 @@ mod tests {
     struct ClaimingDynamicHandler;
 
     impl HandleDispatchFrom<crate::role::UntypedRole> for ClaimingDynamicHandler {
-        async fn handle_dispatch_from(
+        fn handle_dispatch_from(
             &mut self,
             _message: Dispatch,
             _connection: ConnectionTo<crate::role::UntypedRole>,
-        ) -> Result<Handled<Dispatch>, crate::Error> {
-            Ok(Handled::Yes)
+        ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
+            future::ready(Ok(Handled::Yes))
         }
 
         fn describe_chain(&self) -> impl Debug {

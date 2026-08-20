@@ -15,6 +15,7 @@
 //! [`Client.builder()`](agent_client_protocol::Client) to build connections.
 //!
 //! - [`one_shot_prompt`] - Send a single prompt and get a response (simplest pattern)
+//! - [`v2_one_shot_prompt`] - Send a draft-v2 prompt and wait for the independent idle update
 //! - [`connecting_as_client`] - More details on connection setup and permission handling
 //!
 //! # Building Proxies
@@ -118,6 +119,152 @@ pub mod one_shot_prompt {
     //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
     //! [`connecting_as_client`]: super::connecting_as_client
     //! [`RequestPermissionRequest`]: agent_client_protocol::schema::v1::RequestPermissionRequest
+}
+
+pub mod v2_one_shot_prompt {
+    //! Pattern: One prompt with the draft protocol v2 lifecycle.
+    //!
+    //! A successful v2 `session/prompt` response acknowledges acceptance; it
+    //! does not contain output and does not mean the work is complete. Install
+    //! update handlers before connecting, then consume matching updates until
+    //! the new session reports `running` and subsequently reports `idle`.
+    //!
+    //! This module is compiled with the cookbook's v2 feature coverage. For a
+    //! runnable CLI pair, see the SDK's `simple_agent_v2` and
+    //! `v2_one_shot_client` examples.
+    //!
+    //! # Example
+    //!
+    //! ```
+    //! use std::collections::HashMap;
+    //! use agent_client_protocol::{Agent, Client, ConnectTo, Error, Responder, V2ConnectionTo};
+    //! use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
+    //! use futures::{StreamExt, channel::mpsc};
+    //!
+    //! #[derive(Default)]
+    //! struct AgentTextProjection {
+    //!     order: Vec<v2::MessageId>,
+    //!     messages: HashMap<v2::MessageId, Vec<v2::ContentBlock>>,
+    //! }
+    //!
+    //! impl AgentTextProjection {
+    //!     fn apply(&mut self, update: v2::SessionUpdate) {
+    //!         match update {
+    //!             v2::SessionUpdate::AgentMessageChunk(chunk) => {
+    //!                 self.message_content(chunk.message_id).push(chunk.content);
+    //!             }
+    //!             v2::SessionUpdate::AgentMessage(message) => {
+    //!                 let content = self.message_content(message.message_id);
+    //!                 match message.content {
+    //!                     // Snapshots patch chunks accumulated for the same message ID.
+    //!                     MaybeUndefined::Undefined => {}
+    //!                     MaybeUndefined::Null => content.clear(),
+    //!                     MaybeUndefined::Value(replacement) => *content = replacement,
+    //!                 }
+    //!             }
+    //!             _ => {}
+    //!         }
+    //!     }
+    //!
+    //!     fn message_content(
+    //!         &mut self,
+    //!         message_id: v2::MessageId,
+    //!     ) -> &mut Vec<v2::ContentBlock> {
+    //!         if !self.messages.contains_key(&message_id) {
+    //!             self.order.push(message_id.clone());
+    //!         }
+    //!         self.messages.entry(message_id).or_default()
+    //!     }
+    //!
+    //!     fn text(&self) -> String {
+    //!         self.order
+    //!             .iter()
+    //!             .filter_map(|message_id| self.messages.get(message_id))
+    //!             .flatten()
+    //!             .filter_map(|content| match content {
+    //!                 v2::ContentBlock::Text(text) => Some(text.text.as_str()),
+    //!                 _ => None,
+    //!             })
+    //!             .collect()
+    //!     }
+    //! }
+    //!
+    //! async fn ask_agent(
+    //!     transport: impl ConnectTo<Client> + 'static,
+    //!     prompt: &str,
+    //! ) -> Result<String, Error> {
+    //!     let (update_tx, mut update_rx) = mpsc::unbounded();
+    //!
+    //!     Client.v2()
+    //!         .on_receive_notification(
+    //!             async move |update: v2::UpdateSessionNotification,
+    //!                         _connection: V2ConnectionTo<Agent>| {
+    //!                 update_tx
+    //!                     .unbounded_send(update)
+    //!                     .map_err(Error::into_internal_error)
+    //!             },
+    //!             agent_client_protocol::on_receive_notification!(),
+    //!         )
+    //!         .on_receive_request(
+    //!             async move |_request: v2::RequestPermissionRequest,
+    //!                         responder: Responder<v2::RequestPermissionResponse>,
+    //!                         _connection: V2ConnectionTo<Agent>| {
+    //!                 // This non-interactive recipe rejects permission requests.
+    //!                 responder.respond(v2::RequestPermissionResponse::new(
+    //!                     v2::RequestPermissionOutcome::Cancelled,
+    //!                 ))
+    //!             },
+    //!             agent_client_protocol::on_receive_request!(),
+    //!         )
+    //!         .connect_with(transport, async move |connection| {
+    //!             let initialized = connection
+    //!                 .send_request(v2::InitializeRequest::new(
+    //!                     ProtocolVersion::V2,
+    //!                     v2::Implementation::new("example-client", "0.1.0"),
+    //!                 ))
+    //!                 .block_task()
+    //!                 .await?;
+    //!             if initialized.capabilities.session.is_none() {
+    //!                 return Err(Error::invalid_params()
+    //!                     .data("agent did not advertise session support"));
+    //!             }
+    //!
+    //!             let session = connection
+    //!                 .build_session_cwd()?
+    //!                 .start_session()
+    //!                 .block_task()
+    //!                 .await?
+    //!                 .into_session();
+    //!
+    //!             // This response only means that the prompt was accepted.
+    //!             session.send_prompt(prompt).block_task().await?;
+    //!
+    //!             let mut projection = AgentTextProjection::default();
+    //!             let mut observed_running = false;
+    //!             while let Some(notification) = update_rx.next().await {
+    //!                 if &notification.session_id != session.session_id() {
+    //!                     continue;
+    //!                 }
+    //!                 match notification.update {
+    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_)) => {
+    //!                         observed_running = true;
+    //!                     }
+    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
+    //!                         if observed_running =>
+    //!                     {
+    //!                         session.close().block_task().await?;
+    //!                         return Ok(projection.text());
+    //!                     }
+    //!                     update if observed_running => projection.apply(update),
+    //!                     _ => {}
+    //!                 }
+    //!             }
+    //!             Err(Error::internal_error()
+    //!                 .data("agent disconnected before the prompt ran to completion"))
+    //!         })
+    //!         .await
+    //! }
+    //! ```
 }
 
 pub mod connecting_as_client {
@@ -660,10 +807,11 @@ pub mod per_session_mcp_server {
     //!
     //! `Proxy.v2()` exposes the same non-blocking setup shape with v2 schema
     //! types. `V2SessionBuilder` handles `session/new`, while
-    //! `V2ResumeSessionBuilder` handles `session/resume`. Their
-    //! `on_proxy_session_start` callbacks receive an `OpenedV2Session`, not
-    //! just a session ID, so they retain both the command-only handle and the
-    //! complete operation-specific response:
+    //! `V2ResumeSessionBuilder` handles `session/resume`. With
+    //! `unstable_session_fork`, `V2ForkSessionBuilder` handles `session/fork`.
+    //! Their `on_proxy_session_start` callbacks receive an `OpenedV2Session`,
+    //! not just a session ID, so they retain both the command-only handle and
+    //! the complete operation-specific response:
     //!
     //! ```rust,ignore
     //! use agent_client_protocol::schema::v2;
@@ -713,12 +861,17 @@ pub mod per_session_mcp_server {
     //!     );
     //! ```
     //!
-    //! Both helpers forward upstream cancellation and the complete setup
-    //! response. New-session routing is installed before later inbound
-    //! traffic; resume routing and MCP readiness are established before the
-    //! request is published so replay can precede its response. The callback
-    //! runs outside the ordering barrier. V2 updates and interactive requests
-    //! remain independent connection traffic.
+    //! Fork uses the same terminal helper after
+    //! `connection.fork_session_from(request)`. Its returned handle and route
+    //! use the newly allocated ID from the complete `ForkSessionResponse`, not
+    //! the source session ID.
+    //!
+    //! All helpers forward upstream cancellation and the complete setup
+    //! response. New-session and fork routing are installed before later
+    //! inbound traffic; resume routing and MCP readiness are established
+    //! before the request is published so replay can precede its response. The
+    //! callback runs outside the ordering barrier. V2 updates and interactive
+    //! requests remain independent connection traffic.
     //!
     //! # Stable v1 alternative: spawning `start_session_proxy`
     //!

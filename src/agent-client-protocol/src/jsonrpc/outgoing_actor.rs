@@ -70,12 +70,14 @@ pub(super) async fn outgoing_protocol_actor(
                     %method,
                     "Completing abandoned JSON-RPC batch request with Internal Error"
                 );
-                let fallback = RawJsonRpcMessage::response(
-                    id,
+                let fallback = protocol_compat.outgoing_response_to(
+                    &id,
+                    &method,
                     Err(crate::Error::internal_error().data(format!(
                         "request handler dropped its responder for `{method}`"
                     ))),
                 );
+                let fallback = RawJsonRpcMessage::response(id, fallback);
                 if let Some(frame) = destination.abandon(fallback) {
                     transport_tx
                         .unbounded_send(frame)
@@ -178,7 +180,7 @@ pub(super) async fn outgoing_protocol_actor(
                 method,
                 response,
                 destination,
-            } => match protocol_compat.outgoing_response(&method, response) {
+            } => match protocol_compat.outgoing_response_to(&id, &method, response) {
                 Ok(value) => {
                     tracing::debug!(?id, "Sending success response");
                     (RawJsonRpcMessage::response(id, Ok(value)), destination)

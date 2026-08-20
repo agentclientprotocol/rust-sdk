@@ -284,15 +284,15 @@ impl Role for UntypedRole {
         RoleId::from_singleton(self)
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
         _connection: ConnectionTo<Self>,
-    ) -> Result<Handled<Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 
     fn counterpart(&self) -> Self::Counterpart {

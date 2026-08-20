@@ -7,6 +7,7 @@ use crate::role::{HasPeer, Role, handle_incoming_dispatch};
 use crate::{ConnectionTo, Dispatch, JsonRpcNotification, JsonRpcRequest, UntypedMessage};
 // Types re-exported from crate root
 use super::Responder;
+use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::AsyncFnMut;
 
@@ -25,15 +26,15 @@ impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for NullHandler {
         "(null)"
     }
 
-    async fn handle_dispatch_from(
+    fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
         _cx: ConnectionTo<Counterpart>,
-    ) -> Result<Handled<Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 }
 

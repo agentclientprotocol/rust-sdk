@@ -3,6 +3,8 @@
 //! These roles are used for MCP connections, which are separate from ACP but
 //! use the same underlying connection infrastructure.
 
+use std::future::Future;
+
 use crate::{
     Handled, RoleId,
     jsonrpc::{Builder, handlers::NullHandler, run::NullRun},
@@ -24,15 +26,15 @@ impl Role for Client {
         Server
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: crate::Dispatch,
         _connection: crate::ConnectionTo<Self>,
-    ) -> Result<crate::Handled<crate::Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<crate::Handled<crate::Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 }
 
@@ -64,15 +66,15 @@ impl Role for Server {
         Client
     }
 
-    async fn default_handle_dispatch_from(
+    fn default_handle_dispatch_from(
         &self,
         message: crate::Dispatch,
         _connection: crate::ConnectionTo<Self>,
-    ) -> Result<crate::Handled<crate::Dispatch>, crate::Error> {
-        Ok(Handled::No {
+    ) -> impl Future<Output = Result<crate::Handled<crate::Dispatch>, crate::Error>> + Send {
+        std::future::ready(Ok(Handled::No {
             message,
             retry: false,
-        })
+        }))
     }
 }
 
