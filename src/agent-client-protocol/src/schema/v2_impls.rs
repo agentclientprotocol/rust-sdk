@@ -276,7 +276,6 @@ impl_v2_jsonrpc_request!(
     v2::RequestPermissionResponse,
     "session/request_permission"
 );
-#[cfg(feature = "unstable_elicitation")]
 impl_v2_jsonrpc_request!(
     v2::CreateElicitationRequest,
     v2::CreateElicitationResponse,
@@ -292,7 +291,6 @@ impl_v2_jsonrpc_request!(
 );
 
 impl_v2_jsonrpc_notification!(v2::UpdateSessionNotification, "session/update");
-#[cfg(feature = "unstable_elicitation")]
 impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
 
 impl_jsonrpc_protocol_level_notification_enum!(v2::ProtocolLevelNotification {
@@ -356,7 +354,6 @@ impl_v2_jsonrpc_notification_enum!(v2::ClientNotification {
 
 impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
     RequestPermissionRequest => "session/request_permission",
-    #[cfg(feature = "unstable_elicitation")]
     CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpRequest => "mcp/connect",
@@ -369,7 +366,6 @@ impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
 
 impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
     RequestPermissionResponse => "session/request_permission",
-    #[cfg(feature = "unstable_elicitation")]
     CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
     ConnectMcpResponse => "mcp/connect",
@@ -382,7 +378,6 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
 
 impl_v2_jsonrpc_notification_enum!(v2::AgentNotification {
     UpdateSessionNotification => "session/update",
-    #[cfg(feature = "unstable_elicitation")]
     CompleteElicitationNotification => "elicitation/complete",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpNotification => "mcp/message",

@@ -356,7 +356,7 @@ where
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
                 let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.clone()),
+                    crate::schema::v1::SessionId::from(session_id.0.clone()),
                 )) {
                     Ok(route) => route,
                     Err(error) => return responder.respond_with_error(error),
@@ -526,7 +526,7 @@ where
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
                 let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.clone()),
+                    crate::schema::v1::SessionId::from(session_id.0.clone()),
                 )) {
                     Ok(route) => route,
                     Err(error) => return responder.respond_with_error(error),
@@ -694,7 +694,7 @@ where
             session_connection
                 .raw_connection()
                 .add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.clone()),
+                    crate::schema::v1::SessionId::from(session_id.0.clone()),
                 ))?,
         );
 

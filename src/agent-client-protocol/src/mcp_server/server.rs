@@ -198,7 +198,7 @@ where
     fn declaration(&self) -> crate::schema::v2::McpServer {
         crate::schema::v2::McpServer::Acp(crate::schema::v2::McpServerAcp::new(
             self.connect.name(),
-            crate::schema::v2::McpServerAcpId::from(self.server_id.clone()),
+            crate::schema::v2::McpServerAcpId::from(self.server_id.0.clone()),
         ))
     }
 

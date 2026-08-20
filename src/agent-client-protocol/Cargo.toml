@@ -29,21 +29,19 @@ default = []
 # Forward unstable features from agent-client-protocol-schema.
 # Enable these to get support for the corresponding unstable ACP surfaces.
 unstable = [
-    "unstable_auth_methods",
-    "unstable_elicitation",
     "unstable_end_turn_token_usage",
     "unstable_llm_providers",
     "unstable_mcp_over_acp",
     "unstable_plan_operations",
+    "unstable_session_compaction",
     "unstable_session_fork",
     "unstable_tool_call_name",
 ]
-unstable_auth_methods = ["agent-client-protocol-schema/unstable_auth_methods"]
-unstable_elicitation = ["agent-client-protocol-schema/unstable_elicitation"]
 unstable_end_turn_token_usage = ["agent-client-protocol-schema/unstable_end_turn_token_usage"]
 unstable_llm_providers = ["agent-client-protocol-schema/unstable_llm_providers"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
 unstable_plan_operations = ["agent-client-protocol-schema/unstable_plan_operations"]
+unstable_session_compaction = ["agent-client-protocol-schema/unstable_session_compaction"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_tool_call_name = ["agent-client-protocol-schema/unstable_tool_call_name"]
 unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]

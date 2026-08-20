@@ -939,7 +939,6 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
         )
     })?;
 
-    #[cfg(feature = "unstable_elicitation")]
     {
         assert_agent_request!(
             CreateElicitationRequest,
@@ -1972,7 +1971,6 @@ async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(),
                         .and_then(|meta| meta.get("request")),
                     Some(&Value::Bool(true))
                 );
-                #[cfg(feature = "unstable_auth_methods")]
                 assert!(initialize.client_capabilities.auth.terminal);
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
             },
@@ -1986,12 +1984,8 @@ async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(),
                 "source".into(),
                 Value::String("v2".into()),
             )]));
-            #[cfg(feature = "unstable_auth_methods")]
-            {
-                capabilities = capabilities.auth(
-                    v2::AuthCapabilities::new().terminal(v2::TerminalAuthCapabilities::new()),
-                );
-            }
+            capabilities = capabilities
+                .auth(v2::AuthCapabilities::new().terminal(v2::TerminalAuthCapabilities::new()));
             let request = v2::InitializeRequest::new(
                 ProtocolVersion::V2,
                 v2::Implementation::new("v2-metadata-client", "9.9.9").title("V2 Metadata Client"),

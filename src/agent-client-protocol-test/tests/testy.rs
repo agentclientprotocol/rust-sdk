@@ -1,4 +1,3 @@
-#[cfg(feature = "unstable")]
 use std::collections::BTreeMap;
 use std::{
     collections::{HashMap, HashSet},
@@ -7,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "unstable")]
 use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
@@ -1306,9 +1304,7 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     let created_terminal_ids = Arc::new(Mutex::new(Vec::<String>::new()));
     let released_terminal_ids = Arc::new(Mutex::new(Vec::<String>::new()));
     let terminal_content_ids = Arc::new(Mutex::new(Vec::<String>::new()));
-    #[cfg(feature = "unstable")]
     let elicitation_requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    #[cfg(feature = "unstable")]
     let completed_elicitations = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let builder = Client
@@ -1463,7 +1459,6 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
             agent_client_protocol::on_receive_request!(),
         );
 
-    #[cfg(feature = "unstable")]
     let builder = builder
         .on_receive_notification(
             {
@@ -1520,7 +1515,6 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     builder
         .connect_with(Testy::new(), async |cx| {
             let initialize = InitializeRequest::new(ProtocolVersion::V1);
-            #[cfg(feature = "unstable")]
             let initialize = initialize.client_capabilities(
                 ClientCapabilities::new().elicitation(
                     ElicitationCapabilities::new()
@@ -1589,7 +1583,6 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     assert!(messages.contains("scenario: full"));
     assert!(messages.contains("terminal/release_for_tool_call: ok"));
     assert!(messages.contains("terminal/release: ok"));
-    #[cfg(feature = "unstable")]
     for expected in [
         "elicitation/form_session_accept: ok accept content_fields=5",
         "elicitation/form_session_decline: ok decline",
@@ -1605,7 +1598,6 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
         );
     }
 
-    #[cfg(feature = "unstable")]
     {
         assert_eq!(
             elicitation_requests.lock().unwrap().as_slice(),
@@ -1641,7 +1633,6 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     Ok(())
 }
 
-#[cfg(feature = "unstable")]
 #[tokio::test]
 async fn testy_elicitations_prompt_exercises_all_elicitation_create_and_complete_paths()
 -> Result<(), agent_client_protocol::Error> {
@@ -1838,9 +1829,75 @@ async fn testy_elicitations_prompt_exercises_all_elicitation_create_and_complete
     Ok(())
 }
 
-#[cfg(feature = "unstable")]
 #[tokio::test]
-async fn testy_callbacks_with_unstable_feature_returns_invalid_params_when_url_elicitation_is_unsupported()
+async fn testy_elicitations_prompt_rejects_missing_elicitation_capability_before_sending_requests()
+-> Result<(), agent_client_protocol::Error> {
+    assert_form_elicitation_unsupported(None).await
+}
+
+#[tokio::test]
+async fn testy_elicitations_prompt_rejects_url_only_capability_before_sending_requests()
+-> Result<(), agent_client_protocol::Error> {
+    assert_form_elicitation_unsupported(Some(
+        ElicitationCapabilities::new().url(ElicitationUrlCapabilities::new()),
+    ))
+    .await
+}
+
+async fn assert_form_elicitation_unsupported(
+    elicitation_capabilities: Option<ElicitationCapabilities>,
+) -> Result<(), agent_client_protocol::Error> {
+    let requests = Arc::new(Mutex::new(0_usize));
+
+    Client
+        .builder()
+        .on_receive_request(
+            {
+                let requests = Arc::clone(&requests);
+                async move |_request: CreateElicitationRequest, responder, _cx| {
+                    *requests.lock().unwrap() += 1;
+                    responder.respond(CreateElicitationResponse::new(ElicitationAction::Cancel))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(Testy::new(), async move |cx| {
+            let mut initialize = InitializeRequest::new(ProtocolVersion::V1);
+            if let Some(capabilities) = elicitation_capabilities {
+                initialize = initialize
+                    .client_capabilities(ClientCapabilities::new().elicitation(capabilities));
+            }
+            cx.send_request(initialize).block_task().await?;
+            let session = cx
+                .send_request(NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?;
+
+            let error = cx
+                .send_request(PromptRequest::new(
+                    session.session_id,
+                    vec!["elicitations".to_string().into()],
+                ))
+                .block_task()
+                .await
+                .expect_err("unsupported form elicitation should fail the prompt request");
+            assert_eq!(error.code, ErrorCode::InvalidParams);
+            assert_eq!(
+                error.data,
+                Some(serde_json::json!(
+                    "client does not support form elicitation"
+                ))
+            );
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(*requests.lock().unwrap(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn testy_callbacks_return_invalid_params_when_url_elicitation_is_unsupported()
 -> Result<(), agent_client_protocol::Error> {
     let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
@@ -1979,7 +2036,6 @@ async fn testy_callbacks_with_unstable_feature_returns_invalid_params_when_url_e
     Ok(())
 }
 
-#[cfg(feature = "unstable")]
 fn testy_elicitation_request_label(request: &CreateElicitationRequest) -> &'static str {
     match request.message.as_str() {
         "Accept the Testy session-scoped form elicitation" => {
