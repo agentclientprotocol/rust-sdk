@@ -166,6 +166,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
             connection
                 .resume_session_from(resume)
+                .start_session()
                 .on_receiving_result({
                     let event_tx = event_tx.clone();
                     let expected_session_id = session_id.clone();
@@ -208,6 +209,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
 
             connection
                 .resume_session(session_id.clone(), PathBuf::from("/tmp"))
+                .start_session()
                 .on_receiving_result({
                     let event_tx = event_tx.clone();
                     async move |result| {

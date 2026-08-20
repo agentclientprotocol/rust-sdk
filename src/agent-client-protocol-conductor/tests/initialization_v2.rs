@@ -1,7 +1,7 @@
 #![cfg(feature = "unstable_protocol_v2")]
 
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 
@@ -802,6 +802,155 @@ async fn v2_proxy_session_helper_preserves_response_and_routes_later_updates() -
 }
 
 #[tokio::test]
+async fn v2_proxy_resume_helper_routes_replay_before_response_and_later_updates()
+-> Result<(), Error> {
+    let initialize_request = initialize_request();
+    let session_id = v2::SessionId::new("v2-resume-helper-session");
+    let session_request = v2::ResumeSessionRequest::new(session_id.clone(), "/v2-resume-session")
+        .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()))
+        .meta(meta("request", "resume-request"));
+    let session_response = v2::ResumeSessionResponse::new()
+        .config_options(vec![v2::SessionConfigOption::boolean(
+            "thinking", "Thinking", false,
+        )])
+        .meta(meta("response", "resume-response"));
+    let expected_agent_request = session_request.clone();
+    let expected_callback_response = session_response.clone();
+    let agent_session_response = session_response.clone();
+    let agent_session_id = session_id.clone();
+    let post_response_gate = Arc::new(tokio::sync::Notify::new());
+    let agent_post_response_gate = Arc::clone(&post_response_gate);
+    let replay_id = v2::MessageId::new("replayed-message");
+    let expected_replay_id = replay_id.clone();
+    let later_id = v2::MessageId::new("later-message");
+    let expected_later_id = later_id.clone();
+
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |_request: v2::InitializeRequest, responder, _cx| {
+                responder.respond(initialize_response())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ResumeSessionRequest, responder, cx| {
+                assert_eq!(request, expected_agent_request);
+                cx.send_notification(v2::UpdateSessionNotification::new(
+                    agent_session_id.clone(),
+                    v2::SessionUpdate::UserMessage(v2::UserMessage::new(replay_id.clone())),
+                ))?;
+                responder.respond(agent_session_response.clone())?;
+
+                agent_post_response_gate.notified().await;
+                cx.send_notification(v2::UpdateSessionNotification::new(
+                    agent_session_id.clone(),
+                    v2::SessionUpdate::AgentMessage(v2::AgentMessage::new(later_id.clone())),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let (callback_tx, mut callback_rx) = mpsc::unbounded();
+    let proxy = Proxy.v2().on_receive_request_from(
+        Client,
+        async move |request: v2::ResumeSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+            let callback_tx = callback_tx.clone();
+            cx.resume_session_from(request).on_proxy_session_start(
+                responder,
+                move |opened| async move {
+                    callback_tx
+                        .unbounded_send((
+                            opened.session().session_id().clone(),
+                            opened.response().clone(),
+                        ))
+                        .map_err(Error::into_internal_error)
+                },
+            )
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let applied_updates = Arc::new(Mutex::new(Vec::new()));
+    let applied_updates_handler = Arc::clone(&applied_updates);
+    let (update_tx, mut update_rx) = mpsc::unbounded();
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification, _cx| {
+                let message_id = match &update.update {
+                    v2::SessionUpdate::UserMessage(message) => message.message_id.clone(),
+                    v2::SessionUpdate::AgentMessage(message) => message.message_id.clone(),
+                    other => panic!("unexpected resume update: {other:?}"),
+                };
+                applied_updates_handler
+                    .lock()
+                    .expect("resume update lock should not be poisoned")
+                    .push(message_id);
+                update_tx
+                    .unbounded_send(update)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", ProxiesAndAgent::new(agent).proxy(proxy))
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, async move |cx| {
+            cx.send_request(initialize_request).block_task().await?;
+
+            let received = cx.send_request(session_request).block_task().await?;
+            assert_eq!(received, session_response);
+            assert_eq!(
+                *applied_updates
+                    .lock()
+                    .expect("resume update lock should not be poisoned"),
+                vec![expected_replay_id.clone()],
+                "replayed updates must be handled before the resume response is observed"
+            );
+
+            let replay = update_rx
+                .next()
+                .await
+                .ok_or_else(|| Error::internal_error().data("resume update channel closed"))?;
+            assert!(matches!(
+                replay.update,
+                v2::SessionUpdate::UserMessage(message)
+                    if message.message_id == expected_replay_id
+            ));
+
+            let (callback_session_id, callback_response) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), callback_rx.next())
+                    .await
+                    .expect("resume proxy callback should not hang")
+                    .ok_or_else(|| Error::internal_error().data("proxy callback channel closed"))?;
+            assert_eq!(callback_session_id, session_id);
+            assert_eq!(callback_response, expected_callback_response);
+
+            post_response_gate.notify_one();
+            let later = tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
+                .await
+                .expect("post-response resume update should not hang")
+                .ok_or_else(|| Error::internal_error().data("resume update channel closed"))?;
+            assert!(matches!(
+                later.update,
+                v2::SessionUpdate::AgentMessage(message)
+                    if message.message_id == expected_later_id
+            ));
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test]
 async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() -> Result<(), Error>
 {
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
@@ -907,6 +1056,125 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
     let cancelled_id = tokio::time::timeout(std::time::Duration::from_secs(2), cancel_rx.next())
         .await
         .expect("agent should observe the reissued cancellation")
+        .ok_or_else(|| Error::internal_error().data("cancellation channel closed"))?;
+    assert_eq!(cancelled_id, parked_id);
+    assert!(
+        cancel_rx.try_recv().is_err(),
+        "the downstream hop must receive exactly one cancellation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -> Result<(), Error>
+{
+    let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+    let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |_request: v2::InitializeRequest, responder, _cx| {
+                responder.respond(initialize_response())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::ResumeSessionRequest, responder, cx| {
+                if request.session_id == v2::SessionId::new("park-session") {
+                    parked_id_tx
+                        .unbounded_send(responder.id().clone())
+                        .map_err(Error::into_internal_error)?;
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        let result = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<v2::ResumeSessionResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(result)
+                    })?;
+                    return Ok(());
+                }
+
+                responder.respond(v2::ResumeSessionResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |cancel: v1::CancelRequestNotification, _cx| {
+                cancel_tx
+                    .unbounded_send(cancel.request_id)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+    let proxy = Proxy.v2().on_receive_request_from(
+        Client,
+        async |request: v2::ResumeSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+            cx.resume_session_from(request)
+                .on_proxy_session_start(responder, |_opened| async { Ok(()) })
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+    let client_request_id = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        Client
+            .v2()
+            .with_spawned(|_cx| async move {
+                ConductorImpl::new_agent(
+                    "v2-resume-cancellation-conductor",
+                    ProxiesAndAgent::new(agent).proxy(proxy),
+                )
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+            })
+            .connect_with(transport, async move |cx| {
+                cx.send_request(initialize_request()).block_task().await?;
+
+                let pending = cx.send_request(v2::ResumeSessionRequest::new(
+                    "park-session",
+                    "/park-session",
+                ));
+                let client_request_id = pending.id().clone();
+                pending.cancel()?;
+                let error = pending
+                    .block_task()
+                    .await
+                    .expect_err("cancelled v2 session/resume should fail");
+                assert_eq!(i32::from(error.code), -32800);
+
+                let response = cx
+                    .send_request(v2::ResumeSessionRequest::new(
+                        "normal-session",
+                        "/normal-session",
+                    ))
+                    .block_task()
+                    .await?;
+                assert_eq!(response, v2::ResumeSessionResponse::new());
+                Ok(client_request_id)
+            }),
+    )
+    .await
+    .expect("v2 resume proxy cancellation test timed out")?;
+
+    let parked_id = tokio::time::timeout(std::time::Duration::from_secs(2), parked_id_rx.next())
+        .await
+        .expect("agent should observe the forwarded resume request")
+        .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
+    assert_ne!(
+        parked_id, client_request_id,
+        "each proxy hop must allocate its own request ID"
+    );
+    let cancelled_id = tokio::time::timeout(std::time::Duration::from_secs(2), cancel_rx.next())
+        .await
+        .expect("agent should observe the reissued resume cancellation")
         .ok_or_else(|| Error::internal_error().data("cancellation channel closed"))?;
     assert_eq!(cancelled_id, parked_id);
     assert!(

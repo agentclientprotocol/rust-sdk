@@ -347,7 +347,7 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             dynamic_handlers.remove(&uuid);
         }
         DynamicHandlerMessage::Barrier => {}
-        #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+        #[cfg(feature = "unstable_protocol_v2")]
         DynamicHandlerMessage::AcknowledgedBarrier(acknowledgment) => {
             let _ = acknowledgment.send(());
         }

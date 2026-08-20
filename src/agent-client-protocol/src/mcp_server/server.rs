@@ -44,8 +44,9 @@ use crate::schema::v1::ForkSessionRequest;
 /// session setup through `Builder::with_mcp_server` or
 /// `SessionBuilder::with_mcp_server`. When `unstable_protocol_v2` is also
 /// enabled, `Proxy.v2().with_mcp_server` attaches a server globally to draft
-/// v2 setup requests and `V2SessionBuilder::with_mcp_server` attaches one to a
-/// single new v2 session.
+/// v2 setup requests. `V2SessionBuilder::with_mcp_server` attaches one to a
+/// single new v2 session, while `V2ResumeSessionBuilder::with_mcp_server`
+/// attaches one to a single resumed session.
 ///
 /// # Creating an MCP Server
 ///
@@ -199,8 +200,8 @@ where
         ))
     }
 
-    fn append_declaration(&self, request: &mut crate::schema::v2::NewSessionRequest) {
-        request.mcp_servers.push(self.declaration());
+    fn append_declaration(&self, mcp_servers: &mut Vec<crate::schema::v2::McpServer>) {
+        mcp_servers.push(self.declaration());
     }
 
     fn validate_session_setup(request: &UntypedMessage) -> Result<bool, crate::Error> {
@@ -252,13 +253,13 @@ where
         Ok(())
     }
 
-    /// Attach this server to a draft protocol v2 `session/new` request.
+    /// Attach this server to a draft protocol v2 session setup request.
     pub fn into_dynamic_handler(
         self,
-        request: &mut crate::schema::v2::NewSessionRequest,
+        mcp_servers: &mut Vec<crate::schema::v2::McpServer>,
         cx: &crate::V2ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
-        self.append_declaration(request);
+        self.append_declaration(mcp_servers);
         cx.add_dynamic_handler(self.active_session)
     }
 }

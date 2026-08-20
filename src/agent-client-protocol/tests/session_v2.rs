@@ -818,7 +818,11 @@ async fn v2_resume_replay_is_handled_before_the_response() {
 
             let request = v2::ResumeSessionRequest::new(session_id.clone(), cwd()?)
                 .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
-            let opened = connection.resume_session_from(request).block_task().await?;
+            let opened = connection
+                .resume_session_from(request)
+                .start_session()
+                .block_task()
+                .await?;
 
             assert_eq!(opened.session().session_id(), &session_id);
             assert_eq!(opened.response(), &expected_response);

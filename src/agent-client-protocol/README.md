@@ -62,11 +62,12 @@ communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
 Stable protocol v1 supports per-session and global proxy attachment. Draft
 protocol v2 supports both scopes when both unstable features are enabled:
 `Proxy.v2().with_mcp_server(...)` injects a global server into supported setup
-requests, and `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
-`session/new`. Successful attachments remain active for the connection
-lifetime. A v2 proxy can forward setup with
-`V2SessionBuilder::on_proxy_session_start`; updates and interactive requests
-remain independent connection traffic.
+requests, `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
+`session/new`, and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one
+to a single `session/resume`. Successful attachments remain active for the
+connection lifetime. A v2 proxy can forward either setup operation with the
+builder's `on_proxy_session_start`; updates and interactive requests remain
+independent connection traffic.
 
 ## Learning More
 
