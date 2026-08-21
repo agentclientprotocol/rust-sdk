@@ -4,6 +4,14 @@
 
 ### Added
 
+- Add stable protocol v1 `session/load` and `session/resume` restore builders
+  (`ConnectionTo::load_session`, `ConnectionTo::resume_session`,
+  `ConnectionTo::restore_session_from`) that install session routing *before*
+  publishing the request, so replay or early notifications for the restored
+  session are captured, and return the complete restore response alongside the
+  `ActiveSession` in a `RestoredSession`. On failure or cancellation the
+  routing is dropped, leaving no stale handler behind. Mirrors the v2
+  `OpenedV2Session` shape.
 - *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The
   agent implements the complete baseline session lifecycle; the client handles
   permissions, projects chunk and snapshot updates by message ID, and waits for

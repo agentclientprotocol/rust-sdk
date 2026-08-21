@@ -3,16 +3,18 @@ use std::{future::Future, marker::PhantomData, path::Path};
 use futures::channel::{mpsc, oneshot};
 
 use crate::{
-    Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Responder, Role,
+    Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcRequest, Responder,
+    Role,
     jsonrpc::{
         DynamicHandlerGuard,
         run::{NullRun, RunWithConnectionTo},
     },
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v1::{
-        ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
-        PromptResponse, SessionConfigOption, SessionId, SessionModeState, SessionNotification,
-        SessionUpdate, StopReason,
+        ContentBlock, ContentChunk, LoadSessionRequest, LoadSessionResponse, Meta,
+        NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
+        ResumeSessionResponse, SessionConfigOption, SessionId, SessionModeState,
+        SessionNotification, SessionUpdate, StopReason,
     },
     util::{MatchDispatch, MatchDispatchFrom, run_until},
 };
@@ -38,6 +40,75 @@ impl SessionBlockState for NonBlocking {}
 /// Trait for marker types that indicate blocking vs non-blocking API.
 /// See [`SessionBuilder::block_task`].
 pub trait SessionBlockState: Send + 'static + Sync + std::fmt::Debug {}
+
+/// A stable protocol v1 "restore an existing session" request — either
+/// `session/load` or `session/resume` — reduced to what the SDK needs to attach
+/// an [`ActiveSession`] to the restored session.
+///
+/// Implemented for [`LoadSessionRequest`] and [`ResumeSessionRequest`]. The
+/// full request stays on the builder, so interception helpers such as MCP
+/// injection keep working unchanged.
+pub trait RestoreSessionRequest: JsonRpcRequest {
+    /// The session this request loads or resumes.
+    fn session_id(&self) -> &SessionId;
+}
+
+/// The response to a stable protocol v1 restore request, reduced to what an
+/// [`ActiveSession`] carries from the operation.
+///
+/// Implemented for [`LoadSessionResponse`] and [`ResumeSessionResponse`]. The
+/// complete response remains available on [`RestoredSession::response`], so no
+/// operation-specific data is lost by this reduction.
+pub trait RestoreSessionResponse {
+    /// Initial mode state reported by the agent, if any.
+    fn modes(&self) -> Option<SessionModeState>;
+
+    /// Initial session configuration options reported by the agent, if any.
+    fn config_options(&self) -> Option<Vec<SessionConfigOption>>;
+
+    /// `_meta` data reported by the agent, if any.
+    fn meta(&self) -> Option<Meta>;
+}
+
+impl RestoreSessionRequest for LoadSessionRequest {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+impl RestoreSessionResponse for LoadSessionResponse {
+    fn modes(&self) -> Option<SessionModeState> {
+        self.modes.clone()
+    }
+
+    fn config_options(&self) -> Option<Vec<SessionConfigOption>> {
+        self.config_options.clone()
+    }
+
+    fn meta(&self) -> Option<Meta> {
+        self.meta.clone()
+    }
+}
+
+impl RestoreSessionRequest for ResumeSessionRequest {
+    fn session_id(&self) -> &SessionId {
+        &self.session_id
+    }
+}
+
+impl RestoreSessionResponse for ResumeSessionResponse {
+    fn modes(&self) -> Option<SessionModeState> {
+        self.modes.clone()
+    }
+
+    fn config_options(&self) -> Option<Vec<SessionConfigOption>> {
+        self.config_options.clone()
+    }
+
+    fn meta(&self) -> Option<Meta> {
+        self.meta.clone()
+    }
+}
 
 impl<Counterpart: Role> ConnectionTo<Counterpart>
 where
@@ -75,6 +146,44 @@ where
         SessionBuilder::new(self, request)
     }
 
+    /// Stable protocol v1 session builder that loads an existing session.
+    ///
+    /// [`ActiveSession`] routing is installed as with
+    /// [`build_session`](Self::build_session); `session/load` carries the
+    /// session id itself, so the builder hands it to the request rather than
+    /// reading it back from the response.
+    pub fn load_session(
+        &self,
+        session_id: impl Into<SessionId>,
+        cwd: impl AsRef<Path>,
+    ) -> RestoreSessionBuilder<Counterpart, LoadSessionRequest> {
+        RestoreSessionBuilder::new(self, LoadSessionRequest::new(session_id, cwd.as_ref()))
+    }
+
+    /// Stable protocol v1 session builder that resumes an existing session.
+    ///
+    /// The `session/resume` counterpart of [`load_session`](Self::load_session).
+    pub fn resume_session(
+        &self,
+        session_id: impl Into<SessionId>,
+        cwd: impl AsRef<Path>,
+    ) -> RestoreSessionBuilder<Counterpart, ResumeSessionRequest> {
+        RestoreSessionBuilder::new(self, ResumeSessionRequest::new(session_id, cwd.as_ref()))
+    }
+
+    /// Stable protocol v1 session builder starting from an existing restore
+    /// request — either `session/load` or `session/resume`.
+    ///
+    /// Use this when you've intercepted a restore request and want to modify
+    /// it (e.g., inject MCP servers) before forwarding.
+    pub fn restore_session_from<Req>(&self, request: Req) -> RestoreSessionBuilder<Counterpart, Req>
+    where
+        Req: RestoreSessionRequest,
+        Req::Response: RestoreSessionResponse,
+    {
+        RestoreSessionBuilder::new(self, request)
+    }
+
     /// Given a session response received from the agent,
     /// attach a handler to process messages related to this session
     /// and let you access them.
@@ -98,22 +207,285 @@ where
             ..
         } = response;
 
-        let (update_tx, update_rx) = mpsc::unbounded();
-        let handler = ActiveSessionHandler::new(session_id.clone(), update_tx.clone());
-        let session_handler_registration = self.add_dynamic_handler(handler)?;
+        let prepared = self.prepare_session_routing(&session_id)?;
 
         Ok(ActiveSession {
             session_id,
             modes,
             config_options,
             meta,
-            update_rx,
-            update_tx,
+            update_rx: prepared.update_rx,
+            update_tx: prepared.update_tx,
             connection: self.clone(),
-            session_handler_registration,
+            session_handler_registration: prepared.session_handler_registration,
             mcp_handler_registrations,
             _runner: PhantomData,
         })
+    }
+
+    /// Install the update channel and session handler for `session_id`,
+    /// returning the pieces an [`ActiveSession`] claims on success.
+    ///
+    /// Call this *before* publishing a restore request so routing is in place
+    /// for replay or early notifications; dropping the returned registration
+    /// removes routing on failure or cancellation.
+    fn prepare_session_routing(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<PreparedSession<Counterpart>, crate::Error> {
+        let (update_tx, update_rx) = mpsc::unbounded();
+        let handler = ActiveSessionHandler::new(session_id.clone(), update_tx.clone());
+        let session_handler_registration = self.add_dynamic_handler(handler)?;
+
+        Ok(PreparedSession {
+            update_rx,
+            update_tx,
+            session_handler_registration,
+        })
+    }
+}
+
+/// Routing pieces installed for a restore request before it is published.
+///
+/// `prepare_session_routing` returns this so the caller can publish the
+/// request with routing already in place; an [`ActiveSession`] claims the
+/// pieces on success, and the registration drops routing on failure or
+/// cancellation.
+struct PreparedSession<Counterpart: Role>
+where
+    Counterpart: HasPeer<Agent>,
+{
+    update_rx: mpsc::UnboundedReceiver<SessionMessage>,
+    update_tx: mpsc::UnboundedSender<SessionMessage>,
+    session_handler_registration: DynamicHandlerGuard<Counterpart>,
+}
+
+/// Stable protocol v1 session builder that restores an existing session via
+/// either `session/load` or `session/resume`.
+///
+/// The `BlockState` type parameter tracks whether blocking methods are
+/// available, mirroring [`SessionBuilder`]:
+/// - `NonBlocking` (default): Only [`on_session_start`](Self::on_session_start) is available
+/// - `Blocking` (after calling [`block_task`](Self::block_task)):
+///   [`start_session`](Self::start_session) becomes available
+///
+/// The routing that delivers session messages to the returned
+/// [`ActiveSession`] is installed before the request is published, so replay
+/// or early notifications for the restored session are captured; on failure
+/// or cancellation the routing is dropped with the request.
+#[must_use = "use `start_session` or `on_session_start` to start the session"]
+#[derive(Debug)]
+pub struct RestoreSessionBuilder<
+    Counterpart,
+    Req: RestoreSessionRequest,
+    BlockState: SessionBlockState = NonBlocking,
+> where
+    Counterpart: HasPeer<Agent>,
+    Req::Response: RestoreSessionResponse,
+{
+    connection: ConnectionTo<Counterpart>,
+    request: Req,
+    block_state: PhantomData<BlockState>,
+}
+
+impl<Counterpart, Req> RestoreSessionBuilder<Counterpart, Req, NonBlocking>
+where
+    Counterpart: HasPeer<Agent>,
+    Req: RestoreSessionRequest,
+    Req::Response: RestoreSessionResponse,
+{
+    fn new(connection: &ConnectionTo<Counterpart>, request: Req) -> Self {
+        RestoreSessionBuilder {
+            connection: connection.clone(),
+            request,
+            block_state: PhantomData,
+        }
+    }
+
+    /// Restore the session in a spawned background task, running `op` with
+    /// the restored session once the agent confirms.
+    ///
+    /// Mirrors [`SessionBuilder::on_session_start`]: returns immediately and
+    /// the handshake runs in a background task. Because routing is installed
+    /// before the request is published, session messages that arrive before
+    /// the restore response still reach `op`'s [`ActiveSession`].
+    ///
+    /// On an error response the session-handler routing is dropped, so a
+    /// failed restore leaves no stale handler behind.
+    pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
+    where
+        F: FnOnce(RestoredSession<'static, Counterpart, Req::Response>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), crate::Error>> + Send,
+    {
+        ensure_v1_session_protocol(&self.connection)?;
+
+        let RestoreSessionBuilder {
+            connection,
+            request,
+            block_state: _,
+        } = self;
+
+        // Install routing before publishing so replay or early notifications
+        // for this session are captured from the first inbound dispatch.
+        let session_id = request.session_id().clone();
+        let prepared = connection.prepare_session_routing(&session_id)?;
+
+        connection
+            .send_ordered_request_to(Agent, request)
+            .on_receiving_result({
+                let connection = connection.clone();
+                async move |result| {
+                    // Failure or cancellation: `result?` returns and `prepared`
+                    // is dropped, removing the session-handler routing.
+                    let response = result?;
+
+                    let session = ActiveSession {
+                        session_id,
+                        modes: response.modes(),
+                        config_options: response.config_options(),
+                        meta: response.meta(),
+                        update_rx: prepared.update_rx,
+                        update_tx: prepared.update_tx,
+                        connection: connection.clone(),
+                        session_handler_registration: prepared.session_handler_registration,
+                        mcp_handler_registrations: Vec::new(),
+                        _runner: PhantomData,
+                    };
+
+                    connection.spawn(async move { op(RestoredSession { session, response }).await })
+                }
+            })
+    }
+}
+
+impl<Counterpart, Req> RestoreSessionBuilder<Counterpart, Req, NonBlocking>
+where
+    Counterpart: HasPeer<Agent>,
+    Req: RestoreSessionRequest,
+    Req::Response: RestoreSessionResponse,
+{
+    /// Mark this restore builder as able to block the current task.
+    ///
+    /// After calling this, you can use [`start_session`](Self::start_session)
+    /// which blocks the current task.
+    ///
+    /// This should not be used from inside a message handler like
+    /// [`Builder::on_receive_request`](`crate::Builder::on_receive_request`).
+    pub fn block_task(self) -> RestoreSessionBuilder<Counterpart, Req, Blocking> {
+        RestoreSessionBuilder {
+            connection: self.connection,
+            request: self.request,
+            block_state: PhantomData,
+        }
+    }
+}
+
+impl<Counterpart, Req> RestoreSessionBuilder<Counterpart, Req, Blocking>
+where
+    Counterpart: HasPeer<Agent>,
+    Req: RestoreSessionRequest,
+    Req::Response: RestoreSessionResponse,
+{
+    /// Send the restore request, block until the agent confirms, and return
+    /// the restored session handle.
+    ///
+    /// Mirrors [`SessionBuilder::start_session`]. Routing is installed before
+    /// the request is published; on an error response it is dropped.
+    ///
+    /// Requires calling [`block_task`](Self::block_task) first.
+    pub async fn start_session(
+        self,
+    ) -> Result<RestoredSession<'static, Counterpart, Req::Response>, crate::Error> {
+        ensure_v1_session_protocol(&self.connection)?;
+
+        let RestoreSessionBuilder {
+            connection,
+            request,
+            block_state: _,
+        } = self;
+
+        let session_id = request.session_id().clone();
+        let prepared = connection.prepare_session_routing(&session_id)?;
+
+        // On error `prepared` is dropped here, removing the session routing.
+        let response = match connection
+            .send_request_to(Agent, request)
+            .block_task()
+            .await
+        {
+            Ok(response) => response,
+            Err(err) => return Err(err),
+        };
+
+        let session = ActiveSession {
+            session_id,
+            modes: response.modes(),
+            config_options: response.config_options(),
+            meta: response.meta(),
+            update_rx: prepared.update_rx,
+            update_tx: prepared.update_tx,
+            connection,
+            session_handler_registration: prepared.session_handler_registration,
+            mcp_handler_registrations: Vec::new(),
+            _runner: PhantomData,
+        };
+
+        Ok(RestoredSession { session, response })
+    }
+}
+
+/// A restored session and the operation-specific response that opened it.
+///
+/// The response is kept separate from the [`ActiveSession`] because v1
+/// `session/load` and `session/resume` responses carry no session id — it
+/// lives on the request — so the complete response stays available without
+/// being folded into session state. Mirrors the protocol v2 `OpenedV2Session`.
+pub struct RestoredSession<'runner, Link, Response>
+where
+    Link: HasPeer<Agent>,
+{
+    session: ActiveSession<'runner, Link>,
+    response: Response,
+}
+
+impl<'runner, Link, Response> RestoredSession<'runner, Link, Response>
+where
+    Link: HasPeer<Agent>,
+{
+    /// Access the command handle for the restored session.
+    pub fn session(&self) -> &ActiveSession<'runner, Link> {
+        &self.session
+    }
+
+    /// Access the command handle mutably, e.g. to read updates that arrive
+    /// after the restore.
+    pub fn session_mut(&mut self) -> &mut ActiveSession<'runner, Link> {
+        &mut self.session
+    }
+
+    /// Access the complete response from the restore operation.
+    pub fn response(&self) -> &Response {
+        &self.response
+    }
+
+    /// Split this result into the command handle and complete setup response.
+    pub fn into_parts(self) -> (ActiveSession<'runner, Link>, Response) {
+        (self.session, self.response)
+    }
+}
+
+impl<Link, Response> std::fmt::Debug for RestoredSession<'_, Link, Response>
+where
+    Link: HasPeer<Agent>,
+    Response: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // [`ActiveSession`] holds live channels and is intentionally not
+        // `Debug`; its session id is the identity worth printing here.
+        f.debug_struct("RestoredSession")
+            .field("session_id", self.session.session_id())
+            .field("response", &self.response)
+            .finish()
     }
 }
 
