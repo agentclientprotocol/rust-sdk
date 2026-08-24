@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.0.0...v2.1.0) - 2026-08-24
+
+### Added
+
+- *(acp)* update schema to 1.7 ([#331](https://github.com/agentclientprotocol/rust-sdk/pull/331))
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(acp)* Add v2 session MCP attachment ([#303](https://github.com/agentclientprotocol/rust-sdk/pull/303))
+- *(conductor)* add v2 proxy initialization ([#302](https://github.com/agentclientprotocol/rust-sdk/pull/302))
+- *(acp)* expose unstable LLM provider methods ([#298](https://github.com/agentclientprotocol/rust-sdk/pull/298))
+- *(unstable-v2)* Better v2 session builders ([#295](https://github.com/agentclientprotocol/rust-sdk/pull/295))
+- *(acp)* expose unstable plan operations ([#297](https://github.com/agentclientprotocol/rust-sdk/pull/297))
+- *(acp)* expose unstable tool-call names ([#296](https://github.com/agentclientprotocol/rust-sdk/pull/296))
+
+### Fixed
+
+- *(acp)* Preserve session config options ([#332](https://github.com/agentclientprotocol/rust-sdk/pull/332))
+- *(acp)* box handler chain links to bound dispatch stack use ([#306](https://github.com/agentclientprotocol/rust-sdk/pull/306))
+- *(acp)* Allow v2 initialize with future params ([#304](https://github.com/agentclientprotocol/rust-sdk/pull/304))
+- *(acp)* preserve same-version initialize fields ([#299](https://github.com/agentclientprotocol/rust-sdk/pull/299))
+- *(acp)* Support WASI builds ([#294](https://github.com/agentclientprotocol/rust-sdk/pull/294))
+
 ### Added
 
 - *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The

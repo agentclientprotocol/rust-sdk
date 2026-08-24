@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.0.0...agent-client-protocol-conductor-v2.1.0) - 2026-08-24
+
+### Added
+
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(polyfill)* Support v2 MCP-over-ACP bridge ([#305](https://github.com/agentclientprotocol/rust-sdk/pull/305))
+- *(conductor)* add v2 proxy initialization ([#302](https://github.com/agentclientprotocol/rust-sdk/pull/302))
+
 ### Added
 
 - Add opt-in protocol-v2 initialization for agent and nested proxy chains
