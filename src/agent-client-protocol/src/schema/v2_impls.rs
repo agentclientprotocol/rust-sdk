@@ -263,6 +263,24 @@ impl_v2_jsonrpc_request!(
     "session/set_config_option"
 );
 impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt");
+#[cfg(feature = "unstable_session_inject")]
+impl_v2_jsonrpc_request!(
+    v2::InjectSessionRequest,
+    v2::InjectSessionResponse,
+    "session/inject"
+);
+#[cfg(feature = "unstable_session_inject")]
+impl_v2_jsonrpc_request!(
+    v2::RevokeInjectSessionRequest,
+    v2::RevokeInjectSessionResponse,
+    "session/revoke_inject"
+);
+#[cfg(feature = "unstable_session_inject")]
+impl_v2_jsonrpc_request!(
+    v2::ReplaceInjectSessionRequest,
+    v2::ReplaceInjectSessionResponse,
+    "session/replace_inject"
+);
 #[cfg(feature = "unstable_mcp_over_acp")]
 impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
@@ -316,6 +334,12 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     CloseSessionRequest => "session/close",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
+    #[cfg(feature = "unstable_session_inject")]
+    InjectSessionRequest => "session/inject",
+    #[cfg(feature = "unstable_session_inject")]
+    RevokeInjectSessionRequest => "session/revoke_inject",
+    #[cfg(feature = "unstable_session_inject")]
+    ReplaceInjectSessionRequest => "session/replace_inject",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
@@ -340,6 +364,12 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     CloseSessionResponse => "session/close",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
+    #[cfg(feature = "unstable_session_inject")]
+    InjectSessionResponse => "session/inject",
+    #[cfg(feature = "unstable_session_inject")]
+    RevokeInjectSessionResponse => "session/revoke_inject",
+    #[cfg(feature = "unstable_session_inject")]
+    ReplaceInjectSessionResponse => "session/replace_inject",
     #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,

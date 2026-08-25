@@ -1004,6 +1004,118 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .expect("v2 session command test failed");
 }
 
+#[cfg(feature = "unstable_session_inject")]
+#[tokio::test(flavor = "current_thread")]
+async fn v2_session_inject_helpers_preserve_typed_content_and_message_ids() {
+    let session_id = v2::SessionId::new("inject-session");
+    let agent_session_id = session_id.clone();
+
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: v2::NewSessionRequest,
+                        responder: Responder<v2::NewSessionResponse>,
+                        _connection: V2ConnectionTo<Client>| {
+                responder.respond(v2::NewSessionResponse::new(agent_session_id.clone()))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: v2::InjectSessionRequest,
+                   responder: Responder<v2::InjectSessionResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, v2::SessionId::new("inject-session"));
+                assert_eq!(request.mode, v2::SessionInjectMode::Steer);
+                assert_eq!(
+                    request.content,
+                    vec![v2::ContentBlock::Text(v2::TextContent::new("steer"))]
+                );
+                responder.respond(v2::InjectSessionResponse::new(v2::MessageId::new(
+                    "message-1",
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: v2::RevokeInjectSessionRequest,
+                   responder: Responder<v2::RevokeInjectSessionResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, v2::SessionId::new("inject-session"));
+                assert_eq!(request.message_id, v2::MessageId::new("message-1"));
+                responder.respond(v2::RevokeInjectSessionResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |request: v2::ReplaceInjectSessionRequest,
+                   responder: Responder<v2::ReplaceInjectSessionResponse>,
+                   _connection: V2ConnectionTo<Client>| {
+                assert_eq!(request.session_id, v2::SessionId::new("inject-session"));
+                assert_eq!(request.message_id, v2::MessageId::new("message-1"));
+                assert_eq!(
+                    request.content,
+                    vec![v2::ContentBlock::Text(v2::TextContent::new("replacement"))]
+                );
+                responder.respond(v2::ReplaceInjectSessionResponse::new(request.message_id))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let client = Client.v2().connect_with(agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation(),
+            ))
+            .block_task()
+            .await?;
+
+        let opened = connection
+            .build_session(cwd()?)
+            .start_session()
+            .block_task()
+            .await?;
+        let (session, _) = opened.into_parts();
+
+        let injected = session
+            .inject(
+                v2::SessionInjectMode::Steer,
+                vec![v2::ContentBlock::Text(v2::TextContent::new("steer"))],
+            )
+            .block_task()
+            .await?;
+        assert_eq!(injected.message_id, v2::MessageId::new("message-1"));
+
+        let replaced = session
+            .replace_inject(
+                injected.message_id,
+                vec![v2::ContentBlock::Text(v2::TextContent::new("replacement"))],
+            )
+            .block_task()
+            .await?;
+        assert_eq!(replaced.message_id, v2::MessageId::new("message-1"));
+
+        session
+            .revoke_inject(replaced.message_id)
+            .block_task()
+            .await?;
+        Ok(())
+    });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("v2 session inject helper test timed out")
+        .expect("v2 session inject helper test failed");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn dropping_v2_session_does_not_unregister_update_handling() {
     let session_id = v2::SessionId::new("dropped-handle");
