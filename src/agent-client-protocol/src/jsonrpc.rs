@@ -2692,6 +2692,120 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
     }
 }
 
+/// Resolves when a tracked JSON-RPC response frame is accepted by the outgoing
+/// transport-frame queue.
+///
+/// This receipt does not indicate that any bytes were written to the transport.
+/// For a response in a batch, it resolves only after every response in the batch
+/// is ready and the aggregate batch frame is accepted by the queue. It resolves
+/// with an error if enqueueing fails or the outgoing actor tears down first.
+///
+/// # Batch handler deadlocks
+///
+/// A batch cannot be enqueued until all of its handlers return. Do not await a
+/// receipt from inside a batch handler. Return from the handler first, or spawn
+/// receipt-dependent side effects so the handler can return immediately.
+#[must_use = "a response receipt must be awaited to observe enqueue completion"]
+pub struct ResponseReceipt {
+    receiver: oneshot::Receiver<Result<(), crate::Error>>,
+}
+
+impl std::fmt::Debug for ResponseReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResponseReceipt")
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::future::Future for ResponseReceipt {
+    type Output = Result<(), crate::Error>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        match std::pin::Pin::new(&mut self.receiver).poll(context) {
+            std::task::Poll::Ready(Ok(result)) => std::task::Poll::Ready(result),
+            std::task::Poll::Ready(Err(_)) => {
+                std::task::Poll::Ready(Err(response_receipt_teardown_error()))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+struct ResponseReceiptSender {
+    state: Arc<ResponseReceiptState>,
+}
+
+impl std::fmt::Debug for ResponseReceiptSender {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ResponseReceiptSender")
+            .finish_non_exhaustive()
+    }
+}
+
+struct ResponseReceiptState {
+    sender: Mutex<Option<oneshot::Sender<Result<(), crate::Error>>>>,
+}
+
+impl ResponseReceiptSender {
+    fn channel() -> (Self, ResponseReceipt) {
+        let (sender, receiver) = oneshot::channel();
+        (
+            Self {
+                state: Arc::new(ResponseReceiptState {
+                    sender: Mutex::new(Some(sender)),
+                }),
+            },
+            ResponseReceipt { receiver },
+        )
+    }
+
+    fn resolve(self, result: Result<(), crate::Error>) {
+        self.state.resolve(result);
+    }
+}
+
+impl ResponseReceiptState {
+    fn resolve(&self, result: Result<(), crate::Error>) {
+        if let Some(sender) = self
+            .sender
+            .lock()
+            .expect("response receipt mutex poisoned")
+            .take()
+        {
+            drop(sender.send(result));
+        }
+    }
+}
+
+impl Drop for ResponseReceiptState {
+    fn drop(&mut self) {
+        if let Some(sender) = self
+            .sender
+            .get_mut()
+            .expect("response receipt mutex poisoned")
+            .take()
+        {
+            drop(sender.send(Err(response_receipt_teardown_error())));
+        }
+    }
+}
+
+fn response_receipt_teardown_error() -> crate::Error {
+    crate::util::internal_error(
+        "outgoing JSON-RPC actor stopped before the response frame was enqueued",
+    )
+}
+
+struct CompletedResponseFrame {
+    frame: TransportFrame,
+    receipts: Vec<ResponseReceiptSender>,
+}
+
 /// Messages send to be serialized over the transport.
 #[derive(Clone)]
 enum ResponseDestination {
@@ -2719,6 +2833,7 @@ impl ResponseDestination {
             responses: (0..slot_count).map(|_| None).collect(),
             abandoned: (0..slot_count).map(|_| None).collect(),
             active_handler_attempts: (0..slot_count).map(|_| 0).collect(),
+            receipts: (0..slot_count).map(|_| None).collect(),
             dispatch_complete: false,
             emitted: false,
         }));
@@ -2737,14 +2852,18 @@ impl ResponseDestination {
         )
     }
 
-    fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
+    fn complete(
+        self,
+        response: RawJsonRpcMessage,
+        receipt: Option<ResponseReceiptSender>,
+    ) -> Option<CompletedResponseFrame> {
         match self {
-            Self::Individual(slot) => slot.complete(response),
-            Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
+            Self::Individual(slot) => slot.complete(response, receipt),
+            Self::Batch(slot) => slot.complete(response, receipt).map(batch_response_frame),
         }
     }
 
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<TransportFrame> {
+    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<CompletedResponseFrame> {
         match self {
             Self::Individual(_) => None,
             Self::Batch(slot) => slot.abandon(fallback).map(batch_response_frame),
@@ -2769,7 +2888,7 @@ impl ResponseDestination {
         })
     }
 
-    fn finish_handler_attempt(self) -> Option<TransportFrame> {
+    fn finish_handler_attempt(self) -> Option<CompletedResponseFrame> {
         match self {
             Self::Individual(_) => None,
             Self::Batch(slot) => slot.finish_handler_attempt().map(batch_response_frame),
@@ -2783,21 +2902,33 @@ struct IndividualResponseSlot {
 }
 
 impl IndividualResponseSlot {
-    fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
+    fn complete(
+        self,
+        response: RawJsonRpcMessage,
+        receipt: Option<ResponseReceiptSender>,
+    ) -> Option<CompletedResponseFrame> {
         if self.completed.swap(true, Ordering::AcqRel) {
             tracing::warn!("Ignoring duplicate completion of JSON-RPC request");
             return None;
         }
 
-        Some(TransportFrame::Single(response))
+        Some(CompletedResponseFrame {
+            frame: TransportFrame::Single(response),
+            receipts: receipt.into_iter().collect(),
+        })
     }
 }
 
-fn batch_response_frame(responses: Vec<RawJsonRpcMessage>) -> TransportFrame {
-    TransportFrame::Batch(
-        TransportBatch::from_messages(responses)
-            .expect("a completed JSON-RPC response batch is non-empty"),
-    )
+fn batch_response_frame(
+    (responses, receipts): (Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>),
+) -> CompletedResponseFrame {
+    CompletedResponseFrame {
+        frame: TransportFrame::Batch(
+            TransportBatch::from_messages(responses)
+                .expect("a completed JSON-RPC response batch is non-empty"),
+        ),
+        receipts,
+    }
 }
 
 #[derive(Clone)]
@@ -2814,7 +2945,7 @@ impl std::fmt::Debug for BatchDispatchCompletion {
 }
 
 impl BatchDispatchCompletion {
-    fn complete(self) -> Option<TransportFrame> {
+    fn complete(self) -> Option<CompletedResponseFrame> {
         let mut state = self
             .state
             .lock()
@@ -2841,23 +2972,25 @@ fn promote_abandoned_response(state: &mut BatchResponseState, index: usize) {
     }
 }
 
-fn take_completed_batch(state: &mut BatchResponseState) -> Option<Vec<RawJsonRpcMessage>> {
+fn take_completed_batch(
+    state: &mut BatchResponseState,
+) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
     if !state.dispatch_complete || state.remaining != 0 || state.emitted {
         return None;
     }
 
     state.emitted = true;
-    Some(
-        state
-            .responses
-            .iter_mut()
-            .map(|response| {
-                response
-                    .take()
-                    .expect("completed JSON-RPC batch has every response slot")
-            })
-            .collect(),
-    )
+    let responses = state
+        .responses
+        .iter_mut()
+        .map(|response| {
+            response
+                .take()
+                .expect("completed JSON-RPC batch has every response slot")
+        })
+        .collect();
+    let receipts = state.receipts.iter_mut().filter_map(Option::take).collect();
+    Some((responses, receipts))
 }
 
 #[derive(Clone)]
@@ -2884,7 +3017,9 @@ impl BatchResponseSlot {
         state.active_handler_attempts[self.index] += 1;
     }
 
-    fn finish_handler_attempt(self) -> Option<Vec<RawJsonRpcMessage>> {
+    fn finish_handler_attempt(
+        self,
+    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
         let mut state = self
             .state
             .lock()
@@ -2898,7 +3033,11 @@ impl BatchResponseSlot {
         take_completed_batch(&mut state)
     }
 
-    fn complete(self, response: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
+    fn complete(
+        self,
+        response: RawJsonRpcMessage,
+        receipt: Option<ResponseReceiptSender>,
+    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
         let mut state = self
             .state
             .lock()
@@ -2924,11 +3063,15 @@ impl BatchResponseSlot {
 
         state.abandoned[self.index] = None;
         state.responses[self.index] = Some(response);
+        state.receipts[self.index] = receipt;
         state.remaining -= 1;
         take_completed_batch(&mut state)
     }
 
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
+    fn abandon(
+        self,
+        fallback: RawJsonRpcMessage,
+    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
         let mut state = self
             .state
             .lock()
@@ -2959,6 +3102,7 @@ struct BatchResponseState {
     responses: Vec<Option<RawJsonRpcMessage>>,
     abandoned: Vec<Option<RawJsonRpcMessage>>,
     active_handler_attempts: Vec<usize>,
+    receipts: Vec<Option<ResponseReceiptSender>>,
     dispatch_complete: bool,
     emitted: bool,
 }
@@ -3138,6 +3282,8 @@ enum OutgoingMessage {
         response: Result<serde_json::Value, crate::Error>,
 
         destination: ResponseDestination,
+
+        receipt: Option<ResponseReceiptSender>,
     },
 
     /// Send an Error Response that cannot be correlated to a request ID.
@@ -4452,7 +4598,13 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     ///
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    send_fn: Box<
+        dyn FnOnce(
+                Result<T, crate::Error>,
+                Option<ResponseReceiptSender>,
+            ) -> Result<(), crate::Error>
+            + Send,
+    >,
 
     /// Completes an abandoned batch slot unless an explicit response disarms it.
     drop_guard: ResponderDropGuard,
@@ -4533,17 +4685,20 @@ impl Responder<serde_json::Value> {
             id,
             cancellation,
             destination,
-            send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                send_raw_message(
-                    &message_tx,
-                    OutgoingMessage::Response {
-                        id: id_clone,
-                        method: method_clone,
-                        response,
-                        destination: send_destination,
-                    },
-                )
-            }),
+            send_fn: Box::new(
+                move |response: Result<serde_json::Value, crate::Error>, receipt| {
+                    send_raw_message(
+                        &message_tx,
+                        OutgoingMessage::Response {
+                            id: id_clone,
+                            method: method_clone,
+                            response,
+                            destination: send_destination,
+                            receipt,
+                        },
+                    )
+                },
+            ),
             drop_guard,
         }
     }
@@ -4619,9 +4774,9 @@ impl<T: JsonRpcResponse> Responder<T> {
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
-            send_fn: Box::new(move |input: Result<U, crate::Error>| {
+            send_fn: Box::new(move |input: Result<U, crate::Error>, receipt| {
                 let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value)
+                (self.send_fn)(t_value, receipt)
             }),
             drop_guard: self.drop_guard,
         }
@@ -4634,7 +4789,47 @@ impl<T: JsonRpcResponse> Responder<T> {
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
         self.drop_guard.disarm();
-        (self.send_fn)(response)
+        (self.send_fn)(response, None)
+    }
+
+    /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`)
+    /// and return a receipt for enqueue completion.
+    ///
+    /// The receipt resolves successfully when the response's single
+    /// [`TransportFrame`], or its aggregate batch frame, is accepted by the
+    /// outgoing transport-frame queue. It does not wait for bytes to be written.
+    /// It resolves with an error if enqueueing fails or the outgoing actor tears
+    /// down first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error immediately if the response cannot enter the outgoing
+    /// protocol queue. After this method returns a receipt, enqueue or actor
+    /// teardown failures are reported by awaiting that receipt.
+    ///
+    /// # Batch handler deadlocks
+    ///
+    /// A batch frame cannot be enqueued until all batch handlers return. Do not
+    /// await the receipt inside a batch handler. Return first, or spawn any side
+    /// effect that awaits the receipt so the handler can return immediately.
+    pub fn respond_with_result_tracked(
+        mut self,
+        response: Result<T, crate::Error>,
+    ) -> Result<ResponseReceipt, crate::Error> {
+        tracing::debug!(id = ?self.id, "tracked respond called");
+        let (sender, receipt) = ResponseReceiptSender::channel();
+        self.drop_guard.disarm();
+        (self.send_fn)(response, Some(sender))?;
+        Ok(receipt)
+    }
+
+    /// Respond to the JSON-RPC request with a value and return a receipt for
+    /// enqueue completion.
+    ///
+    /// See [`respond_with_result_tracked`](Self::respond_with_result_tracked) for
+    /// receipt semantics and the batch-handler deadlock warning.
+    pub fn respond_tracked(self, response: T) -> Result<ResponseReceipt, crate::Error> {
+        self.respond_with_result_tracked(Ok(response))
     }
 
     /// Respond to the JSON-RPC request with a value.
