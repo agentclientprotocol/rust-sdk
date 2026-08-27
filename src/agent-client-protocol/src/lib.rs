@@ -164,7 +164,7 @@ pub use session::*;
 #[cfg(not(target_family = "wasm"))]
 mod acp_agent;
 #[cfg(not(target_family = "wasm"))]
-pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
+pub use acp_agent::{AcpAgent, AcpAgentConfig, DEFAULT_STDOUT_LINE_LIMIT, LineDirection};
 
 #[cfg(not(target_family = "wasm"))]
 mod stdio;

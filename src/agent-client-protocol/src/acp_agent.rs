@@ -5,14 +5,16 @@
 //! configuration.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::{Pin, pin};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_process::Child;
 use serde::{Deserialize, Serialize};
-use std::pin::pin;
 
 use crate::{Client, Conductor, Role};
 
@@ -22,6 +24,9 @@ const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
+
+/// Default maximum size of one newline-delimited ACP stdout frame.
+pub const DEFAULT_STDOUT_LINE_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +170,7 @@ impl AcpAgentConfig {
 pub struct AcpAgent {
     config: AcpAgentConfig,
     debug_callback: Option<DebugCallback>,
+    stdout_line_limit: usize,
 }
 
 impl std::fmt::Debug for AcpAgent {
@@ -175,6 +181,7 @@ impl std::fmt::Debug for AcpAgent {
                 "debug_callback",
                 &self.debug_callback.as_ref().map(|_| "..."),
             )
+            .field("stdout_line_limit", &self.stdout_line_limit)
             .finish()
     }
 }
@@ -186,6 +193,7 @@ impl AcpAgent {
         Self {
             config,
             debug_callback: None,
+            stdout_line_limit: DEFAULT_STDOUT_LINE_LIMIT,
         }
     }
 
@@ -239,6 +247,19 @@ impl AcpAgent {
         F: Fn(&str, LineDirection) + Send + Sync + 'static,
     {
         self.debug_callback = Some(Arc::new(callback));
+        self
+    }
+
+    /// Set the maximum number of bytes accepted before the newline terminating one ACP stdout
+    /// frame. The default is [`DEFAULT_STDOUT_LINE_LIMIT`]. An optional carriage return counts
+    /// toward this limit; the newline itself does not.
+    ///
+    /// Exceeding the limit fails the protocol transport and terminates the spawned agent process
+    /// group. Set a larger finite value when an agent legitimately emits unusually large inline
+    /// content.
+    #[must_use]
+    pub fn with_stdout_line_limit(mut self, limit: usize) -> Self {
+        self.stdout_line_limit = limit;
         self
     }
 
@@ -332,6 +353,93 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         self.terminate();
+    }
+}
+
+struct BoundedLines<R> {
+    reader: R,
+    buffer: Vec<u8>,
+    limit: usize,
+    finished: bool,
+}
+
+impl<R> BoundedLines<R> {
+    fn new(reader: R, limit: usize) -> Self {
+        Self {
+            reader,
+            buffer: Vec::new(),
+            limit,
+            finished: false,
+        }
+    }
+
+    fn take_line(&mut self, terminated: bool) -> io::Result<String> {
+        if terminated && self.buffer.last() == Some(&b'\r') {
+            self.buffer.pop();
+        }
+        String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )
+        })
+    }
+
+    fn overflow(&mut self) -> Poll<Option<io::Result<String>>> {
+        self.finished = true;
+        Poll::Ready(Some(Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "ACP stdout line exceeds configured {}-byte limit",
+                self.limit
+            ),
+        ))))
+    }
+}
+
+impl<R: futures::AsyncBufRead + Unpin> futures::Stream for BoundedLines<R> {
+    type Item = io::Result<String>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+
+        loop {
+            let this = &mut *self;
+            let available = match Pin::new(&mut this.reader).poll_fill_buf(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    this.finished = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+                Poll::Ready(Ok(available)) => available,
+            };
+            if available.is_empty() {
+                this.finished = true;
+                return if this.buffer.is_empty() {
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(this.take_line(false)))
+                };
+            }
+
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let payload_bytes = newline.unwrap_or(available.len());
+            let Some(payload_len) = this.buffer.len().checked_add(payload_bytes) else {
+                return this.overflow();
+            };
+            if payload_len > this.limit {
+                return this.overflow();
+            }
+
+            let consumed = newline.map_or(available.len(), |position| position + 1);
+            this.buffer.extend_from_slice(&available[..payload_bytes]);
+            Pin::new(&mut this.reader).consume(consumed);
+            if newline.is_some() {
+                return Poll::Ready(Some(this.take_line(true)));
+            }
+        }
     }
 }
 
@@ -633,9 +741,10 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         self,
         client: impl crate::ConnectTo<Counterpart::Counterpart>,
     ) -> Result<(), crate::Error> {
+        use futures::StreamExt;
         use futures::io::BufReader;
-        use futures::{AsyncBufReadExt, StreamExt};
 
+        let stdout_line_limit = self.stdout_line_limit;
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
         // Create a channel to collect stderr for error reporting
@@ -668,13 +777,20 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let incoming_lines: std::pin::Pin<
             Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
         > = if let Some(callback) = self.debug_callback.clone() {
-            Box::pin(BufReader::new(child_stdout).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    callback(line, LineDirection::Stdout);
-                }
-            }))
+            Box::pin(
+                BoundedLines::new(BufReader::new(child_stdout), stdout_line_limit).inspect(
+                    move |result| {
+                        if let Ok(line) = result {
+                            callback(line, LineDirection::Stdout);
+                        }
+                    },
+                ),
+            )
         } else {
-            Box::pin(BufReader::new(child_stdout).lines())
+            Box::pin(BoundedLines::new(
+                BufReader::new(child_stdout),
+                stdout_line_limit,
+            ))
         };
 
         // The JSON-RPC transport keeps polling stdout while it drains stdin.
@@ -880,6 +996,7 @@ impl FromStr for AcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt as _;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -891,6 +1008,59 @@ mod tests {
             recorded.lock().unwrap().push(line.to_owned());
         });
         (callback, lines)
+    }
+
+    #[tokio::test]
+    async fn stdout_lines_accept_the_exact_limit_and_strip_line_endings() {
+        let limit = 64;
+        let mut input = vec![b'x'; limit - 1];
+        input.extend_from_slice(b"\r\nnext");
+        let reader = futures::io::BufReader::with_capacity(8, futures::io::Cursor::new(input));
+        let mut lines = BoundedLines::new(reader, limit);
+
+        assert_eq!(lines.next().await.unwrap().unwrap(), "x".repeat(limit - 1));
+        assert_eq!(lines.next().await.unwrap().unwrap(), "next");
+        assert!(lines.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn stdout_lines_reject_oversize_without_retaining_more_than_the_limit() {
+        let limit = 64;
+        let mut input = vec![b'x'; limit + 1];
+        input.push(b'\n');
+        let reader = futures::io::BufReader::with_capacity(8, futures::io::Cursor::new(input));
+        let mut lines = BoundedLines::new(reader, limit);
+
+        let error = lines.next().await.unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("64-byte limit"));
+        assert!(lines.buffer.len() <= limit);
+        assert!(lines.next().await.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_line_overflow_fails_transport_without_waiting_for_child_exit() {
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", "printf '%065d' 0; sleep 30"])
+            .unwrap()
+            .with_stdout_line_limit(64);
+
+        let error =
+            tokio::time::timeout(Duration::from_secs(5), Client.builder().connect_to(agent))
+                .await
+                .expect("overflow should stop the transport before the child exits")
+                .expect_err("oversized stdout should fail the transport");
+        let detail = error
+            .data
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default();
+
+        assert!(
+            detail.contains("64-byte limit"),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
