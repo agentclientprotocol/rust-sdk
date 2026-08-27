@@ -5,18 +5,16 @@
 //! configuration.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::io;
 use std::path::{Path, PathBuf};
-use std::pin::{Pin, pin};
+use std::pin::pin;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_process::Child;
 use serde::{Deserialize, Serialize};
 
-use crate::{Client, Conductor, Role};
+use crate::{Client, Conductor, DEFAULT_LINE_LIMIT, Role, line::BoundedLines};
 
 type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 
@@ -24,9 +22,6 @@ const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
-
-/// Default maximum size of one newline-delimited ACP stdout frame.
-pub const DEFAULT_STDOUT_LINE_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Direction of a line being sent or received.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,7 +188,7 @@ impl AcpAgent {
         Self {
             config,
             debug_callback: None,
-            stdout_line_limit: DEFAULT_STDOUT_LINE_LIMIT,
+            stdout_line_limit: DEFAULT_LINE_LIMIT,
         }
     }
 
@@ -251,7 +246,7 @@ impl AcpAgent {
     }
 
     /// Set the maximum number of bytes accepted before the newline terminating one ACP stdout
-    /// frame. The default is [`DEFAULT_STDOUT_LINE_LIMIT`]. An optional carriage return counts
+    /// frame. The default is [`DEFAULT_LINE_LIMIT`]. An optional carriage return counts
     /// toward this limit; the newline itself does not.
     ///
     /// Exceeding the limit fails the protocol transport and terminates the spawned agent process
@@ -353,93 +348,6 @@ impl ChildGuard {
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         self.terminate();
-    }
-}
-
-struct BoundedLines<R> {
-    reader: R,
-    buffer: Vec<u8>,
-    limit: usize,
-    finished: bool,
-}
-
-impl<R> BoundedLines<R> {
-    fn new(reader: R, limit: usize) -> Self {
-        Self {
-            reader,
-            buffer: Vec::new(),
-            limit,
-            finished: false,
-        }
-    }
-
-    fn take_line(&mut self, terminated: bool) -> io::Result<String> {
-        if terminated && self.buffer.last() == Some(&b'\r') {
-            self.buffer.pop();
-        }
-        String::from_utf8(std::mem::take(&mut self.buffer)).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stream did not contain valid UTF-8",
-            )
-        })
-    }
-
-    fn overflow(&mut self) -> Poll<Option<io::Result<String>>> {
-        self.finished = true;
-        Poll::Ready(Some(Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "ACP stdout line exceeds configured {}-byte limit",
-                self.limit
-            ),
-        ))))
-    }
-}
-
-impl<R: futures::AsyncBufRead + Unpin> futures::Stream for BoundedLines<R> {
-    type Item = io::Result<String>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.finished {
-            return Poll::Ready(None);
-        }
-
-        loop {
-            let this = &mut *self;
-            let available = match Pin::new(&mut this.reader).poll_fill_buf(cx) {
-                Poll::Pending => return Poll::Pending,
-                Poll::Ready(Err(error)) => {
-                    this.finished = true;
-                    return Poll::Ready(Some(Err(error)));
-                }
-                Poll::Ready(Ok(available)) => available,
-            };
-            if available.is_empty() {
-                this.finished = true;
-                return if this.buffer.is_empty() {
-                    Poll::Ready(None)
-                } else {
-                    Poll::Ready(Some(this.take_line(false)))
-                };
-            }
-
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let payload_bytes = newline.unwrap_or(available.len());
-            let Some(payload_len) = this.buffer.len().checked_add(payload_bytes) else {
-                return this.overflow();
-            };
-            if payload_len > this.limit {
-                return this.overflow();
-            }
-
-            let consumed = newline.map_or(available.len(), |position| position + 1);
-            this.buffer.extend_from_slice(&available[..payload_bytes]);
-            Pin::new(&mut this.reader).consume(consumed);
-            if newline.is_some() {
-                return Poll::Ready(Some(this.take_line(true)));
-            }
-        }
     }
 }
 
@@ -996,7 +904,6 @@ impl FromStr for AcpAgent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt as _;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1008,35 +915,6 @@ mod tests {
             recorded.lock().unwrap().push(line.to_owned());
         });
         (callback, lines)
-    }
-
-    #[tokio::test]
-    async fn stdout_lines_accept_the_exact_limit_and_strip_line_endings() {
-        let limit = 64;
-        let mut input = vec![b'x'; limit - 1];
-        input.extend_from_slice(b"\r\nnext");
-        let reader = futures::io::BufReader::with_capacity(8, futures::io::Cursor::new(input));
-        let mut lines = BoundedLines::new(reader, limit);
-
-        assert_eq!(lines.next().await.unwrap().unwrap(), "x".repeat(limit - 1));
-        assert_eq!(lines.next().await.unwrap().unwrap(), "next");
-        assert!(lines.next().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn stdout_lines_reject_oversize_without_retaining_more_than_the_limit() {
-        let limit = 64;
-        let mut input = vec![b'x'; limit + 1];
-        input.push(b'\n');
-        let reader = futures::io::BufReader::with_capacity(8, futures::io::Cursor::new(input));
-        let mut lines = BoundedLines::new(reader, limit);
-
-        let error = lines.next().await.unwrap().unwrap_err();
-
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains("64-byte limit"));
-        assert!(lines.buffer.len() <= limit);
-        assert!(lines.next().await.is_none());
     }
 
     #[cfg(unix)]

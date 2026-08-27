@@ -161,10 +161,13 @@ pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, Json
 mod session;
 pub use session::*;
 
+mod line;
+pub use line::DEFAULT_LINE_LIMIT;
+
 #[cfg(not(target_family = "wasm"))]
 mod acp_agent;
 #[cfg(not(target_family = "wasm"))]
-pub use acp_agent::{AcpAgent, AcpAgentConfig, DEFAULT_STDOUT_LINE_LIMIT, LineDirection};
+pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
 
 #[cfg(not(target_family = "wasm"))]
 mod stdio;
