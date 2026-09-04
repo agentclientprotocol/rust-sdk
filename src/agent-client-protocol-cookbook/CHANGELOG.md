@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.0.0...agent-client-protocol-cookbook-v2.1.0) - 2026-09-04
+
+### Added
+
+- *(acp)* add stable session restore builders ([#347](https://github.com/agentclientprotocol/rust-sdk/pull/347))
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+
 ### Added
 
 - Add a compiled draft-v2 one-shot prompt recipe that handles initialization,
