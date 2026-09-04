@@ -4,6 +4,9 @@
 
 ### Added
 
+- *(unstable-v2)* Expose pending session injection through the
+  `unstable_session_inject` feature, including typed JSON-RPC dispatch and
+  `V2Session` helpers to inject, replace, and revoke typed content.
 - *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The
   agent implements the complete baseline session lifecycle; the client handles
   permissions, projects chunk and snapshot updates by message ID, and waits for

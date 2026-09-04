@@ -809,6 +809,44 @@ where
         )
     }
 
+    /// Inject content for pending delivery to this session.
+    #[cfg(feature = "unstable_session_inject")]
+    pub fn inject(
+        &self,
+        mode: v2::SessionInjectMode,
+        content: Vec<v2::ContentBlock>,
+    ) -> SentRequest<v2::InjectSessionResponse> {
+        self.connection.send_request_to(
+            Agent,
+            v2::InjectSessionRequest::new(self.session_id.clone(), mode, content),
+        )
+    }
+
+    /// Revoke a pending injected message.
+    #[cfg(feature = "unstable_session_inject")]
+    pub fn revoke_inject(
+        &self,
+        message_id: impl Into<v2::MessageId>,
+    ) -> SentRequest<v2::RevokeInjectSessionResponse> {
+        self.connection.send_request_to(
+            Agent,
+            v2::RevokeInjectSessionRequest::new(self.session_id.clone(), message_id),
+        )
+    }
+
+    /// Replace the content of a pending injected message.
+    #[cfg(feature = "unstable_session_inject")]
+    pub fn replace_inject(
+        &self,
+        message_id: impl Into<v2::MessageId>,
+        content: Vec<v2::ContentBlock>,
+    ) -> SentRequest<v2::ReplaceInjectSessionResponse> {
+        self.connection.send_request_to(
+            Agent,
+            v2::ReplaceInjectSessionRequest::new(self.session_id.clone(), message_id, content),
+        )
+    }
+
     /// Ask the agent to cancel the session's current foreground work.
     ///
     /// This is independent from cancelling a prompt's [`SentRequest`].
