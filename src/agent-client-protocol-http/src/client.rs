@@ -66,6 +66,9 @@ impl HttpClient {
     ///
     /// If the URL path is empty, `/acp` is used. Otherwise `/acp` is appended
     /// unless the path already ends with `/acp`.
+    ///
+    /// The same client is used for HTTP/SSE and for `ws://` / `wss://` handshakes,
+    /// including timeouts, default headers, proxy, and TLS configuration.
     pub fn with_client(
         base_url: impl AsRef<str>,
         http: reqwest::Client,
@@ -86,7 +89,8 @@ impl HttpClient {
     /// Create a client with a custom HTTP client and exact endpoint URL.
     ///
     /// Use this when connecting to a server configured with a custom
-    /// `ServerOptions::path`.
+    /// `ServerOptions::path`. The client is also used for `ws://` / `wss://`
+    /// handshakes.
     pub fn with_endpoint_and_client(
         endpoint: impl AsRef<str>,
         http: reqwest::Client,
@@ -1148,18 +1152,84 @@ fn pending_request_key(id: &RequestId) -> Option<RequestId> {
 }
 
 async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
-    let HttpClient { endpoint, .. } = client;
+    let HttpClient { endpoint, http } = client;
 
-    let (ws_stream, response) = async_tungstenite::tokio::connect_async(endpoint.as_str())
-        .await
-        .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
-    trace!(
-        status = %response.status(),
-        "WebSocket connection established"
-    );
+    let (ws_stream, status) = connect_ws(&http, endpoint).await?;
+    trace!(status = %status, "WebSocket connection established");
     let (ws_tx, ws_rx) = ws_stream.split();
 
     drive_ws(ws_tx, ws_rx, channel).await
+}
+
+fn websocket_http_url(mut endpoint: url::Url) -> Result<url::Url, AcpError> {
+    let scheme = match endpoint.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        other => {
+            return Err(
+                AcpError::internal_error().data(format!("unsupported WebSocket scheme: {other}"))
+            );
+        }
+    };
+    endpoint
+        .set_scheme(scheme)
+        .map_err(|()| AcpError::internal_error().data("failed to convert WebSocket URL"))?;
+    Ok(endpoint)
+}
+
+async fn connect_ws(
+    http: &reqwest::Client,
+    endpoint: url::Url,
+) -> Result<
+    (
+        async_tungstenite::WebSocketStream<
+            async_tungstenite::tokio::TokioAdapter<reqwest::Upgraded>,
+        >,
+        reqwest::StatusCode,
+    ),
+    AcpError,
+> {
+    let http_url = websocket_http_url(endpoint)?;
+    let key = async_tungstenite::tungstenite::handshake::client::generate_key();
+    let expected_accept =
+        async_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+
+    let response = http
+        .get(http_url)
+        .version(reqwest::Version::HTTP_11)
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", &key)
+        .send()
+        .await
+        .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
+    let status = response.status();
+    if status != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+        return Err(AcpError::internal_error().data(format!(
+            "WebSocket connect failed: unexpected status {status}"
+        )));
+    }
+    let accept = response
+        .headers()
+        .get("sec-websocket-accept")
+        .and_then(|value| value.to_str().ok());
+    if accept != Some(expected_accept.as_str()) {
+        return Err(AcpError::internal_error()
+            .data("WebSocket connect failed: invalid Sec-WebSocket-Accept"));
+    }
+
+    let upgraded = response
+        .upgrade()
+        .await
+        .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
+    let ws_stream = async_tungstenite::WebSocketStream::from_raw_socket(
+        async_tungstenite::tokio::TokioAdapter::new(upgraded),
+        async_tungstenite::tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await;
+    Ok((ws_stream, status))
 }
 
 trait WsSink {
@@ -3389,6 +3459,75 @@ mod tests {
         assert!(error.to_string().contains("WebSocket closed by peer"));
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_with_client_sends_default_headers() {
+        let (header_tx, mut header_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/acp",
+            get(move |headers: HeaderMap, ws: WebSocketUpgrade| {
+                let header_tx = header_tx.clone();
+                async move {
+                    header_tx.send(headers).unwrap();
+                    ws.on_upgrade(|_socket| async {})
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut default_headers = reqwest::header::HeaderMap::new();
+        default_headers.insert(
+            reqwest::header::HeaderName::from_static("x-acp-test-client"),
+            reqwest::header::HeaderValue::from_static("from-reqwest"),
+        );
+        let http = reqwest::Client::builder()
+            .default_headers(default_headers)
+            .build()
+            .unwrap();
+        let client = HttpClient::with_client(format!("ws://{addr}"), http).unwrap();
+        let (_caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(client, transport));
+
+        let headers = timeout(Duration::from_secs(1), header_rx.recv())
+            .await
+            .expect("WebSocket handshake should reach the server")
+            .expect("handshake headers were not captured");
+        assert_eq!(
+            headers.get("x-acp-test-client").map(HeaderValue::as_bytes),
+            Some(&b"from-reqwest"[..]),
+            "HttpClient::with_client default headers must be sent on the WebSocket handshake"
+        );
+
+        drop(transport);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn websocket_with_client_honors_request_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let client = HttpClient::with_client(format!("ws://{addr}"), http).unwrap();
+        let (_caller, transport) = Channel::duplex();
+
+        let error = timeout(Duration::from_secs(1), run(client, transport))
+            .await
+            .expect("custom reqwest timeout should fail the WebSocket handshake")
+            .expect_err("handshake should not succeed while the listener never accepts");
+        assert!(
+            error.to_string().contains("WebSocket connect failed"),
+            "{error}"
+        );
+
+        drop(listener);
     }
 
     #[tokio::test]
