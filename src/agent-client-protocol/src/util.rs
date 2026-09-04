@@ -9,21 +9,22 @@ mod typed;
 pub use typed::{MatchDispatch, MatchDispatchFrom, TypeNotification};
 
 /// Cast from `N` to `M` by serializing/deserialization to/from JSON.
+///
+/// Conversion errors include only the failed phase. They deliberately omit
+/// the original JSON and serializer error text because response values may
+/// contain file contents, terminal output, or other sensitive data.
 pub fn json_cast<N, M>(params: N) -> Result<M, crate::Error>
 where
     N: serde::Serialize,
     M: serde::de::DeserializeOwned,
 {
-    let json = serde_json::to_value(params).map_err(|e| {
+    let json = serde_json::to_value(params).map_err(|_| {
         crate::Error::parse_error().data(serde_json::json!({
-            "error": e.to_string(),
             "phase": "serialization"
         }))
     })?;
-    let m = serde_json::from_value(json.clone()).map_err(|e| {
+    let m = serde_json::from_value(json).map_err(|_| {
         crate::Error::parse_error().data(serde_json::json!({
-            "error": e.to_string(),
-            "json": json,
             "phase": "deserialization"
         }))
     })?;
@@ -36,21 +37,22 @@ where
 /// [`Error::invalid_params`](`crate::Error::invalid_params`) (`-32602`)
 /// instead of a parse error, which is the correct JSON-RPC error code for
 /// malformed method parameters.
+///
+/// Conversion errors include only the failed phase. They deliberately omit
+/// the original JSON and serializer error text because method parameters may
+/// contain prompts, encoded files, or other sensitive content.
 pub fn json_cast_params<N, M>(params: N) -> Result<M, crate::Error>
 where
     N: serde::Serialize,
     M: serde::de::DeserializeOwned,
 {
-    let json = serde_json::to_value(params).map_err(|e| {
+    let json = serde_json::to_value(params).map_err(|_| {
         crate::Error::internal_error().data(serde_json::json!({
-            "error": e.to_string(),
             "phase": "serialization"
         }))
     })?;
-    let m = serde_json::from_value(json.clone()).map_err(|e| {
+    let m = serde_json::from_value(json).map_err(|_| {
         crate::Error::invalid_params().data(serde_json::json!({
-            "error": e.to_string(),
-            "json": json,
             "phase": "deserialization"
         }))
     })?;

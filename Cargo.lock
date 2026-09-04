@@ -25,6 +25,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -92,6 +93,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "reqwest",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",
@@ -99,6 +101,7 @@ dependencies = [
  "tower-http 0.7.0",
  "tracing",
  "tracing-subscriber",
+ "tungstenite 0.29.0",
  "url",
  "uuid",
 ]
