@@ -46,6 +46,10 @@ unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_tool_call_name = ["agent-client-protocol-schema/unstable_tool_call_name"]
 unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
 
+# Use Web Crypto through wasm-bindgen for UUID randomness on JavaScript-hosted,
+# OS-less WebAssembly targets.
+wasm_js = ["uuid/js"]
+
 [dependencies]
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-derive.workspace = true

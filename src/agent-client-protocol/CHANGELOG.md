@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Support JavaScript-hosted `wasm32-unknown-unknown` builds through the opt-in
+  `wasm_js` feature, which selects Web Crypto through `wasm-bindgen` as the UUID
+  randomness backend. WASI builds continue to work without an additional
+  feature. ([#308](https://github.com/agentclientprotocol/rust-sdk/pull/308))
+
 ## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.0.0...v2.1.0) - 2026-09-04
 
 ### Added

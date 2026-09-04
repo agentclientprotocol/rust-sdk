@@ -76,13 +76,20 @@
 //!
 //! [`agent_client_protocol_cookbook`]: https://docs.rs/agent-client-protocol-cookbook
 //!
-//! ## WASI
+//! ## WebAssembly
 //!
 //! The runtime-neutral protocol engine and transport abstractions compile for
-//! `wasm32-wasip1` and `wasm32-wasip2`. This crate does not provide a WASI
-//! executor or host I/O adapter. The native `AcpAgent` and `Stdio`
-//! implementations depend on process spawning and blocking-thread facilities,
-//! so they and `LineDirection` are not exported on these targets.
+//! `wasm32-wasip1` and `wasm32-wasip2` without additional features. For
+//! JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js` to select Web
+//! Crypto through `wasm-bindgen` as the UUID randomness backend. The target
+//! does not imply a JavaScript host, so this feature is not enabled by default;
+//! other OS-less WebAssembly hosts must arrange a compatible UUID randomness
+//! backend instead.
+//!
+//! This crate does not provide a WebAssembly executor or host I/O adapter. The
+//! native `AcpAgent` and `Stdio` implementations depend on process spawning and
+//! blocking-thread facilities, so they and `LineDirection` are not exported on
+//! WebAssembly targets.
 //!
 //! Embedders provide their own runtime and transport. They can exchange
 //! `TransportFrame` values through `Channel`, newline-delimited JSON through
