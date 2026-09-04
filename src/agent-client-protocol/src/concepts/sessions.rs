@@ -52,6 +52,45 @@
 //! # }
 //! ```
 //!
+//! # Restoring a Session
+//!
+//! Stable protocol v1 direct clients can turn `session/load` and
+//! `session/resume` into a [`RestoredSession`](crate::RestoredSession) without
+//! manually installing session handlers. It contains both the [`ActiveSession`]
+//! and the complete operation-specific response:
+//!
+//! ```no_run
+//! # use agent_client_protocol::{Client, ConnectTo};
+//! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
+//! # Client.builder().connect_with(transport, async |cx| {
+//! let restored = cx
+//!     .load_session("session-1", "/path/to/project")
+//!     .block_task()
+//!     .start_session()
+//!     .await?;
+//! let (mut session, load_response) = restored.into_parts();
+//! println!("load response: {load_response:?}");
+//! session.send_prompt("Continue where we left off")?;
+//! # Ok(())
+//! # }).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Use `load_session` only when the agent advertises the top-level
+//! `loadSession` capability. Use `resume_session` to continue without replay
+//! when the agent advertises `sessionCapabilities.resume`.
+//! The matching `load_session_from` and `resume_session_from` helpers preserve
+//! requests assembled elsewhere. Non-blocking callers can use
+//! `on_session_start` instead of `block_task().start_session()`.
+//!
+//! For `session/load`, the SDK acknowledges its local route before publishing
+//! the request, so history updates sent before the load response remain queued
+//! on the returned session. An error removes the provisional route before
+//! later traffic is dispatched. Dropping an in-flight blocking start
+//! immediately deactivates the provisional route and triggers the standard
+//! [`SentRequest`](crate::SentRequest) drop-time cancellation behavior.
+//!
 //! # Sending Prompts
 //!
 //! Inside `run_until`, you get an [`ActiveSession`] that lets you interact

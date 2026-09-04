@@ -316,6 +316,13 @@ pub mod connecting_as_client {
     //! With the core SDK's `unstable_mcp_over_acp` feature, the session builder
     //! also supports adding MCP servers with [`with_mcp_server`].
     //!
+    //! Existing stable-v1 sessions can be reopened with [`load_session`] to
+    //! replay history or [`resume_session`] to continue without replay. Their
+    //! blocking `start_session` returns a [`RestoredSession`] containing the
+    //! active session and complete operation response; `on_session_start`
+    //! delivers the same value to its callback. Use either restore operation
+    //! only after initialization advertises its matching capability.
+    //!
     //! # Handling Permission Requests
     //!
     //! Agents may send [`RequestPermissionRequest`] to ask for user approval
@@ -349,7 +356,10 @@ pub mod connecting_as_client {
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
     //! [`build_session`]: agent_client_protocol::ConnectionTo::build_session
+    //! [`load_session`]: agent_client_protocol::ConnectionTo::load_session
+    //! [`resume_session`]: agent_client_protocol::ConnectionTo::resume_session
     //! [`SessionBuilder`]: agent_client_protocol::SessionBuilder
+    //! [`RestoredSession`]: agent_client_protocol::RestoredSession
     //! [`send_prompt`]: agent_client_protocol::ActiveSession::send_prompt
     //! [`read_update`]: agent_client_protocol::ActiveSession::read_update
     //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string

@@ -317,15 +317,20 @@ stream
 Pass a finite limit instead of `None` to bound concurrency.
 
 `ConnectionTo::attach_session` is no longer public. Create sessions through
-`ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Use
-`SessionBuilder::on_session_start` to start without blocking the calling task, or call
-`block_task()` followed by `run_until` or `start_session` outside message handlers. Proxy handlers
-must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from a task
-already outside the dispatch loop, such as a `connect_with` foreground future or a spawned task.
-Directly attaching an already-returned `NewSessionResponse` is no longer supported, so move
+`ConnectionTo::build_session`, `build_session_cwd`, or `build_session_from` instead. Restore
+stable-v1 sessions through `load_session`, `load_session_from`, `resume_session`, or
+`resume_session_from`; blocking `start_session` returns a `RestoredSession` containing the
+`ActiveSession` and exact load or resume response, while `on_session_start` delivers that value to
+its callback. Both builder families expose `on_session_start` for non-blocking use and
+`block_task().start_session()` for tasks already outside the dispatch loop. Restore routing is
+acknowledged before the request is published so `session/load` replay cannot overtake local setup.
+For new sessions, `SessionBuilder::run_until` is also available after `block_task()`. Proxy
+handlers must use `on_proxy_session_start`; only call `block_task().start_session_proxy(...)` from
+a task already outside the dispatch loop, such as a `connect_with` foreground future or a spawned
+task. Directly attaching an already-returned `NewSessionResponse` is no longer supported, so move
 request customization into `build_session_from` before the builder sends `session/new`.
 
-When the session response is routed during its original dispatch, `on_session_start` and
+For new sessions, when the response is routed during its original dispatch, `on_session_start` and
 `on_proxy_session_start` install session routing under the ordered response callback, then spawn
 the user callback. No user callback code runs under that ordering guarantee. The callback itself
 must be `'static`, but its returned future does not need an additional `'static` bound and may

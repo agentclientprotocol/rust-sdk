@@ -1,4 +1,3 @@
-#[cfg(feature = "unstable_protocol_v2")]
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use uuid::Uuid;
@@ -39,11 +38,10 @@ impl<Counterpart: Role, H: HandleDispatchFrom<Counterpart>> DynHandleDispatchFro
 pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
     AddDynamicHandler(Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>),
     RemoveDynamicHandler(Uuid),
-    /// Marks the end of the registrations queued by an ordered response callback.
+    /// Marks the end of updates queued during ordered response processing.
     Barrier,
     /// Acknowledges after every preceding dynamic-handler message has been
     /// applied by the incoming protocol actor.
-    #[cfg(feature = "unstable_protocol_v2")]
     AcknowledgedBarrier(oneshot::Sender<()>),
 }
 
@@ -59,7 +57,6 @@ impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
                 f.debug_tuple("RemoveDynamicHandler").field(arg0).finish()
             }
             Self::Barrier => f.write_str("Barrier"),
-            #[cfg(feature = "unstable_protocol_v2")]
             Self::AcknowledgedBarrier(_) => f.write_str("AcknowledgedBarrier"),
         }
     }
