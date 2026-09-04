@@ -4,6 +4,12 @@
 
 ### Added
 
+- Add stable-v1 `load_session*` and `resume_session*` builders that produce a
+  `RestoredSession` containing an `ActiveSession` and the exact operation
+  response. Session routing is active before either restore request is
+  published, preserving required `session/load` replay, and provisional routing
+  is removed after failed restores or dropped in-flight blocking starts.
+  ([#323](https://github.com/agentclientprotocol/rust-sdk/issues/323))
 - *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The
   agent implements the complete baseline session lifecycle; the client handles
   permissions, projects chunk and snapshot updates by message ID, and waits for

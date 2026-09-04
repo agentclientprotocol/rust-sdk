@@ -2092,10 +2092,11 @@ pub(crate) struct ResponsePayload {
     /// response processing is complete, allowing the dispatch loop to continue
     /// to the next message.
     ///
-    /// This is present only when callback-style consumption was selected before
-    /// the response was routed during its original dispatch. Local error paths,
-    /// blocking consumers, and responses routed later do not hold the dispatch
-    /// loop.
+    /// This is present when ordered response consumption was selected before
+    /// the response was routed during its original dispatch. Public callback
+    /// consumption and framework-owned ordered blocking transforms can hold
+    /// the dispatch loop; ordinary blocking consumers, local error paths, and
+    /// responses routed later do not.
     pub(crate) ack_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -2109,7 +2110,6 @@ struct RequestReadiness {
 }
 
 impl RequestReadiness {
-    #[cfg(feature = "unstable_protocol_v2")]
     fn new(future: impl Future<Output = Result<(), crate::Error>> + Send + 'static) -> Self {
         Self {
             future: future.boxed(),
@@ -4046,6 +4046,34 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.send_request_to_with_options(peer, request, true, None, None)
     }
 
+    /// Send an ordered request after `before_send` completes successfully.
+    ///
+    /// The ordering marker and readiness prerequisite are both registered
+    /// before the request enters the outgoing queue. This is used by framework
+    /// setup paths that must acknowledge local routing before the peer can
+    /// observe the request.
+    pub(crate) fn send_ordered_request_to_after<
+        Peer: Role,
+        Req: JsonRpcRequest,
+        BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
+    >(
+        &self,
+        peer: Peer,
+        request: Req,
+        before_send: BeforeSend,
+    ) -> SentRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.send_request_to_with_options(
+            peer,
+            request,
+            true,
+            Some(RequestReadiness::new(before_send)),
+            None,
+        )
+    }
+
     fn send_request_to_with_options<Peer: Role, Req: JsonRpcRequest>(
         &self,
         peer: Peer,
@@ -4284,7 +4312,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Wait until every dynamic-handler update queued before this call has
     /// been applied by the incoming protocol actor.
-    #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn dynamic_handler_barrier(&self) -> BoxFuture<'static, Result<(), crate::Error>> {
         let (acknowledgment_tx, acknowledgment_rx) = oneshot::channel();
         if let Err(error) =
@@ -5974,6 +6001,48 @@ impl<T> SentRequest<T> {
         }
     }
 
+    /// Block the current task and transform the typed result before releasing
+    /// the ordered-response barrier.
+    ///
+    /// Framework lifecycle code uses this when success transfers local state
+    /// to the returned value while an error must drop that state before later
+    /// messages from the same transport frame are dispatched. The synchronous
+    /// transform must not wait for additional connection traffic.
+    pub(crate) async fn block_task_with_ordered_result<U>(
+        self,
+        transform: impl FnOnce(Result<T, crate::Error>) -> Result<U, crate::Error>,
+    ) -> Result<U, crate::Error> {
+        let response = await_response_forwarding_cancellation(
+            self.response_rx,
+            &self.cancellation,
+            &self.cancellation_sources,
+        )
+        .await;
+
+        let (result, ack_tx) = match response {
+            Ok(ResponsePayload { result, ack_tx }) => {
+                let typed_result = match result {
+                    Ok(json_value) => (self.to_result)(json_value),
+                    Err(error) => Err(error),
+                };
+                (typed_result, ack_tx)
+            }
+            Err(error) => (
+                Err(crate::util::internal_error(format!(
+                    "response to `{}` never received: {error}",
+                    self.method
+                ))),
+                None,
+            ),
+        };
+
+        let outcome = transform(result);
+        if let Some(acknowledgment) = ack_tx {
+            let _ = acknowledgment.send(());
+        }
+        outcome
+    }
+
     /// Schedule an async task to run when a successful response is received.
     ///
     /// This is a convenience wrapper around [`on_receiving_result`](Self::on_receiving_result)
@@ -6829,7 +6898,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
     fn connection_for_response_hook_tests() -> (
         ConnectionTo<crate::role::UntypedRole>,
         mpsc::UnboundedReceiver<OutgoingMessage>,
@@ -6989,17 +7057,15 @@ mod tests {
         assert_eq!(error.data, Some(serde_json::json!("response hook failed")));
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
-    fn outgoing_request_waits_for_readiness_before_publication() {
+    fn ordered_request_waits_for_readiness_before_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let (ready_tx, ready_rx) = oneshot::channel();
-        let sent = connection.send_request_to_with_response_hook_after(
+        let sent = connection.send_ordered_request_to_after(
             crate::role::UntypedRole,
             UntypedMessage::new("after-ready", serde_json::json!({}))
                 .expect("test request should serialize"),
             async move { ready_rx.await.map_err(crate::Error::into_internal_error) },
-            |_| Ok(()),
         );
 
         let (transport_tx, mut transport_rx) = mpsc::unbounded();
@@ -7037,6 +7103,62 @@ mod tests {
         ));
 
         drop(sent);
+    }
+
+    #[test]
+    fn ordered_blocking_transform_precedes_response_acknowledgment() {
+        let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
+        let sent = connection.send_ordered_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("ordered-transform", serde_json::json!({}))
+                .expect("test request should serialize"),
+        );
+        let request_id = sent.id().clone();
+        let pending_reply = pending_replies
+            .remove(&request_id)
+            .expect("the request should have a pending reply");
+        let (dispatch, response_dispatch) = incoming_actor::dispatch_from_response(
+            request_id,
+            pending_reply,
+            Err(crate::Error::invalid_params()),
+        );
+        let Dispatch::Response(result, router) = dispatch else {
+            panic!("expected a response dispatch");
+        };
+        router
+            .route_with_result(result)
+            .expect("response should route to the pending request");
+        let acknowledgment = response_dispatch
+            .complete()
+            .expect("an ordered response should wait for acknowledgment");
+        let acknowledgment = Arc::new(Mutex::new(Some(acknowledgment)));
+        let acknowledgment_probe = acknowledgment.clone();
+
+        let error =
+            futures::executor::block_on(sent.block_task_with_ordered_result(move |result| {
+                assert_eq!(
+                    acknowledgment_probe
+                        .lock()
+                        .expect("acknowledgment mutex poisoned")
+                        .as_mut()
+                        .expect("acknowledgment receiver should remain available")
+                        .try_recv()
+                        .expect("acknowledgment sender should remain open"),
+                    None,
+                    "the ordered response was acknowledged before its transform"
+                );
+                result
+            }))
+            .expect_err("the peer error should survive the ordered transform");
+        assert_eq!(error.code, crate::ErrorCode::InvalidParams);
+
+        let acknowledgment = acknowledgment
+            .lock()
+            .expect("acknowledgment mutex poisoned")
+            .take()
+            .expect("acknowledgment receiver should remain available");
+        futures::executor::block_on(acknowledgment)
+            .expect("the transform should release the ordered response");
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
@@ -7248,7 +7370,6 @@ mod tests {
         assert!(matches!(handled, Handled::No { retry: false, .. }));
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn dynamic_handler_barrier_acknowledges_prior_messages() {
         let (connection, mut receiver) = connection_with_dynamic_handler_receiver();
