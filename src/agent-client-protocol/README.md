@@ -91,6 +91,19 @@ lifetime. A v2 proxy can forward any of these setup operations with the
 builder's `on_proxy_session_start`; updates and interactive requests remain
 independent connection traffic.
 
+## WebAssembly
+
+The runtime-neutral protocol engine and transport abstractions compile for
+`wasm32-wasip1` and `wasm32-wasip2` without additional features. For
+JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js`; it selects Web
+Crypto through `wasm-bindgen` as the UUID randomness backend. The target does
+not imply a JavaScript host, so this feature is not enabled by default. Other
+OS-less WebAssembly hosts must arrange a compatible UUID randomness backend.
+
+The native `AcpAgent` and `Stdio` implementations are not available on
+WebAssembly targets. See the [transport architecture](https://agentclientprotocol.github.io/rust-sdk/transport-architecture.html)
+for the runtime-neutral embedding options.
+
 ## Learning More
 
 See the [crate documentation](https://docs.rs/agent-client-protocol) for:

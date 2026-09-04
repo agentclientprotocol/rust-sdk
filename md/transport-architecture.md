@@ -285,10 +285,14 @@ lines into `Lines`.
 
 The native `Stdio` and `AcpAgent` transports build on `ByteStreams`. Their
 current implementations depend on process spawning and blocking-thread
-facilities, so they are not exported on `wasm32-wasip1` or `wasm32-wasip2`.
-The runtime-neutral protocol engine and transport abstractions compile for
-both targets, but this crate does not provide a WASI executor or host I/O
-adapter.
+facilities, so they are not exported on WebAssembly targets. The runtime-neutral
+protocol engine and transport abstractions compile for `wasm32-wasip1` and
+`wasm32-wasip2` without additional features. JavaScript-hosted
+`wasm32-unknown-unknown` builds require the opt-in `wasm_js` feature, which
+selects Web Crypto through `wasm-bindgen` as the UUID randomness backend. Since
+the target does not imply a JavaScript host, other OS-less WebAssembly hosts
+must arrange a compatible UUID randomness backend instead. This crate does not
+provide a WebAssembly executor or host I/O adapter.
 
 Use cases:
 
@@ -337,7 +341,7 @@ no serialization.
 
 Split the socket and pass compatible read/write halves to `ByteStreams::new`.
 
-### 4. WASI Embedding
+### 4. WebAssembly Embedding
 
 Embedders supply and drive their own runtime and host transport:
 
