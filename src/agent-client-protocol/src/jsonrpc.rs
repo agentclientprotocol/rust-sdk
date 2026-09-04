@@ -6317,6 +6317,7 @@ where
 pub struct ByteStreams<OB, IB> {
     outgoing: OB,
     incoming: IB,
+    incoming_line_limit: usize,
 }
 
 impl<OB, IB> ByteStreams<OB, IB>
@@ -6326,7 +6327,20 @@ where
 {
     /// Create a new byte stream transport.
     pub fn new(outgoing: OB, incoming: IB) -> Self {
-        Self { outgoing, incoming }
+        Self {
+            outgoing,
+            incoming,
+            incoming_line_limit: crate::DEFAULT_LINE_LIMIT,
+        }
+    }
+
+    /// Set the maximum number of bytes accepted before the newline terminating one incoming ACP
+    /// frame. The default is [`crate::DEFAULT_LINE_LIMIT`]. An optional carriage return counts
+    /// toward this limit; the newline itself does not.
+    #[must_use]
+    pub fn with_incoming_line_limit(mut self, limit: usize) -> Self {
+        self.incoming_line_limit = limit;
+        self
     }
 
     fn into_lines(
@@ -6335,11 +6349,17 @@ where
         impl futures::Sink<String, Error = std::io::Error> + Send + 'static,
         impl futures::Stream<Item = std::io::Result<String>> + Send + 'static,
     > {
-        use futures::AsyncBufReadExt;
         use futures::io::BufReader;
-        let Self { outgoing, incoming } = self;
+        let Self {
+            outgoing,
+            incoming,
+            incoming_line_limit,
+        } = self;
 
-        let incoming_lines = Box::pin(BufReader::new(incoming).lines());
+        let incoming_lines = Box::pin(crate::line::BoundedLines::new(
+            BufReader::new(incoming),
+            incoming_line_limit,
+        ));
         let outgoing_lines =
             futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
                 write_line(&mut writer, line).await?;
@@ -6508,6 +6528,20 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn byte_streams_reject_an_incoming_line_over_the_configured_limit() {
+        let mut input = vec![b'x'; 65];
+        input.push(b'\n');
+        let mut lines = ByteStreams::new(futures::io::sink(), futures::io::Cursor::new(input))
+            .with_incoming_line_limit(64)
+            .into_lines();
+
+        let error = lines.incoming.next().await.unwrap().unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("64-byte limit"));
+    }
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn connection_with_task_receiver() -> (

@@ -66,6 +66,10 @@
 
 ### Fixed
 
+- Bound newline-delimited input framing for `AcpAgent`, `Stdio`, and `ByteStreams` to 16 MiB by
+  default before JSON-RPC parsing, with explicit overrides for peers that legitimately need a
+  different finite ceiling. ([#340](https://github.com/agentclientprotocol/rust-sdk/issues/340),
+  [#342](https://github.com/agentclientprotocol/rust-sdk/issues/342))
 - Preserve stable v1 `NewSessionResponse::config_options` on `ActiveSession`,
   expose them through `ActiveSession::config_options`, and include them in
   reconstructed and proxied session responses.

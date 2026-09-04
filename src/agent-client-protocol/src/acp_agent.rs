@@ -6,15 +6,15 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::pin::pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_process::Child;
 use serde::{Deserialize, Serialize};
-use std::pin::pin;
 
-use crate::{Client, Conductor, Role};
+use crate::{Client, Conductor, DEFAULT_LINE_LIMIT, Role, line::BoundedLines};
 
 type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 
@@ -165,6 +165,7 @@ impl AcpAgentConfig {
 pub struct AcpAgent {
     config: AcpAgentConfig,
     debug_callback: Option<DebugCallback>,
+    stdout_line_limit: usize,
 }
 
 impl std::fmt::Debug for AcpAgent {
@@ -175,6 +176,7 @@ impl std::fmt::Debug for AcpAgent {
                 "debug_callback",
                 &self.debug_callback.as_ref().map(|_| "..."),
             )
+            .field("stdout_line_limit", &self.stdout_line_limit)
             .finish()
     }
 }
@@ -186,6 +188,7 @@ impl AcpAgent {
         Self {
             config,
             debug_callback: None,
+            stdout_line_limit: DEFAULT_LINE_LIMIT,
         }
     }
 
@@ -239,6 +242,19 @@ impl AcpAgent {
         F: Fn(&str, LineDirection) + Send + Sync + 'static,
     {
         self.debug_callback = Some(Arc::new(callback));
+        self
+    }
+
+    /// Set the maximum number of bytes accepted before the newline terminating one ACP stdout
+    /// frame. The default is [`DEFAULT_LINE_LIMIT`]. An optional carriage return counts
+    /// toward this limit; the newline itself does not.
+    ///
+    /// Exceeding the limit fails the protocol transport and terminates the spawned agent process
+    /// group. Set a larger finite value when an agent legitimately emits unusually large inline
+    /// content.
+    #[must_use]
+    pub fn with_stdout_line_limit(mut self, limit: usize) -> Self {
+        self.stdout_line_limit = limit;
         self
     }
 
@@ -633,9 +649,10 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         self,
         client: impl crate::ConnectTo<Counterpart::Counterpart>,
     ) -> Result<(), crate::Error> {
+        use futures::StreamExt;
         use futures::io::BufReader;
-        use futures::{AsyncBufReadExt, StreamExt};
 
+        let stdout_line_limit = self.stdout_line_limit;
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
         // Create a channel to collect stderr for error reporting
@@ -668,13 +685,20 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let incoming_lines: std::pin::Pin<
             Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
         > = if let Some(callback) = self.debug_callback.clone() {
-            Box::pin(BufReader::new(child_stdout).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    callback(line, LineDirection::Stdout);
-                }
-            }))
+            Box::pin(
+                BoundedLines::new(BufReader::new(child_stdout), stdout_line_limit).inspect(
+                    move |result| {
+                        if let Ok(line) = result {
+                            callback(line, LineDirection::Stdout);
+                        }
+                    },
+                ),
+            )
         } else {
-            Box::pin(BufReader::new(child_stdout).lines())
+            Box::pin(BoundedLines::new(
+                BufReader::new(child_stdout),
+                stdout_line_limit,
+            ))
         };
 
         // The JSON-RPC transport keeps polling stdout while it drains stdin.
@@ -891,6 +915,30 @@ mod tests {
             recorded.lock().unwrap().push(line.to_owned());
         });
         (callback, lines)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdout_line_overflow_fails_transport_without_waiting_for_child_exit() {
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", "printf '%065d' 0; sleep 30"])
+            .unwrap()
+            .with_stdout_line_limit(64);
+
+        let error =
+            tokio::time::timeout(Duration::from_secs(5), Client.builder().connect_to(agent))
+                .await
+                .expect("overflow should stop the transport before the child exits")
+                .expect_err("oversized stdout should fail the transport");
+        let detail = error
+            .data
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default();
+
+        assert!(
+            detail.contains("64-byte limit"),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[test]
