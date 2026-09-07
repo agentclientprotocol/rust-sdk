@@ -93,7 +93,7 @@ jobs:
         run: cargo +stable doc -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --no-deps --locked
 
       - name: Install just
-        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
         with:
           tool: just
 
@@ -128,7 +128,7 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@37f7c5781271959fb65b6b35224e28652ff2b63d
+        uses: taiki-e/install-action@5bf6ce016fd2e72eefc647cbca1e4213f65955b8
         with:
           tool: cargo-hack
 
