@@ -14,6 +14,6 @@ mod server;
 mod websocket_server;
 
 #[cfg(feature = "client")]
-pub use client::{HttpClient, HttpClientError};
+pub use client::{HttpClient, HttpClientBuilder, HttpClientError};
 #[cfg(feature = "server")]
 pub use server::{AcpHttpServer, CorsOptions, ServerOptions};

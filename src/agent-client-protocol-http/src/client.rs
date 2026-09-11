@@ -28,13 +28,34 @@ use crate::protocol::{
 pub enum HttpClientError {
     #[error("invalid URL: {0}")]
     InvalidUrl(#[from] url::ParseError),
+    #[error("unsupported URL scheme: {0}; expected http, https, ws, or wss")]
+    UnsupportedScheme(String),
+    #[error(
+        "WebSocket URLs require HttpClient::builder or builder_with_endpoint; a prebuilt reqwest client cannot enforce WebSocket connection policies"
+    )]
+    WebSocketRequiresBuilder,
     #[error("failed to build HTTP client: {0}")]
     Reqwest(#[from] reqwest::Error),
 }
 
+/// An endpoint-bound ACP transport using HTTP/SSE or WebSocket.
+///
+/// Cloning shares the underlying HTTP connection pool. Each connection has
+/// independent ACP transport state.
+#[derive(Clone)]
 pub struct HttpClient {
     endpoint: url::Url,
     http: reqwest::Client,
+}
+
+/// Configures an [`HttpClient`] before its underlying HTTP client is built.
+///
+/// Use [`HttpClient::builder`] for a base URL or
+/// [`HttpClient::builder_with_endpoint`] for an exact endpoint.
+#[must_use = "the builder must be built to create an HTTP client"]
+pub struct HttpClientBuilder {
+    endpoint: Result<url::Url, HttpClientError>,
+    http: reqwest::ClientBuilder,
 }
 
 impl std::fmt::Debug for HttpClient {
@@ -45,63 +66,199 @@ impl std::fmt::Debug for HttpClient {
     }
 }
 
+impl std::fmt::Debug for HttpClientBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpClientBuilder")
+            .field("endpoint", &self.endpoint)
+            .finish_non_exhaustive()
+    }
+}
+
 impl HttpClient {
     /// Create a client from a base URL and target the standard ACP endpoint.
     ///
     /// If the URL path is empty, `/acp` is used. Otherwise `/acp` is appended
     /// unless the path already ends with `/acp`.
+    ///
+    /// Use [`Self::builder`] to customize headers, TLS, proxies, or timeouts.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, HttpClientError> {
-        Self::with_client(base_url, reqwest::Client::new())
+        Self::builder(base_url).build()
     }
 
     /// Create a client that targets the exact endpoint URL.
     ///
     /// Use this when connecting to a server configured with a custom
-    /// `ServerOptions::path`.
+    /// `ServerOptions::path`. Use [`Self::builder_with_endpoint`] to also
+    /// customize the HTTP client configuration.
     pub fn with_endpoint(endpoint: impl AsRef<str>) -> Result<Self, HttpClientError> {
-        Self::with_endpoint_and_client(endpoint, reqwest::Client::new())
+        Self::builder_with_endpoint(endpoint).build()
     }
 
-    /// Create a client with a custom HTTP client and the standard ACP endpoint.
+    /// Configure a client from a base URL targeting the standard ACP endpoint.
     ///
-    /// If the URL path is empty, `/acp` is used. Otherwise `/acp` is appended
-    /// unless the path already ends with `/acp`.
+    /// Uses the same path normalization as [`Self::new`]. Invalid URLs and
+    /// unsupported schemes are reported by [`HttpClientBuilder::build`].
     ///
-    /// The same client is used for HTTP/SSE and for `ws://` / `wss://` handshakes,
-    /// including timeouts, default headers, proxy, and TLS configuration.
+    /// ```
+    /// use std::time::Duration;
+    /// use agent_client_protocol_http::HttpClient;
+    ///
+    /// let transport = HttpClient::builder("wss://agent.example")
+    ///     .configure_http(|http| {
+    ///         http.connect_timeout(Duration::from_secs(5))
+    ///             .timeout(Duration::from_secs(10))
+    ///     })
+    ///     .build()?;
+    /// # Ok::<(), agent_client_protocol_http::HttpClientError>(())
+    /// ```
+    pub fn builder(base_url: impl AsRef<str>) -> HttpClientBuilder {
+        HttpClientBuilder {
+            endpoint: parse_base_url(base_url.as_ref()),
+            http: reqwest::Client::builder(),
+        }
+    }
+
+    /// Configure a client targeting an exact endpoint URL without changing its path.
+    ///
+    /// Use this when connecting to a server configured with a custom
+    /// `ServerOptions::path`. Invalid URLs and unsupported schemes are reported
+    /// by [`HttpClientBuilder::build`].
+    pub fn builder_with_endpoint(endpoint: impl AsRef<str>) -> HttpClientBuilder {
+        HttpClientBuilder {
+            endpoint: parse_endpoint(endpoint.as_ref()),
+            http: reqwest::Client::builder(),
+        }
+    }
+
+    /// Reuse an existing reqwest client for HTTP/SSE at an exact endpoint URL.
+    ///
+    /// The path is not changed: include `/acp` or the server's custom path.
+    /// This preserves the supplied client's configuration and connection pool.
+    ///
+    /// Only `http://` and `https://` URLs are accepted. For WebSockets, use
+    /// [`Self::builder`] or [`Self::builder_with_endpoint`] so this transport can
+    /// configure HTTP/1.1 and disable handshake redirects before building the
+    /// underlying client.
+    pub fn from_http_client(
+        endpoint: impl AsRef<str>,
+        http: reqwest::Client,
+    ) -> Result<Self, HttpClientError> {
+        let endpoint = parse_endpoint(endpoint.as_ref())?;
+        if is_websocket_url(&endpoint) {
+            return Err(HttpClientError::WebSocketRequiresBuilder);
+        }
+        Ok(Self { endpoint, http })
+    }
+
+    /// Reuse an existing HTTP/SSE client with the standard ACP endpoint.
+    ///
+    /// Preserves the same base-URL path normalization as [`Self::new`].
+    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
+    /// before any network I/O; migrate those calls to [`Self::builder`].
+    #[deprecated(
+        note = "Use builder(...).configure_http(...).build(), or from_http_client with an exact HTTP/SSE endpoint"
+    )]
     pub fn with_client(
         base_url: impl AsRef<str>,
         http: reqwest::Client,
     ) -> Result<Self, HttpClientError> {
-        let mut endpoint = url::Url::parse(base_url.as_ref())?;
-        let path = endpoint.path().trim_end_matches('/').to_string();
-        let path = if path.is_empty() {
-            "/acp".to_string()
-        } else if path.ends_with("/acp") {
-            path
-        } else {
-            format!("{path}/acp")
-        };
-        endpoint.set_path(&path);
-        Ok(Self { endpoint, http })
+        Self::from_http_client(parse_base_url(base_url.as_ref())?, http)
     }
 
-    /// Create a client with a custom HTTP client and exact endpoint URL.
+    /// Reuse an existing HTTP/SSE client at an exact endpoint.
     ///
-    /// Use this when connecting to a server configured with a custom
-    /// `ServerOptions::path`. The client is also used for `ws://` / `wss://`
-    /// handshakes.
+    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
+    /// before any network I/O; migrate those calls to
+    /// [`Self::builder_with_endpoint`].
+    #[deprecated(
+        note = "Use builder_with_endpoint(...).configure_http(...).build(), or from_http_client for an existing HTTP/SSE client"
+    )]
     pub fn with_endpoint_and_client(
         endpoint: impl AsRef<str>,
         http: reqwest::Client,
     ) -> Result<Self, HttpClientError> {
-        let endpoint = url::Url::parse(endpoint.as_ref())?;
-        Ok(Self { endpoint, http })
+        Self::from_http_client(endpoint, http)
     }
 
     fn is_websocket(&self) -> bool {
-        matches!(self.endpoint.scheme(), "ws" | "wss")
+        is_websocket_url(&self.endpoint)
     }
+}
+
+impl HttpClientBuilder {
+    /// Customize the HTTP client used for HTTP/SSE or the WebSocket handshake.
+    ///
+    /// Each call transforms the current configuration, retaining previous changes.
+    /// Configure default headers, proxies, DNS, trust roots, client certificates,
+    /// and timeouts through reqwest's builder rather than building a client first.
+    ///
+    /// For WebSockets, [`Self::build`] overrides the HTTP version preference with
+    /// HTTP/1.1 and disables redirects. HTTP/SSE retains the supplied settings.
+    /// Handshake headers are transport-owned; subprotocols and extensions are not
+    /// negotiated, even if custom default headers request them.
+    ///
+    /// # Timeouts
+    ///
+    /// Reqwest request/read timeouts apply to the WebSocket opening handshake,
+    /// not the lifetime of the upgraded socket. For HTTP/SSE, they retain their
+    /// normal reqwest request/body semantics, including long-lived SSE bodies.
+    ///
+    /// # Preconfigured TLS
+    ///
+    /// Prefer reqwest's TLS options for custom roots and identities. If using
+    /// `tls_backend_preconfigured`, its ALPN configuration must itself use
+    /// HTTP/1.1 for WebSockets: reqwest cannot rewrite a preconfigured backend's
+    /// ALPN. Incompatible negotiation is rejected before transmitting ACP data.
+    pub fn configure_http(
+        mut self,
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) -> Self {
+        self.http = configure(self.http);
+        self
+    }
+
+    /// Build a client, applying the selected transport's connection policies.
+    ///
+    /// Accepts `http`, `https`, `ws`, and `wss` URLs. No connection is opened
+    /// until the resulting [`HttpClient`] is connected through [`ConnectTo`].
+    pub fn build(self) -> Result<HttpClient, HttpClientError> {
+        let endpoint = self.endpoint?;
+        let http = if is_websocket_url(&endpoint) {
+            self.http
+                .http1_only()
+                .redirect(reqwest::redirect::Policy::none())
+        } else {
+            self.http
+        }
+        .build()?;
+        Ok(HttpClient { endpoint, http })
+    }
+}
+
+fn parse_base_url(base_url: &str) -> Result<url::Url, HttpClientError> {
+    let mut endpoint = parse_endpoint(base_url)?;
+    let path = endpoint.path().trim_end_matches('/');
+    let path = if path.is_empty() {
+        "/acp".to_string()
+    } else if path.ends_with("/acp") {
+        path.to_string()
+    } else {
+        format!("{path}/acp")
+    };
+    endpoint.set_path(&path);
+    Ok(endpoint)
+}
+
+fn parse_endpoint(endpoint: &str) -> Result<url::Url, HttpClientError> {
+    let endpoint = url::Url::parse(endpoint)?;
+    match endpoint.scheme() {
+        "http" | "https" | "ws" | "wss" => Ok(endpoint),
+        scheme => Err(HttpClientError::UnsupportedScheme(scheme.to_string())),
+    }
+}
+
+fn is_websocket_url(endpoint: &url::Url) -> bool {
+    matches!(endpoint.scheme(), "ws" | "wss")
 }
 
 impl ConnectTo<Client> for HttpClient {
@@ -1205,19 +1362,12 @@ async fn connect_ws(
         .await
         .map_err(|e| AcpError::internal_error().data(format!("WebSocket connect failed: {e}")))?;
     let status = response.status();
-    if status != reqwest::StatusCode::SWITCHING_PROTOCOLS {
-        return Err(AcpError::internal_error().data(format!(
-            "WebSocket connect failed: unexpected status {status}"
-        )));
-    }
-    let accept = response
-        .headers()
-        .get("sec-websocket-accept")
-        .and_then(|value| value.to_str().ok());
-    if accept != Some(expected_accept.as_str()) {
-        return Err(AcpError::internal_error()
-            .data("WebSocket connect failed: invalid Sec-WebSocket-Accept"));
-    }
+    validate_ws_response(
+        response.version(),
+        status,
+        response.headers(),
+        &expected_accept,
+    )?;
 
     let upgraded = response
         .upgrade()
@@ -1230,6 +1380,59 @@ async fn connect_ws(
     )
     .await;
     Ok((ws_stream, status))
+}
+
+fn validate_ws_response(
+    version: reqwest::Version,
+    status: reqwest::StatusCode,
+    headers: &reqwest::header::HeaderMap,
+    expected_accept: &str,
+) -> Result<(), AcpError> {
+    let invalid =
+        |reason| AcpError::internal_error().data(format!("WebSocket connect failed: {reason}"));
+    if version != reqwest::Version::HTTP_11 {
+        return Err(invalid(format!(
+            "expected HTTP/1.1, received {version:?}; preconfigured TLS must use HTTP/1.1 ALPN"
+        )));
+    }
+    if status != reqwest::StatusCode::SWITCHING_PROTOCOLS {
+        return Err(invalid(format!("unexpected status {status}")));
+    }
+    let mut upgrades = headers.get_all("upgrade").iter();
+    if !upgrades
+        .next()
+        .is_some_and(|value| value.as_bytes().eq_ignore_ascii_case(b"websocket"))
+        || upgrades.next().is_some()
+    {
+        return Err(invalid("invalid upgrade header".to_string()));
+    }
+    let connection_upgrade = headers.get_all("connection").iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|part| {
+                part.trim_matches([' ', '\t'])
+                    .eq_ignore_ascii_case("upgrade")
+            })
+        })
+    });
+    if !connection_upgrade {
+        return Err(invalid("invalid connection header".to_string()));
+    }
+    let mut accepts = headers.get_all("sec-websocket-accept").iter();
+    if accepts.next().map(reqwest::header::HeaderValue::as_bytes)
+        != Some(expected_accept.as_bytes())
+        || accepts.next().is_some()
+    {
+        return Err(invalid("invalid Sec-WebSocket-Accept".to_string()));
+    }
+    // ACP does not negotiate subprotocols or extensions. In particular, passing
+    // an extension through to from_raw_socket does not enable support for it
+    // (e.g. compression).
+    for header in ["sec-websocket-protocol", "sec-websocket-extensions"] {
+        if headers.contains_key(header) {
+            return Err(invalid(format!("unsupported {header}")));
+        }
+    }
+    Ok(())
 }
 
 trait WsSink {
@@ -1735,15 +1938,124 @@ mod tests {
             "http://example.com/agent"
         );
         assert_eq!(
-            HttpClient::with_endpoint_and_client(
-                "ws://example.com/custom/acp?token=abc",
-                reqwest::Client::new(),
-            )
-            .unwrap()
-            .endpoint
-            .as_str(),
+            HttpClient::builder_with_endpoint("ws://example.com/custom/acp?token=abc")
+                .build()
+                .unwrap()
+                .endpoint
+                .as_str(),
             "ws://example.com/custom/acp?token=abc"
         );
+    }
+
+    #[test]
+    fn builder_uses_the_same_base_url_rule_for_all_transports() {
+        for scheme in ["http", "https", "ws", "wss"] {
+            for (path, expected) in [
+                ("", "/acp"),
+                ("/", "/acp"),
+                ("/proxy/", "/proxy/acp"),
+                ("/proxy/acp/", "/proxy/acp"),
+                ("/proxy/acp/nested", "/proxy/acp/nested/acp"),
+            ] {
+                let url = format!("{scheme}://example.com{path}?key=value");
+                let client = HttpClient::builder(&url).build().unwrap();
+                assert_eq!(
+                    client.endpoint.as_str(),
+                    format!("{scheme}://example.com{expected}?key=value")
+                );
+                let exact = HttpClient::builder_with_endpoint(&url).build().unwrap();
+                assert_eq!(exact.endpoint, url::Url::parse(&url).unwrap());
+            }
+        }
+    }
+
+    #[test]
+    fn constructors_reject_invalid_urls_and_unsupported_schemes() {
+        for build in [HttpClient::builder, HttpClient::builder_with_endpoint] {
+            assert!(matches!(
+                build("not a URL".to_string()).build(),
+                Err(HttpClientError::InvalidUrl(_))
+            ));
+            for scheme in ["file", "ftp", "custom"] {
+                assert!(matches!(
+                    build(format!("{scheme}://example.com/acp")).build(),
+                    Err(HttpClientError::UnsupportedScheme(actual)) if actual == scheme
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn prebuilt_http_client_requires_an_http_endpoint() {
+        let http = reqwest::Client::new();
+        for scheme in ["http", "https"] {
+            let endpoint = format!("{scheme}://example.com/custom?key=value");
+            let client = HttpClient::from_http_client(&endpoint, http.clone()).unwrap();
+            assert_eq!(client.endpoint.as_str(), endpoint);
+        }
+        for scheme in ["ws", "wss"] {
+            assert!(matches!(
+                HttpClient::from_http_client(format!("{scheme}://example.com/acp"), http.clone()),
+                Err(HttpClientError::WebSocketRequiresBuilder)
+            ));
+        }
+        assert!(matches!(
+            HttpClient::from_http_client("ftp://example.com/acp", http),
+            Err(HttpClientError::UnsupportedScheme(_))
+        ));
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_constructors_preserve_http_paths_and_reject_websockets() {
+        let http = reqwest::Client::new();
+        for scheme in ["http", "https"] {
+            for path in ["", "/proxy", "/proxy/acp/"] {
+                let url = format!("{scheme}://example.com{path}?key=value");
+                let legacy = HttpClient::with_client(&url, http.clone()).unwrap();
+                assert_eq!(legacy.endpoint, HttpClient::new(&url).unwrap().endpoint);
+                let exact = HttpClient::with_endpoint_and_client(&url, http.clone()).unwrap();
+                assert_eq!(
+                    exact.endpoint,
+                    HttpClient::with_endpoint(&url).unwrap().endpoint
+                );
+            }
+        }
+        for scheme in ["ws", "wss"] {
+            let url = format!("{scheme}://example.com/custom");
+            assert!(matches!(
+                HttpClient::with_client(&url, http.clone()),
+                Err(HttpClientError::WebSocketRequiresBuilder)
+            ));
+            assert!(matches!(
+                HttpClient::with_endpoint_and_client(&url, http.clone()),
+                Err(HttpClientError::WebSocketRequiresBuilder)
+            ));
+        }
+    }
+
+    #[test]
+    fn builder_propagates_http_configuration_errors_without_panicking() {
+        let error = HttpClient::builder("ws://example.com")
+            .configure_http(|http| http.user_agent("\n"))
+            .build()
+            .unwrap_err();
+        assert!(matches!(error, HttpClientError::Reqwest(_)));
+    }
+
+    #[test]
+    fn client_and_builder_debug_do_not_expose_default_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_static("private-header-value"),
+        );
+        let builder = HttpClient::builder("ws://example.com")
+            .configure_http(|http| http.default_headers(headers));
+        assert!(!format!("{builder:?}").contains("private-header-value"));
+        let client = builder.build().unwrap();
+        assert!(!format!("{client:?}").contains("private-header-value"));
+        assert_eq!(client.clone().endpoint, client.endpoint);
     }
 
     #[tokio::test]
@@ -3304,6 +3616,162 @@ mod tests {
         server.abort();
     }
 
+    fn valid_ws_response_headers() -> HeaderMap {
+        HeaderMap::from_iter([
+            (
+                reqwest::header::UPGRADE,
+                HeaderValue::from_static("websocket"),
+            ),
+            (
+                reqwest::header::CONNECTION,
+                HeaderValue::from_static("Upgrade"),
+            ),
+            (
+                reqwest::header::SEC_WEBSOCKET_ACCEPT,
+                HeaderValue::from_static("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+            ),
+        ])
+    }
+
+    #[test]
+    fn websocket_response_validation() {
+        let valid = valid_ws_response_headers();
+        let validate = |version, status, headers: &HeaderMap| {
+            validate_ws_response(version, status, headers, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        };
+        let version = reqwest::Version::HTTP_11;
+        let status = StatusCode::SWITCHING_PROTOCOLS;
+        validate(version, status, &valid).unwrap();
+        for version in [
+            reqwest::Version::HTTP_10,
+            reqwest::Version::HTTP_2,
+            reqwest::Version::HTTP_3,
+        ] {
+            assert!(validate(version, status, &valid).is_err());
+        }
+        for status in [StatusCode::OK, StatusCode::BAD_REQUEST, StatusCode::FOUND] {
+            assert!(validate(version, status, &valid).is_err());
+        }
+        for (header, invalid_values) in [
+            (
+                "upgrade",
+                vec!["", "h2c", "websocket/13", "notwebsocket", "websocket, h2c"],
+            ),
+            ("connection", vec!["", "keep-alive", "notupgrade"]),
+            (
+                "sec-websocket-accept",
+                vec!["", "wrong", "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=, wrong"],
+            ),
+        ] {
+            let mut headers = valid.clone();
+            headers.remove(header);
+            assert!(validate(version, status, &headers).is_err(), "{header}");
+            for value in invalid_values {
+                headers.insert(header, HeaderValue::from_str(value).unwrap());
+                assert!(
+                    validate(version, status, &headers).is_err(),
+                    "{header}: {value}"
+                );
+            }
+            headers.insert(header, HeaderValue::from_bytes(b"\xff").unwrap());
+            assert!(validate(version, status, &headers).is_err(), "{header}");
+        }
+        for header in ["upgrade", "sec-websocket-accept"] {
+            let mut duplicate = valid.clone();
+            duplicate.append(header, valid[header].clone());
+            assert!(validate(version, status, &duplicate).is_err(), "{header}");
+        }
+
+        for header in ["sec-websocket-protocol", "sec-websocket-extensions"] {
+            for value in ["", "acp", "permessage-deflate"] {
+                let mut headers = valid.clone();
+                headers.insert(header, HeaderValue::from_str(value).unwrap());
+                assert!(validate(version, status, &headers).is_err(), "{header}");
+            }
+        }
+
+        let mut token_lists = valid;
+        token_lists.insert("upgrade", HeaderValue::from_static("WebSocket"));
+        token_lists.insert("connection", HeaderValue::from_static("keep-alive"));
+        token_lists.append("connection", HeaderValue::from_static("other, uPgRaDe\t "));
+        validate(version, status, &token_lists).unwrap();
+    }
+
+    #[tokio::test]
+    async fn websocket_public_transport_validates_before_sending_acp() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for upgrade in ["websocket", "not-websocket"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let fixture = async {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                // Read exactly the handshake, preserving any subsequent ACP
+                // bytes so the assertion also detects premature writes.
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                    assert!(request.len() < 16 * 1024);
+                }
+                let request = String::from_utf8(request).unwrap();
+                let key = request
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.eq_ignore_ascii_case("sec-websocket-key"))
+                    .unwrap()
+                    .1
+                    .trim();
+                let accept =
+                    async_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: {upgrade}\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                let mut received = Vec::new();
+                socket.read_to_end(&mut received).await.unwrap();
+                received
+            };
+            let client = HttpClient::new(format!("ws://{addr}")).unwrap();
+            let (caller, transport) = ConnectTo::<Client>::into_channel_and_future(client);
+            caller
+                .tx
+                .unbounded_send(single_frame(
+                    RawJsonRpcMessage::notification("custom/queued".to_string(), json!({}))
+                        .unwrap(),
+                ))
+                .unwrap();
+            drop(caller);
+
+            // Neither future is spawned: timeout drops both fixtures and
+            // sockets together, without detached tasks or synchronization sleeps.
+            let (result, received) = timeout(Duration::from_secs(2), async {
+                futures::join!(transport, fixture)
+            })
+            .await
+            .expect("handshake fixture should complete");
+            if upgrade == "websocket" {
+                result.unwrap();
+                assert!(!received.is_empty(), "valid handshake must send queued ACP");
+                assert_eq!(received[0], 0x81, "first frame must be WebSocket text");
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("invalid upgrade header"),
+                    "{error}"
+                );
+                assert!(
+                    received.is_empty(),
+                    "ACP escaped before handshake validation"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn websocket_serializes_batch_as_one_text_frame() {
         let (caller, transport) = Channel::duplex();
@@ -3462,7 +3930,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_with_client_sends_default_headers() {
+    async fn websocket_builder_sends_default_headers() {
         let (header_tx, mut header_rx) = tokio::sync::mpsc::unbounded_channel();
         let app = Router::new().route(
             "/acp",
@@ -3485,11 +3953,11 @@ mod tests {
             reqwest::header::HeaderName::from_static("x-acp-test-client"),
             reqwest::header::HeaderValue::from_static("from-reqwest"),
         );
-        let http = reqwest::Client::builder()
-            .default_headers(default_headers)
+        let client = HttpClient::builder(format!("ws://{addr}"))
+            .configure_http(|http| http.default_headers(default_headers))
+            .configure_http(reqwest::ClientBuilder::no_proxy)
             .build()
             .unwrap();
-        let client = HttpClient::with_client(format!("ws://{addr}"), http).unwrap();
         let (_caller, transport) = Channel::duplex();
         let transport = tokio::spawn(run(client, transport));
 
@@ -3500,22 +3968,25 @@ mod tests {
         assert_eq!(
             headers.get("x-acp-test-client").map(HeaderValue::as_bytes),
             Some(&b"from-reqwest"[..]),
-            "HttpClient::with_client default headers must be sent on the WebSocket handshake"
+            "default headers must be retained across configure_http calls and sent on the handshake"
         );
 
-        drop(transport);
+        transport.abort();
+        drop(transport.await);
         server.abort();
+        drop(server.await);
     }
 
-    #[tokio::test]
-    async fn websocket_with_client_honors_request_timeout() {
+    async fn assert_websocket_handshake_times_out(
+        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_millis(200))
+        let client = HttpClient::builder(format!("ws://{addr}"))
+            .configure_http(reqwest::ClientBuilder::no_proxy)
+            .configure_http(configure)
             .build()
             .unwrap();
-        let client = HttpClient::with_client(format!("ws://{addr}"), http).unwrap();
         let (_caller, transport) = Channel::duplex();
 
         let error = timeout(Duration::from_secs(1), run(client, transport))
@@ -3528,6 +3999,17 @@ mod tests {
         );
 
         drop(listener);
+    }
+
+    #[tokio::test]
+    async fn websocket_builder_honors_request_timeout() {
+        assert_websocket_handshake_times_out(|http| http.timeout(Duration::from_millis(200))).await;
+    }
+
+    #[tokio::test]
+    async fn websocket_builder_honors_read_timeout() {
+        assert_websocket_handshake_times_out(|http| http.read_timeout(Duration::from_millis(200)))
+            .await;
     }
 
     #[tokio::test]

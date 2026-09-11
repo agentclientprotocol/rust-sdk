@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Breaking changes
+
+- WebSocket URLs passed to `HttpClient::with_client` or
+  `with_endpoint_and_client` now return `WebSocketRequiresBuilder` before network
+  I/O. Migrate to `builder(...).configure_http(...).build()` or
+  `builder_with_endpoint(...)` so the transport can enforce connection policies.
+  See the
+  [migration guide](https://agentclientprotocol.github.io/rust-sdk/http-transport.html#migrating-custom-client-construction).
+
+### Deprecated
+
+- Retain `HttpClient::with_client` and `with_endpoint_and_client` as deprecated
+  HTTP/SSE compatibility wrappers with unchanged path handling.
+  `from_http_client(exact_endpoint, client)` preserves shared reqwest clients for
+  HTTP/SSE; its endpoint is exact and does not append `/acp`.
+
+### Fixed
+
+- Apply custom headers, TLS, proxies, DNS, and timeouts to WebSocket handshakes.
+  Enforce HTTP/1.1 and disable redirects for WebSockets without changing HTTP/SSE
+  policies. Validate the upgrade response before sending queued ACP data, and
+  reject unsupported subprotocols and extensions.
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
 
 ### Breaking changes

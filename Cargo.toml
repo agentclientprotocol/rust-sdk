@@ -94,6 +94,9 @@ syn = "3"
 # Testing
 expect-test = "1.5"
 regex = "1.12.2"
+h2 = "0.4"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs", "tls12"] }
 
 [workspace.lints.rust]
 future_incompatible = { level = "warn", priority = -1 }

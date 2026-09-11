@@ -73,6 +73,11 @@ tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 async-tungstenite.workspace = true
 tracing-subscriber.workspace = true
 tower.workspace = true
+h2.workspace = true
+rcgen.workspace = true
+tokio-rustls.workspace = true
+# Reproduce downstream feature unification, even in client-only test runs.
+reqwest = { workspace = true, features = ["http2"] }
 
 [lints]
 workspace = true
