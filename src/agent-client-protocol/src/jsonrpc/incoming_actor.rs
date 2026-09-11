@@ -646,6 +646,7 @@ fn handle_handler_error<Counterpart: Role>(
                 method: reply_target.method,
                 response: Err(error),
                 destination: reply_target.destination,
+                receipt: None,
             },
         ),
         Some(HandlerErrorTarget::Response(reply_target)) => {

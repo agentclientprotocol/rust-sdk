@@ -1,9 +1,14 @@
 // Types re-exported from crate root
+use std::sync::{Arc, Weak};
+
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
-use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage, TransportFrame};
+use crate::jsonrpc::{
+    CompletedResponseFrame, OutgoingMessage, PendingReplies, RawJsonRpcMessage,
+    ResponseReceiptSender, ResponseReceiptState, TransportFrame, response_receipt_teardown_error,
+};
 use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
@@ -15,6 +20,47 @@ pub(crate) fn send_raw_message(
     tracing::debug!(?message, ?tx, "send_raw_message");
     tx.unbounded_send(message)
         .map_err(crate::util::internal_error)
+}
+
+#[derive(Default)]
+struct ResponseReceiptRegistry {
+    pending: Vec<Weak<ResponseReceiptState>>,
+}
+
+impl ResponseReceiptRegistry {
+    fn register(&mut self, sender: &ResponseReceiptSender) {
+        self.pending.retain(|state| state.strong_count() != 0);
+        self.pending.push(Arc::downgrade(&sender.state));
+    }
+}
+
+impl Drop for ResponseReceiptRegistry {
+    fn drop(&mut self) {
+        for state in self.pending.drain(..).filter_map(|state| state.upgrade()) {
+            state.resolve(Err(response_receipt_teardown_error()));
+        }
+    }
+}
+
+fn enqueue_completed_response(
+    transport_tx: &mpsc::UnboundedSender<TransportFrame>,
+    completed: CompletedResponseFrame,
+) -> Result<(), crate::Error> {
+    match transport_tx.unbounded_send(completed.frame) {
+        Ok(()) => {
+            for receipt in completed.receipts {
+                receipt.resolve(Ok(()));
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let error = crate::Error::into_internal_error(error);
+            for receipt in completed.receipts {
+                receipt.resolve(Err(error.clone()));
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level RawJsonRpcMessage.
@@ -31,12 +77,13 @@ pub(super) async fn outgoing_protocol_actor(
     protocol_compat: ProtocolCompat,
 ) -> Result<(), crate::Error> {
     let mut drain_waiters = Vec::new();
+    let mut receipt_registry = ResponseReceiptRegistry::default();
 
     while let Some(message) = outgoing_rx.next().await {
         tracing::debug!(?message, "outgoing_protocol_actor");
 
         // Create the message to be sent over the transport
-        let (json_rpc_message, destination) = match message {
+        let (json_rpc_message, destination, receipt) = match message {
             OutgoingMessage::CloseAfterDraining { done } => {
                 // Reject later sends while preserving every message that was
                 // already accepted into this receiver's buffer.
@@ -46,17 +93,13 @@ pub(super) async fn outgoing_protocol_actor(
             }
             OutgoingMessage::BatchDispatchComplete { completion } => {
                 if let Some(frame) = completion.complete() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                    enqueue_completed_response(&transport_tx, frame)?;
                 }
                 continue;
             }
             OutgoingMessage::BatchHandlerAttemptComplete { destination } => {
                 if let Some(frame) = destination.finish_handler_attempt() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                    enqueue_completed_response(&transport_tx, frame)?;
                 }
                 continue;
             }
@@ -79,9 +122,7 @@ pub(super) async fn outgoing_protocol_actor(
                 );
                 let fallback = RawJsonRpcMessage::response(id, fallback);
                 if let Some(frame) = destination.abandon(fallback) {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                    enqueue_completed_response(&transport_tx, frame)?;
                 }
                 continue;
             }
@@ -180,14 +221,23 @@ pub(super) async fn outgoing_protocol_actor(
                 method,
                 response,
                 destination,
+                receipt,
             } => match protocol_compat.outgoing_response_to(&id, &method, response) {
                 Ok(value) => {
                     tracing::debug!(?id, "Sending success response");
-                    (RawJsonRpcMessage::response(id, Ok(value)), destination)
+                    (
+                        RawJsonRpcMessage::response(id, Ok(value)),
+                        destination,
+                        receipt,
+                    )
                 }
                 Err(error) => {
                     tracing::warn!(?id, %method, ?error, "Sending error response");
-                    (RawJsonRpcMessage::response(id, Err(error)), destination)
+                    (
+                        RawJsonRpcMessage::response(id, Err(error)),
+                        destination,
+                        receipt,
+                    )
                 }
             },
             OutgoingMessage::UncorrelatedErrorResponse { error, destination } => {
@@ -196,14 +246,16 @@ pub(super) async fn outgoing_protocol_actor(
                 (
                     RawJsonRpcMessage::response(RequestId::Null, Err(error)),
                     destination,
+                    None,
                 )
             }
         };
 
-        if let Some(frame) = destination.complete(json_rpc_message) {
-            transport_tx
-                .unbounded_send(frame)
-                .map_err(crate::Error::into_internal_error)?;
+        if let Some(receipt) = receipt.as_ref() {
+            receipt_registry.register(receipt);
+        }
+        if let Some(frame) = destination.complete(json_rpc_message, receipt) {
+            enqueue_completed_response(&transport_tx, frame)?;
         }
     }
 
@@ -215,4 +267,48 @@ pub(super) async fn outgoing_protocol_actor(
         let _ = done.send(());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::executor::block_on;
+    use futures::future::join;
+
+    use super::*;
+
+    #[test]
+    fn actor_teardown_fails_every_registered_response_receipt() {
+        let (first_sender, first_receipt) = ResponseReceiptSender::channel();
+        let (second_sender, second_receipt) = ResponseReceiptSender::channel();
+        let mut registry = ResponseReceiptRegistry::default();
+        registry.register(&first_sender);
+        registry.register(&second_sender);
+
+        drop(registry);
+
+        let (first_result, second_result) = block_on(join(first_receipt, second_receipt));
+        assert!(first_result.is_err());
+        assert!(second_result.is_err());
+        drop((first_sender, second_sender));
+    }
+
+    #[test]
+    fn response_transport_queue_failure_fails_every_receipt() {
+        let (transport_tx, transport_rx) = mpsc::unbounded();
+        drop(transport_rx);
+        let (first_sender, first_receipt) = ResponseReceiptSender::channel();
+        let (second_sender, second_receipt) = ResponseReceiptSender::channel();
+        let completed = CompletedResponseFrame {
+            frame: TransportFrame::Single(RawJsonRpcMessage::response(
+                RequestId::Null,
+                Ok(serde_json::Value::Null),
+            )),
+            receipts: vec![first_sender, second_sender],
+        };
+
+        assert!(enqueue_completed_response(&transport_tx, completed).is_err());
+        let (first_result, second_result) = block_on(join(first_receipt, second_receipt));
+        assert!(first_result.is_err());
+        assert!(second_result.is_err());
+    }
 }

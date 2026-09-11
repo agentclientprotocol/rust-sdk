@@ -17,7 +17,8 @@ use std::{
 use agent_client_protocol::{
     Agent, ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom,
     Handled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    RawJsonRpcMessage, Responder, TransportBatch, TransportBatchEntry, TransportFrame,
+    RawJsonRpcMessage, Responder, ResponseReceipt, TransportBatch, TransportBatchEntry,
+    TransportFrame,
     role::{Role, UntypedRole},
     schema::ProtocolVersion,
     schema::v1,
@@ -237,6 +238,79 @@ async fn next_deferred_response(
         .expect("deferred responder channel closed unexpectedly")
 }
 
+async fn next_response_receipt(
+    rx: &mut mpsc::UnboundedReceiver<(String, ResponseReceipt)>,
+) -> (String, ResponseReceipt) {
+    tokio::time::timeout(TIMEOUT, rx.next())
+        .await
+        .expect("timed out waiting for response receipt")
+        .expect("response receipt channel closed unexpectedly")
+}
+
+fn start_tracked_server(
+    responder_tx: mpsc::UnboundedSender<(String, Responder<TestResponse>)>,
+    receipt_tx: mpsc::UnboundedSender<(String, ResponseReceipt)>,
+) -> (
+    DuplexStream,
+    BufReader<DuplexStream>,
+    JoinHandle<Result<(), agent_client_protocol::Error>>,
+) {
+    let (peer_writer, sdk_reader) = tokio::io::duplex(8192);
+    let (sdk_writer, peer_reader) = tokio::io::duplex(8192);
+    let transport = ByteStreams::new(sdk_writer.compat_write(), sdk_reader.compat());
+
+    let server = UntypedRole.builder().on_receive_request(
+        async move |request: TestRequest,
+                    responder: Responder<TestResponse>,
+                    connection: ConnectionTo<UntypedRole>| {
+            let message = request.message;
+            if message == "drop responder" {
+                drop(responder);
+                return Ok(());
+            }
+            if message.starts_with("deferred") {
+                return responder_tx
+                    .unbounded_send((message, responder))
+                    .map_err(agent_client_protocol::Error::into_internal_error);
+            }
+            if message == "tracked then notification" {
+                let receipt = responder.respond_tracked(TestResponse {
+                    result: "tracked response".into(),
+                })?;
+                let notification_connection = connection.clone();
+                connection.spawn(async move {
+                    receipt.await?;
+                    notification_connection.send_notification(TestNotification {
+                        message: "after tracked response".into(),
+                    })
+                })?;
+                return Ok(());
+            }
+            if message == "untracked" {
+                return responder.respond(TestResponse {
+                    result: "untracked response".into(),
+                });
+            }
+
+            let response = if message == "tracked error" {
+                Err(agent_client_protocol::Error::internal_error().data("tracked error"))
+            } else {
+                Ok(TestResponse {
+                    result: format!("echo: {message}"),
+                })
+            };
+            let receipt = responder.respond_with_result_tracked(response)?;
+            receipt_tx
+                .unbounded_send((message, receipt))
+                .map_err(agent_client_protocol::Error::into_internal_error)
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let server_task = tokio::task::spawn_local(server.connect_to(transport));
+    (peer_writer, BufReader::new(peer_reader), server_task)
+}
+
 fn start_deferred_server(
     responder_tx: mpsc::UnboundedSender<(String, Responder<TestResponse>)>,
 ) -> (
@@ -279,6 +353,199 @@ async fn finish_server(
         .expect("server did not stop after incoming EOF")
         .expect("server task panicked")
         .expect("server connection failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tracked_individual_response_orders_notification_and_leaves_untracked_unchanged() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (responder_tx, _responder_rx) = mpsc::unbounded();
+            let (receipt_tx, _receipt_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) =
+                start_tracked_server(responder_tx, receipt_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "test/echo",
+                    "params": { "message": "tracked then notification" }
+                }),
+            )
+            .await;
+
+            let response = read_json_line(&mut peer_reader).await;
+            assert_eq!(response["id"], json!(1));
+            assert_eq!(response["result"], json!({ "result": "tracked response" }));
+            let notification = read_json_line(&mut peer_reader).await;
+            assert_eq!(notification["method"], json!("test/notify"));
+            assert_eq!(
+                notification["params"],
+                json!({ "message": "after tracked response" })
+            );
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "test/echo",
+                    "params": { "message": "untracked" }
+                }),
+            )
+            .await;
+            let untracked = read_json_line(&mut peer_reader).await;
+            assert_eq!(untracked["id"], json!(2));
+            assert_eq!(
+                untracked["result"],
+                json!({ "result": "untracked response" })
+            );
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tracked_error_response_receipt_resolves_when_frame_is_enqueued() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (responder_tx, _responder_rx) = mpsc::unbounded();
+            let (receipt_tx, mut receipt_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) =
+                start_tracked_server(responder_tx, receipt_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "test/echo",
+                    "params": { "message": "tracked error" }
+                }),
+            )
+            .await;
+
+            let (message, receipt) = next_response_receipt(&mut receipt_rx).await;
+            assert_eq!(message, "tracked error");
+            receipt
+                .await
+                .expect("error response frame should be enqueued");
+            let response = read_json_line(&mut peer_reader).await;
+            assert_eq!(response["id"], json!(3));
+            assert_eq!(response["error"]["code"], json!(-32603));
+            assert_eq!(response["error"]["data"], json!("tracked error"));
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tracked_batch_receipts_resolve_together_after_aggregate_is_ready() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (responder_tx, mut responder_rx) = mpsc::unbounded();
+            let (receipt_tx, mut receipt_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) =
+                start_tracked_server(responder_tx, receipt_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!([
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "test/echo",
+                        "params": { "message": "immediate tracked" }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 5,
+                        "method": "test/echo",
+                        "params": { "message": "deferred tracked" }
+                    }
+                ]),
+            )
+            .await;
+
+            let (message, mut first_receipt) = next_response_receipt(&mut receipt_rx).await;
+            assert_eq!(message, "immediate tracked");
+            let (message, responder) = next_deferred_response(&mut responder_rx).await;
+            assert_eq!(message, "deferred tracked");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(25), &mut first_receipt)
+                    .await
+                    .is_err(),
+                "a batch receipt resolved before its sibling response was ready"
+            );
+
+            let second_receipt = responder
+                .respond_tracked(TestResponse {
+                    result: "echo: deferred tracked".into(),
+                })
+                .expect("deferred tracked response should be accepted");
+            let (first_result, second_result) = join(first_receipt, second_receipt).await;
+            first_result.expect("first batch receipt should resolve");
+            second_result.expect("second batch receipt should resolve");
+
+            let response = read_json_line(&mut peer_reader).await;
+            let responses = response
+                .as_array()
+                .expect("tracked batch should emit one aggregate array");
+            assert_eq!(responses.len(), 2);
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tracked_batch_receipt_resolves_when_sibling_responder_is_abandoned() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (responder_tx, _responder_rx) = mpsc::unbounded();
+            let (receipt_tx, mut receipt_rx) = mpsc::unbounded();
+            let (mut peer_writer, mut peer_reader, server_task) =
+                start_tracked_server(responder_tx, receipt_tx);
+
+            write_json_line(
+                &mut peer_writer,
+                &json!([
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 6,
+                        "method": "test/echo",
+                        "params": { "message": "tracked sibling" }
+                    },
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 7,
+                        "method": "test/echo",
+                        "params": { "message": "drop responder" }
+                    }
+                ]),
+            )
+            .await;
+
+            let (message, receipt) = next_response_receipt(&mut receipt_rx).await;
+            assert_eq!(message, "tracked sibling");
+            receipt
+                .await
+                .expect("tracked sibling should resolve with abandoned fallback batch");
+            let response = read_json_line(&mut peer_reader).await;
+            let responses = response
+                .as_array()
+                .expect("abandoned sibling should still emit one aggregate array");
+            assert_eq!(responses.len(), 2);
+            assert!(responses.iter().any(|response| {
+                response["id"] == json!(7) && response["error"]["code"] == json!(-32603)
+            }));
+
+            finish_server(peer_writer, server_task).await;
+        })
+        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
