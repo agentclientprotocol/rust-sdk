@@ -1,7 +1,7 @@
 //! Stdio transport for connecting ACP components via standard input/output.
 
 use crate::acp_agent::LineDirection;
-use crate::{ByteStreams, ConnectTo, Role};
+use crate::{ByteStreams, ConnectTo, DEFAULT_LINE_LIMIT, Role, line::BoundedLines};
 use std::sync::Arc;
 
 /// A transport that connects to an ACP peer via standard input/output.
@@ -10,11 +10,14 @@ use std::sync::Arc;
 /// which is the standard transport for MCP and ACP subprocess communication.
 pub struct Stdio {
     debug_callback: Option<Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>>,
+    stdin_line_limit: usize,
 }
 
 impl std::fmt::Debug for Stdio {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Stdio").finish_non_exhaustive()
+        f.debug_struct("Stdio")
+            .field("stdin_line_limit", &self.stdin_line_limit)
+            .finish_non_exhaustive()
     }
 }
 
@@ -24,6 +27,7 @@ impl Stdio {
     pub fn new() -> Self {
         Self {
             debug_callback: None,
+            stdin_line_limit: DEFAULT_LINE_LIMIT,
         }
     }
 
@@ -34,6 +38,15 @@ impl Stdio {
         F: Fn(&str, LineDirection) + Send + Sync + 'static,
     {
         self.debug_callback = Some(Arc::new(callback));
+        self
+    }
+
+    /// Set the maximum number of bytes accepted before the newline terminating one ACP stdin
+    /// frame. The default is [`DEFAULT_LINE_LIMIT`]. An optional carriage return counts toward
+    /// this limit; the newline itself does not.
+    #[must_use]
+    pub fn with_stdin_line_limit(mut self, limit: usize) -> Self {
+        self.stdin_line_limit = limit;
         self
     }
 }
@@ -53,15 +66,19 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
         let stdout = blocking::Unblock::new(std::io::stdout());
 
         if let Some(callback) = self.debug_callback {
+            use futures::StreamExt;
             use futures::io::BufReader;
-            use futures::{AsyncBufReadExt, StreamExt};
 
             let incoming_callback = callback.clone();
-            let incoming_lines = Box::pin(BufReader::new(stdin).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    incoming_callback(line, LineDirection::Stdin);
-                }
-            }))
+            let incoming_lines = Box::pin(
+                BoundedLines::new(BufReader::new(stdin), self.stdin_line_limit).inspect(
+                    move |result| {
+                        if let Ok(line) = result {
+                            incoming_callback(line, LineDirection::Stdin);
+                        }
+                    },
+                ),
+            )
                 as std::pin::Pin<Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>>;
 
             let outgoing_sink = Box::pin(futures::sink::unfold(
@@ -80,7 +97,11 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
             )
             .await
         } else {
-            ConnectTo::<Counterpart>::connect_to(ByteStreams::new(stdout, stdin), client).await
+            ConnectTo::<Counterpart>::connect_to(
+                ByteStreams::new(stdout, stdin).with_incoming_line_limit(self.stdin_line_limit),
+                client,
+            )
+            .await
         }
     }
 }
