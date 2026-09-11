@@ -143,6 +143,10 @@ impl Connection {
         self.outbound_transport.subscribe_all_outbound()
     }
 
+    pub(crate) fn enqueue_websocket_text(&self, text: String) -> Result<(), &'static str> {
+        self.outbound_transport.enqueue_websocket_text(text)
+    }
+
     pub(crate) fn subscribe_closed(&self) -> watch::Receiver<bool> {
         self.closed_tx.subscribe()
     }
@@ -154,10 +158,7 @@ impl Connection {
 
     #[cfg(test)]
     pub(crate) fn push_all_outbound_for_test(&self, msg: String) -> Result<(), &'static str> {
-        let OutboundTransport::WebSocket(websocket) = &self.outbound_transport else {
-            return Err("not a WebSocket connection");
-        };
-        websocket.all_outbound.push(msg)
+        self.enqueue_websocket_text(msg)
     }
 
     pub(crate) async fn start_router(self: &Arc<Self>) {
@@ -248,6 +249,13 @@ impl OutboundTransport {
             Self::Http(_) => None,
             Self::WebSocket(websocket) => websocket.all_outbound.try_acquire(),
         }
+    }
+
+    fn enqueue_websocket_text(&self, text: String) -> Result<(), &'static str> {
+        let Self::WebSocket(websocket) = self else {
+            return Err("not a WebSocket connection");
+        };
+        websocket.all_outbound.push(text)
     }
 
     #[cfg(test)]
