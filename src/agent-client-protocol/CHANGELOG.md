@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [2.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.1.1) - 2026-09-14
+
+### Fixed
+
+- *(acp)* support JavaScript-hosted WebAssembly ([#308](https://github.com/agentclientprotocol/rust-sdk/pull/308))
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
 ### Fixed
 
 - Support JavaScript-hosted `wasm32-unknown-unknown` builds through the opt-in

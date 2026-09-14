@@ -26,12 +26,12 @@ repository = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "2.1.0" }
-agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "2.1.0" }
-agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "2.1.0" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "3.1.0" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "2.1.1" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "2.1.1" }
+agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "2.1.1" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "3.1.1" }
 agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "2.1.0" }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "2.1.1" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
