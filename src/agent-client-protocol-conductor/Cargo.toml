@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Conductor for orchestrating Agent Client Protocol proxy chains"
 keywords = ["acp", "agent", "conductor", "ai"]
 categories = ["development-tools"]

@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Interactive sequence diagram viewer for Agent Client Protocol trace files"
 keywords = ["acp", "trace", "debugging", "visualization"]
 categories = ["development-tools::debugging"]

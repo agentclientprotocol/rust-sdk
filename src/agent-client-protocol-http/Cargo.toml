@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "HTTP and WebSocket transport for the Agent Client Protocol (ACP)"
 keywords = ["acp", "agent", "protocol", "http", "websocket"]
 categories = ["development-tools", "web-programming::http-server"]

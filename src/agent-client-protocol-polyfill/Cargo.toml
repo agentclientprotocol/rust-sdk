@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Polyfill proxies for Agent Client Protocol backward compatibility"
 keywords = ["acp", "agent", "mcp", "polyfill"]
 categories = ["development-tools"]
