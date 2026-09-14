@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Cookbook of common patterns for building ACP components"
 keywords = ["acp", "agent", "proxy", "mcp", "cookbook"]
 categories = ["development-tools"]

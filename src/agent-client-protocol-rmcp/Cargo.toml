@@ -6,7 +6,6 @@ rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "rmcp integration for Agent Client Protocol MCP servers"
 keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
