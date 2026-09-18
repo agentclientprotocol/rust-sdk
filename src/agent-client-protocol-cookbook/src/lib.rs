@@ -17,6 +17,7 @@
 //! - [`one_shot_prompt`] - Send a single prompt and get a response (simplest pattern)
 //! - [`v2_one_shot_prompt`] - Send a draft-v2 prompt and wait for the independent idle update
 //! - [`connecting_as_client`] - More details on connection setup and permission handling
+//! - [`ordered_application_dispatch`] - Apply updates, response barriers, and closure on one executor
 //!
 //! # Building Proxies
 //!
@@ -53,6 +54,8 @@
 //! [`Agent`]: agent_client_protocol::Agent
 //! [`Proxy`]: agent_client_protocol::Proxy
 //! [`ConnectTo`]: agent_client_protocol::ConnectTo
+
+pub mod ordered_application_dispatch;
 
 pub mod one_shot_prompt {
     //! Pattern: You Only Prompt Once.

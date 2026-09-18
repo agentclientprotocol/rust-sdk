@@ -7,6 +7,7 @@
 - [Design Overview](./design.md)
 - [Protocol Reference](./protocol.md)
 - [Request Cancellation](./request-cancellation.md)
+- [Ordered Application Dispatch](./ordered-application-dispatch.md)
 - [Configurable LLM Providers](./llm-providers.md)
 - [Protocol V2](./protocol-v2.md)
 - [Runnable V2 Quickstart](./protocol-v2-quickstart.md)

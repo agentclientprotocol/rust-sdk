@@ -181,6 +181,8 @@ the resume response on the wire, so preinstalled typed handlers observe them in
 order. If a handler forwards updates to another task, the application is
 responsible for any additional projection-drained barrier it needs before
 treating replay as locally applied.
+See [Ordered Application Dispatch](./ordered-application-dispatch.md) for a
+single-consumer queue that carries updates, response results, and closure.
 
 Dropping command handles has no network or inbound-routing side effect. For a
 session configured with `V2SessionBuilder::with_mcp_server` or
