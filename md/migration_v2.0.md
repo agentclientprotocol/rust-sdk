@@ -347,7 +347,7 @@ Construct `Lines` and `ByteStreams` with `Lines::new(outgoing, incoming)` and
 ## Draft v2 schema updates
 
 The optional `unstable_protocol_v2` surface now tracks
-`agent-client-protocol-schema` 1.7. The changes accumulated across schema 1.5
+`agent-client-protocol-schema` 1.8. The draft API changes accumulated across schema 1.5
 through 1.7 are included in the SDK 2.0 migration because this API is explicitly
 unstable, rather than treated as stable-v1 wire changes.
 
@@ -362,6 +362,11 @@ unstable, rather than treated as stable-v1 wire changes.
 - The experimental `v2::conversion` module and its cross-version helpers have been removed.
   Implement v1 and v2 handlers separately, and translate only application-owned shared state
   where the application's semantics define a faithful mapping.
+
+Schema 1.8 stabilizes optional tool-call `name` metadata in both v1 and draft
+v2. Remove `unstable_tool_call_name` from your enabled Cargo features; v2 still
+requires `unstable_protocol_v2`. The version-specific update semantics are
+unchanged.
 
 ## `SentRequest::map` accepts arbitrary output
 
