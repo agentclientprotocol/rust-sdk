@@ -103,7 +103,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 .on_receiving_result({
                     let event_tx = event_tx.clone();
                     async move |result| {
-                        assert_eq!(result?, v2::PromptResponse::new());
+                        assert_eq!(result?, v2::PromptResponse::new("testy-v2-user-message-0"));
                         event_tx
                             .send(TestEvent::PromptAccepted)
                             .map_err(Error::into_internal_error)
@@ -273,7 +273,7 @@ async fn testy_v2_prompt_acceptance_is_independent_from_cancellation_completion(
                 .on_receiving_result({
                     let event_tx = event_tx.clone();
                     async move |result| {
-                        assert_eq!(result?, v2::PromptResponse::new());
+                        assert_eq!(result?, v2::PromptResponse::new("testy-v2-user-message-0"));
                         event_tx
                             .send(TestEvent::PromptAccepted)
                             .map_err(Error::into_internal_error)
@@ -347,7 +347,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
                 .on_receiving_result({
                     let event_tx = event_tx.clone();
                     async move |result| {
-                        assert_eq!(result?, v2::PromptResponse::new());
+                        assert_eq!(result?, v2::PromptResponse::new("testy-v2-user-message-0"));
                         event_tx
                             .send(TestEvent::PromptAccepted)
                             .map_err(Error::into_internal_error)

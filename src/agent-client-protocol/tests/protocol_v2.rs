@@ -868,7 +868,7 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
         PromptResponse,
         "session/prompt",
         v2::PromptRequest::new("session-1", Vec::new()),
-        v2::PromptResponse::new()
+        v2::PromptResponse::new("message-1")
     );
 
     #[cfg(feature = "unstable_session_fork")]

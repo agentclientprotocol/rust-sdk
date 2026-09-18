@@ -122,7 +122,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
                             .content(vec!["unrelated".into()]),
                     ),
                 ))?;
-                responder.respond(v2::PromptResponse::new())?;
+                responder.respond(v2::PromptResponse::new("accepted-user"))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id.clone(),
                     v2::SessionUpdate::UserMessage(
@@ -189,7 +189,10 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
                     if message.message_id == v2::MessageId::new("background")
             ));
 
-            assert_eq!(acceptance.block_task().await?, v2::PromptResponse::new());
+            assert_eq!(
+                acceptance.block_task().await?,
+                v2::PromptResponse::new("accepted-user")
+            );
 
             assert!(matches!(
                 next_update(&mut update_rx).await.update,
@@ -314,7 +317,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
                    connection: V2ConnectionTo<Client>| {
-                responder.respond(v2::PromptResponse::new())?;
+                responder.respond(v2::PromptResponse::new("cancel-user"))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id.clone(),
                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
@@ -438,7 +441,11 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
                     [v2::ContentBlock::Text(text)]
                         if text.text == "first" || text.text == "second"
                 ));
-                responder.respond(v2::PromptResponse::new())?;
+                let message_id = match request.prompt.as_slice() {
+                    [v2::ContentBlock::Text(text)] => format!("{}-user", text.text),
+                    _ => unreachable!("prompt shape was asserted above"),
+                };
+                responder.respond(v2::PromptResponse::new(message_id))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id,
                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
@@ -480,7 +487,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
 
             assert_eq!(
                 session.send_prompt("first").block_task().await?,
-                v2::PromptResponse::new()
+                v2::PromptResponse::new("first-user")
             );
             assert!(matches!(
                 next_update(&mut update_rx).await.update,
@@ -489,7 +496,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
 
             assert_eq!(
                 other_task.send_prompt("second").block_task().await?,
-                v2::PromptResponse::new()
+                v2::PromptResponse::new("second-user")
             );
             assert!(matches!(
                 next_update(&mut update_rx).await.update,
@@ -621,7 +628,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse>,
                    connection: V2ConnectionTo<Client>| {
-                responder.respond(v2::PromptResponse::new())?;
+                responder.respond(v2::PromptResponse::new("permission-user"))?;
 
                 let session_id = request.session_id;
                 connection
@@ -752,7 +759,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
             async move |request: v2::PromptRequest,
                         responder: Responder<v2::PromptResponse>,
                         connection: V2ConnectionTo<Client>| {
-                responder.respond(v2::PromptResponse::new())?;
+                responder.respond(v2::PromptResponse::new("unhandled-user"))?;
 
                 // A v2 client without typed handlers should ignore an
                 // unhandled notification and reject an unhandled request,

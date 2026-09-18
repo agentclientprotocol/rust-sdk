@@ -132,7 +132,10 @@ rather than waiting for user input inside the dispatch callback.
 V2 deliberately separates prompt submission from session observation:
 
 - `session/prompt` returns a `PromptResponse` as soon as the agent accepts the
-  prompt. `V2Session::send_prompt` returns that request as a
+  prompt. Its `message_id` identifies the inserted user message, and live
+  `UserMessage` updates for that prompt use the same ID; persisting the message
+  in resumable history remains optional. The response does not indicate turn
+  completion. `V2Session::send_prompt` returns that request as a
   `SentRequest<PromptResponse>`; callers must explicitly await it, register a
   response callback, or detach it.
 - `V2SessionBuilder::start_session` likewise returns a mapped `SentRequest`.
