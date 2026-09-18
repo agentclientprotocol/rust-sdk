@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Update `agent-client-protocol-schema` to 1.8.0, stabilizing optional
+  programmatic tool-call names in v1 and draft v2. Remove the
+  `unstable_tool_call_name` feature; v2 still requires `unstable_protocol_v2`.
+
 ### Fixed
 
 - Support JavaScript-hosted `wasm32-unknown-unknown` builds through the opt-in
