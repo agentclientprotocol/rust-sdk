@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.1.0...agent-client-protocol-cookbook-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(cookbook)* demonstrate v2 session coordination ([#364](https://github.com/agentclientprotocol/rust-sdk/pull/364))
+- *(cookbook)* demonstrate ordered application dispatch ([#362](https://github.com/agentclientprotocol/rust-sdk/pull/362))
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
 ### Added
 
 - Add an ordered application-dispatch recipe that bridges v2 replay, response
