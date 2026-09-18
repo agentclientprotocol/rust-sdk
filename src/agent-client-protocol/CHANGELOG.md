@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Preserve already-captured stderr in nonzero process-exit errors when the
+  bounded shutdown wait expires before stderr EOF. The capture limit and
+  process-group cleanup behavior are unchanged.
 - Support JavaScript-hosted `wasm32-unknown-unknown` builds through the opt-in
   `wasm_js` feature, which selects Web Crypto through `wasm-bindgen` as the UUID
   randomness backend. WASI builds continue to work without an additional

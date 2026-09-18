@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_process::Child;
@@ -139,6 +139,10 @@ impl AcpAgentConfig {
 /// be parsed from command-line strings or JSON configurations.
 /// On Unix, dropping an active connection terminates the spawned process group, including agents
 /// started through wrapper commands such as `npx` and `uvx`.
+///
+/// Nonzero process exits include a bounded stderr tail in the returned error.
+/// Collection waits only for a bounded shutdown period; if stderr EOF does not
+/// arrive, bytes already captured are still reported.
 ///
 /// # Use Cases
 ///
@@ -374,6 +378,24 @@ impl StderrTail {
     }
 }
 
+/// Keep diagnostics accessible even when the reader has not reached EOF.
+#[derive(Clone, Default)]
+struct StderrCapture(Arc<Mutex<StderrTail>>);
+
+impl StderrCapture {
+    fn push(&self, bytes: &[u8]) {
+        self.0
+            .lock()
+            .expect("stderr capture lock poisoned")
+            .push(bytes);
+    }
+
+    fn take(&self) -> String {
+        let tail = std::mem::take(&mut *self.0.lock().expect("stderr capture lock poisoned"));
+        tail.into_string()
+    }
+}
+
 #[derive(Default)]
 struct StderrDebugLines {
     current: Vec<u8>,
@@ -437,18 +459,13 @@ impl StderrDebugLines {
     }
 }
 
-struct StderrDrainResult {
-    captured: String,
-    read_error: Option<std::io::Error>,
-}
-
 async fn drain_stderr(
     mut stderr: impl futures::AsyncRead + Unpin,
     debug_callback: Option<DebugCallback>,
-) -> StderrDrainResult {
+    capture: StderrCapture,
+) -> Option<std::io::Error> {
     use futures::AsyncReadExt as _;
 
-    let mut tail = StderrTail::default();
     let mut debug_lines = debug_callback.as_ref().map(|_| StderrDebugLines::default());
     let mut buffer = [0; STDERR_READ_BUFFER_SIZE];
 
@@ -457,7 +474,9 @@ async fn drain_stderr(
             Ok(0) => break None,
             Ok(read) => {
                 let bytes = &buffer[..read];
-                tail.push(bytes);
+                // Release the capture lock before invoking user code or awaiting
+                // another read.
+                capture.push(bytes);
                 if let (Some(lines), Some(callback)) =
                     (debug_lines.as_mut(), debug_callback.as_ref())
                 {
@@ -472,23 +491,22 @@ async fn drain_stderr(
         lines.finish(callback);
     }
 
-    StderrDrainResult {
-        captured: tail.into_string(),
-        read_error,
-    }
+    read_error
 }
 
 struct ExitedChild {
     guard: ChildGuard,
     status: std::process::ExitStatus,
-    stderr_rx: futures::channel::oneshot::Receiver<String>,
+    stderr_rx: futures::channel::oneshot::Receiver<()>,
+    stderr_capture: StderrCapture,
 }
 
 /// Waits for the direct child process while retaining its process-group guard
-/// and stderr receiver for exit reporting.
+/// and stderr capture and completion receiver for exit reporting.
 async fn wait_for_child(
     mut guard: ChildGuard,
-    stderr_rx: futures::channel::oneshot::Receiver<String>,
+    stderr_rx: futures::channel::oneshot::Receiver<()>,
+    stderr_capture: StderrCapture,
 ) -> Result<ExitedChild, crate::Error> {
     let status = guard
         .wait()
@@ -499,6 +517,7 @@ async fn wait_for_child(
         guard,
         status,
         stderr_rx,
+        stderr_capture,
     })
 }
 
@@ -509,6 +528,7 @@ async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
         mut guard,
         status,
         stderr_rx,
+        stderr_capture,
     } = child;
 
     // A launcher may exit while a descendant remains alive holding inherited
@@ -518,20 +538,21 @@ async fn finish_child_exit(child: ExitedChild) -> Result<(), crate::Error> {
     if status.success() {
         Ok(())
     } else {
-        let stderr =
-            match futures::future::select(stderr_rx, async_io::Timer::after(SHUTDOWN_GRACE_PERIOD))
-                .await
-            {
-                futures::future::Either::Left((stderr, _)) => stderr.unwrap_or_default(),
-                futures::future::Either::Right((_, stderr_rx)) => {
-                    tracing::debug!(
-                        grace = ?SHUTDOWN_GRACE_PERIOD,
-                        "Agent stderr remained open after process exit; reporting status without it"
-                    );
-                    drop(stderr_rx);
-                    String::new()
-                }
-            };
+        match futures::future::select(stderr_rx, async_io::Timer::after(SHUTDOWN_GRACE_PERIOD))
+            .await
+        {
+            futures::future::Either::Left((_, _)) => {}
+            futures::future::Either::Right((_, stderr_rx)) => {
+                tracing::debug!(
+                    grace = ?SHUTDOWN_GRACE_PERIOD,
+                    "Agent stderr remained open after process exit; reporting stderr captured so far"
+                );
+                drop(stderr_rx);
+            }
+        }
+        // EOF, read error, cancellation, and timeout all retain bytes already
+        // read. The completion signal controls the wait, not ownership of data.
+        let stderr = stderr_capture.take();
 
         let message = if stderr.is_empty() {
             format!("Process exited with {status}")
@@ -638,19 +659,19 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
 
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
-        // Create a channel to collect stderr for error reporting
-        let (stderr_tx, stderr_rx) = futures::channel::oneshot::channel::<String>();
+        // Completion and captured data have separate lifetimes: a shutdown
+        // timeout must not discard diagnostics already read from the pipe.
+        let (stderr_tx, stderr_rx) = futures::channel::oneshot::channel();
+        let stderr_capture = StderrCapture::default();
 
         // Read stderr concurrently, optionally calling the debug callback.
         // We use futures::future::select below to race this against the protocol,
         // so this runs as part of the same task — no tokio::spawn needed.
         let debug_callback = self.debug_callback.clone();
+        let capture = stderr_capture.clone();
         let stderr_future = async move {
-            let StderrDrainResult {
-                captured,
-                read_error,
-            } = drain_stderr(child_stderr, debug_callback).await;
-            drop(stderr_tx.send(captured));
+            let read_error = drain_stderr(child_stderr, debug_callback, capture).await;
+            let _ = stderr_tx.send(());
 
             if let Some(error) = read_error {
                 tracing::warn!(
@@ -662,7 +683,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
 
         // Create the guard eagerly so cancelling this connection before the
         // monitor is first polled still terminates the whole process group.
-        let child_wait = wait_for_child(ChildGuard(child), stderr_rx);
+        let child_wait = wait_for_child(ChildGuard(child), stderr_rx, stderr_capture);
 
         // Convert stdio to line streams with optional debug inspection.
         let incoming_lines: std::pin::Pin<
@@ -977,21 +998,128 @@ mod tests {
         }
     }
 
+    struct HeldOpenStderr(futures::io::Cursor<Vec<u8>>);
+
+    impl futures::AsyncRead for HeldOpenStderr {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buffer: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            match std::pin::Pin::new(&mut self.get_mut().0).poll_read(cx, buffer) {
+                // Simulate an inherited stderr pipe whose writer never closes.
+                std::task::Poll::Ready(Ok(0)) => std::task::Poll::Pending,
+                result => result,
+            }
+        }
+    }
+
+    #[test]
+    fn stderr_capture_is_available_before_eof_and_outside_callback_locks() {
+        use futures::FutureExt as _;
+
+        let capture = StderrCapture::default();
+        let (record, recorded) = recording_debug_callback();
+        let callback: DebugCallback = Arc::new({
+            let capture = capture.clone();
+            move |line, direction| {
+                assert!(
+                    capture.0.try_lock().is_ok(),
+                    "debug callbacks must not run under the capture lock"
+                );
+                record(line, direction);
+            }
+        });
+        let mut drain = pin!(drain_stderr(
+            HeldOpenStderr(futures::io::Cursor::new(b"diagnostic\npartial".to_vec())),
+            Some(callback),
+            capture.clone(),
+        ));
+        assert!((&mut drain).now_or_never().is_none());
+        assert_eq!(capture.take(), "diagnostic\npartial");
+        assert_eq!(*recorded.lock().unwrap(), ["diagnostic"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nonzero_exit_preserves_captured_stderr_without_eof() {
+        let agent = AcpAgent::from_args(["/bin/sh", "-c", "exit 17"]).unwrap();
+        let (stdin, stdout, stderr, child) = agent.spawn_process().unwrap();
+        drop((stdin, stdout, stderr));
+
+        let mut bytes = vec![b'x'; STDERR_CAPTURE_LIMIT + 1024];
+        bytes.extend_from_slice(b"\nACP_BUFFERED_ERROR\nunterminated");
+        let (callback, recorded) = recording_debug_callback();
+        let (stderr_tx, stderr_rx) = futures::channel::oneshot::channel();
+        let stderr_capture = StderrCapture::default();
+        let capture = stderr_capture.clone();
+        let drain = Box::pin(async move {
+            let _error = drain_stderr(
+                HeldOpenStderr(futures::io::Cursor::new(bytes)),
+                Some(callback),
+                capture,
+            )
+            .await;
+            let _ = stderr_tx.send(());
+        });
+        let report = async move {
+            let child = wait_for_child(ChildGuard(child), stderr_rx, stderr_capture).await?;
+            finish_child_exit(child).await
+        };
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            match futures::future::select(pin!(report), drain).await {
+                futures::future::Either::Left((result, _)) => result,
+                futures::future::Either::Right(_) => panic!("stderr must remain open"),
+            }
+        })
+        .await
+        .expect("stderr reporting must remain bounded")
+        .expect_err("nonzero child exit should be reported");
+
+        assert!(
+            recorded
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|line| line == "ACP_BUFFERED_ERROR"),
+            "the diagnostic was read before reporting the exit"
+        );
+        let detail = error
+            .data
+            .as_ref()
+            .and_then(serde_json::Value::as_str)
+            .unwrap();
+        assert!(detail.contains("exit status: 17"), "{error:?}");
+        assert!(detail.contains("ACP_BUFFERED_ERROR"), "{error:?}");
+        assert!(
+            detail.contains("[stderr truncated; showing last"),
+            "{error:?}"
+        );
+        assert!(detail.ends_with("unterminated"), "{error:?}");
+        assert_eq!(
+            detail.split_once('\n').unwrap().1.len(),
+            STDERR_CAPTURE_LIMIT
+        );
+    }
+
     #[tokio::test]
     async fn stderr_drain_stops_after_read_error() {
         let polls = Arc::new(AtomicUsize::new(0));
         let (callback, recorded) = recording_debug_callback();
+        let capture = StderrCapture::default();
 
-        let result = drain_stderr(
+        let error = drain_stderr(
             ErrorAfterData {
                 polls: polls.clone(),
             },
             Some(callback),
+            capture.clone(),
         )
         .await;
 
-        assert_eq!(result.captured, "partial");
-        assert_eq!(result.read_error.unwrap().to_string(), "read failed");
+        assert_eq!(capture.take(), "partial");
+        assert_eq!(error.unwrap().to_string(), "read failed");
         assert_eq!(polls.load(Ordering::SeqCst), 2);
         assert_eq!(*recorded.lock().unwrap(), ["partial"]);
     }
@@ -1046,16 +1174,22 @@ mod tests {
         drop(child_stdin);
         drop(child_stdout);
         let mut guard = ChildGuard(child);
+        let capture = StderrCapture::default();
 
-        let (drained, status) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            futures::join!(drain_stderr(child_stderr, None), guard.wait())
-        })
-        .await
-        .expect("stderr drain should not block after its retained tail is full");
+        let (read_error, status) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                futures::join!(
+                    drain_stderr(child_stderr, None, capture.clone()),
+                    guard.wait()
+                )
+            })
+            .await
+            .expect("stderr drain should not block after its retained tail is full");
 
         assert_eq!(status.unwrap().code(), Some(17));
-        assert!(drained.read_error.is_none());
-        let (notice, tail) = drained.captured.split_once('\n').unwrap();
+        assert!(read_error.is_none());
+        let captured = capture.take();
+        let (notice, tail) = captured.split_once('\n').unwrap();
         assert_eq!(
             notice,
             format!("[stderr truncated; showing last {STDERR_CAPTURE_LIMIT} bytes]")
