@@ -63,7 +63,14 @@ before the prompt response and are not scoped to a prompt or turn ID.
 Within that projection, message chunks append by `messageId`; a later message
 snapshot with concrete content replaces the accumulated chunks, `null` clears
 them, and omitted content preserves them. Rendering chunks and then rendering a
-snapshot again would duplicate output.
+snapshot again would duplicate output. An empty content array is also a
+replacement. Identical chunks append again; chunk updates are not automatically
+idempotent. The example renders messages in first-seen order, even when the
+first update for a message only carries metadata.
+
+Run `just test` from the repository root to execute the example's unit tests
+alongside the workspace suite. They cover interleaved message IDs, metadata-only
+updates, content replacement and clearing, and repeated chunks.
 
 ## Agent lifecycle
 
