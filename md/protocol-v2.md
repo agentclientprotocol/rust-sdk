@@ -183,6 +183,10 @@ responsible for any additional projection-drained barrier it needs before
 treating replay as locally applied.
 See [Ordered Application Dispatch](./ordered-application-dispatch.md) for a
 single-consumer queue that carries updates, response results, and closure.
+For an application-owned prototype that additionally coordinates shared resume
+replay, abandonment, and close, see
+[Session Operation Coordination](./session-operation-coordination.md). It is a
+cookbook policy example, not a public SDK coordinator.
 
 Dropping command handles has no network or inbound-routing side effect. For a
 session configured with `V2SessionBuilder::with_mcp_server` or

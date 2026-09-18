@@ -24,6 +24,11 @@ name = "v2_one_shot_client"
 required-features = ["unstable_protocol_v2"]
 test = true
 
+[[example]]
+name = "v2_session_coordination"
+required-features = ["unstable_protocol_v2"]
+test = true
+
 [features]
 default = []
 
