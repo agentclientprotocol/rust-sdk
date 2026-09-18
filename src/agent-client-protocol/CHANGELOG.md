@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
+
+### Added
+
+- *(acp)* update schema dependency to 1.9.0 ([#366](https://github.com/agentclientprotocol/rust-sdk/pull/366))
+- *(acp)* update schema to 1.8 ([#360](https://github.com/agentclientprotocol/rust-sdk/pull/360))
+
+### Fixed
+
+- *(acp)* preserve stderr when shutdown drain times out ([#365](https://github.com/agentclientprotocol/rust-sdk/pull/365))
+- *(acp)* support JavaScript-hosted WebAssembly ([#308](https://github.com/agentclientprotocol/rust-sdk/pull/308))
+
+### Other
+
+- *(cookbook)* demonstrate v2 session coordination ([#364](https://github.com/agentclientprotocol/rust-sdk/pull/364))
+- *(acp)* exercise v2 example projection semantics ([#363](https://github.com/agentclientprotocol/rust-sdk/pull/363))
+- *(cookbook)* demonstrate ordered application dispatch ([#362](https://github.com/agentclientprotocol/rust-sdk/pull/362))
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
 ### Added
 
 - Update `agent-client-protocol-schema` to 1.8.0, stabilizing optional

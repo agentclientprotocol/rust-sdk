@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.1.0...agent-client-protocol-http-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
 ## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.0.0...agent-client-protocol-http-v2.1.0) - 2026-09-04
 
 ### Added
