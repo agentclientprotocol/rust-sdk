@@ -18,6 +18,7 @@
 //! - [`v2_one_shot_prompt`] - Send a draft-v2 prompt and wait for the independent idle update
 //! - [`connecting_as_client`] - More details on connection setup and permission handling
 //! - [`ordered_application_dispatch`] - Apply updates, response barriers, and closure on one executor
+//! - [`v2_session_coordination`] - Prototype shared resume/replay/close policy on one executor
 //!
 //! # Building Proxies
 //!
@@ -56,6 +57,20 @@
 //! [`ConnectTo`]: agent_client_protocol::ConnectTo
 
 pub mod ordered_application_dispatch;
+
+pub mod v2_session_coordination {
+    //! Pattern: Coordinate shared draft-v2 resume, replay, abandonment, and close.
+    //!
+    //! This is a cookbook prototype for one application's single-threaded
+    //! executor, not a public SDK coordinator. The complete ownership, ordering,
+    //! failure, and limitation policy is documented in the
+    //! [Session Operation Coordination guide][guide]. The runnable
+    //! [`v2_session_coordination` source example][source] is the implementation;
+    //! it is linked rather than duplicated here.
+    //!
+    //! [guide]: https://agentclientprotocol.github.io/rust-sdk/session-operation-coordination.html
+    //! [source]: https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/v2_session_coordination.rs
+}
 
 pub mod one_shot_prompt {
     //! Pattern: You Only Prompt Once.

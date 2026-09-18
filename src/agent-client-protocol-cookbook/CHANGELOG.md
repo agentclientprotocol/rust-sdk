@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add an ordered application-dispatch recipe that bridges v2 replay, response
   results, and connection closure onto one application-owned event queue.
+- Document the single-executor v2 session coordination prototype for shared
+  resume replay, abandonment, and close sequencing.
 
 ## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.0.0...agent-client-protocol-cookbook-v2.1.0) - 2026-09-04
 
