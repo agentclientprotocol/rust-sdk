@@ -5,6 +5,7 @@
 # Core Library (agent-client-protocol)
 
 - [Design Overview](./design.md)
+- [Cargo Features](./features.md)
 - [Protocol Reference](./protocol.md)
 - [Request Cancellation](./request-cancellation.md)
 - [Ordered Application Dispatch](./ordered-application-dispatch.md)

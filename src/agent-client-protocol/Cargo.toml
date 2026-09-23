@@ -30,7 +30,10 @@ required-features = ["unstable_protocol_v2"]
 test = true
 
 [features]
-default = []
+default = ["schemars"]
+
+# JSON Schema generation for protocol types and typed MCP tool helpers.
+schemars = ["dep:schemars", "agent-client-protocol-schema/schemars"]
 
 # Forward unstable features from agent-client-protocol-schema.
 # Enable these to get support for the corresponding unstable ACP surfaces.
@@ -62,7 +65,7 @@ agent-client-protocol-derive.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true
-schemars.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

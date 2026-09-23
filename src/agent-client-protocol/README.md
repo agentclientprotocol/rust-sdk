@@ -71,6 +71,25 @@ cargo build -p agent-client-protocol \
 See the [Runnable Protocol V2 Quickstart](https://agentclientprotocol.github.io/rust-sdk/protocol-v2-quickstart.html)
 for the lifecycle invariants to preserve when adapting these examples.
 
+## JSON Schema Generation
+
+The `schemars` feature is enabled by default. It enables `JsonSchema`
+implementations on protocol types and the typed MCP tool registry and function
+helpers. To use the SDK without the `schemars` dependency:
+
+```toml
+agent-client-protocol = { version = "2.2", default-features = false }
+```
+
+Protocol serialization, clients, agents, proxies, and custom MCP servers remain
+available. The `McpTool` trait, `McpToolRegistry` and its metadata types, and the
+`mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require `schemars`.
+Unstable protocol features can be enabled independently.
+
+`agent-client-protocol-rmcp` explicitly enables `schemars` for its tool builders.
+See [Cargo Features](https://agentclientprotocol.github.io/rust-sdk/features.html)
+for details.
+
 ## MCP Server Attachment
 
 The runtime-agnostic `mcp_server` module can build and directly serve standalone

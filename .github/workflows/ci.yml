@@ -71,6 +71,25 @@ jobs:
         with:
           config: ./typos.toml
 
+      - name: Check schemars dependency features
+        shell: bash
+        run: |
+          # Dev dependencies intentionally use schemars; inspect only the library's dependency graph.
+          for features in "" "unstable,unstable_protocol_v2"; do
+            dependencies="$(cargo tree -p agent-client-protocol --no-default-features --features "$features" --locked --edges normal,build --prefix none --format '{p}')"
+            if grep -Eq '^schemars(_derive)? ' <<< "$dependencies"; then
+              printf '%s\n' "$dependencies" >&2
+              echo "schemars must not be enabled when the SDK's default features are disabled" >&2
+              exit 1
+            fi
+          done
+          # Preserve the default-enabled contract without feature unification from dev dependencies.
+          dependencies="$(cargo tree -p agent-client-protocol --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^schemars ' <<< "$dependencies"; then
+            echo "schemars must remain enabled by default" >&2
+            exit 1
+          fi
+
       - name: Lint
         run: |
           cargo clippy
@@ -133,9 +152,9 @@ jobs:
           tool: cargo-hack
 
       - name: Check feature powerset
-        # `default` is empty, `unstable` is an aggregate alias for the individual
-        # unstable_* features, and `wasm_js` is covered on its relevant target
-        # above. Excluding them avoids duplicate or host-only combinations.
+        # `default` and `unstable` are aggregate aliases, and `wasm_js` is
+        # covered on its relevant target above. Excluding them avoids duplicate
+        # or host-only combinations; `schemars` is checked independently.
         # Depth 2 covers every remaining individual feature and pair, while the
         # regular CI all-features build covers their full union without making
         # this matrix grow exponentially.

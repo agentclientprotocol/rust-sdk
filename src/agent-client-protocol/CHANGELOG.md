@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add a default-enabled `schemars` feature that forwards JSON Schema support to
+  the schema crate and gates the typed MCP tool helpers. Set
+  `default-features = false` to use the core SDK without `schemars`; custom MCP
+  servers and independently enabled unstable protocol features remain available.
+  Existing users of `default-features = false` who need the previous JSON Schema
+  or typed MCP tool APIs should add `features = ["schemars"]`.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
 
 ### Added
