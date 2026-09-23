@@ -15,8 +15,16 @@
 //!
 //! ## Building MCP servers with tools
 //!
+//! The default-enabled `schemars` feature provides `McpTool`, `McpToolRegistry`
+//! and its metadata types, and the `tool_fn` / `tool_fn_mut` functions for
+//! automatically generating JSON Schemas from Rust input and output types.
 //! The `agent-client-protocol-rmcp` crate provides the builder APIs for MCP
-//! tools backed by the `rmcp` crate.
+//! tools backed by the `rmcp` crate and enables this feature.
+//!
+//! Custom servers using [`McpServerConnect`](crate::mcp_server::McpServerConnect),
+//! [`McpServer`](crate::mcp_server::McpServer), and the connection types remain
+//! available without `schemars`, including ACP attachment when
+//! `unstable_mcp_over_acp` is enabled.
 //!
 //! ## Custom MCP Server Implementations
 //!
@@ -46,16 +54,25 @@
 mod active_session;
 mod connect;
 mod context;
+#[cfg(feature = "schemars")]
 mod registry;
 mod server;
+#[cfg(feature = "schemars")]
 mod tool;
+#[cfg(feature = "schemars")]
 mod tool_fn;
 
 pub use connect::McpServerConnect;
 pub use context::{McpConnectionContext, McpConnectionTo};
+#[cfg(feature = "schemars")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use registry::{
     EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
 };
 pub use server::McpServer;
+#[cfg(feature = "schemars")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool::McpTool;
+#[cfg(feature = "schemars")]
+#[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool_fn::{tool_fn, tool_fn_mut};

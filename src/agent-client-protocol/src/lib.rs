@@ -76,6 +76,21 @@
 //!
 //! [`agent_client_protocol_cookbook`]: https://docs.rs/agent-client-protocol-cookbook
 //!
+//! ## JSON Schema Generation
+//!
+//! The `schemars` feature is enabled by default. It enables `JsonSchema`
+//! implementations on protocol types and the typed MCP tool helpers in
+//! [`mcp_server`]. To omit the dependency:
+//!
+//! ```toml
+//! agent-client-protocol = { version = "2.2", default-features = false }
+//! ```
+//!
+//! Protocol serialization and connection APIs remain available, as do custom
+//! MCP servers and independently enabled unstable protocol features. The
+//! `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its tool
+//! builders.
+//!
 //! ## WebAssembly
 //!
 //! The runtime-neutral protocol engine and transport abstractions compile for

@@ -19,7 +19,7 @@ name = "with_mcp_server"
 required-features = ["unstable_mcp_over_acp"]
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, features = ["schemars"] }
 futures.workspace = true
 futures-concurrency.workspace = true
 rmcp.workspace = true
