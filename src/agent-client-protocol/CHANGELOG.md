@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.2.0...v3.0.0) - 2026-09-24
+
+### Added
+
+- *(acp)* make schemars optional ([#373](https://github.com/agentclientprotocol/rust-sdk/pull/373))
+
 ### Added
 
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to
