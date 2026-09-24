@@ -35,7 +35,9 @@ version_group = "acp"
 # major release here. Keep it outside the `acp` version group because its
 # version need not equal the core version, but verify dependency-only release
 # proposals manually: core 1.x -> 2.x requires rmcp 2.x -> 3.x even if
-# release-plz initially classifies the manifest update as a patch.
+# release-plz initially classifies the manifest update as a patch. Upgrading
+# the public rmcp dependency from 2.x -> 3.x similarly requires this integration
+# crate to move from 3.x -> 4.x; it does not require a core ACP major release.
 [[package]]
 name = "agent-client-protocol-rmcp"
 
