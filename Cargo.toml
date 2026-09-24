@@ -35,7 +35,8 @@ agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-v
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=1.9.1", default-features = false, features = ["tracing"] }
+# Draft cross-repository validation; replace with the released schema before publishing.
+agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol", rev = "1ae7f09519fa0ba43289365da42bd589468e135f", default-features = false, features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }

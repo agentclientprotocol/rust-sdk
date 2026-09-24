@@ -106,7 +106,7 @@ fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_prot
 fn native_mcp_over_acp_message_meta_serializes_as_reserved_meta_field()
 -> Result<(), agent_client_protocol::Error> {
     let meta = trace_context_meta();
-    let message = MessageMcpRequest::new("connection-1", "tools/list")
+    let message = MessageMcpRequest::new("server-1", "request-1", "tools/list")
         .params(serde_json::Map::from_iter([(
             "cursor".into(),
             Value::String("abc".into()),
@@ -116,7 +116,8 @@ fn native_mcp_over_acp_message_meta_serializes_as_reserved_meta_field()
     let untyped = message.to_untyped_message()?;
 
     assert_eq!(untyped.method(), "mcp/message");
-    assert_eq!(untyped.params()["connectionId"], "connection-1");
+    assert_eq!(untyped.params()["serverId"], "server-1");
+    assert_eq!(untyped.params()["requestId"], "request-1");
     assert_eq!(untyped.params()["method"], "tools/list");
     assert_eq!(untyped.params()["params"]["cursor"], "abc");
     assert_eq!(untyped.params()["_meta"], Value::Object(meta.clone()));

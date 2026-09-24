@@ -31,8 +31,6 @@ impl_jsonrpc_request_enum!(ClientRequest {
     SetSessionModeRequest => "session/set_mode",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
 });
 
@@ -57,8 +55,6 @@ impl_jsonrpc_response_enum!(AgentResponse {
     SetSessionModeResponse => "session/set_mode",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,
 });
 
@@ -84,11 +80,7 @@ impl_jsonrpc_request_enum!(AgentRequest {
     KillTerminalRequest => "terminal/kill",
     CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
-    ConnectMcpRequest => "mcp/connect",
-    #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    DisconnectMcpRequest => "mcp/disconnect",
     [ext] ExtMethodRequest,
 });
 
@@ -103,18 +95,12 @@ impl_jsonrpc_response_enum!(ClientResponse {
     KillTerminalResponse => "terminal/kill",
     CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
-    ConnectMcpResponse => "mcp/connect",
-    #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    DisconnectMcpResponse => "mcp/disconnect",
     [ext] ExtMethodResponse,
 });
 
 impl_jsonrpc_notification_enum!(AgentNotification {
     SessionNotification => "session/update",
     CompleteElicitationNotification => "elicitation/complete",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpNotification => "mcp/message",
     [ext] ExtNotification,
 });

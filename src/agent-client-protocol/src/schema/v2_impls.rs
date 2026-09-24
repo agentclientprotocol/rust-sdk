@@ -281,14 +281,6 @@ impl_v2_jsonrpc_request!(
     v2::CreateElicitationResponse,
     "elicitation/create"
 );
-#[cfg(feature = "unstable_mcp_over_acp")]
-impl_v2_jsonrpc_request!(v2::ConnectMcpRequest, v2::ConnectMcpResponse, "mcp/connect");
-#[cfg(feature = "unstable_mcp_over_acp")]
-impl_v2_jsonrpc_request!(
-    v2::DisconnectMcpRequest,
-    v2::DisconnectMcpResponse,
-    "mcp/disconnect"
-);
 
 impl_v2_jsonrpc_notification!(v2::UpdateSessionNotification, "session/update");
 impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
@@ -316,8 +308,6 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     CloseSessionRequest => "session/close",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpRequest => "mcp/message",
     [ext] ExtMethodRequest,
 });
 
@@ -340,8 +330,6 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     CloseSessionResponse => "session/close",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpResponse => "mcp/message",
     [ext] ExtMethodResponse,
 });
 
@@ -356,11 +344,7 @@ impl_v2_jsonrpc_request_enum!(v2::AgentRequest {
     RequestPermissionRequest => "session/request_permission",
     CreateElicitationRequest => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
-    ConnectMcpRequest => "mcp/connect",
-    #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpRequest => "mcp/message",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    DisconnectMcpRequest => "mcp/disconnect",
     [ext] ExtMethodRequest,
 });
 
@@ -368,18 +352,12 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
     RequestPermissionResponse => "session/request_permission",
     CreateElicitationResponse => "elicitation/create",
     #[cfg(feature = "unstable_mcp_over_acp")]
-    ConnectMcpResponse => "mcp/connect",
-    #[cfg(feature = "unstable_mcp_over_acp")]
     MessageMcpResponse => "mcp/message",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    DisconnectMcpResponse => "mcp/disconnect",
     [ext] ExtMethodResponse,
 });
 
 impl_v2_jsonrpc_notification_enum!(v2::AgentNotification {
     UpdateSessionNotification => "session/update",
     CompleteElicitationNotification => "elicitation/complete",
-    #[cfg(feature = "unstable_mcp_over_acp")]
-    MessageMcpNotification => "mcp/message",
     [ext] ExtNotification,
 });

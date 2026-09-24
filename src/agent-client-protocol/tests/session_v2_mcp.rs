@@ -12,8 +12,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, ErrorCode, JsonRpcNotification,
-    JsonRpcRequest, JsonRpcResponse, Responder, RunWithConnectionTo, V2ConnectionTo,
+    Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, ErrorCode, JsonRpcRequest,
+    JsonRpcResponse, Responder, RunWithConnectionTo, V2ConnectionTo,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
     schema::{ProtocolVersion, v2},
@@ -87,21 +87,14 @@ struct ConnectionProbeResponse {
     nonce: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
-#[notification(method = "_test/notice")]
-struct NoticeNotification {
-    message: String,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct ObservedMcpContext {
     server_id: String,
-    connection_id: String,
+    request_id: String,
 }
 
 struct EchoMcpConnect {
     context_tx: mpsc::UnboundedSender<ObservedMcpContext>,
-    notice_tx: mpsc::UnboundedSender<String>,
     runner_started: Arc<AtomicBool>,
     dropped_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -135,37 +128,23 @@ impl McpServerConnect<Agent> for EchoMcpConnect {
                     .server_id()
                     .expect("the MCP server should be attached through ACP")
                     .to_string(),
-                connection_id: context
-                    .connection_id()
-                    .expect("an attached MCP connection should have an ID")
+                request_id: context
+                    .request_id()
+                    .expect("an attached MCP request should have an ID")
                     .to_string(),
             })
             .expect("MCP context receiver should remain active");
 
-        DynConnectTo::new(EchoMcpComponent {
-            notice_tx: self.notice_tx.clone(),
-        })
+        DynConnectTo::new(EchoMcpComponent)
     }
 }
 
-struct EchoMcpComponent {
-    notice_tx: mpsc::UnboundedSender<String>,
-}
+struct EchoMcpComponent;
 
 impl ConnectTo<role::mcp::Client> for EchoMcpComponent {
     async fn connect_to(self, client: impl ConnectTo<role::mcp::Server>) -> Result<(), Error> {
-        let notice_tx = self.notice_tx;
-
         role::mcp::Server
             .builder()
-            .on_receive_notification(
-                async move |notification: NoticeNotification, _connection| {
-                    notice_tx
-                        .unbounded_send(notification.message)
-                        .map_err(Error::into_internal_error)
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
             .on_receive_request(
                 async |request: EchoRequest, responder: Responder<EchoResponse>, _connection| {
                     responder.respond(EchoResponse {
@@ -210,8 +189,7 @@ impl RunWithConnectionTo<Agent> for ProbeRunner {
 #[derive(Debug)]
 struct RoundTrip {
     server_id: String,
-    connection_id: String,
-    notice: String,
+    request_id: String,
     response: Value,
 }
 
@@ -220,36 +198,24 @@ async fn run_mcp_round_trip(
     server_id: &v2::McpServerAcpId,
     sequence: usize,
 ) -> Result<RoundTrip, Error> {
-    let connected = connection
-        .send_request(v2::ConnectMcpRequest::new(server_id.clone()))
-        .block_task()
-        .await?;
-    let connection_id = connected.connection_id;
-    let notice = format!("notice-{sequence}");
-    connection.send_notification(
-        v2::MessageMcpNotification::new(connection_id.clone(), "_test/notice")
-            .params(object(json!({ "message": notice }))),
-    )?;
-
+    let request_id = format!("request-{sequence}");
     let message = format!("message-{sequence}");
     let response = connection
         .send_request(
-            v2::MessageMcpRequest::new(connection_id.clone(), "_test/echo")
-                .params(object(json!({ "message": message }))),
+            v2::MessageMcpRequest::new(server_id.clone(), request_id.clone(), "_test/echo").params(
+                object(json!({ "message": message, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {}
+                } })),
+            ),
         )
         .block_task()
         .await?;
     let response = serde_json::from_str(response.0.get()).map_err(Error::into_internal_error)?;
 
-    connection
-        .send_request(v2::DisconnectMcpRequest::new(connection_id.clone()))
-        .block_task()
-        .await?;
-
     Ok(RoundTrip {
         server_id: server_id.to_string(),
-        connection_id: connection_id.to_string(),
-        notice,
+        request_id,
         response,
     })
 }
@@ -258,15 +224,12 @@ async fn assert_round_trip(
     sequence: usize,
     round_trip_rx: &mut UnboundedReceiver<Result<RoundTrip, Error>>,
     context_rx: &mut UnboundedReceiver<ObservedMcpContext>,
-    notice_rx: &mut UnboundedReceiver<String>,
 ) -> Result<(), Error> {
     let round_trip = next(round_trip_rx, "MCP round trip").await?;
-    let context = next(context_rx, "MCP connection context").await;
-    let notice = next(notice_rx, "inner MCP notification").await;
+    let context = next(context_rx, "MCP request context").await;
 
     assert_eq!(context.server_id, round_trip.server_id);
-    assert_eq!(context.connection_id, round_trip.connection_id);
-    assert_eq!(notice, round_trip.notice);
+    assert_eq!(context.request_id, round_trip.request_id);
     assert_eq!(
         round_trip.response,
         json!({ "echoed": format!("message-{sequence}") })
@@ -364,7 +327,6 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
-        let (notice_tx, mut notice_rx) = mpsc::unbounded();
         let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
         let (runner_started_tx, runner_started_rx) = oneshot::channel();
         let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
@@ -384,7 +346,6 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
                 let mcp_server = McpServer::<Agent, _>::new(
                     EchoMcpConnect {
                         context_tx,
-                        notice_tx,
                         runner_started: runner_started.clone(),
                         dropped_tx: Mutex::new(Some(connector_dropped_tx)),
                     },
@@ -411,7 +372,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
                     "the MCP runner must be first-polled before session/new is published"
                 );
 
-                assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(1, &mut round_trip_rx, &mut context_rx).await?;
 
                 let session = pending_session.block_task().await?.into_session();
                 let remaining_session = session.clone();
@@ -421,7 +382,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
                 round_trip_trigger_tx
                     .unbounded_send(())
                     .map_err(Error::into_internal_error)?;
-                assert_round_trip(2, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(2, &mut round_trip_rx, &mut context_rx).await?;
 
                 Ok(())
             })
@@ -550,7 +511,6 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
-        let (notice_tx, mut notice_rx) = mpsc::unbounded();
         let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
         let (runner_started_tx, runner_started_rx) = oneshot::channel();
         let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
@@ -570,7 +530,6 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
                 let mcp_server = McpServer::<Agent, _>::new(
                     EchoMcpConnect {
                         context_tx,
-                        notice_tx,
                         runner_started: runner_started.clone(),
                         dropped_tx: Mutex::new(Some(connector_dropped_tx)),
                     },
@@ -598,7 +557,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
                     "the MCP runner must be first-polled before session/fork is published"
                 );
 
-                assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(1, &mut round_trip_rx, &mut context_rx).await?;
 
                 let opened = pending_session.block_task().await?;
                 assert_eq!(opened.session().session_id(), &expected_forked_session_id);
@@ -612,7 +571,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
                 round_trip_trigger_tx
                     .unbounded_send(())
                     .map_err(Error::into_internal_error)?;
-                assert_round_trip(2, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(2, &mut round_trip_rx, &mut context_rx).await?;
 
                 Ok(())
             })
@@ -742,7 +701,6 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
-        let (notice_tx, mut notice_rx) = mpsc::unbounded();
         let (connector_dropped_tx, connector_dropped_rx) = oneshot::channel();
         let (runner_started_tx, runner_started_rx) = oneshot::channel();
         let (runner_dropped_tx, runner_dropped_rx) = oneshot::channel();
@@ -762,7 +720,6 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
                 let mcp_server = McpServer::<Agent, _>::new(
                     EchoMcpConnect {
                         context_tx,
-                        notice_tx,
                         runner_started: runner_started.clone(),
                         dropped_tx: Mutex::new(Some(connector_dropped_tx)),
                     },
@@ -793,7 +750,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
                     "the MCP runner must be first-polled before session/resume is published"
                 );
 
-                assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(1, &mut round_trip_rx, &mut context_rx).await?;
 
                 let opened = pending_session.block_task().await?;
                 assert_eq!(opened.session().session_id(), &session_id);
@@ -806,7 +763,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
                 round_trip_trigger_tx
                     .unbounded_send(())
                     .map_err(Error::into_internal_error)?;
-                assert_round_trip(2, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
+                assert_round_trip(2, &mut round_trip_rx, &mut context_rx).await?;
 
                 Ok(())
             })
