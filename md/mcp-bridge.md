@@ -1,5 +1,12 @@
 # MCP-over-ACP Compatibility Bridge
 
+**Draft checkpoint:** The stateful adapter described here targets older MCP
+semantics. It is not an implementation of MCP 2026-07-28, which removes
+initialization, protocol sessions, GET, and DELETE. The intended MCP-over-ACP
+transport will target that stateless revision only; retaining this session mode
+for backwards compatibility is not a goal. See the
+[modernization audit](https://agentclientprotocol.com/rfds/mcp-over-acp#modernization-audit-mcp-2026-07-28).
+
 `agent-client-protocol-polyfill::mcp_over_acp::McpOverAcpPolyfill` adapts the
 native ACP MCP transport for a final agent that accepts HTTP MCP
 servers. MCP adaptation is explicit and is not built into the conductor.
@@ -93,12 +100,14 @@ polyfill:
    final agent.
 2. Retains the native `serverId` so connections can be routed back to the
    component that provided the server.
-3. Opens the endpoint's native connection by sending `mcp/connect` with that
-   server ID toward the provider.
+3. Opens a native connection when an HTTP MCP client initializes a logical
+   session, sending `mcp/connect` with that server ID toward the provider.
+   Independent HTTP sessions receive independent native connections.
 4. Relays requests and notifications through `mcp/message`, using the returned
    `connectionId` for that active MCP connection.
-5. Sends an `mcp/disconnect` request when the local transport closes and removes
-   the connection from the bridge.
+5. Sends an `mcp/disconnect` request when the logical HTTP MCP session closes
+   and removes that connection from the bridge. The listening endpoint remains
+   available for other sessions.
 
 Enable the polyfill crate's `unstable_session_fork` feature when adapting fork
 requests. Stable v1 setup includes `session/new`, `session/load`, and
@@ -120,8 +129,15 @@ Reference](./protocol.md#native-mcp-over-acp).
 
 `McpOverAcpPolyfill::http()` is the default compatibility shape. It replaces
 the native declaration with an HTTP MCP URL at `http://127.0.0.1:PORT`. The
-embedded server accepts MCP POST requests and an SSE GET stream at `/`, retaining
-JSON-RPC batch frames and correlating each POST with its response.
+embedded server accepts MCP POST requests, SSE GET streams, and session DELETE
+requests at `/`, retaining JSON-RPC batch frames and correlating each POST with
+its response.
+
+The adapter uses stateful Streamable HTTP. A successful MCP initialization
+returns an `MCP-Session-Id` header. Clients must send that header on subsequent
+POST, GET, and DELETE requests; unknown or closed sessions return HTTP 404.
+Clients that previously ignored session headers must retain the returned ID.
+An individual POST response or GET stream closing does not end the session.
 
 ```rust,ignore
 let bridge = McpOverAcpPolyfill::http();
@@ -132,11 +148,18 @@ implement resumable SSE event IDs.
 
 ## Lifecycle and Failure Behavior
 
-Each bridge endpoint receives a unique `connectionId` from `mcp/connect`. The
-polyfill keeps a connection map until the endpoint's transport task closes,
-then removes the entry, sends `mcp/disconnect`, and observes its response.
-Request failures use the corresponding request's error path; notifications are
-never answered with synthetic errors.
+The listener and the logical MCP connections have different lifetimes. Endpoint
+creation alone does not open an MCP connection. Each HTTP MCP session receives
+its own native `connectionId` from `mcp/connect`, so initialization, request IDs,
+and server-originated messages cannot cross between clients. Disconnecting one
+session leaves its siblings and the cached endpoint usable.
+
+Deleting an HTTP MCP session stops its local transport and sends
+`mcp/disconnect` for that session's native connection. Request failures use the
+corresponding request's error path; notifications are never answered with
+synthetic errors. Closing the parent ACP connection drops its listeners and
+session tasks; a disconnect exchange is not possible after that transport is
+gone.
 
 A reverse `mcp/message` request for an unknown `connectionId` receives
 `Invalid params`. A reverse notification for an unknown connection is ignored,
@@ -144,3 +167,9 @@ as required for JSON-RPC notifications.
 
 The polyfill does not infer or store ACP session IDs. Association is carried by
 the declared `serverId` and the resulting active `connectionId`.
+
+Known checkpoint gaps: aborting HTTP initialization before receiving its
+response can leave an unadvertised session until the listener stops. There is
+no idle timeout, and DELETE during pending forward/reverse requests still
+needs regression coverage. These are reasons to keep the checkpoint in draft,
+not features to preserve in the stateless replacement.

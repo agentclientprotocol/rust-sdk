@@ -1,5 +1,9 @@
 use agent_client_protocol::{ConnectTo, Dispatch, DynConnectTo, role::mcp};
-use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
+use futures::{
+    SinkExt as _, StreamExt as _,
+    channel::{mpsc, oneshot},
+    future::Either,
+};
 use tracing::info;
 
 use super::BridgeMessage;
@@ -31,7 +35,11 @@ impl BridgeConnectionActor {
         }
     }
 
-    pub async fn run(self, connection_id: String) -> Result<(), agent_client_protocol::Error> {
+    pub async fn run(
+        self,
+        connection_id: String,
+        disconnected_tx: oneshot::Sender<Result<(), agent_client_protocol::Error>>,
+    ) -> Result<(), agent_client_protocol::Error> {
         info!(connection_id, "MCP bridge connected");
 
         let Self {
@@ -61,15 +69,32 @@ impl BridgeConnectionActor {
             )
             .connect_with(transport, async move |mcp_connection_to_client| {
                 let mut to_mcp_client_rx = to_mcp_client_rx;
-                while let Some(message) = to_mcp_client_rx.next().await {
-                    mcp_connection_to_client.send_proxied_message(message)?;
+                loop {
+                    let next = to_mcp_client_rx.next();
+                    let closed = mcp_connection_to_client.incoming_closed();
+                    match futures::future::select(Box::pin(next), Box::pin(closed)).await {
+                        Either::Left((Some(message), _)) => {
+                            mcp_connection_to_client.send_proxied_message(message)?;
+                        }
+                        Either::Left((None, _)) | Either::Right(((), _)) => break,
+                    }
+                }
+                // The runner still holds the sender until it receives
+                // Disconnected. Reject already queued reverse calls explicitly.
+                while let Ok(message) = to_mcp_client_rx.try_recv() {
+                    if let Dispatch::Request(_, responder) = message {
+                        drop(responder.respond_with_internal_error("HTTP MCP session closed"));
+                    }
                 }
                 Ok(())
             })
             .await;
 
         bridge_tx
-            .send(BridgeMessage::Disconnected { connection_id })
+            .send(BridgeMessage::Disconnected {
+                connection_id,
+                disconnected_tx,
+            })
             .await
             .map_err(|_| agent_client_protocol::Error::internal_error())?;
 

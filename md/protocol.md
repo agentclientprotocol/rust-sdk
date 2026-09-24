@@ -5,6 +5,12 @@ conductor and the opt-in native MCP-over-ACP transport exposed by the shared ACP
 schema. The proxy methods are provisional SDK extensions. MCP-over-ACP is also
 unstable and is available only with the `unstable_mcp_over_acp` feature.
 
+The MCP wire methods below describe the current **connection-oriented
+checkpoint**, not the intended MCP 2026-07-28-only design. Modernization will
+replace the old lifecycle with stateless requests and request-scoped
+notifications/cancellation; see the
+[RFD audit](https://agentclientprotocol.com/rfds/mcp-over-acp#modernization-audit-mcp-2026-07-28).
+
 ## Method Summary
 
 | Method | JSON-RPC shape | Purpose |
@@ -63,8 +69,9 @@ inner message.
 
 Enable `unstable_mcp_over_acp` to use the draft native transport. A component
 providing an MCP server adds `McpServer::Acp` to session setup requests
-(`session/new`, `session/load`, `session/resume`, and the opt-in `session/fork`).
-Its wire shape contains a human-readable name and an opaque server identifier:
+(`session/new` and `session/resume`, plus `session/load` in v1 and the opt-in
+`session/fork` in either version). Its wire shape contains a human-readable
+name and an opaque server identifier:
 
 ```json
 {
@@ -81,9 +88,15 @@ for multiple visible servers on the same ACP connection. The high-level
 automatically.
 
 An agent that consumes this transport advertises
-`agentCapabilities.mcpCapabilities.acp`. If the final agent supports HTTP but
-not ACP-transport MCP servers, place the [MCP-over-ACP compatibility
-bridge](./mcp-bridge.md) immediately before it.
+`agentCapabilities.mcpCapabilities.acp: true` in v1 or
+`capabilities.session.mcp.acp: {}` in draft v2. The v2 capability is an optional
+object: omission or `null` means support is not advertised. The `mcp/*` wire
+envelopes below are the same in both versions.
+
+See [Native MCP-over-ACP](./mcp-over-acp.md) for the consumer helper and a direct
+client/agent example. If the final agent supports HTTP but not ACP-transport
+MCP servers, place the [MCP-over-ACP compatibility bridge](./mcp-bridge.md)
+immediately before it.
 
 ### `mcp/connect`
 
@@ -111,6 +124,13 @@ connection ID:
 
 The server ID selects what to connect to; the connection ID selects that
 particular running connection. All subsequent messages use the connection ID.
+Each connect request creates a separate MCP connection, even when the server
+ID is reused. MCP initialization still happens inside that connection through
+`mcp/message`.
+
+The provider must be ready when it publishes the server declaration. An agent
+may connect and initialize its MCP servers before returning the ACP session
+ID; routing cannot depend on waiting for the session setup response.
 
 ### `mcp/message`
 
@@ -135,7 +155,10 @@ is bidirectional because MCP clients and servers can both issue requests:
 
 Use an outer request for an inner MCP request and an outer notification for an
 inner MCP notification. The outer response carries the inner MCP result or
-error.
+error directly, without another JSON-RPC envelope. The inner `params` field
+accepts an object or `null`; omission and `null` both mean no parameters.
+Positional arrays are not supported. ACP `_meta` alongside `connectionId` is
+separate from MCP metadata inside the inner parameters or result.
 
 ### `mcp/disconnect`
 
@@ -161,8 +184,15 @@ A successful disconnect returns an empty result:
 }
 ```
 
+The provider stops the connection's relay and server work before acknowledging
+disconnect. Outstanding requests complete or fail, and further messages
+cannot use the closed connection. Sibling MCP connections and the parent ACP
+connection remain usable. An MCP server failure is contained to that connection;
+closing the ACP connection releases all of its MCP connections.
+
 ## Related Documentation
 
+- [MCP-over-ACP RFD](https://agentclientprotocol.com/rfds/mcp-over-acp)
 - [Conductor Design](./conductor.md)
 - [MCP Bridge](./mcp-bridge.md)
 - [Original P/ACP Design Proposal](./proxying-acp.md) (historical)

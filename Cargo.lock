@@ -46,6 +46,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "regex",
+ "reqwest",
  "rmcp",
  "rustc-hash",
  "schemars 1.2.2",

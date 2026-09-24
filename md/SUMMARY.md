@@ -18,6 +18,7 @@
 
 - [Transport Architecture](./transport-architecture.md)
 - [HTTP / WebSocket Transport](./http-transport.md)
+- [Native MCP-over-ACP](./mcp-over-acp.md)
 
 # Conductor (agent-client-protocol-conductor)
 

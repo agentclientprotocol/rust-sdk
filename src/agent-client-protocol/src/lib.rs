@@ -131,6 +131,9 @@ pub mod component;
 pub mod concepts;
 /// JSON-RPC connection and handler infrastructure
 mod jsonrpc;
+/// Native MCP-over-ACP transport for agents consuming client-provided servers.
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub mod mcp_client;
 /// Runtime-agnostic MCP server support, including optional attachment to ACP sessions.
 pub mod mcp_server;
 /// Role types for ACP connections

@@ -10,6 +10,15 @@
   servers and independently enabled unstable protocol features remain available.
   Existing users of `default-features = false` who need the previous JSON Schema
   or typed MCP tool APIs should add `features = ["schemars"]`.
+- Add a runtime-agnostic native MCP-over-ACP consumer transport for ACP agents,
+  supporting v1 and draft v2, bidirectional MCP traffic, and awaited close
+  without a conductor or HTTP bridge.
+
+### Fixed
+
+- Stop native MCP-over-ACP relay and server tasks before acknowledging
+  `mcp/disconnect`. Contain individual MCP connection failures and clean up
+  connection-scoped work without terminating sibling MCP connections or ACP.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
 

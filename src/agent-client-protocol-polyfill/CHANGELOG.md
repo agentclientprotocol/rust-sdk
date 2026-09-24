@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Isolate logical HTTP MCP sessions behind a shared bridge endpoint. Each
+  session opens its own native MCP-over-ACP connection on initialization and
+  disconnects independently, leaving sibling sessions and the endpoint usable.
+
+### Changed
+
+- The HTTP bridge uses stateful Streamable HTTP: clients must retain the
+  `MCP-Session-Id` returned by initialization and include it in subsequent
+  POST, GET, and DELETE requests. Endpoint creation no longer eagerly opens an
+  MCP connection.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.1.0...agent-client-protocol-polyfill-v2.2.0) - 2026-09-18
 
 ### Other
