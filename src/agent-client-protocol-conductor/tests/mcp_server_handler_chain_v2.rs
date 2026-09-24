@@ -10,8 +10,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, ByteStreams, Client, Conductor, ConnectTo, DynConnectTo, Error, NullRun, Proxy,
-    Responder, V2ConnectionTo,
+    Agent, ByteStreams, Client, Conductor, ConnectTo, DynConnectTo, Error, JsonRpcRequest,
+    JsonRpcResponse, NullRun, Proxy, Responder, V2ConnectionTo,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
     schema::{ProtocolVersion, v2},
@@ -21,6 +21,16 @@ use futures::{StreamExt as _, channel::mpsc};
 use serde_json::json;
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcRequest)]
+#[request(method = "_test/probe", response = ProbeResponse)]
+struct ProbeRequest {}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, JsonRpcResponse)]
+struct ProbeResponse {
+    #[serde(rename = "resultType")]
+    result_type: String,
+}
 
 fn implementation(name: &str) -> v2::Implementation {
     v2::Implementation::new(name, env!("CARGO_PKG_VERSION"))
@@ -40,7 +50,7 @@ fn existing_server() -> v2::McpServer {
 #[derive(Debug, PartialEq, Eq)]
 struct ObservedMcpContext {
     server_id: String,
-    connection_id: String,
+    request_id: String,
 }
 
 struct RecordingMcpConnect {
@@ -58,9 +68,9 @@ impl McpServerConnect<Conductor> for RecordingMcpConnect {
                 .server_id()
                 .expect("the global MCP server should be attached through ACP")
                 .to_string(),
-            connection_id: context
-                .connection_id()
-                .expect("an attached MCP connection should have an ID")
+            request_id: context
+                .request_id()
+                .expect("an attached MCP request should have an ID")
                 .to_string(),
         });
         DynConnectTo::new(PendingMcpComponent)
@@ -73,6 +83,14 @@ impl ConnectTo<role::mcp::Client> for PendingMcpComponent {
     async fn connect_to(self, client: impl ConnectTo<role::mcp::Server>) -> Result<(), Error> {
         role::mcp::Server
             .builder()
+            .on_receive_request(
+                async |_request: ProbeRequest, responder: Responder<ProbeResponse>, _connection| {
+                    responder.respond(ProbeResponse {
+                        result_type: "complete".to_owned(),
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
             .connect_with(client, async |_connection| {
                 std::future::pending::<Result<(), Error>>().await
             })
@@ -214,14 +232,17 @@ impl ConnectTo<Client> for RecordingAgent {
                     let mcp_connection = connection.clone();
                     connection.spawn(async move {
                         let result = async {
-                            let connected = mcp_connection
-                                .send_request(v2::ConnectMcpRequest::new(server_id))
-                                .block_task()
-                                .await?;
                             mcp_connection
-                                .send_request(v2::DisconnectMcpRequest::new(
-                                    connected.connection_id,
-                                ))
+                                .send_request(v2::MessageMcpRequest::new(
+                                    server_id,
+                                    v2::McpRequestId::new("global-v2-probe"),
+                                    "_test/probe",
+                                ).params(serde_json::Map::from_iter([
+                                    ("_meta".to_owned(), json!({
+                                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                        "io.modelcontextprotocol/clientCapabilities": {}
+                                    })),
+                                ])))
                                 .block_task()
                                 .await?;
                             Ok(())
@@ -335,7 +356,7 @@ async fn v2_global_mcp_attachment_preserves_setup_and_continues_handler_chain() 
 
         tokio::time::timeout(std::time::Duration::from_secs(2), round_trip_rx.next())
             .await
-            .expect("global MCP connect/disconnect round trip should not hang")
+            .expect("global MCP request should not hang")
             .ok_or_else(|| Error::internal_error().data("MCP round-trip channel closed"))??;
 
         connection
@@ -369,8 +390,8 @@ async fn v2_global_mcp_attachment_preserves_setup_and_continues_handler_chain() 
     assert_eq!(mcp_contexts.len(), 1);
     assert_eq!(mcp_contexts[0].server_id, server_ids[0].to_string());
     assert!(
-        !mcp_contexts[0].connection_id.is_empty(),
-        "the global MCP connection should receive a connection ID"
+        mcp_contexts[0].request_id == "global-v2-probe",
+        "the global MCP request should retain its logical request ID"
     );
     Ok(())
 }

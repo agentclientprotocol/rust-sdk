@@ -8,6 +8,7 @@ use futures::{
 use serde_json::{Map, Value};
 use std::{
     collections::HashMap,
+    io::Write,
     marker::PhantomData,
     sync::{Arc, Mutex, Weak},
 };
@@ -24,6 +25,13 @@ use crate::{
     },
     util::MatchDispatchFrom,
 };
+
+// These bound admitted work and individual payloads, not the SDK's underlying
+// Channel/outgoing queues. End-to-end native backpressure is separate transport work.
+const MAX_ACTIVE_REQUESTS: usize = 64;
+const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+const MCP_VERSION: &str = "2026-07-28";
+type ActiveRequests = Arc<Mutex<HashMap<McpRequestId, oneshot::Sender<()>>>>;
 
 pub(super) struct V1McpProtocol;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -99,7 +107,7 @@ impl McpProtocol for V2McpProtocol {
 pub(super) struct McpActiveSession<Counterpart: Role, Protocol = V1McpProtocol> {
     server_id: McpServerAcpId,
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
-    active: Arc<Mutex<HashMap<McpRequestId, oneshot::Sender<()>>>>,
+    active: ActiveRequests,
     protocol: PhantomData<fn() -> Protocol>,
 }
 
@@ -117,6 +125,52 @@ impl Drop for ActiveRequest {
                 .remove(&self.id);
         }
     }
+}
+
+fn admit_request(
+    active: &ActiveRequests,
+    id: McpRequestId,
+) -> Result<(ActiveRequest, oneshot::Receiver<()>), crate::Error> {
+    let (stop_tx, stop_rx) = oneshot::channel();
+    let mut requests = active.lock().expect("MCP request registry poisoned");
+    if requests.contains_key(&id) {
+        return Err(crate::Error::invalid_params().data("duplicate active MCP requestId"));
+    }
+    if requests.len() >= MAX_ACTIVE_REQUESTS {
+        return Err(
+            crate::Error::new(-32000, "MCP active request limit exceeded")
+                .data(serde_json::json!({"limit": MAX_ACTIVE_REQUESTS})),
+        );
+    }
+    requests.insert(id.clone(), stop_tx);
+    Ok((
+        ActiveRequest {
+            active: Arc::downgrade(active),
+            id,
+        },
+        stop_rx,
+    ))
+}
+
+/// Count serialized bytes without allocating another copy of a potentially large payload.
+fn check_payload_size(value: &impl serde::Serialize, limit: usize) -> Result<(), crate::Error> {
+    struct Budget(usize);
+    impl Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_sub(bytes.len())
+                .ok_or_else(|| std::io::Error::other("MCP payload limit exceeded"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Budget(limit), value).map_err(|_| {
+        crate::Error::new(-32000, "MCP payload limit exceeded")
+            .data(serde_json::json!({"limitBytes": limit}))
+    })
 }
 
 impl<Counterpart: Role, Protocol> McpActiveSession<Counterpart, Protocol>
@@ -157,31 +211,20 @@ where
         }
         let request_id = Protocol::request_id(&request);
         let (method, params) = Protocol::into_request(request);
-        if let Err(error) = validate_modern_request(&method, params.as_ref()) {
+        if let Err(error) = validate_modern_request(&method, params.as_ref())
+            .and_then(|()| check_payload_size(&(&method, &params, &request_id), MAX_PAYLOAD_BYTES))
+        {
             responder.respond_with_error(error)?;
             return Ok(Handled::Yes);
         }
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let duplicate = {
-            let mut active = self.active.lock().expect("MCP request registry poisoned");
-            if active.contains_key(&request_id) {
-                true
-            } else {
-                active.insert(request_id.clone(), stop_tx);
-                false
+        let (guard, stop_rx) = match admit_request(&self.active, request_id.clone()) {
+            Ok(admitted) => admitted,
+            Err(error) => {
+                responder.respond_with_error(error)?;
+                return Ok(Handled::Yes);
             }
         };
-        if duplicate {
-            responder.respond_with_error(
-                crate::Error::invalid_params().data("duplicate active MCP requestId"),
-            )?;
-            return Ok(Handled::Yes);
-        }
 
-        let guard = ActiveRequest {
-            active: Arc::downgrade(&self.active),
-            id: request_id.clone(),
-        };
         let backend = self.mcp_connect.connect(McpConnectionTo {
             context: McpConnectionContext::Acp {
                 server_id: server_id.clone(),
@@ -215,6 +258,7 @@ where
         }
         let spawn_result = connection.spawn(async move {
             let inner_id = RequestId::Str(request_id.0.to_string());
+            let is_discovery = method == "server/discover";
             let process = async {
                 let raw = RawJsonRpcMessage::request(
                     method,
@@ -226,30 +270,34 @@ where
                     .unbounded_send(TransportFrame::Single(raw))
                     .map_err(crate::Error::into_internal_error)?;
                 while let Some(frame) = client.rx.next().await {
-                    let mut result = None;
-                    frame.inspect_messages(&mut |message| {
-                        // A response ends the request, even within a batch. Notifications
-                        // following it must not escape after the operation has completed.
-                        if result.is_some() {
-                            return Ok(());
-                        }
-                        match message {
-                            RawJsonRpcMessage::Response(response) => {
-                                if message.response_id() != Some(&inner_id) {
-                                    return Err(crate::Error::invalid_params()
-                                        .data("MCP backend returned a different request ID"));
+                    let TransportFrame::Single(message) = frame else {
+                        return Err(crate::Error::invalid_request()
+                            .data("MCP backends must send individual valid JSON-RPC messages"));
+                    };
+                    if matches!(message, RawJsonRpcMessage::Response(_))
+                        && message.response_id() != Some(&inner_id)
+                    {
+                        return Err(crate::Error::invalid_params()
+                            .data("MCP backend returned a different request ID"));
+                    }
+                    match message {
+                        RawJsonRpcMessage::Response(response) => {
+                            check_payload_size(&response, MAX_PAYLOAD_BYTES)?;
+                            // Returning ends notification forwarding before the terminal reply.
+                            return match response {
+                                crate::schema::v1::Response::Result { mut result, .. } => {
+                                    if is_discovery {
+                                        constrain_discovery_versions(&mut result)?;
+                                    }
+                                    Ok(result)
                                 }
-                                result = Some(match response {
-                                    crate::schema::v1::Response::Result { result, .. } => {
-                                        Ok(result.clone())
-                                    }
-                                    crate::schema::v1::Response::Error { error, .. } => {
-                                        Err(error.clone())
-                                    }
-                                });
-                            }
-                            RawJsonRpcMessage::Notification(notification) => {
-                                let params = match notification.params.clone() {
+                                crate::schema::v1::Response::Error { error, .. } => Err(error),
+                            };
+                        }
+                        RawJsonRpcMessage::Notification(notification) => {
+                            check_payload_size(&notification, MAX_PAYLOAD_BYTES)?;
+                            let params =
+                                match notification.params {
                                     Some(params) => match params.into_value() {
                                         Value::Object(map) => Some(map),
                                         _ => return Err(crate::Error::invalid_params().data(
@@ -258,25 +306,20 @@ where
                                     },
                                     None => None,
                                 };
-                                connection_for_task.send_notification_to(
-                                    Agent,
-                                    Protocol::notification(
-                                        server_id.clone(),
-                                        request_id.clone(),
-                                        notification.method.to_string(),
-                                        params,
-                                    ),
-                                )?;
-                            }
-                            RawJsonRpcMessage::Request(_) => {
-                                return Err(crate::Error::method_not_found()
-                                    .data("reverse MCP requests are not supported"));
-                            }
+                            connection_for_task.send_notification_to(
+                                Agent,
+                                Protocol::notification(
+                                    server_id.clone(),
+                                    request_id.clone(),
+                                    notification.method.to_string(),
+                                    params,
+                                ),
+                            )?;
                         }
-                        Ok(())
-                    })?;
-                    if let Some(response) = result {
-                        return response;
+                        RawJsonRpcMessage::Request(_) => {
+                            return Err(crate::Error::method_not_found()
+                                .data("reverse MCP requests are not supported"));
+                        }
                     }
                 }
                 Err(crate::util::internal_error(
@@ -312,10 +355,8 @@ where
             }
             Ok(())
         });
-        if let Err(error) = spawn_result {
-            // The dropped task also drops its responder and backend stop sender.
-            return Err(error);
-        }
+        // A failed spawn drops its responder and backend stop sender with the task.
+        spawn_result?;
         Ok(Handled::Yes)
     }
 }
@@ -346,34 +387,68 @@ where
     }
 }
 
+/// Discovery describes the revisions available through this binding, not other
+/// transports the hosted backend might also implement.
+fn constrain_discovery_versions(result: &mut Value) -> Result<(), crate::Error> {
+    let versions = result
+        .get_mut("supportedVersions")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| crate::Error::internal_error().data("invalid MCP discovery result"))?;
+    if !versions
+        .iter()
+        .any(|version| version.as_str() == Some(MCP_VERSION))
+    {
+        return Err(crate::Error::new(-32022, "Unsupported protocol version")
+            .data(serde_json::json!({"requested": MCP_VERSION, "supported": versions})));
+    }
+    *versions = vec![Value::String(MCP_VERSION.to_owned())];
+    Ok(())
+}
+
 fn validate_modern_request(
     method: &str,
     params: Option<&Map<String, Value>>,
 ) -> Result<(), crate::Error> {
     if method == "initialize" {
         return Err(
-            crate::Error::invalid_params().data("native MCP requests do not use initialize")
+            crate::Error::method_not_found().data("native MCP requests do not use initialize")
         );
     }
     let meta = params
         .and_then(|params| params.get("_meta"))
-        .and_then(Value::as_object);
-    if meta
-        .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            crate::Error::invalid_params().data("inner params._meta must be an object")
+        })?;
+    let version = meta
+        .get("io.modelcontextprotocol/protocolVersion")
         .and_then(Value::as_str)
-        != Some("2026-07-28")
-        || !meta
-            .and_then(|meta| meta.get("io.modelcontextprotocol/clientCapabilities"))
-            .is_some_and(Value::is_object)
+        .ok_or_else(|| {
+            crate::Error::invalid_params()
+                .data("inner params._meta requires io.modelcontextprotocol/protocolVersion")
+        })?;
+    if version != MCP_VERSION {
+        return Err(crate::Error::new(-32022, "Unsupported protocol version")
+            .data(serde_json::json!({"requested": version, "supported": [MCP_VERSION]})));
+    }
+    if !meta
+        .get("io.modelcontextprotocol/clientCapabilities")
+        .is_some_and(Value::is_object)
     {
-        return Err(crate::Error::invalid_params().data("inner params._meta requires io.modelcontextprotocol/protocolVersion 2026-07-28 and io.modelcontextprotocol/clientCapabilities object"));
+        return Err(crate::Error::invalid_params().data(
+            "inner params._meta requires io.modelcontextprotocol/clientCapabilities object",
+        ));
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::validate_modern_request;
+    use super::{
+        ActiveRequests, MAX_ACTIVE_REQUESTS, admit_request, check_payload_size,
+        constrain_discovery_versions, validate_modern_request,
+    };
+    use crate::schema::v1::McpRequestId;
     use serde_json::json;
 
     #[test]
@@ -390,5 +465,74 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn unsupported_version_is_an_mcp_error_not_a_legacy_fallback() {
+        let params = json!({
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2025-11-25",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }
+        });
+        let error = validate_modern_request("tools/call", params.as_object()).unwrap_err();
+        assert_eq!(
+            serde_json::to_value(error).unwrap(),
+            json!({
+                "code": -32022,
+                "message": "Unsupported protocol version",
+                "data": {"requested": "2025-11-25", "supported": ["2026-07-28"]}
+            })
+        );
+    }
+
+    #[test]
+    fn native_request_admission_is_bounded_and_recovers_after_cleanup() {
+        let active = ActiveRequests::default();
+        let mut admitted = Vec::new();
+        for index in 0..MAX_ACTIVE_REQUESTS {
+            admitted
+                .push(admit_request(&active, McpRequestId::new(format!("req-{index}"))).unwrap());
+        }
+        assert_eq!(active.lock().unwrap().len(), MAX_ACTIVE_REQUESTS);
+        let duplicate = admit_request(&active, McpRequestId::new("req-0"))
+            .err()
+            .unwrap();
+        assert_eq!(duplicate.code, crate::ErrorCode::InvalidParams);
+        let overload = admit_request(&active, McpRequestId::new("extra"))
+            .err()
+            .unwrap();
+        assert_eq!(i32::from(overload.code), -32000);
+        drop(admitted.pop());
+        let replacement = admit_request(&active, McpRequestId::new("replacement")).unwrap();
+        assert_eq!(active.lock().unwrap().len(), MAX_ACTIVE_REQUESTS);
+        drop(replacement);
+        drop(admitted);
+        assert!(active.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn payload_limits_count_json_escaping_without_building_an_extra_buffer() {
+        let payload = json!({"text": "\n\n"});
+        let encoded = serde_json::to_vec(&payload).unwrap();
+        assert!(check_payload_size(&payload, encoded.len()).is_ok());
+        assert!(check_payload_size(&payload, encoded.len() - 1).is_err());
+    }
+
+    #[test]
+    fn discovery_reports_the_binding_version_without_changing_other_payload() {
+        let mut result = json!({
+            "resultType": "complete",
+            "supportedVersions": ["2025-11-25", "2026-07-28"],
+            "capabilities": {"tools": {}},
+            "_meta": {"vendor/opaque": ["preserved"]}
+        });
+        constrain_discovery_versions(&mut result).unwrap();
+        assert_eq!(result["supportedVersions"], json!(["2026-07-28"]));
+        assert_eq!(result["_meta"]["vendor/opaque"], json!(["preserved"]));
+        assert_eq!(result["capabilities"], json!({"tools": {}}));
+        let mut unsupported = json!({"supportedVersions": ["2025-11-25"]});
+        assert!(constrain_discovery_versions(&mut unsupported).is_err());
+        assert!(constrain_discovery_versions(&mut json!({})).is_err());
     }
 }

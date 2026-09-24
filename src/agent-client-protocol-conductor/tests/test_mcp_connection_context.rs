@@ -1,8 +1,7 @@
 //! Integration tests for the context delivered to ACP-attached MCP tools.
 //!
-//! This verifies that an attached tool receives both identifiers defined by the
-//! native MCP-over-ACP lifecycle: the server ID advertised during session setup
-//! and the connection ID created by `mcp/connect`.
+//! This verifies that an attached tool receives the server ID advertised during
+//! session setup and the logical MCP request ID assigned to the operation.
 
 use agent_client_protocol::RunWithConnectionTo;
 use agent_client_protocol::mcp_server::McpServer;
@@ -20,7 +19,7 @@ struct EchoInput {}
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct EchoOutput {
     server_id: String,
-    connection_id: String,
+    request_id: String,
 }
 
 fn create_echo_proxy() -> DynConnectTo<Conductor> {
@@ -28,15 +27,15 @@ fn create_echo_proxy() -> DynConnectTo<Conductor> {
         .instructions("Test MCP server with a connection-context echo tool")
         .tool_fn_mut(
             "echo",
-            "Returns the current MCP connection context",
+            "Returns the current MCP request context",
             async |_input: EchoInput, context| {
                 Ok(EchoOutput {
                     server_id: context
                         .server_id()
                         .expect("tool is attached through ACP")
                         .to_string(),
-                    connection_id: context
-                        .connection_id()
+                    request_id: context
+                        .request_id()
                         .expect("tool is attached through ACP")
                         .to_string(),
                 })
@@ -88,7 +87,7 @@ async fn test_list_tools_from_mcp_server() -> Result<(), agent_client_protocol::
 
     expect![[r"
         Available tools:
-          - echo: Returns the current MCP connection context"]]
+          - echo: Returns the current MCP request context"]]
     .assert_eq(&result);
 
     Ok(())
@@ -115,14 +114,10 @@ async fn test_acp_identifiers_are_delivered_to_mcp_tools()
 
     let server_id = regex::Regex::new(r#""server_id":\s*String\("mcp-server:[0-9a-f-]+"\)"#)
         .expect("valid server ID regex");
-    let connection_id =
-        regex::Regex::new(r#""connection_id":\s*String\("mcp-over-acp-connection:[0-9a-f-]+"\)"#)
-            .expect("valid connection ID regex");
+    let request_id = regex::Regex::new(r#""request_id":\s*String\("[^"]+"\)"#)
+        .expect("valid logical request ID regex");
     assert!(server_id.is_match(&result), "unexpected result: {result}");
-    assert!(
-        connection_id.is_match(&result),
-        "unexpected result: {result}"
-    );
+    assert!(request_id.is_match(&result), "unexpected result: {result}");
 
     Ok(())
 }

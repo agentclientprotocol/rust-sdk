@@ -45,6 +45,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 async-tungstenite = { version = "0.35.0", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
 # Serialization
+base64 = "0.23"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 schemars = { version = "1.0", features = ["derive"] }

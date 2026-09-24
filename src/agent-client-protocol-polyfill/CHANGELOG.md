@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Replace the MCP session bridge with a latest-only MCP 2026-07-28 HTTP adapter:
+  one native ACP request per POST, request-scoped SSE, and stream-close
+  cancellation. Remove the initialize/connect/disconnect, GET, batch, and
+  session-header paths; existing older MCP HTTP clients must be upgraded.
+- Require runtime bearer credentials from the rewritten declaration, validate
+  Origin and mirrored routing headers, and preserve logical request identities
+  independently of overlapping HTTP IDs.
+- Bound notification queues and request/listener admission. Translate
+  subscription IDs in namespaced MCP metadata for notifications and completion.
+- Fail closed for unsupported `x-mcp-header` tools. Direct tool calls perform
+  descriptor lookup internally rather than requiring a client-side list
+  handshake. This remains a draft, not a claim of full HTTP conformance.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.1.0...agent-client-protocol-polyfill-v2.2.0) - 2026-09-18
 
 ### Other

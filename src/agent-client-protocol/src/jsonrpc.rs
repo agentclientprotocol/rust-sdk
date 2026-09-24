@@ -236,7 +236,7 @@ impl Serialize for TransportBatch {
 }
 
 impl TransportFrame {
-    pub(crate) fn inspect_messages(
+    fn inspect_messages(
         &self,
         observer: &mut impl FnMut(&RawJsonRpcMessage) -> Result<(), crate::Error>,
     ) -> Result<(), crate::Error> {

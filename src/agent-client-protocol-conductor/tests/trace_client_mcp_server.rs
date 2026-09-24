@@ -33,7 +33,8 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Replaces UUIDs with sequential IDs (id:0, id:1, etc.)
 /// - Replaces session IDs with "session:0", etc.
 /// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
-/// - Replaces MCP server and connection IDs with stable sequential IDs
+/// - Replaces MCP server and logical request IDs with stable sequential IDs
+/// - Redacts runtime-generated HTTP Authorization headers
 struct EventNormalizer {
     id_map: HashMap<String, String>,
     next_id: usize,
@@ -43,8 +44,8 @@ struct EventNormalizer {
     next_endpoint: usize,
     server_map: HashMap<String, String>,
     next_server: usize,
-    connection_map: HashMap<String, String>,
-    next_connection: usize,
+    request_map: HashMap<String, String>,
+    next_request: usize,
 }
 
 impl EventNormalizer {
@@ -58,8 +59,8 @@ impl EventNormalizer {
             next_endpoint: 0,
             server_map: HashMap::new(),
             next_server: 0,
-            connection_map: HashMap::new(),
-            next_connection: 0,
+            request_map: HashMap::new(),
+            next_request: 0,
         }
     }
 
@@ -116,12 +117,12 @@ impl EventNormalizer {
             .clone()
     }
 
-    fn normalize_connection_id(&mut self, id: &str) -> String {
-        self.connection_map
+    fn normalize_request_id(&mut self, id: &str) -> String {
+        self.request_map
             .entry(id.to_string())
             .or_insert_with(|| {
-                let n = format!("connection:{}", self.next_connection);
-                self.next_connection += 1;
+                let n = format!("request:{}", self.next_request);
+                self.next_request += 1;
                 n
             })
             .clone()
@@ -131,6 +132,10 @@ impl EventNormalizer {
     fn normalize_json(&mut self, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
+                let is_authorization_header = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("authorization"));
                 let normalized: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
                     .map(|(k, v)| {
@@ -158,12 +163,14 @@ impl EventNormalizer {
                             } else {
                                 self.normalize_json(v)
                             }
-                        } else if k == "connectionId" {
+                        } else if k == "requestId" {
                             if let serde_json::Value::String(s) = &v {
-                                serde_json::Value::String(self.normalize_connection_id(s))
+                                serde_json::Value::String(self.normalize_request_id(s))
                             } else {
                                 self.normalize_json(v)
                             }
+                        } else if is_authorization_header && k == "value" {
+                            serde_json::Value::String("[REDACTED]".into())
                         } else {
                             self.normalize_json(v)
                         };
@@ -500,7 +507,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { result_type: None, content: [Text(TextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None, annotations: None })], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { result_type: Some(ResultType(\"complete\")), content: [Text(TextContent { text: \"{\\\"echoed\\\":\\\"Client echoes: Hello from client test!\\\",\\\"call_number\\\":1}\", meta: None, annotations: None })], structured_content: Some(Object {\"echoed\": String(\"Client echoes: Hello from client test!\"), \"call_number\": Number(1)}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },

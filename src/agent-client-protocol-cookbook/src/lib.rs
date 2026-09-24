@@ -732,7 +732,7 @@ pub mod global_mcp_server {
     //! ```
     //!
     //! The `from_rmcp` function takes a factory closure that creates a new server
-    //! instance. This allows each MCP connection to get a fresh server instance.
+    //! instance for each MCP request.
     //!
     //! # How it works
     //!
@@ -740,13 +740,14 @@ pub mod global_mcp_server {
     //! handler. It:
     //!
     //! 1. Intercepts session setup requests and adds a schema-native
-    //!    `McpServer::Acp` declaration with one connection-scoped server ID.
+    //!    `McpServer::Acp` declaration with one stable server ID.
     //!    V1 injects it into `session/new`, `session/load`, `session/resume`,
     //!    and feature-gated `session/fork`; v2 injects it into
     //!    `session/new`, `session/resume`, and feature-gated `session/fork`
     //!    while preserving unrelated request fields
     //! 2. Passes the modified request through to the next handler
-    //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
+    //! 3. Handles `mcp/message` requests for that server ID. Each operation
+    //!    has its own logical request ID and per-request MCP metadata.
     //!
     //! [`McpServer::builder`]: agent_client_protocol_rmcp::McpServerExt::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp

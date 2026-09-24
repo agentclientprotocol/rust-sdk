@@ -13,10 +13,15 @@ categories = ["development-tools"]
 [features]
 default = []
 unstable_mcp_over_acp = ["agent-client-protocol/unstable_mcp_over_acp"]
+unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [[example]]
 name = "with_mcp_server"
 required-features = ["unstable_mcp_over_acp"]
+
+[[example]]
+name = "stateless_native_mcp"
+required-features = ["unstable_mcp_over_acp", "unstable_protocol_v2"]
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["schemars"] }
