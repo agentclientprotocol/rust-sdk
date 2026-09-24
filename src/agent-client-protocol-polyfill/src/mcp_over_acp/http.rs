@@ -11,20 +11,24 @@ use agent_client_protocol::{
 use axum::{
     Router,
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response, Sse},
     routing::post,
 };
-use futures::{SinkExt, StreamExt as _, channel::mpsc, future::Either, stream::Stream};
-use futures_concurrency::future::FutureExt as _;
+use futures::{
+    SinkExt, StreamExt as _,
+    channel::{mpsc, oneshot},
+    future::Either,
+    stream::Stream,
+};
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
 use std::{
     collections::{HashMap, VecDeque},
-    pin::pin,
     sync::Arc,
 };
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 
 use super::{BridgeConnection, BridgeMessage, actor::BridgeConnectionActor};
 
@@ -32,37 +36,29 @@ use super::{BridgeConnection, BridgeMessage, actor::BridgeConnectionActor};
 pub async fn run_http_listener(
     tcp_listener: TcpListener,
     server_id: String,
-    mut bridge_tx: mpsc::Sender<BridgeMessage>,
+    bridge_tx: mpsc::Sender<BridgeMessage>,
 ) -> Result<(), agent_client_protocol::Error> {
-    let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
-
-    bridge_tx
-        .send(BridgeMessage::ConnectionReceived {
-            server_id,
-            actor: BridgeConnectionActor::new(
-                HttpMcpBridge::new(tcp_listener),
-                bridge_tx.clone(),
-                to_mcp_client_rx,
-            ),
-            connection: BridgeConnection::new(to_mcp_client_tx),
-        })
+    let state = Arc::new(ListenerState {
+        server_id,
+        bridge_tx,
+        sessions: Mutex::new(HashMap::new()),
+    });
+    let app = Router::new()
+        .route(
+            "/",
+            post(session_post).get(session_get).delete(session_delete),
+        )
+        .with_state(state);
+    axum::serve(tcp_listener, app)
         .await
-        .map_err(|_| agent_client_protocol::Error::internal_error())?;
-
-    Ok(())
+        .map_err(agent_client_protocol::util::internal_error)
 }
 
-/// A component that receives HTTP requests/responses using the HTTP transport
-/// defined by the MCP protocol.
+/// Each logical HTTP session has its own raw-frame router and native connection.
 struct HttpMcpBridge {
-    listener: tokio::net::TcpListener,
-}
-
-impl HttpMcpBridge {
-    /// Creates a new HTTP-MCP bridge from an existing TCP listener.
-    fn new(listener: tokio::net::TcpListener) -> Self {
-        Self { listener }
-    }
+    client_channel: Channel,
+    server_channel: Channel,
+    registration_rx: mpsc::UnboundedReceiver<HttpMessage>,
 }
 
 impl ConnectTo<mcp::Client> for HttpMcpBridge {
@@ -71,7 +67,7 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
         client: impl ConnectTo<mcp::Server>,
     ) -> Result<(), agent_client_protocol::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
-        match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
+        match futures::future::select(Box::pin(client.connect_to(channel)), serve_self).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
@@ -85,8 +81,10 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
     where
         Self: Sized,
     {
-        let (channel_a, channel_b) = Channel::duplex();
-        (channel_a, Box::pin(run(self.listener, channel_b)))
+        (
+            self.client_channel,
+            Box::pin(RunningServer::new().run(self.server_channel, self.registration_rx)),
+        )
     }
 }
 
@@ -108,36 +106,173 @@ impl IntoResponse for HttpError {
     }
 }
 
-/// Run a webserver listening on `listener` for HTTP requests at `/`
-/// and communicating those requests over `channel` to the JSON-RPC server.
-async fn run(listener: TcpListener, channel: Channel) -> Result<(), agent_client_protocol::Error> {
-    let (registration_tx, registration_rx) = mpsc::unbounded();
-    let state = BridgeState { registration_tx };
+const SESSION_HEADER: &str = "mcp-session-id";
 
-    // The way that the MCP protocol works is a bit "special".
-    //
-    // Clients *POST* messages to `/`. Those are submitted to the MCP server.
-    // If the message is a REQUEST, then the client waits until it gets a reply.
-    // It expects the server to close the connection after responding.
-    //
-    // Clients can also issue a *GET* request. This will result in a stream of messages.
-    //
-    // Non-reply messages can be sent to any open stream (POST, GET, etc) but must be sent to
-    // exactly one.
-    //
-    // There are provisions for "resuming" from a blocked point by tagging each message in the SSE
-    // stream with an id, but we are not implementing that because I am lazy.
-    async {
-        let app = Router::new()
-            .route("/", post(handle_post).get(handle_get))
-            .with_state(Arc::new(state));
+struct ListenerState {
+    server_id: String,
+    bridge_tx: mpsc::Sender<BridgeMessage>,
+    sessions: Mutex<HashMap<String, Session>>,
+}
 
-        axum::serve(listener, app)
-            .await
-            .map_err(agent_client_protocol::util::internal_error)
+struct Session {
+    state: Arc<BridgeState>,
+    disconnected: oneshot::Receiver<Result<(), agent_client_protocol::Error>>,
+}
+
+impl BridgeState {
+    fn close(&self) {
+        drop(self.registration_tx.unbounded_send(HttpMessage::Close));
     }
-    .race(RunningServer::new().run(channel, registration_rx))
-    .await
+}
+
+fn session_id(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(SESSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+}
+
+async fn session_get(State(state): State<Arc<ListenerState>>, headers: HeaderMap) -> Response {
+    let Some(id) = session_id(&headers) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let session = state
+        .sessions
+        .lock()
+        .await
+        .get(id)
+        .map(|session| session.state.clone());
+    let Some(session) = session else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match handle_get(State(session)).await {
+        Ok(response) => response.into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn session_delete(State(state): State<Arc<ListenerState>>, headers: HeaderMap) -> Response {
+    let Some(id) = session_id(&headers) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if let Some(session) = state.sessions.lock().await.remove(id) {
+        session.state.close();
+        match session.disconnected.await {
+            Ok(Ok(())) => StatusCode::ACCEPTED.into_response(),
+            Ok(Err(error)) => {
+                tracing::warn!(?error, "native MCP disconnect failed");
+                StatusCode::BAD_GATEWAY.into_response()
+            }
+            Err(_) => StatusCode::BAD_GATEWAY.into_response(),
+        }
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
+async fn session_post(
+    State(state): State<Arc<ListenerState>>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if let Some(id) = session_id(&headers) {
+        let session = state
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .map(|session| session.state.clone());
+        return match session {
+            Some(session) => handle_post(State(session), body)
+                .await
+                .unwrap_or_else(IntoResponse::into_response),
+            None => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+
+    // Only an initialize request without a session ID can establish a new
+    // logical session. In particular, malformed frames never open connections.
+    let TransportFrame::Single(RawJsonRpcMessage::Request(request)) =
+        TransportFrame::parse_json(&body)
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if request.method.as_ref() != "initialize" {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let (registration_tx, registration_rx) = mpsc::unbounded();
+    let (client_channel, server_channel) = Channel::duplex();
+    let session = Arc::new(BridgeState { registration_tx });
+    let (to_mcp_client_tx, to_mcp_client_rx) = mpsc::channel(128);
+    let (disconnected_tx, disconnected) = oneshot::channel();
+    let actor = BridgeConnectionActor::new(
+        HttpMcpBridge {
+            client_channel,
+            server_channel,
+            registration_rx,
+        },
+        state.bridge_tx.clone(),
+        to_mcp_client_rx,
+    );
+    state.sessions.lock().await.insert(
+        id.clone(),
+        Session {
+            state: session.clone(),
+            disconnected,
+        },
+    );
+    let mut bridge_tx = state.bridge_tx.clone();
+    if bridge_tx
+        .send(BridgeMessage::ConnectionReceived {
+            server_id: state.server_id.clone(),
+            actor,
+            connection: BridgeConnection::new(to_mcp_client_tx),
+            disconnected_tx,
+        })
+        .await
+        .is_err()
+    {
+        state.sessions.lock().await.remove(&id);
+        session.close();
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    let (tx, mut rx) = mpsc::unbounded();
+    if session
+        .registration_tx
+        .unbounded_send(HttpMessage::Request {
+            http_request_id: uuid::Uuid::new_v4(),
+            request,
+            response_tx: tx,
+        })
+        .is_err()
+    {
+        state.sessions.lock().await.remove(&id);
+        session.close();
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    // Don't hand out a session ID unless initialization actually succeeded.
+    let Some(response) = rx.next().await else {
+        state.sessions.lock().await.remove(&id);
+        session.close();
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let success = matches!(
+        &response,
+        TransportFrame::Single(RawJsonRpcMessage::Response(RpcResponse::Result { .. }))
+    );
+    if !success {
+        state.sessions.lock().await.remove(&id);
+        session.close();
+        return immediate_sse_response(response);
+    }
+    let mut http_response = immediate_sse_response(response);
+    http_response.headers_mut().insert(
+        SESSION_HEADER,
+        HeaderValue::from_str(&id).expect("UUID is a valid HTTP header value"),
+    );
+    http_response
 }
 
 /// The state we pass to our POST/GET handlers.
@@ -150,6 +285,7 @@ struct BridgeState {
 #[derive(Debug)]
 #[allow(dead_code)]
 enum HttpMessage {
+    Close,
     /// A JSON-RPC request (has an id, expects a response via the channel).
     Request {
         http_request_id: uuid::Uuid,
@@ -220,6 +356,9 @@ impl RunningServer {
 
             match message {
                 MultiplexMessage::FromHttpToChannel(http_message) => {
+                    if matches!(http_message, HttpMessage::Close) {
+                        return Ok(());
+                    }
                     self.handle_http_message(http_message, &mut channel.tx)?;
                 }
                 MultiplexMessage::FromChannelToHttp(message) => {
@@ -241,6 +380,7 @@ impl RunningServer {
         channel_tx: &mut mpsc::UnboundedSender<TransportFrame>,
     ) -> Result<(), agent_client_protocol::Error> {
         match message {
+            HttpMessage::Close => return Ok(()),
             HttpMessage::Request {
                 http_request_id,
                 request,

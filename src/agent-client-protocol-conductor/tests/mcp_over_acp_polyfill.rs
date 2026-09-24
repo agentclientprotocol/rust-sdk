@@ -6,10 +6,11 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, ConnectMcpRequest, ConnectMcpResponse, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    McpServerAcp, NewSessionRequest, NewSessionResponse, ResumeSessionRequest,
-    ResumeSessionResponse, SessionCapabilities, SessionResumeCapabilities,
+    AgentCapabilities, ConnectMcpRequest, ConnectMcpResponse, DisconnectMcpRequest,
+    DisconnectMcpResponse, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, McpCapabilities, McpServer, McpServerAcp, MessageMcpRequest,
+    NewSessionRequest, NewSessionResponse, ResumeSessionRequest, ResumeSessionResponse,
+    SessionCapabilities, SessionResumeCapabilities,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
@@ -36,6 +37,8 @@ struct SetupRequest {
 #[derive(Default)]
 struct ObservedRequests {
     setup: Mutex<Vec<SetupRequest>>,
+    native_messages: Mutex<Vec<(String, String)>>,
+    disconnect_count: AtomicUsize,
 }
 
 impl ObservedRequests {
@@ -57,6 +60,7 @@ struct RecordingAgent {
 
 struct NativeMcpProvider {
     connect_count: Arc<AtomicUsize>,
+    observed: Arc<ObservedRequests>,
 }
 
 impl ConnectTo<Conductor> for NativeMcpProvider {
@@ -64,6 +68,8 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
         self,
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
+        let messages = Arc::clone(&self.observed);
+        let disconnected = Arc::clone(&self.observed);
         Proxy
             .builder()
             .name("native-mcp-provider")
@@ -71,8 +77,41 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                 Agent,
                 async move |request: ConnectMcpRequest, responder, _cx| {
                     assert_eq!(request.server_id.to_string(), SERVER_ID);
-                    self.connect_count.fetch_add(1, Ordering::SeqCst);
-                    responder.respond(ConnectMcpResponse::new("test-connection-id"))
+                    let index = self.connect_count.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(ConnectMcpResponse::new(format!("test-connection-{index}")))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request_from(
+                Agent,
+                async move |request: MessageMcpRequest, responder, _cx| {
+                    messages
+                        .native_messages
+                        .lock()
+                        .unwrap()
+                        .push((request.connection_id.to_string(), request.method.clone()));
+                    let result = match request.method.as_str() {
+                        "initialize" => serde_json::json!({
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "v1-test", "version": "1" }
+                        }),
+                        "tools/list" => serde_json::json!({ "tools": [] }),
+                        _ => {
+                            return responder.respond_with_error(
+                                agent_client_protocol::Error::method_not_found(),
+                            );
+                        }
+                    };
+                    responder.respond(serde_json::from_value(result)?)
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request_from(
+                Agent,
+                async move |_request: DisconnectMcpRequest, responder, _cx| {
+                    disconnected.disconnect_count.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(DisconnectMcpResponse::new())
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -163,6 +202,7 @@ async fn run_with_polyfill(
         agent_client_protocol::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::clone(&agent.observed);
     drop(
         tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -185,6 +225,7 @@ async fn run_with_polyfill(
                 ProxiesAndAgent::new(agent)
                     .proxy(NativeMcpProvider {
                         connect_count: provider_connect_count,
+                        observed,
                     })
                     .proxy(McpOverAcpPolyfill::http()),
             )
@@ -245,8 +286,8 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         .expect("setup request mutex should not be poisoned");
     assert_eq!(
         connect_count.load(Ordering::SeqCst),
-        1,
-        "one reused listener should create one native MCP connection"
+        0,
+        "creating and reusing the listener must not open a logical MCP session"
     );
     assert_eq!(setup.len(), 3);
     assert_eq!(setup[0].method, SetupMethod::New);
@@ -280,6 +321,148 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
     }
 
     Ok(())
+}
+
+#[tokio::test]
+async fn v1_http_sessions_open_lazily_and_disconnect_independently()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let connects = Arc::new(AtomicUsize::new(0));
+    run_with_polyfill(
+        RecordingAgent {
+            capabilities: agent_capabilities(McpCapabilities::new().http(true)),
+            observed: Arc::clone(&observed),
+        },
+        Arc::clone(&connects),
+        async |connection| {
+            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
+            recv(connection.send_request(
+                NewSessionRequest::new(PathBuf::from("/tmp")).mcp_servers(vec![native_server()]),
+            ))
+            .await?;
+            let endpoint = {
+                let setup = observed.setup.lock().unwrap();
+                let McpServer::Http(server) = &setup[0].mcp_servers[0] else {
+                    panic!("expected HTTP adaptation");
+                };
+                server.url.clone()
+            };
+            assert_eq!(connects.load(Ordering::SeqCst), 0);
+            let http = reqwest::Client::new();
+            let init = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {},
+                    "clientInfo": { "name": "v1-client", "version": "1" }
+                }
+            });
+            let (a, b) = tokio::join!(
+                http.post(&endpoint).json(&init).send(),
+                http.post(&endpoint).json(&init).send(),
+            );
+            let a = a.unwrap();
+            let b = b.unwrap();
+            let a_id = a
+                .headers()
+                .get("mcp-session-id")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let b_id = b
+                .headers()
+                .get("mcp-session-id")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert_ne!(a_id, b_id);
+            assert_eq!(connects.load(Ordering::SeqCst), 2);
+            assert!(a.text().await.unwrap().contains("\"result\""));
+            assert!(b.text().await.unwrap().contains("\"result\""));
+            let tool = serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
+            });
+            let (a, b) = tokio::join!(
+                http.post(&endpoint)
+                    .header("mcp-session-id", &a_id)
+                    .json(&tool)
+                    .send(),
+                http.post(&endpoint)
+                    .header("mcp-session-id", &b_id)
+                    .json(&tool)
+                    .send(),
+            );
+            assert!(a.unwrap().text().await.unwrap().contains("\"tools\":[]"));
+            assert!(b.unwrap().text().await.unwrap().contains("\"tools\":[]"));
+            assert_eq!(
+                http.delete(&endpoint)
+                    .header("mcp-session-id", &a_id)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::ACCEPTED
+            );
+            assert_eq!(observed.disconnect_count.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                http.post(&endpoint)
+                    .header("mcp-session-id", &a_id)
+                    .json(&tool)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::NOT_FOUND
+            );
+            assert!(
+                http.post(&endpoint)
+                    .header("mcp-session-id", &b_id)
+                    .json(&tool)
+                    .send()
+                    .await
+                    .unwrap()
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("\"tools\":[]")
+            );
+            let c = http.post(&endpoint).json(&init).send().await.unwrap();
+            let c_id = c
+                .headers()
+                .get("mcp-session-id")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            assert_ne!(c_id, a_id);
+            assert_eq!(connects.load(Ordering::SeqCst), 3);
+            for id in [&b_id, &c_id] {
+                assert_eq!(
+                    http.delete(&endpoint)
+                        .header("mcp-session-id", id)
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    reqwest::StatusCode::ACCEPTED
+                );
+            }
+            assert_eq!(observed.disconnect_count.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                observed
+                    .native_messages
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(_, method)| method == "initialize")
+                    .count(),
+                3
+            );
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[tokio::test]

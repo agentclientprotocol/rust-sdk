@@ -44,6 +44,7 @@ struct SetupRequest {
 #[derive(Default)]
 struct ObservedRequests {
     setup: Mutex<Vec<SetupRequest>>,
+    native_messages: Mutex<Vec<(String, String)>>,
 }
 
 impl ObservedRequests {
@@ -112,6 +113,7 @@ struct NativeMcpProvider {
     request_methods: Arc<Mutex<Vec<String>>>,
     notification_methods: Arc<Mutex<Vec<String>>>,
     disconnect_count: Arc<AtomicUsize>,
+    observed: Arc<ObservedRequests>,
 }
 
 impl ConnectTo<Conductor> for NativeMcpProvider {
@@ -122,6 +124,7 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
         let request_methods = Arc::clone(&self.request_methods);
         let notification_methods = Arc::clone(&self.notification_methods);
         let disconnect_count = Arc::clone(&self.disconnect_count);
+        let observed = Arc::clone(&self.observed);
 
         Proxy
             .v2()
@@ -130,14 +133,21 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                 Agent,
                 async move |request: v2::ConnectMcpRequest, responder, _cx| {
                     assert_eq!(request.server_id.to_string(), SERVER_ID);
-                    self.connect_count.fetch_add(1, Ordering::SeqCst);
-                    responder.respond(v2::ConnectMcpResponse::new("v2-test-connection-id"))
+                    let index = self.connect_count.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(v2::ConnectMcpResponse::new(format!(
+                        "v2-test-connection-{index}"
+                    )))
                 },
                 agent_client_protocol::on_receive_request!(),
             )
             .on_receive_request_from(
                 Agent,
                 async move |request: v2::MessageMcpRequest, responder, _cx| {
+                    observed
+                        .native_messages
+                        .lock()
+                        .unwrap()
+                        .push((request.connection_id.to_string(), request.method.clone()));
                     request_methods
                         .lock()
                         .expect("request method mutex should not be poisoned")
@@ -247,6 +257,7 @@ async fn run_with_polyfill(
     provider_disconnect_count: Arc<AtomicUsize>,
     editor_task: impl AsyncFnOnce(V2ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::clone(&agent.observed);
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport =
@@ -264,6 +275,7 @@ async fn run_with_polyfill(
                         request_methods: provider_request_methods,
                         notification_methods: provider_notification_methods,
                         disconnect_count: provider_disconnect_count,
+                        observed,
                     })
                     .proxy(McpOverAcpPolyfill::http()),
             )
@@ -419,6 +431,204 @@ async fn http_downstream_adapts_v2_capabilities_and_only_transforms_native_serve
     }
 
     Ok(())
+}
+
+async fn http_call(
+    client: &reqwest::Client,
+    endpoint: &str,
+    session: Option<&str>,
+    method: &str,
+) -> (reqwest::StatusCode, Option<String>, serde_json::Value) {
+    let params = if method == "initialize" {
+        serde_json::json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "session-isolation-test", "version": "1" }
+        })
+    } else {
+        serde_json::json!({})
+    };
+    let mut request = client.post(endpoint).json(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+    }));
+    if let Some(session) = session {
+        request = request.header("mcp-session-id", session);
+    }
+    let response = request.send().await.expect("HTTP MCP POST");
+    let status = response.status();
+    let id = response
+        .headers()
+        .get("mcp-session-id")
+        .map(|value| value.to_str().expect("ASCII session ID").to_owned());
+    let body = response.text().await.expect("HTTP MCP response body");
+    let payload = body
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .map(|line| serde_json::from_str(line).expect("JSON-RPC SSE data"))
+        .unwrap_or(serde_json::Value::Null);
+    (status, id, payload)
+}
+
+#[tokio::test]
+async fn concurrent_http_sessions_isolate_ids_and_survive_individual_delete()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let agent = RecordingAgent {
+        capabilities: agent_capabilities(
+            v2::McpCapabilities::new().http(v2::McpHttpCapabilities::new()),
+        ),
+        observed: Arc::clone(&observed),
+    };
+    let connects = Arc::new(AtomicUsize::new(0));
+    let disconnects = Arc::new(AtomicUsize::new(0));
+    run_with_polyfill(
+        agent,
+        Arc::clone(&connects),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::clone(&disconnects),
+        async |connection| {
+            connection
+                .send_request(initialize_request())
+                .block_task()
+                .await?;
+            connection
+                .send_request(
+                    v2::NewSessionRequest::new(PathBuf::from("/tmp"))
+                        .mcp_servers(vec![native_server()]),
+                )
+                .block_task()
+                .await?;
+            let endpoint = {
+                let setup = observed.setup.lock().unwrap();
+                let v2::McpServer::Http(server) = &setup[0].mcp_servers[0] else {
+                    panic!("expected adapted HTTP server");
+                };
+                server.url.clone()
+            };
+            let http = reqwest::Client::new();
+            let (a, b) = tokio::join!(
+                http_call(&http, &endpoint, None, "initialize"),
+                http_call(&http, &endpoint, None, "initialize"),
+            );
+            assert_eq!(a.0, reqwest::StatusCode::OK);
+            assert_eq!(b.0, reqwest::StatusCode::OK);
+            assert!(
+                a.2.get("result").is_some(),
+                "first initialization: {:?}",
+                a.2
+            );
+            assert!(
+                b.2.get("result").is_some(),
+                "second initialization: {:?}",
+                b.2
+            );
+            let a_id = a.1.expect("first MCP-Session-Id");
+            let b_id = b.1.expect("second MCP-Session-Id");
+            assert_ne!(a_id, b_id);
+            assert_eq!(connects.load(Ordering::SeqCst), 2);
+
+            // The same JSON-RPC ID on two sessions must not serialize or
+            // cross-deliver replies. Both session headers remain stable.
+            let (a, b) = tokio::join!(
+                http_call(&http, &endpoint, Some(&a_id), "tools/list"),
+                http_call(&http, &endpoint, Some(&b_id), "tools/list"),
+            );
+            for (status, header, response) in [a, b] {
+                assert_eq!(status, reqwest::StatusCode::OK);
+                assert!(header.is_none(), "session ID belongs only on initialize");
+                assert_eq!(response["id"], 1);
+                assert_eq!(response["result"]["tools"], serde_json::json!([]));
+            }
+            let unknown = http
+                .post(&endpoint)
+                .header("mcp-session-id", "not-a-session")
+                .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+            let absent = http.get(&endpoint).send().await.unwrap();
+            assert_eq!(absent.status(), reqwest::StatusCode::BAD_REQUEST);
+
+            let deleted = http
+                .delete(&endpoint)
+                .header("mcp-session-id", &a_id)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(deleted.status(), reqwest::StatusCode::ACCEPTED);
+            assert_eq!(
+                disconnects.load(Ordering::SeqCst),
+                1,
+                "DELETE must wait for native disconnect"
+            );
+            assert_eq!(
+                http.delete(&endpoint)
+                    .header("mcp-session-id", &a_id)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                reqwest::StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                http_call(&http, &endpoint, Some(&a_id), "tools/list")
+                    .await
+                    .0,
+                reqwest::StatusCode::NOT_FOUND
+            );
+            assert_eq!(
+                http_call(&http, &endpoint, Some(&b_id), "tools/list")
+                    .await
+                    .2["result"]["tools"],
+                serde_json::json!([])
+            );
+
+            let c = http_call(&http, &endpoint, None, "initialize").await;
+            assert!(c.2.get("result").is_some());
+            let c_id = c.1.expect("new session after DELETE");
+            assert_ne!(c_id, a_id);
+            assert_eq!(connects.load(Ordering::SeqCst), 3);
+            assert_eq!(
+                http_call(&http, &endpoint, Some(&c_id), "tools/list")
+                    .await
+                    .2["result"]["tools"],
+                serde_json::json!([])
+            );
+            for id in [&b_id, &c_id] {
+                assert_eq!(
+                    http.delete(&endpoint)
+                        .header("mcp-session-id", id)
+                        .send()
+                        .await
+                        .unwrap()
+                        .status(),
+                    reqwest::StatusCode::ACCEPTED
+                );
+            }
+            assert_eq!(disconnects.load(Ordering::SeqCst), 3);
+            let routes = observed.native_messages.lock().unwrap();
+            let mut per_connection = std::collections::BTreeMap::new();
+            for (id, method) in routes.iter() {
+                per_connection
+                    .entry(id.clone())
+                    .or_insert_with(Vec::new)
+                    .push(method.as_str());
+            }
+            assert_eq!(per_connection.len(), 3);
+            assert!(per_connection.values().all(|methods| {
+                methods.first() == Some(&"initialize")
+                    && methods
+                        .iter()
+                        .filter(|method| **method == "tools/list")
+                        .count()
+                        >= 1
+            }));
+            Ok(())
+        },
+    )
+    .await
 }
 
 #[tokio::test]

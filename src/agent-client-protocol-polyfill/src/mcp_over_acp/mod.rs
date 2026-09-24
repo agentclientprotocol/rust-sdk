@@ -59,6 +59,7 @@ pub(crate) enum BridgeMessage {
         server_id: String,
         actor: BridgeConnectionActor,
         connection: BridgeConnection,
+        disconnected_tx: oneshot::Sender<Result<(), agent_client_protocol::Error>>,
     },
 
     /// A native MCP connection ID was received; spawn the actor and store its sender.
@@ -67,6 +68,7 @@ pub(crate) enum BridgeMessage {
         connection_id: String,
         actor: BridgeConnectionActor,
         connection: BridgeConnection,
+        disconnected_tx: oneshot::Sender<Result<(), agent_client_protocol::Error>>,
     },
 
     /// Opening a native MCP connection failed.
@@ -88,7 +90,10 @@ pub(crate) enum BridgeMessage {
     ServerToClientNotification { notification: NativeMcpMessage },
 
     /// The local MCP bridge disconnected.
-    Disconnected { connection_id: String },
+    Disconnected {
+        connection_id: String,
+        disconnected_tx: oneshot::Sender<Result<(), agent_client_protocol::Error>>,
+    },
 }
 
 /// Connection handle for sending messages to an MCP client via a bridge.
@@ -452,10 +457,6 @@ impl BridgeListeners {
         self.listeners.insert(server_id, listener);
         Ok(declaration)
     }
-
-    fn remove(&mut self, server_id: &str) {
-        self.listeners.remove(server_id);
-    }
 }
 
 #[derive(Debug)]
@@ -532,13 +533,13 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     server_id,
                     actor,
                     connection: bridge,
+                    disconnected_tx,
                 } => {
                     let Some(protocol) = self.protocol else {
                         warn!(
                             server_id,
                             "cannot open MCP bridge before ACP initialization"
                         );
-                        self.listeners.remove(&server_id);
                         continue;
                     };
                     let request = protocol.connect_request(server_id.clone())?;
@@ -553,6 +554,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                                         connection_id,
                                         actor,
                                         connection: bridge,
+                                        disconnected_tx,
                                     },
                                     Err(error) => {
                                         warn!(?error, "invalid response to mcp/connect");
@@ -577,16 +579,20 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     connection_id,
                     actor,
                     connection: bridge,
+                    disconnected_tx,
                 } => {
                     self.bridge_connections.insert(
                         connection_id.clone(),
                         ActiveBridgeConnection { server_id, bridge },
                     );
-                    connection.spawn(actor.run(connection_id))?;
+                    connection.spawn(actor.run(connection_id, disconnected_tx))?;
                 }
 
                 BridgeMessage::ConnectionFailed { server_id } => {
-                    self.listeners.remove(&server_id);
+                    warn!(
+                        server_id,
+                        "MCP session connection failed; listener remains available"
+                    );
                 }
 
                 BridgeMessage::ClientToServer {
@@ -741,13 +747,15 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     }
                 }
 
-                BridgeMessage::Disconnected { connection_id } => {
+                BridgeMessage::Disconnected {
+                    connection_id,
+                    disconnected_tx,
+                } => {
                     let Some(active) = self.bridge_connections.remove(&connection_id) else {
                         debug!(connection_id, "local MCP connection was already removed");
                         continue;
                     };
-                    self.listeners.remove(&active.server_id);
-
+                    debug!(server_id = %active.server_id, connection_id, "closing MCP session");
                     let Some(protocol) = self.protocol else {
                         debug!("could not disconnect MCP bridge before ACP initialization");
                         continue;
@@ -756,18 +764,10 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     let scheduled = connection
                         .send_request_to(Client, request)
                         .on_receiving_result(async move |result| {
-                            match result {
-                                Ok(response) => {
-                                    if let Err(error) =
-                                        protocol.validate_disconnect_response(response)
-                                    {
-                                        warn!(?error, "invalid response to mcp/disconnect");
-                                    }
-                                }
-                                Err(error) => {
-                                    debug!(?error, "mcp/disconnect failed");
-                                }
-                            }
+                            let result = result.and_then(|response| {
+                                protocol.validate_disconnect_response(response)
+                            });
+                            drop(disconnected_tx.send(result));
                             Ok(())
                         });
                     if let Err(error) = scheduled {

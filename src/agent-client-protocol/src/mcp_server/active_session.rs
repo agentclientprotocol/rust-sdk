@@ -1,7 +1,11 @@
-use std::{marker::PhantomData, sync::Arc};
+use std::{
+    marker::PhantomData,
+    sync::{Arc, Mutex, Weak},
+};
 
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
+use futures::channel::{mpsc, oneshot};
+use futures::future::{Either, Shared, select};
+use futures::{FutureExt, SinkExt, StreamExt};
 use rustc_hash::FxHashMap;
 use serde_json::{Map, Value};
 
@@ -205,9 +209,32 @@ pub(super) struct McpActiveSession<Counterpart: Role, Protocol = V1McpProtocol> 
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
 
     /// Active connections to MCP server tasks.
-    connections: FxHashMap<McpConnectionId, mpsc::Sender<Dispatch>>,
+    connections: Arc<Mutex<FxHashMap<McpConnectionId, NativeConnection>>>,
 
     protocol: PhantomData<fn() -> Protocol>,
+}
+
+struct NativeConnection {
+    sender: mpsc::Sender<Dispatch>,
+    shutdown: oneshot::Sender<()>,
+    finished: Shared<oneshot::Receiver<()>>,
+}
+
+struct NativeConnectionGuard {
+    id: McpConnectionId,
+    connections: Weak<Mutex<FxHashMap<McpConnectionId, NativeConnection>>>,
+    finished: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for NativeConnectionGuard {
+    fn drop(&mut self) {
+        if let Some(connections) = self.connections.upgrade() {
+            connections.lock().unwrap().remove(&self.id);
+        }
+        if let Some(finished) = self.finished.take() {
+            let _ = finished.send(());
+        }
+    }
 }
 
 impl<Counterpart: Role, Protocol> McpActiveSession<Counterpart, Protocol>
@@ -222,7 +249,7 @@ where
         Self {
             server_id,
             mcp_connect,
-            connections: FxHashMap::default(),
+            connections: Arc::new(Mutex::new(FxHashMap::default())),
             protocol: PhantomData,
         }
     }
@@ -251,14 +278,17 @@ where
         let connection_id =
             McpConnectionId::new(format!("mcp-over-acp-connection:{}", uuid::Uuid::new_v4()));
         let (mcp_server_tx, mut mcp_server_rx) = mpsc::channel(128);
-        self.connections
-            .insert(connection_id.clone(), mcp_server_tx);
+        let (shutdown, shutdown_rx) = oneshot::channel();
+        let (finished_tx, finished) = oneshot::channel();
+        let finished = finished.shared();
 
         let (client_channel, server_channel) = Channel::duplex();
 
         let client_component = {
             let connection_id = connection_id.clone();
             let acp_connection = acp_connection.clone();
+            let relay_connection = acp_connection.clone();
+            let relay_finished = finished.clone();
 
             role::mcp::Client
                 .builder()
@@ -313,7 +343,28 @@ where
                 .with_spawned(move |mcp_connection| async move {
                     // These messages were sent by the ACP agent. Forward them to the MCP server.
                     while let Some(message) = mcp_server_rx.next().await {
-                        mcp_connection.send_proxied_message_to(role::mcp::Server, message)?;
+                        match message {
+                            Dispatch::Request(request, responder) => {
+                                let response = mcp_connection
+                                    .send_request_to(role::mcp::Server, request)
+                                    .block_task();
+                                let finished = relay_finished.clone();
+                                // Keep the response waiter on ACP, not on the
+                                // child actor being stopped. A pending request
+                                // receives an error when that child closes.
+                                relay_connection.spawn(async move {
+                                    let result = match select(Box::pin(response), finished).await {
+                                        Either::Left((result, _)) => result,
+                                        Either::Right(_) => Err(crate::Error::internal_error()
+                                            .data("native MCP connection closed")),
+                                    };
+                                    responder.respond_with_result(result)
+                                })?;
+                            }
+                            other => {
+                                mcp_connection.send_proxied_message_to(role::mcp::Server, other)?
+                            }
+                        }
                     }
                     Ok(())
                 })
@@ -327,19 +378,43 @@ where
             connection: acp_connection.clone(),
         });
 
-        let spawn_results = acp_connection
-            .spawn(async move { client_component.connect_to(client_channel).await })
-            .and_then(|()| {
-                acp_connection.spawn(async move { spawned_server.connect_to(server_channel).await })
-            });
+        let guard = NativeConnectionGuard {
+            id: connection_id.clone(),
+            connections: Arc::downgrade(&self.connections),
+            finished: Some(finished_tx),
+        };
+        // Both halves belong to one task. A child error must not propagate
+        // through the task actor and terminate the parent ACP connection.
+        let spawn_result = acp_connection.spawn(async move {
+            let client = Box::pin(client_component.connect_to(client_channel));
+            let server = Box::pin(spawned_server.connect_to(server_channel));
+            let running = select(client, server);
+            let result = match select(Box::pin(running), shutdown_rx).await {
+                Either::Left((Either::Left((result, _)), _))
+                | Either::Left((Either::Right((result, _)), _)) => Some(result),
+                Either::Right(_) => None,
+            };
+            if let Some(Err(error)) = result {
+                tracing::warn!(?error, "native MCP connection closed with error");
+            }
+            drop(guard);
+            Ok(())
+        });
 
-        match spawn_results {
+        match spawn_result {
             Ok(()) => {
+                self.connections.lock().unwrap().insert(
+                    connection_id.clone(),
+                    NativeConnection {
+                        sender: mcp_server_tx,
+                        shutdown,
+                        finished,
+                    },
+                );
                 responder.respond(Protocol::connect_response(connection_id))?;
                 Ok(Handled::Yes)
             }
             Err(error) => {
-                self.connections.remove(&connection_id);
                 responder.respond_with_error(error)?;
                 Ok(Handled::Yes)
             }
@@ -359,7 +434,13 @@ where
         crate::Error,
     > {
         let connection_id = Protocol::message_request_connection_id(&request);
-        let Some(mcp_server_tx) = self.connections.get_mut(&connection_id) else {
+        let sender = self
+            .connections
+            .lock()
+            .unwrap()
+            .get(&connection_id)
+            .map(|entry| entry.sender.clone());
+        let Some(mut mcp_server_tx) = sender else {
             return Ok(Handled::No {
                 message: (request, responder),
                 retry: false,
@@ -375,10 +456,14 @@ where
             result
                 .and_then(|response: Value| Protocol::MessageResponse::from_value(method, response))
         });
-        mcp_server_tx
+        if let Err(error) = mcp_server_tx
             .send(Dispatch::Request(untyped, responder))
             .await
-            .map_err(crate::Error::into_internal_error)?;
+        {
+            // Dropping the undelivered responder reports failure to the
+            // caller; a closed child must not terminate its parent ACP task.
+            tracing::debug!(?error, "native MCP relay closed during request");
+        }
 
         Ok(Handled::Yes)
     }
@@ -389,7 +474,13 @@ where
         notification: Protocol::MessageNotification,
     ) -> Result<Handled<Protocol::MessageNotification>, crate::Error> {
         let connection_id = Protocol::message_notification_connection_id(&notification);
-        let Some(mcp_server_tx) = self.connections.get_mut(&connection_id) else {
+        let sender = self
+            .connections
+            .lock()
+            .unwrap()
+            .get(&connection_id)
+            .map(|entry| entry.sender.clone());
+        let Some(mut mcp_server_tx) = sender else {
             return Ok(Handled::No {
                 message: notification,
                 retry: false,
@@ -401,16 +492,15 @@ where
             method: message.method,
             params: native_params_into_value(message.params),
         };
-        mcp_server_tx
-            .send(Dispatch::Notification(untyped))
-            .await
-            .map_err(crate::Error::into_internal_error)?;
+        if let Err(error) = mcp_server_tx.send(Dispatch::Notification(untyped)).await {
+            tracing::debug!(?error, "native MCP relay closed during notification");
+        }
 
         Ok(Handled::Yes)
     }
 
     /// Disconnect an active native MCP-over-ACP connection.
-    fn handle_mcp_disconnect_request(
+    async fn handle_mcp_disconnect_request(
         &mut self,
         request: Protocol::DisconnectRequest,
         responder: Responder<Protocol::DisconnectResponse>,
@@ -422,13 +512,20 @@ where
         crate::Error,
     > {
         let connection_id = Protocol::disconnect_connection_id(&request);
-        if self.connections.remove(&connection_id).is_none() {
+        let entry = self.connections.lock().unwrap().remove(&connection_id);
+        let Some(NativeConnection {
+            shutdown, finished, ..
+        }) = entry
+        else {
             return Ok(Handled::No {
                 message: (request, responder),
                 retry: false,
             });
-        }
+        };
 
+        // A successful disconnect means both child halves have been dropped.
+        let _ = shutdown.send(());
+        let _ = finished.await;
         responder.respond(Protocol::disconnect_response())?;
         Ok(Handled::Yes)
     }
@@ -474,7 +571,7 @@ where
             .if_request_from(
                 Agent,
                 async |request: Protocol::DisconnectRequest, responder| {
-                    self.handle_mcp_disconnect_request(request, responder)
+                    self.handle_mcp_disconnect_request(request, responder).await
                 },
             )
             .await

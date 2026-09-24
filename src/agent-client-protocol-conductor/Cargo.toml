@@ -42,6 +42,7 @@ agent-client-protocol-test.workspace = true
 yopo.workspace = true
 expect-test.workspace = true
 regex.workspace = true
+reqwest.workspace = true
 rmcp = { workspace = true, features = [
     "client",
     "server",
