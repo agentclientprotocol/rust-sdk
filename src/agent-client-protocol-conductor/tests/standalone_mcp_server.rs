@@ -7,7 +7,7 @@ use agent_client_protocol::{
     ByteStreams, ConnectTo, RunWithConnectionTo, mcp_server::McpServer, role::mcp, util::run_until,
 };
 use agent_client_protocol_rmcp::McpServerExt as _;
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo};
+use rmcp::{ClientHandler, ServiceExt, model::ClientConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -64,8 +64,8 @@ fn create_test_server() -> McpServer<mcp::Client, impl RunWithConnectionTo<mcp::
 struct MinimalClientHandler;
 
 impl ClientHandler for MinimalClientHandler {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default()
     }
 }
 

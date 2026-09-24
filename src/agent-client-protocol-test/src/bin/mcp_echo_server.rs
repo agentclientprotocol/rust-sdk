@@ -51,8 +51,8 @@ impl EchoServer {
 #[allow(unknown_lints, clippy::unused_async_trait_impl)]
 #[tool_handler]
 impl ServerHandler for EchoServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("mcp-echo-server", "1.0.0"))
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
             .with_instructions("A simple MCP server with an echo tool for testing")
