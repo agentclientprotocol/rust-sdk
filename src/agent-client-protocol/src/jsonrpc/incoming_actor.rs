@@ -361,6 +361,17 @@ enum IncomingProtocolMsg<Counterpart: Role> {
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
 }
 
+/// A bounded preview of a malformed wire line for logs: the line may be
+/// arbitrarily large, and its text can carry user content.
+fn log_preview(raw: &str) -> &str {
+    match raw.char_indices().nth(LOG_PREVIEW_CHARS) {
+        Some((idx, _)) => &raw[..idx],
+        None => raw,
+    }
+}
+
+const LOG_PREVIEW_CHARS: usize = 200;
+
 fn frame_entries(
     frame: TransportFrame,
 ) -> (
@@ -378,6 +389,15 @@ fn frame_entries(
         }
         TransportFrame::Malformed { raw, error } => {
             if raw_is_response_only_shape(&raw) {
+                // A malformed line that cannot be correlated to a request
+                // id is dropped — but dropping it silently hides exactly
+                // the replies a caller may still be waiting on.
+                tracing::warn!(
+                    %error,
+                    line = %log_preview(&raw),
+                    "dropping a response-shaped line that failed to deserialize; \
+                     a pending request it may have answered will not resolve"
+                );
                 return (Vec::new(), None);
             }
             return (
@@ -390,7 +410,18 @@ fn frame_entries(
             .filter_map(|entry| match entry {
                 TransportBatchEntry::Message(message) => Some(Ok(message)),
                 TransportBatchEntry::Malformed { raw, error } => {
-                    (!is_response_only_shape(&raw)).then_some(Err(error))
+                    if is_response_only_shape(&raw) {
+                        tracing::warn!(
+                            %error,
+                            line = %log_preview(&raw.to_string()),
+                            "dropping a response-shaped batch entry that failed to \
+                             deserialize; a pending request it may have answered \
+                             will not resolve"
+                        );
+                        None
+                    } else {
+                        Some(Err(error))
+                    }
                 }
             })
             .collect(),
