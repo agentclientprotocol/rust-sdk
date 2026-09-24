@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.1...agent-client-protocol-rmcp-v4.0.0) - 2026-09-24
+
+### Added
+
+- *(rmcp)* [**breaking**] upgrade integration to rmcp 3.4
+- *(acp)* make schemars optional ([#373](https://github.com/agentclientprotocol/rust-sdk/pull/373))
+
 ### Breaking changes
 
 - Upgrade the public `rmcp` dependency from 2.x to 3.4. This requires the next
