@@ -40,13 +40,21 @@
 //! ```
 
 use agent_client_protocol::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use agent_client_protocol::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
 use agent_client_protocol::role;
 use agent_client_protocol::{ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use futures::future::BoxFuture;
 use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
+#[cfg(feature = "unstable_mcp_over_acp")]
+use std::sync::Arc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod builder;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod native;
 
 pub use agent_client_protocol::mcp_server::{EnabledTools, McpTool};
 pub use agent_client_protocol::{tool_fn, tool_fn_mut};
@@ -76,6 +84,29 @@ pub trait McpServerExt<Counterpart: Role> {
             new_fn: F,
         }
 
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        struct SharedRmcp<F, S> {
+            new_fn: Arc<F>,
+            service: std::sync::OnceLock<Arc<S>>,
+        }
+
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        impl<Counterpart, F, S> McpService<Counterpart> for SharedRmcp<F, S>
+        where
+            Counterpart: Role,
+            F: Fn() -> S + Send + Sync + 'static,
+            S: rmcp::Service<rmcp::RoleServer>,
+        {
+            fn execute(
+                &self,
+                request: McpRequest,
+                context: McpRequestContext<Counterpart>,
+            ) -> BoxFuture<'static, Result<McpOutcome, agent_client_protocol::Error>> {
+                let service = self.service.get_or_init(|| Arc::new((self.new_fn)()));
+                native::execute(service.clone(), request, context)
+            }
+        }
+
         impl<Counterpart, F, S> McpServerConnect<Counterpart> for RmcpServer<F>
         where
             Counterpart: Role,
@@ -95,13 +126,34 @@ pub trait McpServerExt<Counterpart: Role> {
             }
         }
 
-        McpServer::new(
-            RmcpServer {
-                name: name.to_string(),
-                new_fn,
-            },
-            NullRun,
-        )
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        {
+            // Feature unification must not construct an unused ACP service
+            // when this server is only used through its standalone adapter.
+            let new_fn = Arc::new(new_fn);
+            let shared = SharedRmcp {
+                new_fn: new_fn.clone(),
+                service: std::sync::OnceLock::new(),
+            };
+            McpServer::new_service_with_standalone(
+                shared,
+                RmcpServer {
+                    name: name.to_string(),
+                    new_fn: move || new_fn(),
+                },
+                NullRun,
+            )
+        }
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        {
+            McpServer::new(
+                RmcpServer {
+                    name: name.to_string(),
+                    new_fn,
+                },
+                NullRun,
+            )
+        }
     }
 }
 
@@ -130,10 +182,7 @@ where
             let byte_streams =
                 ByteStreams::new(mcp_client_write.compat_write(), mcp_client_read.compat());
 
-            // Spawn task to connect byte_streams to the provided client
-            drop(ConnectTo::<role::mcp::Client>::connect_to(byte_streams, client).await);
-
-            Ok(())
+            ConnectTo::<role::mcp::Client>::connect_to(byte_streams, client).await
         };
 
         let bytes_to_rmcp = async {

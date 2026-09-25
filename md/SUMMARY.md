@@ -18,6 +18,7 @@
 
 - [Transport Architecture](./transport-architecture.md)
 - [HTTP / WebSocket Transport](./http-transport.md)
+- [Native MCP-over-ACP](./mcp-over-acp.md)
 
 # Conductor (agent-client-protocol-conductor)
 
@@ -31,6 +32,7 @@
 
 # Reference
 
+- [Migrating the Native MCP Transport](./migration-stateless-mcp.md)
 - [Migrating the rmcp Integration to v4](./migration-rmcp-v4.md)
 - [Migrating to v2.0](./migration_v2.0.md)
 - [Migrating to v0.11](./migration_v0.11.x.md)

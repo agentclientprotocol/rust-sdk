@@ -1,7 +1,11 @@
 use crate::{ConnectionTo, role::Role};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use futures::channel::oneshot;
+#[cfg(feature = "unstable_mcp_over_acp")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
-use crate::schema::v1::{McpConnectionId, McpServerAcpId};
+use crate::schema::v1::{McpRequestId, McpServerAcpId};
 
 /// Describes how an MCP server connection was established.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,8 +20,8 @@ pub enum McpConnectionContext {
         /// The identifier advertised in the session's `McpServer::Acp` declaration.
         server_id: McpServerAcpId,
 
-        /// The identifier for this active `mcp/connect` connection.
-        connection_id: McpConnectionId,
+        /// The logical identifier of this independent MCP request.
+        request_id: McpRequestId,
     },
 }
 
@@ -40,15 +44,15 @@ impl McpConnectionContext {
         }
     }
 
-    /// The identifier for the active `mcp/connect` connection.
+    /// The logical identifier of the active MCP request.
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[must_use]
-    pub fn connection_id(&self) -> Option<&McpConnectionId> {
+    pub fn request_id(&self) -> Option<&McpRequestId> {
         match self {
             Self::Standalone => None,
-            Self::Acp { connection_id, .. } => Some(connection_id),
+            Self::Acp { request_id, .. } => Some(request_id),
         }
     }
 }
@@ -58,9 +62,28 @@ impl McpConnectionContext {
 pub struct McpConnectionTo<Counterpart: Role> {
     pub(super) context: McpConnectionContext,
     pub(super) connection: ConnectionTo<Counterpart>,
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(super) cleanup: Option<Arc<Mutex<Vec<oneshot::Receiver<()>>>>>,
 }
 
 impl<Counterpart: Role> McpConnectionTo<Counterpart> {
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) fn register_cleanup(&self, done: oneshot::Receiver<()>) {
+        if let Some(cleanup) = &self.cleanup {
+            cleanup.lock().expect("MCP cleanup poisoned").push(done);
+        }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) async fn wait_cleanup(&self) {
+        if let Some(cleanup) = &self.cleanup {
+            let pending = std::mem::take(&mut *cleanup.lock().expect("MCP cleanup poisoned"));
+            for done in pending {
+                let _ = done.await;
+            }
+        }
+    }
+
     /// Describes whether this is a standalone or ACP-attached MCP connection.
     #[must_use]
     pub fn context(&self) -> &McpConnectionContext {
@@ -76,13 +99,13 @@ impl<Counterpart: Role> McpConnectionTo<Counterpart> {
         self.context.server_id()
     }
 
-    /// The identifier for the active `mcp/connect` connection.
+    /// The logical identifier of the active MCP request.
     ///
     /// Returns `None` for a standalone MCP connection.
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[must_use]
-    pub fn connection_id(&self) -> Option<&McpConnectionId> {
-        self.context.connection_id()
+    pub fn request_id(&self) -> Option<&McpRequestId> {
+        self.context.request_id()
     }
 
     /// Borrow the host protocol connection.
@@ -108,24 +131,24 @@ mod tests {
         #[cfg(feature = "unstable_mcp_over_acp")]
         {
             assert_eq!(context.server_id(), None);
-            assert_eq!(context.connection_id(), None);
+            assert_eq!(context.request_id(), None);
         }
     }
 
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[test]
-    fn acp_context_exposes_server_and_connection_ids() {
-        use crate::schema::v1::{McpConnectionId, McpServerAcpId};
+    fn acp_context_exposes_server_and_request_ids() {
+        use crate::schema::v1::{McpRequestId, McpServerAcpId};
 
         let server_id = McpServerAcpId::new("server-id");
-        let connection_id = McpConnectionId::new("connection-id");
+        let request_id = McpRequestId::new("request-id");
         let context = McpConnectionContext::Acp {
             server_id: server_id.clone(),
-            connection_id: connection_id.clone(),
+            request_id: request_id.clone(),
         };
 
         assert!(!context.is_standalone());
         assert_eq!(context.server_id(), Some(&server_id));
-        assert_eq!(context.connection_id(), Some(&connection_id));
+        assert_eq!(context.request_id(), Some(&request_id));
     }
 }

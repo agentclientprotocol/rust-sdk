@@ -6,15 +6,15 @@ use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, ConnectMcpRequest, ConnectMcpResponse, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    McpServerAcp, NewSessionRequest, NewSessionResponse, ResumeSessionRequest,
+    AgentCapabilities, InitializeRequest, InitializeResponse, LoadSessionRequest,
+    LoadSessionResponse, McpCapabilities, McpServer, McpServerAcp, MessageMcpRequest,
+    MessageMcpResponse, NewSessionRequest, NewSessionResponse, ResumeSessionRequest,
     ResumeSessionResponse, SessionCapabilities, SessionResumeCapabilities,
 };
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
-use tokio::io::duplex;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const SERVER_NAME: &str = "shared-server";
@@ -56,7 +56,7 @@ struct RecordingAgent {
 }
 
 struct NativeMcpProvider {
-    connect_count: Arc<AtomicUsize>,
+    request_count: Arc<AtomicUsize>,
 }
 
 impl ConnectTo<Conductor> for NativeMcpProvider {
@@ -69,10 +69,12 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
             .name("native-mcp-provider")
             .on_receive_request_from(
                 Agent,
-                async move |request: ConnectMcpRequest, responder, _cx| {
+                async move |request: MessageMcpRequest, responder, _cx| {
                     assert_eq!(request.server_id.to_string(), SERVER_ID);
-                    self.connect_count.fetch_add(1, Ordering::SeqCst);
-                    responder.respond(ConnectMcpResponse::new("test-connection-id"))
+                    self.request_count.fetch_add(1, Ordering::SeqCst);
+                    responder.respond(serde_json::from_value::<MessageMcpResponse>(
+                        serde_json::json!({"result":{"tools": []}}),
+                    )?)
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -144,6 +146,28 @@ fn native_server() -> McpServer {
     McpServer::Acp(McpServerAcp::new(SERVER_NAME, SERVER_ID).meta(meta))
 }
 
+async fn http_post(url: &str, bearer: &str, id: i64) -> serde_json::Value {
+    let (address, route) = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    let body = serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/list",
+        "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities":{}}}})
+    .to_string();
+    let request = format!(
+        "POST /{route} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\nContent-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+}
+
 async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
     response: agent_client_protocol::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
@@ -158,7 +182,7 @@ async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
 
 async fn run_with_polyfill(
     agent: RecordingAgent,
-    provider_connect_count: Arc<AtomicUsize>,
+    provider_request_count: Arc<AtomicUsize>,
     editor_task: impl AsyncFnOnce(
         agent_client_protocol::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
@@ -184,7 +208,7 @@ async fn run_with_polyfill(
                 "polyfill-test-conductor".to_string(),
                 ProxiesAndAgent::new(agent)
                     .proxy(NativeMcpProvider {
-                        connect_count: provider_connect_count,
+                        request_count: provider_request_count,
                     })
                     .proxy(McpOverAcpPolyfill::http()),
             )
@@ -206,9 +230,9 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         capabilities: agent_capabilities(McpCapabilities::new().http(true)),
         observed: observed.clone(),
     };
-    let connect_count = Arc::new(AtomicUsize::new(0));
+    let request_count = Arc::new(AtomicUsize::new(0));
 
-    run_with_polyfill(agent, connect_count.clone(), async |connection| {
+    run_with_polyfill(agent, request_count.clone(), async |connection| {
         let initialize =
             recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
         assert!(initialize.agent_capabilities.mcp_capabilities.http);
@@ -235,6 +259,20 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         ))
         .await?;
 
+        let (url, bearer) = {
+            let setup = observed.setup.lock().unwrap();
+            let McpServer::Http(server) = &setup[0].mcp_servers[0] else {
+                panic!("expected HTTP declaration")
+            };
+            (server.url.clone(), server.headers[0].value.clone())
+        };
+        let (first, second) =
+            tokio::join!(http_post(&url, &bearer, 1), http_post(&url, &bearer, 1),);
+        assert_eq!(
+            first,
+            serde_json::json!({"jsonrpc":"2.0","id":1,"result":{"tools":[]}})
+        );
+        assert_eq!(second, first);
         Ok(())
     })
     .await?;
@@ -244,9 +282,9 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         .lock()
         .expect("setup request mutex should not be poisoned");
     assert_eq!(
-        connect_count.load(Ordering::SeqCst),
-        1,
-        "one reused listener should create one native MCP connection"
+        request_count.load(Ordering::SeqCst),
+        2,
+        "each HTTP POST creates exactly one native MCP request, without a connect handshake"
     );
     assert_eq!(setup.len(), 3);
     assert_eq!(setup[0].method, SetupMethod::New);
@@ -267,7 +305,9 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         };
         assert_eq!(server.name, SERVER_NAME);
         assert_eq!(server.meta.as_ref(), Some(&expected_meta));
-        assert!(server.headers.is_empty());
+        assert_eq!(server.headers.len(), 1);
+        assert_eq!(server.headers[0].name, "Authorization");
+        assert!(server.headers[0].value.starts_with("Bearer "));
         assert!(server.url.starts_with("http://127.0.0.1:"));
         if let Some(endpoint) = &endpoint {
             assert_eq!(
@@ -292,9 +332,9 @@ async fn native_downstream_keeps_capability_and_declaration_unchanged()
     };
     let declaration = native_server();
     let expected = declaration.clone();
-    let connect_count = Arc::new(AtomicUsize::new(0));
+    let request_count = Arc::new(AtomicUsize::new(0));
 
-    run_with_polyfill(agent, connect_count.clone(), async move |connection| {
+    run_with_polyfill(agent, request_count.clone(), async move |connection| {
         let initialize =
             recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
         assert!(!initialize.agent_capabilities.mcp_capabilities.http);
@@ -315,7 +355,7 @@ async fn native_downstream_keeps_capability_and_declaration_unchanged()
     assert_eq!(setup.len(), 1);
     assert_eq!(setup[0].mcp_servers, vec![expected]);
     assert_eq!(
-        connect_count.load(Ordering::SeqCst),
+        request_count.load(Ordering::SeqCst),
         0,
         "a native-capable downstream should not be routed through the HTTP adapter"
     );

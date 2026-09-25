@@ -1344,7 +1344,7 @@ mod tests {
 
     #[cfg(unix)]
     async fn reported_descendant_pid(
-        connection: &mut futures::future::BoxFuture<'static, Result<(), crate::Error>>,
+        connection: &mut (impl Future<Output = Result<(), crate::Error>> + Unpin),
         pid_rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
     ) -> rustix::process::Pid {
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1417,7 +1417,7 @@ mod tests {
             Ok(serde_json::json!({ "payload": "x".repeat(4 * 1024 * 1024) })),
         );
         outgoing
-            .unbounded_send(crate::TransportFrame::Single(response))
+            .try_send(crate::TransportFrame::Single(response))
             .expect("response should be accepted before the connection starts");
         outgoing.close_channel();
 

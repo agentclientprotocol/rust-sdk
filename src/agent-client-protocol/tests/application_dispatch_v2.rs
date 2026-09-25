@@ -3,8 +3,8 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use agent_client_protocol::{
-    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportBatch, TransportFrame,
-    V2ConnectionTo,
+    Agent, BudgetedFrame, Channel, Client, Error, RawJsonRpcMessage, TransportBatch,
+    TransportFrame, V2ConnectionTo,
     schema::{ProtocolVersion, v2},
 };
 use futures::{StreamExt as _, channel::mpsc};
@@ -119,13 +119,13 @@ async fn assert_application_order(batched: bool) {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(initialize))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected initialize");
         };
         assert_eq!(initialize.method.as_ref(), "initialize");
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                 initialize.id,
                 Ok(serde_json::to_value(
                     v2::InitializeResponse::new(
@@ -138,9 +138,11 @@ async fn assert_application_order(batched: bool) {
                 )
                 .unwrap()),
             )))
+            .await
             .unwrap();
 
-        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(resume))) = peer.rx.next().await
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(resume))) =
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected resume");
         };
@@ -168,14 +170,16 @@ async fn assert_application_order(batched: bool) {
         ];
         if batched {
             peer.tx
-                .unbounded_send(TransportFrame::Batch(
+                .send_frame(TransportFrame::Batch(
                     TransportBatch::from_messages(messages).unwrap(),
                 ))
+                .await
                 .unwrap();
         } else {
             for message in messages {
                 peer.tx
-                    .unbounded_send(TransportFrame::Single(message))
+                    .send_frame(TransportFrame::Single(message))
+                    .await
                     .unwrap();
             }
         }

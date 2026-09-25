@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Changed (unstable MCP-over-ACP)
+
+- Target MCP 2026-07-28 with server-addressed `mcp/message` operations and
+  logical `McpRequestId`s. Remove connect/disconnect and reverse MCP requests;
+  providers send request-scoped notifications and use ACP cancellation.
+- Create an independent backend per operation and expose `request_id()` in
+  attached MCP contexts instead of `connection_id()`. Preserve standalone MCP
+  serving independently of the unstable ACP transport feature.
+- Validate modern request metadata, restrict discovery to the binding's MCP
+  revision, and add native admission/payload limits. End-to-end native queue
+  backpressure remains required before stabilization.
+
 ### Added
 
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to

@@ -865,14 +865,15 @@ async fn protocol_actor_ignores_response_shaped_malformed_public_frame_entries()
             ])
             .expect("test batch is non-empty");
             peer.tx
-                .unbounded_send(TransportFrame::Batch(batch))
+                .send_frame(TransportFrame::Batch(batch))
+                .await
                 .expect("server should accept the test batch");
 
             let frame = tokio::time::timeout(TIMEOUT, peer.rx.next())
                 .await
                 .expect("timed out waiting for the batch response")
                 .expect("server channel closed before responding");
-            let TransportFrame::Batch(batch) = frame else {
+            let TransportFrame::Batch(batch) = frame.into_frame() else {
                 panic!("request sibling should receive one grouped batch response");
             };
             let response = serde_json::to_value(batch).expect("batch response should serialize");

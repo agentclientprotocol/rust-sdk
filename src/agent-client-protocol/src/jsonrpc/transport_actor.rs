@@ -4,8 +4,12 @@ use std::pin::pin;
 use crate::jsonrpc::{RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame};
 use crate::schema::v1::Response;
 use futures::StreamExt as _;
-use futures::channel::mpsc;
 use serde::Deserialize as _;
+
+/// Maximum bytes in one wire value (excluding its newline).
+pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Maximum number of JSON-RPC values carried in one batch.
+pub const MAX_BATCH_ENTRIES: usize = 64;
 
 enum ParsedIncomingLine {
     Single(RawJsonRpcMessage),
@@ -14,13 +18,21 @@ enum ParsedIncomingLine {
 }
 
 fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
+    if line.len() > MAX_FRAME_BYTES {
+        return ParsedIncomingLine::Malformed {
+            raw: String::new(),
+            error: crate::Error::invalid_request().data("JSON-RPC frame exceeds maximum size"),
+        };
+    }
     let value = match serde_json::from_str::<serde_json::Value>(line) {
         Ok(value) => value,
         Err(error) => {
             tracing::debug!(?error, "Failed to parse incoming JSON-RPC JSON");
             return ParsedIncomingLine::Malformed {
                 raw: line.to_owned(),
-                error: crate::Error::parse_error().data(serde_json::json!({ "line": line })),
+                error: crate::Error::parse_error().data(serde_json::json!({
+                    "line": line.chars().take(256).collect::<String>()
+                })),
             };
         }
     };
@@ -30,6 +42,12 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
             raw: line.to_owned(),
             error: crate::Error::invalid_request(),
         },
+        serde_json::Value::Array(entries) if entries.len() > MAX_BATCH_ENTRIES => {
+            ParsedIncomingLine::Malformed {
+                raw: String::new(),
+                error: crate::Error::invalid_request().data("JSON-RPC batch exceeds maximum width"),
+            }
+        }
         serde_json::Value::Array(entries) => {
             let entries = entries
                 .into_iter()
@@ -58,6 +76,62 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
             }
         },
     }
+}
+
+/// Read newline-delimited UTF-8 without allocating an unterminated line larger
+/// than the frame budget. An oversized line terminates the transport explicitly.
+pub fn bounded_lines<R: futures::AsyncRead + Unpin>(
+    input: R,
+) -> impl futures::Stream<Item = std::io::Result<String>> {
+    use futures::io::BufReader;
+    use futures::{AsyncBufReadExt, stream};
+    stream::unfold(Some(BufReader::new(input)), |reader| async move {
+        let mut reader = reader?;
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = match reader.fill_buf().await {
+                Ok(chunk) => chunk,
+                Err(error) => return Some((Err(error), None)),
+            };
+            if chunk.is_empty() {
+                return if bytes.is_empty() {
+                    None
+                } else {
+                    Some((
+                        String::from_utf8(bytes)
+                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                        None,
+                    ))
+                };
+            }
+            let width = chunk
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(chunk.len(), |i| i + 1);
+            if bytes.len() + width > MAX_FRAME_BYTES + 1 {
+                return Some((
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "JSON-RPC line exceeds maximum frame size",
+                    )),
+                    None,
+                ));
+            }
+            bytes.extend_from_slice(&chunk[..width]);
+            reader.consume_unpin(width);
+            if bytes.last() == Some(&b'\n') {
+                bytes.pop();
+                if bytes.last() == Some(&b'\r') {
+                    bytes.pop();
+                }
+                return Some((
+                    String::from_utf8(bytes)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                    Some(reader),
+                ));
+            }
+        }
+    })
 }
 
 impl TransportFrame {
@@ -110,19 +184,21 @@ impl TransportFrame {
 ///
 /// This is the transport layer - it has no knowledge of protocol semantics (IDs, correlation, etc.).
 async fn transport_outgoing_frames_actor(
-    transport_rx: impl futures::Stream<Item = TransportFrame>,
+    transport_rx: impl futures::Stream<Item = super::BudgetedFrame>,
     outgoing_lines: impl futures::Sink<String, Error = std::io::Error>,
 ) -> Result<(), crate::Error> {
     use futures::SinkExt;
     let mut transport_rx = pin!(transport_rx);
     let mut outgoing_lines = pin!(outgoing_lines);
 
-    while let Some(frame) = transport_rx.next().await {
+    while let Some(budgeted) = transport_rx.next().await {
+        let (frame, _permit) = budgeted.into_parts();
         let json_rpc_message = match frame {
             TransportFrame::Single(message) => message,
             TransportFrame::Malformed { raw, .. } => {
                 let raw = malformed_line_value(raw)?;
                 tracing::trace!(message = ?raw, "Relaying invalid JSON-RPC value");
+                ensure_frame_size(&raw)?;
                 outgoing_lines
                     .send(raw)
                     .await
@@ -133,6 +209,7 @@ async fn transport_outgoing_frames_actor(
                 let line =
                     serde_json::to_string(&batch).map_err(crate::Error::into_internal_error)?;
                 tracing::trace!(message = %line, "Sending JSON-RPC batch");
+                ensure_frame_size(&line)?;
                 outgoing_lines
                     .send(line)
                     .await
@@ -143,6 +220,7 @@ async fn transport_outgoing_frames_actor(
         match serde_json::to_string(&json_rpc_message) {
             Ok(line) => {
                 tracing::trace!(message = %line, "Sending JSON-RPC message");
+                ensure_frame_size(&line)?;
                 outgoing_lines
                     .send(line)
                     .await
@@ -177,6 +255,7 @@ async fn transport_outgoing_frames_actor(
                             Err(crate::Error::internal_error()),
                         ))
                         .unwrap();
+                        ensure_frame_size(&error_line)?;
                         outgoing_lines
                             .send(error_line)
                             .await
@@ -187,6 +266,14 @@ async fn transport_outgoing_frames_actor(
         }
     }
     Ok(())
+}
+
+fn ensure_frame_size(line: &str) -> Result<(), crate::Error> {
+    if line.len() > MAX_FRAME_BYTES {
+        Err(crate::Error::invalid_request().data("outgoing JSON-RPC frame exceeds maximum size"))
+    } else {
+        Ok(())
+    }
 }
 
 fn malformed_line_value(raw: String) -> Result<String, crate::Error> {
@@ -202,7 +289,7 @@ fn malformed_line_value(raw: String) -> Result<String, crate::Error> {
 }
 
 pub(super) async fn transport_outgoing_lines_actor(
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
+    transport_rx: super::FrameReceiver,
     outgoing_lines: impl futures::Sink<String, Error = std::io::Error>,
 ) -> Result<(), crate::Error> {
     transport_outgoing_frames_actor(transport_rx, outgoing_lines).await
@@ -222,7 +309,7 @@ pub(super) async fn transport_outgoing_lines_actor(
 /// This is the transport layer - it has no knowledge of protocol semantics.
 pub(super) async fn transport_incoming_lines_actor(
     incoming_lines: impl futures::Stream<Item = std::io::Result<String>>,
-    transport_tx: mpsc::UnboundedSender<TransportFrame>,
+    transport_tx: super::FrameSender,
 ) -> Result<(), crate::Error> {
     let mut incoming_lines = pin!(incoming_lines);
     while let Some(line_result) = incoming_lines.next().await {
@@ -232,17 +319,20 @@ pub(super) async fn transport_incoming_lines_actor(
         match parse_incoming_line(&line) {
             ParsedIncomingLine::Single(message) => {
                 transport_tx
-                    .unbounded_send(TransportFrame::Single(message))
+                    .send_frame(TransportFrame::Single(message))
+                    .await
                     .map_err(crate::Error::into_internal_error)?;
             }
             ParsedIncomingLine::Malformed { raw, error } => {
                 transport_tx
-                    .unbounded_send(TransportFrame::Malformed { raw, error })
+                    .send_frame(TransportFrame::Malformed { raw, error })
+                    .await
                     .map_err(crate::Error::into_internal_error)?;
             }
             ParsedIncomingLine::Batch(entries) => {
                 transport_tx
-                    .unbounded_send(TransportFrame::Batch(entries))
+                    .send_frame(TransportFrame::Batch(entries))
+                    .await
                     .map_err(crate::Error::into_internal_error)?;
             }
         }
@@ -256,6 +346,28 @@ mod tests {
 
     use super::*;
     use crate::ErrorCode;
+
+    #[test]
+    fn rejects_batches_over_width_limit() {
+        let batch = format!("[{}]", vec!["null"; MAX_BATCH_ENTRIES + 1].join(","));
+        let ParsedIncomingLine::Malformed { error, .. } = parse_incoming_line(&batch) else {
+            panic!("oversized batch must be rejected");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+    }
+
+    #[tokio::test]
+    async fn oversized_unterminated_line_fails_before_eof() {
+        let input = futures::io::Cursor::new(vec![b'x'; MAX_FRAME_BYTES + 2]);
+        let mut lines = Box::pin(bounded_lines(input));
+        let error = lines
+            .next()
+            .await
+            .expect("explicit framing failure")
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(lines.next().await.is_none());
+    }
 
     #[test]
     fn parses_batch_entries_independently() {
@@ -446,15 +558,19 @@ mod tests {
             Ok::<_, std::io::Error>(captured)
         });
 
-        transport_outgoing_frames_actor(
-            futures::stream::iter([TransportFrame::Malformed {
+        let (source, destination) = crate::Channel::duplex();
+        source
+            .tx
+            .send_frame(TransportFrame::Malformed {
                 raw: raw.clone(),
                 error: crate::Error::parse_error(),
-            }]),
-            outgoing,
-        )
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap();
+        drop(source);
+        transport_outgoing_frames_actor(destination.rx, outgoing)
+            .await
+            .unwrap();
 
         let lines = captured.lock().unwrap();
         assert_eq!(lines.len(), 1);

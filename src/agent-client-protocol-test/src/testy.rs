@@ -1464,14 +1464,25 @@ impl Testy {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(rmcp::service::RunningService<rmcp::RoleClient, ()>) -> Fut,
+        F: FnOnce(
+            rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientConfig>,
+        ) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
         use rmcp::{
-            ServiceExt,
+            ClientLifecycleMode, ClientServiceExt, ServiceExt,
+            model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion},
             transport::{ConfigureCommandExt, TokioChildProcess},
         };
         use tokio::process::Command;
+
+        let client_config = || {
+            ClientConfig::new(
+                ClientCapabilities::default(),
+                Implementation::new("testy", env!("CARGO_PKG_VERSION")),
+            )
+            .with_protocol_version(ProtocolVersion::V_2026_07_28)
+        };
 
         let mcp_servers = self
             .get_mcp_servers(session_id)
@@ -1490,7 +1501,9 @@ impl Testy {
         match mcp_server {
             McpServer::Stdio(stdio) => {
                 self.run_until_session_cancelled(session_id, async move {
-                    let mcp_client = ()
+                    // Standalone stdio servers may still require initialize;
+                    // native-over-ACP HTTP below uses discover without fallback.
+                    let mcp_client = ClientConfig::default()
                         .serve(TokioChildProcess::new(
                             Command::new(&stdio.command).configure(|cmd| {
                                 cmd.args(&stdio.args);
@@ -1516,9 +1529,14 @@ impl Testy {
                         .custom_headers(http_headers(&http.headers)?);
 
                 self.run_until_session_cancelled(session_id, async move {
-                    let mcp_client =
-                        ().serve(StreamableHttpClientTransport::from_config(transport_config))
-                            .await?;
+                    let mcp_client = client_config()
+                        .serve_with_lifecycle(
+                            StreamableHttpClientTransport::from_config(transport_config),
+                            ClientLifecycleMode::Discover {
+                                preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                            },
+                        )
+                        .await?;
 
                     operation(mcp_client).await
                 })

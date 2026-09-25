@@ -409,15 +409,16 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
 
         channel
             .tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "initialize".into(),
                 initialize_params_with_extensions(ProtocolVersion::V2)?,
                 v1::RequestId::Number(1),
             )?))
+            .await
             .map_err(Error::into_internal_error)?;
 
         while let Some(message) = channel.rx.next().await {
-            let TransportFrame::Single(message) = message else {
+            let TransportFrame::Single(message) = message.into_frame() else {
                 continue;
             };
             let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
@@ -488,15 +489,16 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
 
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             Value::Object(params),
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(response) = message else {
@@ -967,21 +969,13 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
 
     #[cfg(feature = "unstable_mcp_over_acp")]
     {
-        fn message_response() -> Result<v2::MessageMcpResponse, Error> {
-            serde_json::from_value(serde_json::json!({ "tools": [] }))
-                .map_err(Error::into_internal_error)
+        fn message_response() -> v2::MessageMcpResponse {
+            v2::MessageMcpResponse::success(serde_json::json!({ "tools": [] }))
         }
 
-        assert_client_request!(
-            MessageMcpRequest,
-            MessageMcpResponse,
-            "mcp/message",
-            v2::MessageMcpRequest::new("connection-1", "tools/list"),
-            message_response()?
-        );
         assert_v2_client_notification_mapping(
             "mcp/message",
-            v2::MessageMcpNotification::new("connection-1", "notifications/tools/list"),
+            v2::MessageMcpNotification::new("server-1", "request-1", "notifications/tools/list"),
             |notification| {
                 matches!(
                     notification,
@@ -991,36 +985,12 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
         )?;
 
         assert_agent_request!(
-            ConnectMcpRequest,
-            ConnectMcpResponse,
-            "mcp/connect",
-            v2::ConnectMcpRequest::new("server-1"),
-            v2::ConnectMcpResponse::new("connection-1")
-        );
-        assert_agent_request!(
             MessageMcpRequest,
             MessageMcpResponse,
             "mcp/message",
-            v2::MessageMcpRequest::new("connection-1", "tools/list"),
-            message_response()?
+            v2::MessageMcpRequest::new("server-1", "request-1", "tools/list"),
+            message_response()
         );
-        assert_agent_request!(
-            DisconnectMcpRequest,
-            DisconnectMcpResponse,
-            "mcp/disconnect",
-            v2::DisconnectMcpRequest::new("connection-1"),
-            v2::DisconnectMcpResponse::new()
-        );
-        assert_v2_agent_notification_mapping(
-            "mcp/message",
-            v2::MessageMcpNotification::new("connection-1", "notifications/tools/list"),
-            |notification| {
-                matches!(
-                    notification,
-                    v2::AgentNotification::MessageMcpNotification(_)
-                )
-            },
-        )?;
     }
 
     let cancel_params = json_value(v2::CancelRequestNotification::new(String::from(
@@ -1056,70 +1026,32 @@ fn mcp_over_acp_v1_variants_are_jsonrpc_mapped() -> Result<(), Error> {
     }
 
     assert_message_mapping!(
-        v1::ClientRequest,
-        "mcp/message",
-        json_value(v1::MessageMcpRequest::new("conn-1", "tools/list"))?,
-        v1::ClientRequest::MessageMcpRequest(_)
-    );
-    assert_response_mapping!(
-        v1::AgentResponse,
-        "mcp/message",
-        serde_json::json!({ "tools": [] }),
-        v1::AgentResponse::MessageMcpResponse(_)
-    );
-    assert_message_mapping!(
         v1::ClientNotification,
         "mcp/message",
         json_value(v1::MessageMcpNotification::new(
-            "conn-1",
+            "server-1",
+            "request-1",
             "notifications/tools/list"
         ))?,
         v1::ClientNotification::MessageMcpNotification(_)
     );
     assert_message_mapping!(
         v1::AgentRequest,
-        "mcp/connect",
-        json_value(v1::ConnectMcpRequest::new("server-1"))?,
-        v1::AgentRequest::ConnectMcpRequest(_)
-    );
-    assert_message_mapping!(
-        v1::AgentRequest,
         "mcp/message",
-        json_value(v1::MessageMcpRequest::new("conn-1", "tools/list"))?,
+        json_value(v1::MessageMcpRequest::new(
+            "server-1",
+            "request-1",
+            "tools/list"
+        ))?,
         v1::AgentRequest::MessageMcpRequest(_)
     );
-    assert_message_mapping!(
-        v1::AgentRequest,
-        "mcp/disconnect",
-        json_value(v1::DisconnectMcpRequest::new("conn-1"))?,
-        v1::AgentRequest::DisconnectMcpRequest(_)
-    );
-    assert_response_mapping!(
-        v1::ClientResponse,
-        "mcp/connect",
-        json_value(v1::ConnectMcpResponse::new("conn-1"))?,
-        v1::ClientResponse::ConnectMcpResponse(_)
-    );
     assert_response_mapping!(
         v1::ClientResponse,
         "mcp/message",
-        serde_json::json!({ "tools": [] }),
-        v1::ClientResponse::MessageMcpResponse(_)
-    );
-    assert_response_mapping!(
-        v1::ClientResponse,
-        "mcp/disconnect",
-        serde_json::json!({}),
-        v1::ClientResponse::DisconnectMcpResponse(_)
-    );
-    assert_message_mapping!(
-        v1::AgentNotification,
-        "mcp/message",
-        json_value(v1::MessageMcpNotification::new(
-            "conn-1",
-            "notifications/tools/list"
+        json_value(v1::MessageMcpResponse::success(
+            serde_json::json!({ "tools": [] })
         ))?,
-        v1::AgentNotification::MessageMcpNotification(_)
+        v1::ClientResponse::MessageMcpResponse(_)
     );
 
     Ok(())
@@ -2024,15 +1956,16 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
 
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             json_value(v1_initialize_request(ProtocolVersion::V1))?,
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(v1::Response::Error { error, .. }) = message else {
@@ -2770,15 +2703,16 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         );
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             initialize,
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {

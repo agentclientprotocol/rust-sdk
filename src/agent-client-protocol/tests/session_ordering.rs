@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use agent_client_protocol::{
-    ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
-    SessionMessage, TransportBatch, TransportFrame,
+    ActiveSession, Agent, BudgetedFrame, Channel, Client, Conductor, ConnectionTo,
+    RawJsonRpcMessage, Responder, SessionMessage, TransportBatch, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
@@ -34,16 +34,17 @@ async fn initialize_raw_v2_proxy(
         v2::Implementation::new(client_name, env!("CARGO_PKG_VERSION")),
     ));
     peer.tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "_proxy/initialize".to_owned(),
             serde_json::to_value(initialize).expect("initialize request should serialize"),
             initialize_id.clone(),
         )?))
+        .await
         .expect("proxy should accept initialization");
 
     let Some(TransportFrame::Single(RawJsonRpcMessage::Response(
         agent_client_protocol::schema::v1::Response::Result { id, result },
-    ))) = peer.rx.next().await
+    ))) = peer.rx.next().await.map(BudgetedFrame::into_frame)
     else {
         panic!("expected the proxy initialize response");
     };
@@ -306,7 +307,7 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected a session/new request");
         };
@@ -333,7 +334,8 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
         let batch = TransportBatch::from_messages([response, notification])
             .expect("test batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("client should accept the response batch");
 
         while peer.rx.next().await.is_some() {}
@@ -407,16 +409,17 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/new".to_owned(),
                 serde_json::to_value(v2::NewSessionRequest::new("/same-batch-v2-session"))
                     .expect("session request should serialize"),
                 upstream_id.clone(),
             )?))
+            .await
             .expect("proxy should accept session/new");
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(forwarded))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected a forwarded session/new request");
         };
@@ -448,13 +451,16 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
         let batch = TransportBatch::from_messages([response, notification])
             .expect("test response batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("proxy should accept the response batch");
 
         let mut saw_response = false;
         let mut saw_update = false;
         for _ in 0..2 {
-            let Some(TransportFrame::Single(message)) = peer.rx.next().await else {
+            let Some(TransportFrame::Single(message)) =
+                peer.rx.next().await.map(BudgetedFrame::into_frame)
+            else {
                 panic!("expected a forwarded session response and update");
             };
             match message {
@@ -558,7 +564,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/fork".to_owned(),
                 serde_json::to_value(v2::ForkSessionRequest::new(
                     source_session_id,
@@ -567,10 +573,11 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
                 .expect("fork request should serialize"),
                 upstream_id.clone(),
             )?))
+            .await
             .expect("proxy should accept session/fork");
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(forwarded))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected a forwarded session/fork request");
         };
@@ -603,13 +610,16 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
         let batch = TransportBatch::from_messages([response, notification])
             .expect("test response batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("proxy should accept the response batch");
 
         let mut saw_response = false;
         let mut saw_update = false;
         for _ in 0..2 {
-            let Some(TransportFrame::Single(message)) = peer.rx.next().await else {
+            let Some(TransportFrame::Single(message)) =
+                peer.rx.next().await.map(BudgetedFrame::into_frame)
+            else {
                 panic!("expected a forwarded fork response and update");
             };
             match message {
@@ -714,7 +724,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/resume".to_owned(),
                 serde_json::to_value(v2::ResumeSessionRequest::new(
                     session_id.clone(),
@@ -723,10 +733,11 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
                 .expect("resume request should serialize"),
                 upstream_id.clone(),
             )?))
+            .await
             .expect("proxy should accept session/resume");
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(forwarded))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected a forwarded session/resume request");
         };
@@ -755,11 +766,12 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
         let batch = TransportBatch::from_messages([notification, response])
             .expect("test replay batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("proxy should accept the replay batch");
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(notification))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected replay to be forwarded before the resume response");
         };
@@ -775,7 +787,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Response(
             agent_client_protocol::schema::v1::Response::Result { id, result },
-        ))) = peer.rx.next().await
+        ))) = peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected the resume response after replay");
         };

@@ -4,14 +4,15 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage, TransportBatchEntry,
+    Agent, BudgetedFrame, Channel, Client, ConnectTo, Error as AcpError, FrameAdmission,
+    FramePermit, FrameReceiver, FrameSender, RawJsonRpcMessage, TransportBatchEntry,
     TransportFrame,
     schema::v1::{RequestId, Response as RpcResponse},
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
-    Stream, StreamExt,
-    channel::mpsc::{self, UnboundedSender},
+    SinkExt, Stream, StreamExt,
+    channel::mpsc,
     future::{BoxFuture, FutureExt},
     pin_mut,
     stream::FuturesUnordered,
@@ -20,8 +21,9 @@ use thiserror::Error;
 use tracing::{debug, error, trace, warn};
 
 use crate::protocol::{
-    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_initialize_request, is_response_only_shape,
-    method_for_message, method_requires_session_header, session_id_from_message,
+    HEADER_CONNECTION_ID, HEADER_SESSION_ID, cancelled_request_id, is_initialize_request,
+    is_response_only_shape, method_for_message, method_requires_session_header,
+    session_id_from_message,
 };
 
 #[derive(Debug, Error)]
@@ -123,9 +125,12 @@ impl ConnectTo<Client> for HttpClient {
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), AcpError>>) {
+    fn into_channel_and_future(self) -> (Channel, agent_client_protocol::ConnectionDriver) {
         let (caller, transport) = Channel::duplex();
-        (caller, Box::pin(run(self, transport)))
+        (
+            caller,
+            agent_client_protocol::ConnectionDriver::new(run(self, transport)),
+        )
     }
 }
 
@@ -138,15 +143,18 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
         rx: mut outgoing,
         tx: incoming,
     } = channel;
-    let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
+    let admission = incoming.admission();
+    let max_operations = admission.limits().max_queued_frames.max(1);
+    let (sse_event_tx, mut sse_event_rx) = mpsc::channel::<SseMessage>(max_operations);
     let connection = HttpConnection::new(endpoint, http);
     let mut state = ClientState {
         connection: connection.clone(),
         open_session_streams: HashSet::new(),
         pending_requests: HashMap::new(),
+        pending_request_leases: HashMap::new(),
         incoming,
     };
-    let mut lifecycle = HttpTransportLifecycle::new(connection);
+    let mut lifecycle = HttpTransportLifecycle::new(connection, admission, max_operations);
     let mut posts = PostQueues::default();
     let mut buffered_outgoing = VecDeque::new();
     let mut outgoing_closed = false;
@@ -200,8 +208,8 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                 let Some(event) = event else {
                     continue;
                 };
-                let open_session_ids = state.sessions_to_open_for_responses(&event.frame);
-                state.deliver_frame(event.frame);
+                let open_session_ids = state.sessions_to_open_for_responses(event.frame.frame());
+                state.deliver_budgeted(event.frame).await?;
                 for session_id in open_session_ids {
                     match lifecycle
                         .start_sse(
@@ -242,7 +250,9 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
         };
 
-        let is_response_only = is_response_only_frame(&frame);
+        let bypass_ordered =
+            is_response_only_frame(frame.frame()) || is_cancellation_frame(frame.frame());
+        let (frame, permit) = frame.into_parts();
         let msg = match frame {
             TransportFrame::Single(message) => message,
             frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
@@ -254,6 +264,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                     // Response-only batches answer SSE-delivered callbacks and
                     // must not be blocked behind the request they answer.
                     Ok((post, session_ids)) => {
+                        state.attach_pending_permits(&post.pending_requests, &permit);
                         for session_id in session_ids {
                             match lifecycle
                                 .start_sse(
@@ -276,10 +287,15 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                                 Err(error) => break 'transport Err(error),
                             }
                         }
-                        if is_response_only {
-                            posts.responses.push(post);
+                        if let Err(error) =
+                            check_post_capacity(&posts, max_operations, bypass_ordered)
+                        {
+                            break 'transport Err(error);
+                        }
+                        if bypass_ordered {
+                            posts.responses.push_budgeted(post, permit);
                         } else {
-                            posts.ordered.push(post);
+                            posts.ordered.push_budgeted(post, permit);
                         }
                     }
                     Err(error) => {
@@ -356,11 +372,20 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             }
         }
 
+        if let Err(error) = check_post_capacity(&posts, max_operations, bypass_ordered) {
+            break Err(error);
+        }
         match state.prepare_post(msg) {
-            // Responses answer SSE-delivered callbacks and must not be blocked
-            // behind a POST that may be waiting for that callback response.
-            Ok(post) if is_response_only => posts.responses.push(post),
-            Ok(post) => posts.ordered.push(post),
+            // Responses and cancellation must not be blocked behind a POST
+            // that may itself be waiting for their delivery.
+            Ok(post) => {
+                state.attach_pending_permits(&post.pending_requests, &permit);
+                if bypass_ordered {
+                    posts.responses.push_budgeted(post, permit);
+                } else {
+                    posts.ordered.push_budgeted(post, permit);
+                }
+            }
             Err(e) => {
                 error!("POST failed: {e}");
                 break Err(AcpError::internal_error().data(format!("POST: {e}")));
@@ -383,12 +408,32 @@ fn sse_setup_blocked_output_error() -> AcpError {
         .data("outgoing channel closed while accepted messages awaited SSE stream establishment")
 }
 
+fn post_capacity_error() -> AcpError {
+    AcpError::internal_error().data("HTTP POST operation capacity exceeded")
+}
+
+fn check_post_capacity(
+    posts: &PostQueues,
+    max_operations: usize,
+    bypass_ordered: bool,
+) -> Result<(), AcpError> {
+    // Keep one operation available for callbacks/cancellation even while the
+    // ordered data POST is waiting for exactly such a response.
+    let reserved = usize::from(!bypass_ordered && max_operations > 1);
+    if posts.len() >= max_operations.saturating_sub(reserved).max(1) {
+        Err(post_capacity_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn handle_completed_post(
     state: &mut ClientState,
     completed: CompletedPost,
 ) -> Result<(), AcpError> {
     let CompletedPost {
         pending_requests,
+        cancelled_requests,
         result,
     } = completed;
     if let Err(error) = result {
@@ -396,6 +441,9 @@ fn handle_completed_post(
         error!("POST failed: {error}");
         Err(AcpError::internal_error().data(format!("POST: {error}")))
     } else {
+        for id in cancelled_requests {
+            state.cancel_pending_request(&id);
+        }
         Ok(())
     }
 }
@@ -403,8 +451,14 @@ fn handle_completed_post(
 fn queue_response_post(
     state: &mut ClientState,
     posts: &mut PostQueues,
-    frame: TransportFrame,
+    frame: BudgetedFrame,
 ) -> Result<(), AcpError> {
+    check_post_capacity(
+        posts,
+        state.incoming.admission().limits().max_queued_frames.max(1),
+        true,
+    )?;
+    let (frame, permit) = frame.into_parts();
     let post = match frame {
         TransportFrame::Single(message) => state.prepare_post(message),
         frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
@@ -418,7 +472,8 @@ fn queue_response_post(
         error!("POST failed: {error}");
         AcpError::internal_error().data(format!("POST: {error}"))
     })?;
-    posts.responses.push(post);
+    state.attach_pending_permits(&post.pending_requests, &permit);
+    posts.responses.push_budgeted(post, permit);
     Ok(())
 }
 
@@ -441,8 +496,16 @@ fn is_response_only_frame(frame: &TransportFrame) -> bool {
     }
 }
 
+fn is_cancellation_frame(frame: &TransportFrame) -> bool {
+    matches!(
+        frame,
+        TransportFrame::Single(RawJsonRpcMessage::Notification(message))
+            if message.method.as_ref() == "$/cancel_request"
+    )
+}
+
 enum HttpLoopEvent {
-    Outgoing(Option<TransportFrame>),
+    Outgoing(Option<BudgetedFrame>),
     SseEvent(Option<SseMessage>),
     SseFailure(SseFailure),
     Post(CompletedPost),
@@ -456,7 +519,7 @@ struct SseFailure {
 
 #[derive(Debug)]
 struct SseMessage {
-    frame: TransportFrame,
+    frame: BudgetedFrame,
 }
 
 #[derive(Clone, Debug)]
@@ -535,6 +598,9 @@ impl HttpConnection {
         if let Err(e) = http
             .delete(endpoint)
             .header(HEADER_CONNECTION_ID, connection_id)
+            // A stalled peer must not keep the transport's shutdown (and its
+            // retained POST/SSE permits) alive indefinitely.
+            .timeout(std::time::Duration::from_secs(2))
             .send()
             .await
         {
@@ -547,6 +613,8 @@ impl HttpConnection {
 struct HttpTransportLifecycle {
     connection: HttpConnection,
     sse_tasks: SseTasks,
+    admission: FrameAdmission,
+    max_tasks: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -556,25 +624,27 @@ enum SseStartOutcome {
 }
 
 struct SseStartContext<'a> {
-    events: &'a mut mpsc::UnboundedReceiver<SseMessage>,
-    outgoing: &'a mut mpsc::UnboundedReceiver<TransportFrame>,
-    buffered_outgoing: &'a mut VecDeque<TransportFrame>,
+    events: &'a mut mpsc::Receiver<SseMessage>,
+    outgoing: &'a mut FrameReceiver,
+    buffered_outgoing: &'a mut VecDeque<BudgetedFrame>,
     posts: &'a mut PostQueues,
     state: &'a mut ClientState,
 }
 
 impl HttpTransportLifecycle {
-    fn new(connection: HttpConnection) -> Self {
+    fn new(connection: HttpConnection, admission: FrameAdmission, max_tasks: usize) -> Self {
         Self {
             connection,
             sse_tasks: SseTasks::default(),
+            admission,
+            max_tasks,
         }
     }
 
     async fn start_sse(
         &mut self,
         session_id: Option<String>,
-        event_tx: UnboundedSender<SseMessage>,
+        event_tx: mpsc::Sender<SseMessage>,
         context: SseStartContext<'_>,
     ) -> Result<SseStartOutcome, AcpError> {
         let SseStartContext {
@@ -585,7 +655,7 @@ impl HttpTransportLifecycle {
             state,
         } = context;
         let mut establishing = FuturesUnordered::new();
-        establishing.push(self.begin_sse(session_id, event_tx.clone()));
+        establishing.push(self.begin_sse(session_id, event_tx.clone())?);
 
         loop {
             if establishing.is_empty() {
@@ -625,20 +695,29 @@ impl HttpTransportLifecycle {
                 }
                 SseStartWait::Failure(failure) => return Err(sse_failure_error(failure)),
                 SseStartWait::SseEvent(Some(event)) => {
-                    let open_session_ids = state.sessions_to_open_for_responses(&event.frame);
-                    state.deliver_frame(event.frame);
+                    let open_session_ids =
+                        state.sessions_to_open_for_responses(event.frame.frame());
+                    state.deliver_budgeted(event.frame).await?;
                     for session_id in open_session_ids {
-                        establishing.push(self.begin_sse(Some(session_id), event_tx.clone()));
+                        establishing.push(self.begin_sse(Some(session_id), event_tx.clone())?);
                     }
                 }
                 SseStartWait::SseEvent(None) => {
                     return Err(AcpError::internal_error().data("SSE event channel closed"));
                 }
                 SseStartWait::Post(completed) => handle_completed_post(state, completed)?,
-                SseStartWait::Outgoing(Some(frame)) if is_response_only_frame(&frame) => {
+                SseStartWait::Outgoing(Some(frame))
+                    if is_response_only_frame(frame.frame())
+                        || is_cancellation_frame(frame.frame()) =>
+                {
                     queue_response_post(state, posts, frame)?;
                 }
-                SseStartWait::Outgoing(Some(frame)) => buffered_outgoing.push_back(frame),
+                SseStartWait::Outgoing(Some(frame)) => {
+                    if buffered_outgoing.len() + posts.len() >= self.max_tasks {
+                        return Err(post_capacity_error());
+                    }
+                    buffered_outgoing.push_back(frame);
+                }
                 SseStartWait::Outgoing(None) => return Ok(SseStartOutcome::OutgoingClosed),
             }
         }
@@ -647,16 +726,20 @@ impl HttpTransportLifecycle {
     fn begin_sse(
         &mut self,
         session_id: Option<String>,
-        event_tx: UnboundedSender<SseMessage>,
-    ) -> futures::channel::oneshot::Receiver<()> {
+        event_tx: mpsc::Sender<SseMessage>,
+    ) -> Result<futures::channel::oneshot::Receiver<()>, AcpError> {
+        if self.sse_tasks.len() >= self.max_tasks {
+            return Err(AcpError::internal_error().data("HTTP SSE stream capacity exceeded"));
+        }
         let (established_tx, established_rx) = futures::channel::oneshot::channel();
         self.sse_tasks.push(run_sse(
             self.connection.clone(),
             session_id,
             event_tx,
             established_tx,
+            self.admission.clone(),
         ));
-        established_rx
+        Ok(established_rx)
     }
 
     async fn next_sse_failure(&mut self) -> SseFailure {
@@ -674,7 +757,7 @@ enum SseStartWait {
     Failure(SseFailure),
     SseEvent(Option<SseMessage>),
     Post(CompletedPost),
-    Outgoing(Option<TransportFrame>),
+    Outgoing(Option<BudgetedFrame>),
 }
 
 impl Drop for HttpTransportLifecycle {
@@ -687,15 +770,17 @@ impl Drop for HttpTransportLifecycle {
 fn run_sse(
     connection: HttpConnection,
     session_id: Option<String>,
-    event_tx: UnboundedSender<SseMessage>,
+    event_tx: mpsc::Sender<SseMessage>,
     established_tx: futures::channel::oneshot::Sender<()>,
+    admission: FrameAdmission,
 ) -> BoxFuture<'static, SseFailure> {
     Box::pin(async move {
         let label = session_id.clone();
-        let error = match read_sse(connection, session_id, event_tx, established_tx).await {
-            Ok(()) => "SSE stream closed".to_string(),
-            Err(e) => e,
-        };
+        let error =
+            match read_sse(connection, session_id, event_tx, established_tx, admission).await {
+                Ok(()) => "SSE stream closed".to_string(),
+                Err(e) => e,
+            };
         warn!(session_id = ?label, "SSE stream ended: {error}");
         SseFailure {
             session_id: label,
@@ -710,6 +795,10 @@ struct SseTasks {
 }
 
 impl SseTasks {
+    fn len(&self) -> usize {
+        self.handles.len()
+    }
+
     fn push(&mut self, task: BoxFuture<'static, SseFailure>) {
         self.handles.push(task);
     }
@@ -732,25 +821,31 @@ struct ClientState {
     connection: HttpConnection,
     open_session_streams: HashSet<String>,
     pending_requests: HashMap<RequestId, VecDeque<String>>,
-    incoming: futures::channel::mpsc::UnboundedSender<TransportFrame>,
+    pending_request_leases: HashMap<RequestId, VecDeque<FramePermit>>,
+    incoming: FrameSender,
 }
 
 struct PendingPost {
     pending_requests: Vec<(RequestId, String)>,
+    cancelled_requests: Vec<RequestId>,
     response: BoxFuture<'static, Result<(), String>>,
 }
 
 impl PendingPost {
-    fn into_completion(self) -> BoxFuture<'static, CompletedPost> {
+    fn into_completion(self, permit: Option<FramePermit>) -> BoxFuture<'static, CompletedPost> {
         let Self {
             pending_requests,
+            cancelled_requests,
             response,
         } = self;
         async move {
-            CompletedPost {
+            let completed = CompletedPost {
                 pending_requests,
+                cancelled_requests,
                 result: response.await,
-            }
+            };
+            drop(permit);
+            completed
         }
         .boxed()
     }
@@ -759,12 +854,13 @@ impl PendingPost {
 #[derive(Debug)]
 struct CompletedPost {
     pending_requests: Vec<(RequestId, String)>,
+    cancelled_requests: Vec<RequestId>,
     result: Result<(), String>,
 }
 
 #[derive(Default)]
 struct PostQueue {
-    queued: VecDeque<PendingPost>,
+    queued: VecDeque<(PendingPost, Option<FramePermit>)>,
     in_flight: Option<BoxFuture<'static, CompletedPost>>,
 }
 
@@ -778,11 +874,25 @@ impl PostQueues {
     fn is_empty(&self) -> bool {
         self.ordered.is_empty() && self.responses.is_empty()
     }
+
+    fn len(&self) -> usize {
+        self.ordered.len() + self.responses.len()
+    }
 }
 
 impl PostQueue {
+    fn len(&self) -> usize {
+        self.queued.len() + usize::from(self.in_flight.is_some())
+    }
+
+    #[cfg(test)]
     fn push(&mut self, post: PendingPost) {
-        self.queued.push_back(post);
+        self.queued.push_back((post, None));
+        self.start_next();
+    }
+
+    fn push_budgeted(&mut self, post: PendingPost, permit: FramePermit) {
+        self.queued.push_back((post, Some(permit)));
         self.start_next();
     }
 
@@ -800,9 +910,9 @@ impl PostQueue {
 
     fn start_next(&mut self) {
         if self.in_flight.is_none()
-            && let Some(post) = self.queued.pop_front()
+            && let Some((post, permit)) = self.queued.pop_front()
         {
-            self.in_flight = Some(post.into_completion());
+            self.in_flight = Some(post.into_completion(permit));
         }
     }
 
@@ -859,14 +969,14 @@ impl ClientState {
             message,
             RawJsonRpcMessage::Response(RpcResponse::Error { .. })
         ) {
-            self.deliver(message);
+            self.deliver(message).await.map_err(|e| e.to_string())?;
             self.connection.close().await;
             return Ok(InitializeOutcome::Rejected);
         }
 
         connection_id
             .ok_or_else(|| format!("server did not return {HEADER_CONNECTION_ID} header"))?;
-        self.deliver(message);
+        self.deliver(message).await.map_err(|e| e.to_string())?;
         Ok(InitializeOutcome::Connected)
     }
 
@@ -889,6 +999,8 @@ impl ClientState {
         let pending_requests = pending_request_for_message(&msg)
             .into_iter()
             .collect::<Vec<_>>();
+        let cancelled_requests = cancelled_request_id(&msg).into_iter().collect();
+        self.check_pending_request_capacity(pending_requests.len())?;
         self.track_pending_requests(&pending_requests);
 
         let response = async move {
@@ -902,6 +1014,7 @@ impl ClientState {
         };
         Ok(PendingPost {
             pending_requests,
+            cancelled_requests,
             response: response.boxed(),
         })
     }
@@ -911,6 +1024,7 @@ impl ClientState {
         frame: TransportFrame,
     ) -> Result<(PendingPost, Vec<String>), String> {
         let bookkeeping = FrameBookkeeping::for_frame(&frame)?;
+        self.check_pending_request_capacity(bookkeeping.pending_requests.len())?;
         let connection_id = self
             .connection
             .connection_id()
@@ -937,6 +1051,7 @@ impl ClientState {
         Ok((
             PendingPost {
                 pending_requests: bookkeeping.pending_requests,
+                cancelled_requests: bookkeeping.cancelled_requests,
                 response: response.boxed(),
             },
             session_ids,
@@ -952,16 +1067,43 @@ impl ClientState {
         }
     }
 
+    fn check_pending_request_capacity(&self, additional: usize) -> Result<(), String> {
+        let limit = self.incoming.admission().limits().max_queued_frames.max(1);
+        let existing: usize = self.pending_requests.values().map(VecDeque::len).sum();
+        if additional > limit.saturating_sub(existing) {
+            Err("HTTP pending request capacity exceeded".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn attach_pending_permits(
+        &mut self,
+        pending_requests: &[(RequestId, String)],
+        permit: &FramePermit,
+    ) {
+        for (id, _) in pending_requests {
+            self.pending_request_leases
+                .entry(id.clone())
+                .or_default()
+                .push_back(permit.clone());
+        }
+    }
+
     fn remove_pending_requests(&mut self, pending_requests: &[(RequestId, String)]) {
         for (id, method) in pending_requests.iter().rev() {
             let remove_entry = self.pending_requests.get_mut(id).is_some_and(|methods| {
                 if let Some(index) = methods.iter().rposition(|candidate| candidate == method) {
                     methods.remove(index);
+                    if let Some(leases) = self.pending_request_leases.get_mut(id) {
+                        leases.remove(index);
+                    }
                 }
                 methods.is_empty()
             });
             if remove_entry {
                 self.pending_requests.remove(id);
+                self.pending_request_leases.remove(id);
             }
         }
     }
@@ -971,10 +1113,28 @@ impl ClientState {
             let methods = self.pending_requests.get_mut(id)?;
             (methods.pop_front(), methods.is_empty())
         };
+        if let Some(leases) = self.pending_request_leases.get_mut(id) {
+            leases.pop_front();
+        }
         if remove_entry {
             self.pending_requests.remove(id);
+            self.pending_request_leases.remove(id);
         }
         method
+    }
+
+    fn cancel_pending_request(&mut self, id: &RequestId) {
+        let Some(methods) = self.pending_requests.get_mut(id) else {
+            return;
+        };
+        methods.pop_front();
+        if let Some(leases) = self.pending_request_leases.get_mut(id) {
+            leases.pop_front();
+        }
+        if methods.is_empty() {
+            self.pending_requests.remove(id);
+            self.pending_request_leases.remove(id);
+        }
     }
 
     fn register_session_streams(
@@ -1031,14 +1191,20 @@ impl ClientState {
         }
     }
 
-    fn deliver(&self, msg: RawJsonRpcMessage) {
-        self.deliver_frame(TransportFrame::Single(msg));
+    async fn deliver(&self, msg: RawJsonRpcMessage) -> Result<(), AcpError> {
+        self.deliver_frame(TransportFrame::Single(msg)).await
     }
 
-    fn deliver_frame(&self, frame: TransportFrame) {
-        if self.incoming.unbounded_send(frame).is_err() {
-            debug!("upstream channel closed; dropping inbound message");
-        }
+    async fn deliver_frame(&self, frame: TransportFrame) -> Result<(), AcpError> {
+        self.incoming.send_frame(frame).await
+    }
+
+    async fn deliver_budgeted(&self, frame: BudgetedFrame) -> Result<(), AcpError> {
+        self.incoming
+            .clone()
+            .send(frame)
+            .await
+            .map_err(|error| AcpError::internal_error().data(format!("deliver SSE frame: {error}")))
     }
 }
 
@@ -1046,6 +1212,7 @@ impl ClientState {
 struct FrameBookkeeping {
     session_ids: Vec<String>,
     pending_requests: Vec<(RequestId, String)>,
+    cancelled_requests: Vec<RequestId>,
 }
 
 impl FrameBookkeeping {
@@ -1074,6 +1241,8 @@ impl FrameBookkeeping {
         if let Some(pending_request) = pending_request_for_message(message) {
             self.pending_requests.push(pending_request);
         }
+        self.cancelled_requests
+            .extend(cancelled_request_id(message));
         Ok(())
     }
 }
@@ -1096,8 +1265,9 @@ fn is_session_opening_method(method: &str) -> bool {
 async fn read_sse(
     connection: HttpConnection,
     session_id: Option<String>,
-    event_tx: UnboundedSender<SseMessage>,
+    mut event_tx: mpsc::Sender<SseMessage>,
     established_tx: futures::channel::oneshot::Sender<()>,
+    admission: FrameAdmission,
 ) -> Result<(), String> {
     let connection_id = connection
         .connection_id()
@@ -1117,16 +1287,45 @@ async fn read_sse(
     trace!(session_id = ?session_id, "SSE stream open");
     let _ = established_tx.send(());
 
-    let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
+    // Cap each event before EventStream buffers its data fields or JSON parsing
+    // materializes the payload. A blank line terminates one SSE event.
+    let max_frame_bytes = admission.limits().max_frame_bytes;
+    let mut event_bytes = 0usize;
+    let mut line_has_data = false;
+    let mut events =
+        eventsource_stream::EventStream::new(response.bytes_stream().map(move |chunk| {
+            let chunk = chunk.map_err(std::io::Error::other)?;
+            for &byte in &chunk {
+                event_bytes += 1;
+                if event_bytes > max_frame_bytes {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "SSE event exceeds maximum JSON-RPC frame size",
+                    ));
+                }
+                if byte == b'\n' {
+                    if !line_has_data {
+                        event_bytes = 0;
+                    }
+                    line_has_data = false;
+                } else if byte != b'\r' {
+                    line_has_data = true;
+                }
+            }
+            Ok(chunk)
+        }));
     while let Some(event) = events.next().await {
         let event = event.map_err(|e| e.to_string())?;
         let payload = event.data;
         if payload.is_empty() {
             continue;
         }
-        let frame = TransportFrame::parse_json(&payload);
+        let frame = admission
+            .admit(TransportFrame::parse_json(&payload))
+            .await
+            .map_err(|error| error.to_string())?;
 
-        if event_tx.unbounded_send(SseMessage { frame }).is_err() {
+        if event_tx.send(SseMessage { frame }).await.is_err() {
             return Err("upstream channel closed".to_string());
         }
     }
@@ -1196,7 +1395,7 @@ where
     } = channel;
     let writer = async move {
         while let Some(frame) = outgoing.next().await {
-            let text = match frame.to_json() {
+            let text = match frame.frame().to_json() {
                 Ok(text) => text,
                 Err(error) => {
                     error!("failed to serialize outbound frame: {error}");
@@ -1222,7 +1421,7 @@ where
                         continue;
                     }
                     let frame = TransportFrame::parse_json(text.as_str());
-                    if incoming.unbounded_send(frame).is_err() {
+                    if incoming.send_frame(frame).await.is_err() {
                         debug!(
                             "upstream channel closed; discarding WS input while draining output"
                         );
@@ -1257,6 +1456,10 @@ where
 }
 
 #[cfg(test)]
+#[path = "client_admission_tests.rs"]
+mod admission_tests;
+
+#[cfg(test)]
 mod tests {
     use std::{
         convert::Infallible,
@@ -1287,9 +1490,7 @@ mod tests {
     struct PostsThenExitClient {
         finish: Arc<Notify>,
         finished: Arc<Notify>,
-        escaped_tx: futures::channel::oneshot::Sender<
-            futures::channel::mpsc::UnboundedSender<TransportFrame>,
-        >,
+        escaped_tx: futures::channel::oneshot::Sender<FrameSender>,
     }
 
     struct InitializeThenExitClient {
@@ -1299,7 +1500,7 @@ mod tests {
 
     struct QueueOutgoingThenText {
         text: Option<WsMessage>,
-        outgoing: Option<mpsc::UnboundedSender<TransportFrame>>,
+        outgoing: Option<FrameSender>,
     }
 
     struct RecordingWsSink(mpsc::UnboundedSender<WsMessage>);
@@ -1339,6 +1540,12 @@ mod tests {
         }
     }
 
+    impl TransportFrameTestExt for agent_client_protocol::BudgetedFrame {
+        fn unwrap(self) -> RawJsonRpcMessage {
+            into_single_message(self.into_frame()).unwrap()
+        }
+    }
+
     #[test]
     fn malformed_response_shapes_bypass_only_when_the_whole_frame_is_response_only() {
         let standalone_response = TransportFrame::parse_json(
@@ -1374,12 +1581,13 @@ mod tests {
             reqwest::Client::new(),
         );
         connection.set_connection_id("connection-1".to_string());
-        let (incoming, _incoming_rx) = mpsc::unbounded();
+        let (incoming, _incoming_rx) = Channel::duplex();
         ClientState {
             connection,
             open_session_streams: HashSet::new(),
             pending_requests: HashMap::new(),
-            incoming,
+            pending_request_leases: HashMap::new(),
+            incoming: incoming.tx,
         }
     }
 
@@ -1515,7 +1723,7 @@ mod tests {
             if let Some(outgoing) = self.outgoing.take() {
                 for method in ["custom/first", "custom/second"] {
                     outgoing
-                        .unbounded_send(single_frame(
+                        .try_send(single_frame(
                             RawJsonRpcMessage::notification(method.to_string(), json!({})).unwrap(),
                         ))
                         .unwrap();
@@ -1559,7 +1767,7 @@ mod tests {
                 })?;
                 channel
                     .tx
-                    .unbounded_send(single_frame(
+                    .send_frame(single_frame(
                         RawJsonRpcMessage::request(
                             "initialize".to_string(),
                             json!({}),
@@ -1567,19 +1775,28 @@ mod tests {
                         )
                         .unwrap(),
                     ))
+                    .await
                     .map_err(|e| {
                         AcpError::internal_error().data(format!("send initialize: {e}"))
                     })?;
-                into_single_message(channel.rx.next().await.ok_or_else(|| {
-                    AcpError::internal_error().data("initialize response channel closed")
-                })?)?;
+                into_single_message(
+                    channel
+                        .rx
+                        .next()
+                        .await
+                        .ok_or_else(|| {
+                            AcpError::internal_error().data("initialize response channel closed")
+                        })?
+                        .into_frame(),
+                )?;
 
                 for method in ["custom/first", "custom/second"] {
                     channel
                         .tx
-                        .unbounded_send(single_frame(
+                        .send_frame(single_frame(
                             RawJsonRpcMessage::notification(method.to_string(), json!({})).unwrap(),
                         ))
+                        .await
                         .map_err(|e| {
                             AcpError::internal_error().data(format!("send {method}: {e}"))
                         })?;
@@ -1605,7 +1822,7 @@ mod tests {
             let client = async move {
                 channel
                     .tx
-                    .unbounded_send(single_frame(
+                    .send_frame(single_frame(
                         RawJsonRpcMessage::request(
                             "initialize".to_string(),
                             json!({}),
@@ -1613,12 +1830,20 @@ mod tests {
                         )
                         .unwrap(),
                     ))
+                    .await
                     .map_err(|error| {
                         AcpError::internal_error().data(format!("send initialize: {error}"))
                     })?;
-                into_single_message(channel.rx.next().await.ok_or_else(|| {
-                    AcpError::internal_error().data("initialize response channel closed")
-                })?)?;
+                into_single_message(
+                    channel
+                        .rx
+                        .next()
+                        .await
+                        .ok_or_else(|| {
+                            AcpError::internal_error().data("initialize response channel closed")
+                        })?
+                        .into_frame(),
+                )?;
 
                 sse_started.notified().await;
                 finished.notify_one();
@@ -1714,7 +1939,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -1732,7 +1957,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::notification(
                     "$/cancel_request".to_string(),
                     json!({
@@ -1832,7 +2057,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -1862,7 +2087,7 @@ mod tests {
         ]);
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([
                     RawJsonRpcMessage::notification("custom/outbound-one".to_string(), json!({}))
                         .unwrap(),
@@ -1884,11 +2109,12 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(&inbound, TransportFrame::Batch(_)));
+        assert!(matches!(inbound.frame(), TransportFrame::Batch(_)));
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&inbound.to_json().unwrap()).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&inbound.frame().to_json().unwrap()).unwrap(),
             inbound_batch
         );
+        drop(inbound);
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -1997,7 +2223,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2013,7 +2239,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([RawJsonRpcMessage::request(
                     "session/fork".to_string(),
                     json!({ "sessionId": "source-session" }),
@@ -2045,11 +2271,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(&response, TransportFrame::Batch(_)));
+        assert!(matches!(response.frame(), TransportFrame::Batch(_)));
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&response.to_json().unwrap()).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&response.frame().to_json().unwrap())
+                .unwrap(),
             response_batch
         );
+        drop(response);
         let forked_stream = timeout(Duration::from_secs(1), get_rx.recv())
             .await
             .unwrap()
@@ -2129,7 +2357,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2153,7 +2381,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "custom/sessionish".to_string(),
                     json!({}),
@@ -2258,7 +2486,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2282,7 +2510,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "session/fork".to_string(),
                     json!({ "sessionId": "source-session" }),
@@ -2381,7 +2609,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2397,7 +2625,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::notification("custom/slow".to_string(), json!({})).unwrap(),
             ))
             .unwrap();
@@ -2407,7 +2635,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([
                     RawJsonRpcMessage::notification("custom/one".to_string(), json!({})).unwrap(),
                     RawJsonRpcMessage::notification("custom/two".to_string(), json!({})).unwrap(),
@@ -2424,7 +2652,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([
                     RawJsonRpcMessage::response(RequestId::Number(10), Ok(json!({}))),
                     RawJsonRpcMessage::response(RequestId::Number(11), Ok(json!({}))),
@@ -2529,7 +2757,7 @@ mod tests {
         );
         assert!(
             escaped
-                .unbounded_send(single_frame(
+                .try_send(single_frame(
                     RawJsonRpcMessage::notification("custom/too-late".to_string(), json!({}),)
                         .unwrap()
                 ))
@@ -2622,25 +2850,30 @@ mod tests {
             reqwest::Client::new(),
         );
         connection.set_connection_id("connection-1".to_string());
-        let (incoming, _incoming_rx) = mpsc::unbounded();
+        let (incoming, _incoming_rx) = Channel::duplex();
         let mut state = ClientState {
             connection: connection.clone(),
             open_session_streams: HashSet::new(),
             pending_requests: HashMap::new(),
-            incoming,
+            pending_request_leases: HashMap::new(),
+            incoming: incoming.tx,
         };
         let pending_request = (RequestId::Number(7), "custom/earlier".to_string());
         state.track_pending_requests(std::slice::from_ref(&pending_request));
         let mut posts = PostQueues::default();
         posts.ordered.push(PendingPost {
             pending_requests: vec![pending_request],
+            cancelled_requests: Vec::new(),
             response: async { Err("earlier post failed".to_string()) }.boxed(),
         });
 
-        let (_outgoing_tx, mut outgoing) = mpsc::unbounded();
+        let (outgoing_channel, _outgoing_peer) = Channel::duplex();
+        let mut outgoing = outgoing_channel.rx;
         let mut buffered_outgoing = VecDeque::new();
-        let (event_tx, mut event_rx) = mpsc::unbounded();
-        let mut lifecycle = HttpTransportLifecycle::new(connection);
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let admission = state.incoming.admission();
+        let max_tasks = admission.limits().max_queued_frames;
+        let mut lifecycle = HttpTransportLifecycle::new(connection, admission, max_tasks);
         let error = timeout(
             Duration::from_secs(1),
             lifecycle.start_sse(
@@ -2703,16 +2936,18 @@ mod tests {
             reqwest::Client::new(),
         );
         connection.set_connection_id("connection-1".to_string());
-        let (incoming, mut incoming_rx) = mpsc::unbounded();
+        let (incoming, mut incoming_peer) = Channel::duplex();
         let mut state = ClientState {
             connection: connection.clone(),
             open_session_streams: HashSet::new(),
             pending_requests: HashMap::new(),
-            incoming,
+            pending_request_leases: HashMap::new(),
+            incoming: incoming.tx,
         };
         let mut posts = PostQueues::default();
         posts.ordered.push(PendingPost {
             pending_requests: Vec::new(),
+            cancelled_requests: Vec::new(),
             response: async move {
                 complete_earlier_post.notified().await;
                 Ok(())
@@ -2720,41 +2955,50 @@ mod tests {
             .boxed(),
         });
 
-        let (outgoing_tx, mut outgoing) = mpsc::unbounded();
+        let (outgoing_channel, outgoing_peer) = Channel::duplex();
+        let outgoing_tx = outgoing_peer.tx;
+        let mut outgoing = outgoing_channel.rx;
         let outgoing_guard = outgoing_tx.clone();
         let mut buffered_outgoing = VecDeque::new();
-        let (event_tx, mut event_rx) = mpsc::unbounded();
+        let (mut event_tx, mut event_rx) = mpsc::channel(16);
         event_tx
-            .unbounded_send(SseMessage {
-                frame: single_frame(
-                    RawJsonRpcMessage::request(
-                        "test/callback".to_string(),
-                        json!({}),
-                        RequestId::Number(99),
-                    )
+            .try_send(SseMessage {
+                frame: state
+                    .incoming
+                    .admission()
+                    .try_admit(single_frame(
+                        RawJsonRpcMessage::request(
+                            "test/callback".to_string(),
+                            json!({}),
+                            RequestId::Number(99),
+                        )
+                        .unwrap(),
+                    ))
                     .unwrap(),
-                ),
             })
             .unwrap();
 
         let responder = async move {
-            let callback = incoming_rx
+            let callback = incoming_peer
+                .rx
                 .next()
                 .await
                 .expect("callback was not delivered");
             assert!(matches!(
-                into_single_message(callback).unwrap(),
+                into_single_message(callback.into_frame()).unwrap(),
                 RawJsonRpcMessage::Request(request)
                     if request.method.as_ref() == "test/callback"
             ));
             outgoing_tx
-                .unbounded_send(single_frame(RawJsonRpcMessage::response(
+                .try_send(single_frame(RawJsonRpcMessage::response(
                     RequestId::Number(99),
                     Ok(json!({})),
                 )))
                 .unwrap();
         };
-        let mut lifecycle = HttpTransportLifecycle::new(connection);
+        let admission = state.incoming.admission();
+        let max_tasks = admission.limits().max_queued_frames;
+        let mut lifecycle = HttpTransportLifecycle::new(connection, admission, max_tasks);
         let (outcome, ()) = timeout(Duration::from_secs(1), async {
             futures::join!(
                 lifecycle.start_sse(
@@ -2821,7 +3065,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2840,7 +3084,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::notification("custom/queued".to_string(), json!({})).unwrap(),
             ))
             .unwrap();
@@ -2942,7 +3186,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -2963,7 +3207,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "custom/slow".to_string(),
                     json!({}),
@@ -2987,7 +3231,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(RawJsonRpcMessage::response(
+            .try_send(single_frame(RawJsonRpcMessage::response(
                 RequestId::Number(99),
                 Ok(json!({})),
             )))
@@ -3039,7 +3283,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3057,7 +3301,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "session/prompt".to_string(),
                     json!({}),
@@ -3103,7 +3347,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3158,7 +3402,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3179,7 +3423,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let TransportFrame::Malformed { raw, error } = frame else {
+        let TransportFrame::Malformed { raw, error } = frame.frame() else {
             panic!("expected malformed frame, got {frame:?}");
         };
         assert_eq!(raw, "{not json");
@@ -3211,7 +3455,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let TransportFrame::Malformed { raw, error } = frame else {
+        let TransportFrame::Malformed { raw, error } = frame.frame() else {
             panic!("expected malformed frame, got {frame:?}");
         };
         assert_eq!(raw, "{not json");
@@ -3243,7 +3487,7 @@ mod tests {
         } = caller;
         drop(incoming);
         outgoing
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([
                     RawJsonRpcMessage::notification("custom/first".to_string(), json!({})).unwrap(),
                     RawJsonRpcMessage::notification("custom/second".to_string(), json!({}))
@@ -3335,7 +3579,7 @@ mod tests {
         } = caller;
         drop(incoming);
         outgoing
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::notification("custom/queued".to_string(), json!({})).unwrap(),
             ))
             .unwrap();
@@ -3416,7 +3660,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3474,7 +3718,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3525,7 +3769,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
@@ -3584,7 +3828,7 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(single_frame(
+            .try_send(single_frame(
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),

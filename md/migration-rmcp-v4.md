@@ -54,8 +54,9 @@ the required request metadata.
 
 ## MCP-over-ACP remains a separate draft
 
-This upgrade does not change ACP's unstable `mcp/connect`, `mcp/message`, or
-`mcp/disconnect` envelopes. Redesigning that transport around stateless,
-server-addressed requests is separate work. The new transport's latest-only
-target does not require removing existing rmcp behavior from this prerequisite
-dependency upgrade.
+The dependency upgrade alone did not change the unstable ACP wire envelopes.
+The subsequent [native MCP transport migration](./migration-stateless-mcp.md)
+removes the prototype's `mcp/connect`/`mcp/disconnect` lifecycle and changes
+`mcp/message` to server-addressed requests with explicit outcome carriers.
+Read both guides when adopting the combined major-version changes. The
+latest-only native binding does not require removing standalone rmcp behavior.

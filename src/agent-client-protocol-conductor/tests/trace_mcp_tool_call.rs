@@ -32,7 +32,8 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Replaces UUIDs with sequential IDs (id:0, id:1, etc.)
 /// - Replaces session IDs with "session:0", etc.
 /// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
-/// - Replaces MCP server and connection IDs with stable sequential IDs
+/// - Replaces MCP server and logical request IDs with stable sequential IDs
+/// - Redacts runtime-generated HTTP Authorization headers
 struct EventNormalizer {
     id_map: HashMap<String, String>,
     next_id: usize,
@@ -42,8 +43,8 @@ struct EventNormalizer {
     next_endpoint: usize,
     server_map: HashMap<String, String>,
     next_server: usize,
-    connection_map: HashMap<String, String>,
-    next_connection: usize,
+    request_map: HashMap<String, String>,
+    next_request: usize,
 }
 
 impl EventNormalizer {
@@ -57,8 +58,8 @@ impl EventNormalizer {
             next_endpoint: 0,
             server_map: HashMap::new(),
             next_server: 0,
-            connection_map: HashMap::new(),
-            next_connection: 0,
+            request_map: HashMap::new(),
+            next_request: 0,
         }
     }
 
@@ -115,12 +116,12 @@ impl EventNormalizer {
             .clone()
     }
 
-    fn normalize_connection_id(&mut self, id: &str) -> String {
-        self.connection_map
+    fn normalize_request_id(&mut self, id: &str) -> String {
+        self.request_map
             .entry(id.to_string())
             .or_insert_with(|| {
-                let n = format!("connection:{}", self.next_connection);
-                self.next_connection += 1;
+                let n = format!("request:{}", self.next_request);
+                self.next_request += 1;
                 n
             })
             .clone()
@@ -130,6 +131,10 @@ impl EventNormalizer {
     fn normalize_json(&mut self, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
+                let is_authorization_header = map
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case("authorization"));
                 let normalized: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
                     .map(|(k, v)| {
@@ -157,12 +162,14 @@ impl EventNormalizer {
                             } else {
                                 self.normalize_json(v)
                             }
-                        } else if k == "connectionId" {
+                        } else if k == "requestId" {
                             if let serde_json::Value::String(s) = &v {
-                                serde_json::Value::String(self.normalize_connection_id(s))
+                                serde_json::Value::String(self.normalize_request_id(s))
                             } else {
                                 self.normalize_json(v)
                             }
+                        } else if is_authorization_header && k == "value" {
+                            serde_json::Value::String("[REDACTED]".into())
                         } else {
                             self.normalize_json(v)
                         };
@@ -317,7 +324,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
     // Snapshot the trace events
     // This should show:
     // 1. Client -> Agent: initialize, session/new, session/prompt (left-to-right)
-    // 2. Agent -> MCP Server: tools/call (right-to-left, the key part!)
+    // 2. Agent -> MCP Server: discovery/list/call with per-request MCP metadata
     // 3. MCP Server -> Agent: response
     // 4. Agent -> Client: notification + response
     expect![[r#"
@@ -377,6 +384,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(0)",
                     id: String("id:1"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
@@ -419,6 +427,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Client",
                     id: String("id:0"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
@@ -490,32 +499,6 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     },
                 },
             ),
-            Request(
-                RequestEvent {
-                    ts: 0.0,
-                    protocol: Acp,
-                    from: "Proxy(1)",
-                    to: "Proxy(0)",
-                    id: String("id:4"),
-                    method: "mcp/connect",
-                    session: None,
-                    params: Object {
-                        "serverId": String("server:0"),
-                    },
-                },
-            ),
-            Response(
-                ResponseEvent {
-                    ts: 0.0,
-                    from: "Proxy(0)",
-                    to: "Proxy(1)",
-                    id: String("id:4"),
-                    is_error: false,
-                    payload: Object {
-                        "connectionId": String("connection:0"),
-                    },
-                },
-            ),
             Response(
                 ResponseEvent {
                     ts: 0.0,
@@ -523,6 +506,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(0)",
                     id: String("id:3"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "sessionId": String("session:0"),
                         "modes": Object {
@@ -573,6 +557,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Client",
                     id: String("id:2"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "sessionId": String("session:0"),
                         "modes": Object {
@@ -622,7 +607,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Client",
                     to: "Proxy(0)",
-                    id: String("id:5"),
+                    id: String("id:4"),
                     method: "session/prompt",
                     session: None,
                     params: Object {
@@ -642,7 +627,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:6"),
+                    id: String("id:5"),
                     method: "session/prompt",
                     session: None,
                     params: Object {
@@ -662,15 +647,17 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Mcp,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:7"),
-                    method: "initialize",
+                    id: String("id:6"),
+                    method: "server/discover",
                     session: None,
                     params: Object {
-                        "protocolVersion": String("2025-11-25"),
-                        "capabilities": Object {},
-                        "clientInfo": Object {
-                            "name": String("rmcp"),
-                            "version": String("3.4.0"),
+                        "_meta": Object {
+                            "io.modelcontextprotocol/protocolVersion": String("2026-07-28"),
+                            "io.modelcontextprotocol/clientInfo": Object {
+                                "name": String("testy"),
+                                "version": String("0.11.0"),
+                            },
+                            "io.modelcontextprotocol/clientCapabilities": Object {},
                         },
                     },
                 },
@@ -680,30 +667,27 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:7"),
+                    id: String("id:6"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
-                        "protocolVersion": String("2025-11-25"),
+                        "resultType": String("complete"),
+                        "supportedVersions": Array [
+                            String("2026-07-28"),
+                        ],
                         "capabilities": Object {
                             "tools": Object {},
                         },
-                        "serverInfo": Object {
-                            "name": String("rmcp"),
-                            "version": String("3.4.0"),
-                        },
                         "instructions": String("A simple test MCP server with an echo tool"),
+                        "ttlMs": Number(0),
+                        "cacheScope": String("private"),
+                        "_meta": Object {
+                            "io.modelcontextprotocol/serverInfo": Object {
+                                "name": String("rmcp"),
+                                "version": String("3.4.0"),
+                            },
+                        },
                     },
-                },
-            ),
-            Notification(
-                NotificationEvent {
-                    ts: 0.0,
-                    protocol: Mcp,
-                    from: "Proxy(1)",
-                    to: "Proxy(0)",
-                    method: "notifications/initialized",
-                    session: None,
-                    params: Null,
                 },
             ),
             Request(
@@ -712,11 +696,17 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Mcp,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:8"),
+                    id: String("id:7"),
                     method: "tools/call",
                     session: None,
                     params: Object {
                         "_meta": Object {
+                            "io.modelcontextprotocol/protocolVersion": String("2026-07-28"),
+                            "io.modelcontextprotocol/clientInfo": Object {
+                                "name": String("testy"),
+                                "version": String("0.11.0"),
+                            },
+                            "io.modelcontextprotocol/clientCapabilities": Object {},
                             "progressToken": Number(0),
                         },
                         "name": String("echo"),
@@ -731,9 +721,11 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:8"),
+                    id: String("id:7"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
+                        "resultType": String("complete"),
                         "content": Array [
                             Object {
                                 "type": String("text"),
@@ -761,7 +753,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { result_type: None, content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { result_type: Some(ResultType(\"complete\")), content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },
@@ -773,8 +765,9 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:6"),
+                    id: String("id:5"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "stopReason": String("end_turn"),
                     },
@@ -794,7 +787,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                             "sessionUpdate": String("agent_message_chunk"),
                             "content": Object {
                                 "type": String("text"),
-                                "text": String("OK: CallToolResult { result_type: None, content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
+                                "text": String("OK: CallToolResult { result_type: Some(ResultType(\"complete\")), content: [Text(TextContent { text: \"{\\\"result\\\":\\\"Echo: Hello from trace test!\\\"}\", meta: None, annotations: None })], structured_content: Some(Object {\"result\": String(\"Echo: Hello from trace test!\")}), is_error: Some(false), meta: None }"),
                             },
                             "messageId": String("testy-message-end-turn-1"),
                         },
@@ -806,8 +799,9 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Client",
-                    id: String("id:5"),
+                    id: String("id:4"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "stopReason": String("end_turn"),
                     },

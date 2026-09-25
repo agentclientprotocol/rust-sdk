@@ -4,6 +4,8 @@ use std::{marker::PhantomData, sync::Arc};
 
 use futures::{StreamExt, channel::mpsc};
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+use crate::mcp_server::McpService;
 use crate::{
     ConnectTo, Dispatch, DynConnectTo, Role,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
@@ -66,6 +68,8 @@ pub struct McpServer<Counterpart: Role, Run = NullRun> {
 
     /// The "connect" instance
     connect: Arc<dyn McpServerConnect<Counterpart>>,
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    service: Option<Arc<dyn McpService<Counterpart>>>,
 
     /// The runner is a task that should be run alongside the message handler.
     /// Some futures direct messages back through channels to this future which actually
@@ -103,6 +107,37 @@ where
         McpServer {
             phantom: PhantomData,
             connect: Arc::new(c),
+            #[cfg(feature = "unstable_mcp_over_acp")]
+            service: None,
+            runner,
+        }
+    }
+
+    /// Construct a reusable request-native application service for ACP.
+    ///
+    /// Standalone serving additionally needs a direct MCP transport adapter;
+    /// use [`Self::new_service_with_standalone`] when direct serving is needed.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn new_service(
+        service: impl McpService<Counterpart>,
+        name: impl Into<String>,
+        runner: Run,
+    ) -> Self {
+        Self::new_service_with_standalone(service, NoStandalone { name: name.into() }, runner)
+    }
+
+    /// Construct a reusable application service with a separate standalone MCP
+    /// connector. ACP requests never create connector sessions.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub fn new_service_with_standalone(
+        service: impl McpService<Counterpart>,
+        standalone: impl McpServerConnect<Counterpart>,
+        runner: Run,
+    ) -> Self {
+        Self {
+            phantom: PhantomData,
+            connect: Arc::new(standalone),
+            service: Some(Arc::new(service)),
             runner,
         }
     }
@@ -116,10 +151,14 @@ where
         let Self {
             phantom: _,
             connect,
+            service,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
-        (McpSessionHandler::new(server_id, connect), runner)
+        (
+            McpSessionHandler::new_with_service(server_id, connect, service),
+            runner,
+        )
     }
 
     /// Split this MCP server into a protocol v2 session handler and its runner.
@@ -131,10 +170,40 @@ where
         let Self {
             phantom: _,
             connect,
+            service,
             runner,
         } = self;
         let server_id = McpServerAcpId::new(format!("mcp-server:{}", Uuid::new_v4()));
-        (V2McpSessionHandler::new(server_id, connect), runner)
+        (
+            V2McpSessionHandler::new_with_service(server_id, connect, service),
+            runner,
+        )
+    }
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+struct NoStandalone {
+    name: String,
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> McpServerConnect<Counterpart> for NoStandalone {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn connect(&self, _context: McpConnectionTo<Counterpart>) -> DynConnectTo<role::mcp::Client> {
+        struct Unavailable;
+        impl ConnectTo<role::mcp::Client> for Unavailable {
+            fn connect_to(
+                self,
+                _client: impl ConnectTo<role::mcp::Server>,
+            ) -> impl Future<Output = Result<(), crate::Error>> + Send {
+                std::future::ready(Err(crate::Error::method_not_found()
+                    .data("this MCP service has no standalone transport adapter")))
+            }
+        }
+        DynConnectTo::new(Unavailable)
     }
 }
 
@@ -154,9 +223,17 @@ impl<Counterpart: Role> McpSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
-    pub fn new(server_id: McpServerAcpId, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+    fn new_with_service(
+        server_id: McpServerAcpId,
+        connect: Arc<dyn McpServerConnect<Counterpart>>,
+        service: Option<Arc<dyn McpService<Counterpart>>>,
+    ) -> Self {
         Self {
-            active_session: McpActiveSession::new(server_id.clone(), connect.clone()),
+            active_session: McpActiveSession::new_with_service(
+                server_id.clone(),
+                connect.clone(),
+                service,
+            ),
             server_id,
             connect,
         }
@@ -187,9 +264,22 @@ impl<Counterpart: Role> V2McpSessionHandler<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
+    #[cfg(test)]
     fn new(server_id: McpServerAcpId, connect: Arc<dyn McpServerConnect<Counterpart>>) -> Self {
+        Self::new_with_service(server_id, connect, None)
+    }
+
+    fn new_with_service(
+        server_id: McpServerAcpId,
+        connect: Arc<dyn McpServerConnect<Counterpart>>,
+        service: Option<Arc<dyn McpService<Counterpart>>>,
+    ) -> Self {
         Self {
-            active_session: McpActiveSession::new(server_id.clone(), connect.clone()),
+            active_session: McpActiveSession::new_with_service(
+                server_id.clone(),
+                connect.clone(),
+                service,
+            ),
             server_id,
             connect,
         }
@@ -405,6 +495,8 @@ where
             connect,
             runner,
             phantom: _,
+            #[cfg(feature = "unstable_mcp_over_acp")]
+                service: _,
         } = self;
 
         let (tx, mut rx) = mpsc::unbounded();
@@ -424,6 +516,8 @@ where
                     connect.connect(McpConnectionTo {
                         context: McpConnectionContext::Standalone,
                         connection: connection_to_client.clone(),
+                        #[cfg(feature = "unstable_mcp_over_acp")]
+                        cleanup: None,
                     });
 
                 role::mcp::Client

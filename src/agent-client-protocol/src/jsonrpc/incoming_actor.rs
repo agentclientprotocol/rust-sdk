@@ -1,6 +1,5 @@
 // Types re-exported from crate root
 use futures::StreamExt as _;
-use futures::channel::mpsc;
 use futures::stream;
 use futures_concurrency::stream::StreamExt as _;
 use rustc_hash::FxHashMap;
@@ -24,11 +23,11 @@ use crate::jsonrpc::ResponseDestination;
 use crate::jsonrpc::ResponseDispatch;
 use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::TransportBatchEntry;
-use crate::jsonrpc::TransportFrame;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
+use crate::jsonrpc::{BudgetedFrame, FramePermit, TransportFrame};
 use crate::jsonrpc::{is_response_only_shape, raw_is_response_only_shape};
 
 use crate::role::Role;
@@ -59,8 +58,8 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
-    dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
+    transport_rx: super::FrameReceiver,
+    dynamic_handler_rx: super::admission::SimpleReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
     handlers: IncomingHandlers<
         impl HandleDispatchFrom<Counterpart>,
@@ -85,7 +84,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
     let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
         FxHashMap::default();
-    let mut pending_messages: Vec<Dispatch> = vec![];
+    let mut pending_messages: Vec<DeferredDispatch> = vec![];
 
     let request_cancellations = super::RequestCancellationRegistry::new();
     let mut on_close = Some(on_close);
@@ -128,6 +127,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             }
 
             IncomingProtocolMsg::Transport(frame) => {
+                let (frame, permit) = frame.into_parts();
                 let (entries, batch_completion) = frame_entries(frame);
                 for (message, destination) in entries {
                     match message {
@@ -156,6 +156,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                             &mut handler,
                                             &mut pending_messages,
                                             &request_cancellations,
+                                            permit.clone(),
                                         )
                                         .await?;
                                     }
@@ -196,6 +197,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                             &mut handler,
                                             &mut pending_messages,
                                             &request_cancellations,
+                                            permit.clone(),
                                         )
                                         .await?;
                                     }
@@ -215,8 +217,12 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                             if let Some(pending_reply) = pending_replies.remove(&id) {
                                 let result = protocol_compat
                                     .incoming_response(&pending_reply.method, result);
-                                let (dispatch, response_dispatch) =
-                                    dispatch_from_response(id, pending_reply, result);
+                                let (dispatch, response_dispatch) = dispatch_from_response(
+                                    id,
+                                    pending_reply,
+                                    result,
+                                    Some(permit.clone()),
+                                );
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -225,6 +231,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     &mut handler,
                                     &mut pending_messages,
                                     &request_cancellations,
+                                    permit.clone(),
                                 )
                                 .await?;
                                 if let Some(ack_rx) = response_dispatch.complete() {
@@ -260,6 +267,13 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                             }
                                             message @ (IncomingProtocolMsg::Transport(_)
                                             | IncomingProtocolMsg::TransportClosed) => {
+                                                if queued_transport_messages.len()
+                                                    >= connection.message_tx.queue_capacity()
+                                                {
+                                                    return Err(crate::util::internal_error(
+                                                        "transport frames exceed barrier queue capacity",
+                                                    ));
+                                                }
                                                 queued_transport_messages.push_back(message);
                                             }
                                         }
@@ -303,14 +317,18 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
     message: DynamicHandlerMessage<Counterpart>,
     connection: &ConnectionTo<Counterpart>,
     dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
-    pending_messages: &mut Vec<Dispatch>,
+    pending_messages: &mut Vec<DeferredDispatch>,
 ) -> Result<(), crate::Error> {
     match message {
         DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
             // Before adding the new handler, give it a chance to process
             // any pending messages.
             let mut new_pending_messages = vec![];
-            for pending_message in std::mem::take(pending_messages) {
+            for DeferredDispatch {
+                dispatch: pending_message,
+                permit,
+            } in std::mem::take(pending_messages)
+            {
                 tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
                 let reply_target = pending_message.handler_error_target();
                 let handler_attempt = reply_target
@@ -329,7 +347,10 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
                         retry: _,
                     }) => {
                         tracing::trace!(method = m.method(), handler = ?handler.dyn_describe_chain(), "Message not handled");
-                        new_pending_messages.push(m);
+                        new_pending_messages.push(DeferredDispatch {
+                            dispatch: m,
+                            permit: permit.clone(),
+                        });
                     }
                     Err(err) => {
                         tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
@@ -341,6 +362,13 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             *pending_messages = new_pending_messages;
 
             // Add handler so it will be used for future incoming messages.
+            if !dynamic_handlers.contains_key(&uuid)
+                && dynamic_handlers.len() >= connection.message_tx.queue_capacity()
+            {
+                return Err(crate::util::internal_error(
+                    "dynamic handler capacity exceeded",
+                ));
+            }
             dynamic_handlers.insert(uuid, handler);
         }
         DynamicHandlerMessage::RemoveDynamicHandler(uuid) => {
@@ -356,9 +384,14 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
 
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
-    Transport(TransportFrame),
+    Transport(BudgetedFrame),
     TransportClosed,
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
+}
+
+struct DeferredDispatch {
+    dispatch: Dispatch,
+    permit: FramePermit,
 }
 
 fn frame_entries(
@@ -472,11 +505,17 @@ pub(super) fn dispatch_from_response(
     id: RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
+    frame_bytes: Option<FramePermit>,
 ) -> (Dispatch, ResponseDispatch) {
     let response_dispatch = ResponseDispatch::default();
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
-    let router = ResponseRouter::new(id.clone(), pending_reply, response_dispatch.clone());
+    let router = ResponseRouter::new(
+        id.clone(),
+        pending_reply,
+        response_dispatch.clone(),
+        frame_bytes,
+    );
     (Dispatch::Response(result, router), response_dispatch)
 }
 
@@ -485,14 +524,19 @@ pub(super) fn dispatch_from_response(
     fields(method = dispatch.method()),
     level = "trace",
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one dispatch carries its retained frame admission"
+)]
 async fn dispatch_dispatch<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
     mut dispatch: Dispatch,
     dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
     handler: &mut impl HandleDispatchFrom<Counterpart>,
-    pending_messages: &mut Vec<Dispatch>,
+    pending_messages: &mut Vec<DeferredDispatch>,
     request_cancellations: &super::RequestCancellationRegistry,
+    permit: FramePermit,
 ) -> Result<(), crate::Error> {
     tracing::trace!(?dispatch, "dispatch_dispatch");
 
@@ -607,7 +651,15 @@ async fn dispatch_dispatch<Counterpart: Role>(
             ?method,
             "Retrying message as new dynamic handlers are added"
         );
-        pending_messages.push(dispatch);
+        if pending_messages.len() >= connection.message_tx.queue_capacity() {
+            return handle_handler_error(
+                connection,
+                error_target,
+                method,
+                crate::util::internal_error("pending dispatch capacity exceeded"),
+            );
+        }
+        pending_messages.push(DeferredDispatch { dispatch, permit });
         Ok(())
     } else {
         match dispatch {
@@ -617,6 +669,13 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
             Dispatch::Request(_, responder) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
+                #[cfg(feature = "unstable_mcp_over_acp")]
+                if method == "mcp/message" {
+                    return responder.respond_with_error(crate::Error::new(
+                        crate::mcp_server::MCP_SERVER_UNAVAILABLE,
+                        "MCP server unavailable",
+                    ));
+                }
                 responder.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {

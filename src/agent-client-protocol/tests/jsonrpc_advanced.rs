@@ -6,7 +6,7 @@
 //! - Out-of-order response handling
 
 use agent_client_protocol::{
-    Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
+    BudgetedFrame, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
     JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder,
     SentRequest, TransportBatch, TransportFrame, role::UntypedRole,
 };
@@ -461,7 +461,7 @@ async fn ordered_callback_installs_dynamic_handler_before_later_batch_entry() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected a ping request");
         };
@@ -481,7 +481,8 @@ async fn ordered_callback_installs_dynamic_handler_before_later_batch_entry() {
         let batch = TransportBatch::from_messages([response, notification])
             .expect("test batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("client should accept the response batch");
 
         while peer.rx.next().await.is_some() {}

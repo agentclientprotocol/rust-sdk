@@ -35,7 +35,8 @@ agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-v
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=1.9.1", default-features = false, features = ["tracing"] }
+# Draft cross-repository validation; replace with the released schema before publishing.
+agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol", rev = "e5c36d2671fd355f983533bc83b5feb7981d25a6", default-features = false, features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }
@@ -44,6 +45,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 async-tungstenite = { version = "0.35.0", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
 # Serialization
+base64 = "0.23"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 schemars = { version = "1.0", features = ["derive"] }
@@ -71,6 +73,7 @@ url = "2.5"
 async-io = "2"
 async-process = "2"
 async-stream = "0.3.6"
+async-channel = "2"
 blocking = "1"
 chrono = "0.4"
 futures = "0.3.32"

@@ -57,6 +57,8 @@ mod context;
 #[cfg(feature = "schemars")]
 mod registry;
 mod server;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod service;
 #[cfg(feature = "schemars")]
 mod tool;
 #[cfg(feature = "schemars")]
@@ -70,9 +72,20 @@ pub use registry::{
     EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
 };
 pub use server::McpServer;
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub use service::{
+    McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpService,
+};
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool::McpTool;
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool_fn::{tool_fn, tool_fn_mut};
+
+/// ACP binding error: the MCP operation admission or payload budget was exhausted.
+pub const MCP_RESOURCE_EXHAUSTED: i32 = -33000;
+/// ACP binding error: the requested MCP server registration is no longer available.
+pub const MCP_SERVER_UNAVAILABLE: i32 = -33001;
+/// ACP binding error: the MCP backend failed before returning an MCP outcome.
+pub const MCP_BACKEND_FAILURE: i32 = -33002;

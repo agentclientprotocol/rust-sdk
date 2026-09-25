@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
-    MessageMcpNotification, MessageMcpRequest, Notification as RpcNotification,
+    MessageMcpNotification, MessageMcpRequest, MessageMcpResponse, Notification as RpcNotification,
     Request as RpcRequest, RequestId, Response as RpcResponse,
 };
 use agent_client_protocol::{
@@ -98,6 +98,11 @@ pub struct ResponseEvent {
     /// True if this is an error response.
     pub is_error: bool,
 
+    /// Whether an error belongs to the outer ACP binding or the inner MCP peer.
+    /// Older trace files omit this provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_domain: Option<Protocol>,
+
     /// Response result or error object.
     pub payload: serde_json::Value,
 }
@@ -181,12 +186,7 @@ impl std::fmt::Debug for TraceWriter {
 }
 
 struct RequestDetails {
-    #[expect(dead_code)]
     protocol: Protocol,
-
-    #[expect(dead_code)]
-    method: String,
-
     request_from: ComponentIndex,
     request_to: ComponentIndex,
 }
@@ -232,13 +232,13 @@ impl TraceWriter {
         id: serde_json::Value,
         method: String,
         session: Option<String>,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
     ) {
+        redact_http_credentials(&mut params);
         self.request_details.insert(
             id.clone(),
             RequestDetails {
                 protocol,
-                method: method.clone(),
                 request_from: from,
                 request_to: to,
             },
@@ -261,15 +261,17 @@ impl TraceWriter {
         from: ComponentIndex,
         to: ComponentIndex,
         id: serde_json::Value,
-        is_error: bool,
-        payload: serde_json::Value,
+        error_domain: Option<Protocol>,
+        mut payload: serde_json::Value,
     ) {
+        redact_http_credentials(&mut payload);
         self.write_event(&TraceEvent::Response(ResponseEvent {
             ts: self.elapsed(),
             from: format!("{from:?}"),
             to: format!("{to:?}"),
             id,
-            is_error,
+            is_error: error_domain.is_some(),
+            error_domain,
             payload,
         }));
     }
@@ -282,8 +284,9 @@ impl TraceWriter {
         to: ComponentIndex,
         method: impl Into<String>,
         session: Option<String>,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
     ) {
+        redact_http_credentials(&mut params);
         self.write_event(&TraceEvent::Notification(NotificationEvent {
             ts: self.elapsed(),
             protocol,
@@ -367,13 +370,13 @@ impl TraceWriter {
                 };
                 let id = id_to_json(&id);
                 if let Some(RequestDetails {
-                    protocol: _,
-                    method: _,
+                    protocol,
                     request_from,
                     request_to,
                 }) = self.request_details.remove(&id)
                 {
-                    self.response(request_to, request_from, id, is_error, payload);
+                    let (error_domain, payload) = response_outcome(protocol, is_error, payload);
+                    self.response(request_to, request_from, id, error_domain, payload);
                 }
             }
         }
@@ -526,6 +529,85 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
     params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)
 }
 
+/// Project the logical MCP outcome without losing whether an error came from
+/// the outer ACP binding. In particular, an inner -32000 is not ACP AuthRequired.
+fn response_outcome(
+    protocol: Protocol,
+    outer_error: bool,
+    payload: serde_json::Value,
+) -> (Option<Protocol>, serde_json::Value) {
+    if outer_error {
+        return (Some(Protocol::Acp), payload);
+    }
+    if protocol == Protocol::Mcp {
+        match serde_json::from_value::<MessageMcpResponse>(payload.clone()) {
+            Ok(MessageMcpResponse::Result { result, .. }) => return (None, result),
+            Ok(MessageMcpResponse::Error { error, .. }) => {
+                return (
+                    Some(Protocol::Mcp),
+                    serde_json::to_value(error).expect("MCP errors contain only JSON values"),
+                );
+            }
+            // Retain a malformed carrier as observed, rather than invent an
+            // error the peer never sent. The binding validates it separately.
+            _ => {}
+        }
+    }
+    (None, payload)
+}
+
+/// Do not persist HTTP credentials from MCP declarations or other traced payloads.
+/// Only the trace's copy is modified; transport messages retain their headers.
+fn redact_http_credentials(value: &mut serde_json::Value) {
+    fn is_credential(name: &str) -> bool {
+        [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "x-api-key",
+        ]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+    }
+
+    match value {
+        serde_json::Value::Object(object) => {
+            match object.get_mut("headers") {
+                Some(serde_json::Value::Array(headers)) => {
+                    for header in headers {
+                        if header
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_credential)
+                            && let Some(value) = header.get_mut("value")
+                        {
+                            *value = serde_json::Value::String("[REDACTED]".to_owned());
+                        }
+                    }
+                }
+                Some(serde_json::Value::Object(headers)) => {
+                    for (name, value) in headers {
+                        if is_credential(name) {
+                            *value = serde_json::Value::String("[REDACTED]".to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for value in object.values_mut() {
+                redact_http_credentials(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_http_credentials(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A message observed going over a channel connected to `left` and `right`.
 /// This could be a successor message, a mcp-over-acp message, etc.
 #[derive(Debug)]
@@ -651,16 +733,84 @@ mod tests {
     use agent_client_protocol::RawJsonRpcMessage;
     use serde_json::json;
 
-    use super::{MessageInfo, Protocol};
+    use super::{MessageInfo, Protocol, ResponseEvent, redact_http_credentials, response_outcome};
 
     #[test]
-    fn tolerant_mcp_notification_params_are_traced_as_mcp() {
+    fn traced_mcp_outcomes_preserve_error_domain() {
+        let error = json!({"code":-32000,"message":"peer error","data":null,"extension":true});
+        assert_eq!(
+            response_outcome(Protocol::Mcp, false, json!({"error":error})),
+            (Some(Protocol::Mcp), error.clone())
+        );
+        assert_eq!(
+            response_outcome(Protocol::Mcp, true, error.clone()),
+            (Some(Protocol::Acp), error)
+        );
+        for result in [
+            json!(null),
+            json!({"resultType":"input_required","requestState":"opaque"}),
+        ] {
+            assert_eq!(
+                response_outcome(Protocol::Mcp, false, json!({"result":result})),
+                (None, result)
+            );
+        }
+        let acp_result = json!({"result": "not an MCP carrier"});
+        assert_eq!(
+            response_outcome(Protocol::Acp, false, acp_result.clone()),
+            (None, acp_result)
+        );
+    }
+
+    #[test]
+    fn older_response_traces_without_error_domain_still_deserialize() {
+        let response: ResponseEvent = serde_json::from_value(json!({
+            "ts": 0.0, "from": "Client", "to": "Agent", "id": 1,
+            "is_error": true, "payload": {"code": -32602, "message": "invalid"}
+        }))
+        .unwrap();
+        assert!(response.is_error);
+        assert_eq!(response.error_domain, None);
+    }
+
+    #[test]
+    fn trace_credentials_are_redacted_in_nested_header_shapes() {
+        let original = json!({
+            "params": {
+                "mcpServers": [{
+                    "type": "http",
+                    "headers": [
+                        {"name": "Authorization", "value": "Bearer test-token"},
+                        {"name": "X-Trace-Id", "value": "keep"},
+                        {"name": "cOoKiE", "value": "test-cookie"}
+                    ]
+                }]
+            },
+            "other": {"headers": {"X-Api-Key": "test-key", "Accept": "application/json"}}
+        });
+        let mut traced = original.clone();
+        redact_http_credentials(&mut traced);
+        let headers = &traced["params"]["mcpServers"][0]["headers"];
+        assert_eq!(headers[0]["value"], "[REDACTED]");
+        assert_eq!(headers[1]["value"], "keep");
+        assert_eq!(headers[2]["value"], "[REDACTED]");
+        assert_eq!(traced["other"]["headers"]["X-Api-Key"], "[REDACTED]");
+        assert_eq!(traced["other"]["headers"]["Accept"], "application/json");
+        assert_eq!(
+            original["params"]["mcpServers"][0]["headers"][0]["value"],
+            "Bearer test-token"
+        );
+    }
+
+    #[test]
+    fn nullable_mcp_notification_params_are_traced_as_mcp() {
         let RawJsonRpcMessage::Notification(notification) = RawJsonRpcMessage::notification(
             "mcp/message".into(),
             json!({
-                "connectionId": "connection-1",
+                "serverId": "server-1",
+                "requestId": "request-1",
                 "method": "notifications/progress",
-                "params": ["invalid named params"]
+                "params": null
             }),
         )
         .expect("notification is valid JSON-RPC") else {

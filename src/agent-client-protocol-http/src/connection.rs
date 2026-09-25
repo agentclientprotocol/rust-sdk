@@ -4,8 +4,9 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
-    schema::v1::RequestId,
+    BudgetedFrame, Channel, ConnectionLimits, FrameAdmission, FramePermit, RawJsonRpcMessage,
+    TransportBatch, TransportBatchEntry, TransportFrame,
+    schema::v1::{RequestId, Response as RpcResponse},
 };
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
@@ -20,14 +21,15 @@ pub(crate) enum ResponseRoute {
 }
 
 enum OutboundTransport {
-    Http(HttpOutbound),
+    Http(Box<HttpOutbound>),
     WebSocket(WebSocketOutbound),
 }
 
 struct HttpOutbound {
     connection_stream: OutboundMailbox,
-    session_streams: RwLock<HashMap<String, Arc<OutboundMailbox>>>,
-    pending_routes: Mutex<HashMap<RequestId, VecDeque<ResponseRoute>>>,
+    session_streams: RwLock<HashMap<String, (Arc<OutboundMailbox>, Option<FramePermit>)>>,
+    pending_routes: Mutex<HashMap<RequestId, VecDeque<(ResponseRoute, Option<FramePermit>)>>>,
+    limits: ConnectionLimits,
 }
 
 struct WebSocketOutbound {
@@ -35,28 +37,43 @@ struct WebSocketOutbound {
 }
 
 struct OutboundMailbox {
-    sender: mpsc::UnboundedSender<String>,
-    receiver_slot: Arc<StdMutex<Option<mpsc::UnboundedReceiver<String>>>>,
+    sender: mpsc::Sender<OutboundValue>,
+    receiver_slot: Arc<StdMutex<Option<mpsc::Receiver<OutboundValue>>>>,
+}
+
+struct OutboundValue {
+    text: String,
+    permit: Option<FramePermit>,
 }
 
 pub(crate) struct OutboundLease {
-    receiver: Option<mpsc::UnboundedReceiver<String>>,
-    receiver_slot: Arc<StdMutex<Option<mpsc::UnboundedReceiver<String>>>>,
+    receiver: Option<mpsc::Receiver<OutboundValue>>,
+    receiver_slot: Arc<StdMutex<Option<mpsc::Receiver<OutboundValue>>>>,
+    current: Option<FramePermit>,
 }
 
 impl OutboundMailbox {
     fn new() -> Self {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let (sender, receiver) = mpsc::channel(32);
         Self {
             sender,
             receiver_slot: Arc::new(StdMutex::new(Some(receiver))),
         }
     }
 
+    #[cfg(test)]
     fn push(&self, msg: String) -> Result<(), &'static str> {
+        self.push_with_permit(msg, None)
+    }
+
+    fn push_with_permit(
+        &self,
+        text: String,
+        permit: Option<FramePermit>,
+    ) -> Result<(), &'static str> {
         self.sender
-            .send(msg)
-            .map_err(|_| "outbound mailbox receiver closed")
+            .try_send(OutboundValue { text, permit })
+            .map_err(|_| "outbound mailbox full or receiver closed")
     }
 
     fn try_acquire(&self) -> Option<OutboundLease> {
@@ -68,24 +85,31 @@ impl OutboundMailbox {
         Some(OutboundLease {
             receiver: Some(receiver),
             receiver_slot: self.receiver_slot.clone(),
+            current: None,
         })
     }
 }
 
 impl OutboundLease {
     pub(crate) async fn recv(&mut self) -> Option<String> {
-        self.receiver
+        let value = self
+            .receiver
             .as_mut()
             .expect("outbound lease receiver missing")
             .recv()
-            .await
+            .await?;
+        self.current = value.permit;
+        Some(value.text)
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<String, mpsc::error::TryRecvError> {
-        self.receiver
+        let value = self
+            .receiver
             .as_mut()
             .expect("outbound lease receiver missing")
-            .try_recv()
+            .try_recv()?;
+        self.current = value.permit;
+        Ok(value.text)
     }
 }
 
@@ -104,8 +128,9 @@ impl Drop for OutboundLease {
 }
 
 pub(crate) struct Connection {
-    inbound_tx: mpsc::UnboundedSender<TransportFrame>,
-    outbound_rx: Mutex<Option<mpsc::UnboundedReceiver<TransportFrame>>>,
+    inbound_tx: mpsc::Sender<BudgetedFrame>,
+    inbound_admission: FrameAdmission,
+    outbound_rx: Mutex<Option<mpsc::Receiver<BudgetedFrame>>>,
     agent_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     router_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
     closed_tx: watch::Sender<bool>,
@@ -114,17 +139,61 @@ pub(crate) struct Connection {
 
 impl Connection {
     pub(crate) fn send_frame_to_agent(&self, frame: TransportFrame) -> Result<(), &'static str> {
+        let frame = self.admit_frame_to_agent(frame)?;
+        self.send_budgeted_frame_to_agent(frame)
+    }
+
+    pub(crate) fn admit_frame_to_agent(
+        &self,
+        frame: TransportFrame,
+    ) -> Result<BudgetedFrame, &'static str> {
+        self.inbound_admission
+            .try_admit(frame)
+            .map_err(|_| "agent frame byte capacity exceeded")
+    }
+
+    pub(crate) fn send_budgeted_frame_to_agent(
+        &self,
+        frame: BudgetedFrame,
+    ) -> Result<(), &'static str> {
         self.inbound_tx
-            .send(frame)
-            .map_err(|_| "agent channel closed")
+            .try_send(frame)
+            .map_err(|_| "agent channel full or closed")
     }
 
-    pub(crate) async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
-        self.outbound_transport
-            .record_pending_route(id, route)
-            .await;
+    pub(crate) async fn register_post_routes(
+        &self,
+        sessions: &[String],
+        routes: &[(RequestId, ResponseRoute)],
+        permit: &FramePermit,
+    ) -> Result<Vec<String>, &'static str> {
+        if let OutboundTransport::Http(http) = &self.outbound_transport {
+            http.register_post_routes(sessions, routes, permit).await
+        } else {
+            Ok(Vec::new())
+        }
     }
 
+    pub(crate) async fn rollback_post_routes(
+        &self,
+        sessions: &[String],
+        routes: &[(RequestId, ResponseRoute)],
+    ) {
+        if let OutboundTransport::Http(http) = &self.outbound_transport {
+            http.rollback_post_routes(sessions, routes).await;
+        }
+    }
+
+    pub(crate) async fn cancel_pending_routes(&self, ids: &[RequestId]) {
+        if let OutboundTransport::Http(http) = &self.outbound_transport {
+            let mut pending = http.pending_routes.lock().await;
+            for id in ids {
+                take_pending_route(&mut pending, id);
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) async fn ensure_session(&self, session_id: &str) {
         self.outbound_transport.ensure_session(session_id).await;
     }
@@ -177,11 +246,14 @@ impl Connection {
         }));
     }
 
-    pub(crate) async fn route_outbound(&self, frame: TransportFrame) -> Result<(), &'static str> {
-        self.outbound_transport.route_outbound(frame).await
+    pub(crate) async fn route_outbound(&self, frame: BudgetedFrame) -> Result<(), &'static str> {
+        let (frame, permit) = frame.into_parts();
+        self.outbound_transport
+            .route_outbound(frame, Some(permit))
+            .await
     }
 
-    pub(crate) async fn recv_initial(&self) -> Option<TransportFrame> {
+    pub(crate) async fn recv_initial(&self) -> Option<BudgetedFrame> {
         let mut guard = self.outbound_rx.lock().await;
         let rx = guard.as_mut()?;
         rx.recv().await
@@ -191,6 +263,10 @@ impl Connection {
         // Explicit peer teardown is abortive. Natural agent completion instead
         // awaits the router in `close_connection_task` before closing streams.
         self.close_streams();
+        if let OutboundTransport::Http(http) = &self.outbound_transport {
+            http.session_streams.write().await.clear();
+            http.pending_routes.lock().await.clear();
+        }
         if let Some(h) = self.agent_handle.lock().await.take() {
             h.abort();
         }
@@ -206,21 +282,14 @@ impl Connection {
 
 impl OutboundTransport {
     fn http() -> Self {
-        Self::Http(HttpOutbound::new())
+        Self::Http(Box::new(HttpOutbound::new()))
     }
 
     fn websocket() -> Self {
         Self::WebSocket(WebSocketOutbound::new())
     }
 
-    async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
-        let Self::Http(http) = self else {
-            return;
-        };
-
-        http.record_pending_route(id, route).await;
-    }
-
+    #[cfg(test)]
     async fn ensure_session(&self, session_id: &str) {
         let Self::Http(http) = self else {
             return;
@@ -238,7 +307,12 @@ impl OutboundTransport {
 
     async fn subscribe_session_stream(&self, session_id: &str) -> Option<OutboundLease> {
         match self {
-            Self::Http(http) => http.session_stream(session_id).await.try_acquire(),
+            Self::Http(http) => http
+                .session_streams
+                .read()
+                .await
+                .get(session_id)
+                .and_then(|(stream, _)| stream.try_acquire()),
             Self::WebSocket(_) => None,
         }
     }
@@ -259,7 +333,11 @@ impl OutboundTransport {
         http.connection_stream.push(msg)
     }
 
-    async fn route_outbound(&self, frame: TransportFrame) -> Result<(), &'static str> {
+    async fn route_outbound(
+        &self,
+        frame: TransportFrame,
+        permit: Option<FramePermit>,
+    ) -> Result<(), &'static str> {
         match frame {
             TransportFrame::Single(message) => {
                 let serialized = match serde_json::to_string(&message) {
@@ -270,13 +348,18 @@ impl OutboundTransport {
                     }
                 };
                 match self {
-                    Self::Http(http) => http.route_outbound(&message, serialized).await,
-                    Self::WebSocket(websocket) => websocket.all_outbound.push(serialized),
+                    Self::Http(http) => {
+                        http.route_outbound_with_permit(&message, serialized, permit)
+                            .await
+                    }
+                    Self::WebSocket(websocket) => {
+                        websocket.all_outbound.push_with_permit(serialized, permit)
+                    }
                 }
             }
             TransportFrame::Malformed { raw, .. } => match self {
-                Self::Http(http) => http.connection_stream.push(raw),
-                Self::WebSocket(websocket) => websocket.all_outbound.push(raw),
+                Self::Http(http) => http.connection_stream.push_with_permit(raw, permit),
+                Self::WebSocket(websocket) => websocket.all_outbound.push_with_permit(raw, permit),
             },
             TransportFrame::Batch(batch) => {
                 let serialized = match serde_json::to_string(&batch) {
@@ -287,8 +370,10 @@ impl OutboundTransport {
                     }
                 };
                 match self {
-                    Self::Http(http) => http.route_outbound_batch(&batch, serialized).await,
-                    Self::WebSocket(websocket) => websocket.all_outbound.push(serialized),
+                    Self::Http(http) => http.route_outbound_batch(&batch, serialized, permit).await,
+                    Self::WebSocket(websocket) => {
+                        websocket.all_outbound.push_with_permit(serialized, permit)
+                    }
                 }
             }
         }
@@ -301,9 +386,70 @@ impl HttpOutbound {
             connection_stream: OutboundMailbox::new(),
             session_streams: RwLock::new(HashMap::new()),
             pending_routes: Mutex::new(HashMap::new()),
+            limits: ConnectionLimits::default(),
         }
     }
 
+    async fn register_post_routes(
+        &self,
+        sessions: &[String],
+        routes: &[(RequestId, ResponseRoute)],
+        permit: &FramePermit,
+    ) -> Result<Vec<String>, &'static str> {
+        // Lock both metadata tables in one order and check the whole batch
+        // before inserting anything: rejection must never leave half a batch.
+        let mut streams = self.session_streams.write().await;
+        let mut pending = self.pending_routes.lock().await;
+        let mut new_sessions = Vec::new();
+        for id in sessions {
+            if !streams.contains_key(id) && !new_sessions.contains(id) {
+                new_sessions.push(id.clone());
+            }
+        }
+        let pending_count: usize = pending.values().map(VecDeque::len).sum();
+        let limit = self.limits.max_queued_frames.max(1);
+        let available = limit.saturating_sub(streams.len().saturating_add(pending_count));
+        if new_sessions.len().saturating_add(routes.len()) > available {
+            return Err("HTTP pending route or session capacity exceeded");
+        }
+        for id in &new_sessions {
+            streams.insert(
+                id.clone(),
+                (Arc::new(OutboundMailbox::new()), Some(permit.clone())),
+            );
+        }
+        for (id, route) in routes {
+            if let Some(id) = pending_route_key(id) {
+                pending
+                    .entry(id)
+                    .or_default()
+                    .push_back((route.clone(), Some(permit.clone())));
+            }
+        }
+        Ok(new_sessions)
+    }
+
+    async fn rollback_post_routes(
+        &self,
+        new_sessions: &[String],
+        routes: &[(RequestId, ResponseRoute)],
+    ) {
+        let mut streams = self.session_streams.write().await;
+        let mut pending = self.pending_routes.lock().await;
+        for id in new_sessions {
+            streams.remove(id);
+        }
+        for (id, _) in routes.iter().rev() {
+            if let Some(queue) = pending.get_mut(id) {
+                queue.pop_back();
+                if queue.is_empty() {
+                    pending.remove(id);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
     async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
         if let Some(key) = pending_route_key(&id) {
             self.pending_routes
@@ -311,31 +457,71 @@ impl HttpOutbound {
                 .await
                 .entry(key)
                 .or_default()
-                .push_back(route);
+                .push_back((route, None));
         }
     }
 
+    #[cfg(test)]
     async fn ensure_session(&self, session_id: &str) {
         self.session_stream(session_id).await;
     }
 
+    async fn session_stream_with_permit(
+        &self,
+        session_id: &str,
+        permit: Option<FramePermit>,
+    ) -> Result<Arc<OutboundMailbox>, &'static str> {
+        let mut streams = self.session_streams.write().await;
+        if let Some((stream, _)) = streams.get(session_id) {
+            return Ok(stream.clone());
+        }
+        let Some(permit) = permit else {
+            return Err("session stream has no admitted source frame");
+        };
+        let pending_count: usize = self
+            .pending_routes
+            .lock()
+            .await
+            .values()
+            .map(VecDeque::len)
+            .sum();
+        if streams.len().saturating_add(pending_count) >= self.limits.max_queued_frames.max(1) {
+            return Err("HTTP session stream capacity exceeded");
+        }
+        let stream = Arc::new(OutboundMailbox::new());
+        streams.insert(session_id.to_string(), (stream.clone(), Some(permit)));
+        Ok(stream)
+    }
+
+    #[cfg(test)]
     async fn session_stream(&self, session_id: &str) -> Arc<OutboundMailbox> {
         if let Some(stream) = self.session_streams.read().await.get(session_id) {
-            return stream.clone();
+            return stream.0.clone();
         }
 
         self.session_streams
             .write()
             .await
             .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(OutboundMailbox::new()))
+            .or_insert_with(|| (Arc::new(OutboundMailbox::new()), None))
+            .0
             .clone()
     }
 
+    #[cfg(test)]
     async fn route_outbound(
         &self,
         msg: &RawJsonRpcMessage,
         serialized: String,
+    ) -> Result<(), &'static str> {
+        self.route_outbound_with_permit(msg, serialized, None).await
+    }
+
+    async fn route_outbound_with_permit(
+        &self,
+        msg: &RawJsonRpcMessage,
+        serialized: String,
+        permit: Option<FramePermit>,
     ) -> Result<(), &'static str> {
         let route = match msg {
             RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_) => {
@@ -353,15 +539,23 @@ impl HttpOutbound {
                 route.unwrap_or(ResponseRoute::Connection)
             }
         };
+        // A successful session/new (or fork) response can be followed
+        // immediately by a session SSE GET, before any session-scoped POST.
+        if let Some(session_id) = response_session_id(msg) {
+            self.session_stream_with_permit(session_id, permit.clone())
+                .await?;
+        }
 
         match route {
             ResponseRoute::Connection => {
                 trace!(target = "connection", "→ connection-scoped stream");
-                self.connection_stream.push(serialized)
+                self.connection_stream.push_with_permit(serialized, permit)
             }
             ResponseRoute::Session(sid) => {
                 trace!(target = %sid, "→ session-scoped stream");
-                self.session_stream(&sid).await.push(serialized)
+                self.session_stream_with_permit(&sid, permit.clone())
+                    .await?
+                    .push_with_permit(serialized, permit)
             }
         }
     }
@@ -370,6 +564,7 @@ impl HttpOutbound {
         &self,
         batch: &TransportBatch,
         serialized: String,
+        permit: Option<FramePermit>,
     ) -> Result<(), &'static str> {
         let mut pending_routes = self.pending_routes.lock().await;
         let mut common_route = None;
@@ -390,6 +585,14 @@ impl HttpOutbound {
             }
         }
         drop(pending_routes);
+        for entry in batch.entries() {
+            if let TransportBatchEntry::Message(message) = entry
+                && let Some(session_id) = response_session_id(message)
+            {
+                self.session_stream_with_permit(session_id, permit.clone())
+                    .await?;
+            }
+        }
 
         let route = if routes_disagree {
             ResponseRoute::Connection
@@ -399,11 +602,13 @@ impl HttpOutbound {
         match route {
             ResponseRoute::Connection => {
                 trace!(target = "connection", "→ connection-scoped batch stream");
-                self.connection_stream.push(serialized)
+                self.connection_stream.push_with_permit(serialized, permit)
             }
             ResponseRoute::Session(session_id) => {
                 trace!(target = %session_id, "→ session-scoped batch stream");
-                self.session_stream(&session_id).await.push(serialized)
+                self.session_stream_with_permit(&session_id, permit.clone())
+                    .await?
+                    .push_with_permit(serialized, permit)
             }
         }
     }
@@ -442,7 +647,8 @@ where
         Channel,
         futures::future::BoxFuture<'static, agent_client_protocol::Result<()>>,
     ) {
-        self().into_channel_and_future()
+        let (channel, driver) = self().into_channel_and_future();
+        (channel, Box::pin(driver))
     }
 }
 
@@ -483,14 +689,19 @@ impl ConnectionRegistry {
         outbound_transport: OutboundTransport,
     ) -> Arc<Connection> {
         let (channel, agent_future) = self.factory.spawn_agent();
-        let (inbound_tx, mut inbound_rx) = mpsc::unbounded_channel::<TransportFrame>();
-        let (outbound_tx, outbound_rx) = mpsc::unbounded_channel::<TransportFrame>();
+        let mut outbound_transport = outbound_transport;
+        if let OutboundTransport::Http(http) = &mut outbound_transport {
+            http.limits = channel.tx.admission().limits();
+        }
+        let (inbound_tx, mut inbound_rx) = mpsc::channel::<BudgetedFrame>(32);
+        let (outbound_tx, outbound_rx) = mpsc::channel::<BudgetedFrame>(32);
         let (closed_tx, _) = watch::channel(false);
 
         let Channel {
             rx: mut agent_rx,
             tx: mut agent_tx,
         } = channel;
+        let inbound_admission = agent_tx.admission();
         let inbound = async move {
             while let Some(msg) = inbound_rx.recv().await {
                 if agent_tx.send(msg).await.is_err() {
@@ -504,7 +715,7 @@ impl ConnectionRegistry {
         let inbound_abort_for_outbound = inbound_abort.clone();
         let outbound = async move {
             while let Some(msg) = agent_rx.next().await {
-                if outbound_tx.send(msg).is_err() {
+                if outbound_tx.send(msg).await.is_err() {
                     inbound_abort_for_outbound.abort();
                     break;
                 }
@@ -516,6 +727,7 @@ impl ConnectionRegistry {
 
         let connection = Arc::new(Connection {
             inbound_tx,
+            inbound_admission,
             outbound_rx: Mutex::new(Some(outbound_rx)),
             agent_handle: Mutex::new(None),
             router_handle: Mutex::new(None),
@@ -582,6 +794,10 @@ async fn close_connection_task(connection: Weak<Connection>) {
         error!("outbound router task failed while draining: {error}");
     }
     connection.close_streams();
+    if let OutboundTransport::Http(http) = &connection.outbound_transport {
+        http.session_streams.write().await.clear();
+        http.pending_routes.lock().await.clear();
+    }
 }
 
 fn pending_route_key(id: &RequestId) -> Option<RequestId> {
@@ -591,8 +807,15 @@ fn pending_route_key(id: &RequestId) -> Option<RequestId> {
     }
 }
 
+fn response_session_id(msg: &RawJsonRpcMessage) -> Option<&str> {
+    let RawJsonRpcMessage::Response(RpcResponse::Result { result, .. }) = msg else {
+        return None;
+    };
+    result.get("sessionId")?.as_str()
+}
+
 fn take_pending_route(
-    pending_routes: &mut HashMap<RequestId, VecDeque<ResponseRoute>>,
+    pending_routes: &mut HashMap<RequestId, VecDeque<(ResponseRoute, Option<FramePermit>)>>,
     key: &RequestId,
 ) -> Option<ResponseRoute> {
     let routes = pending_routes.get_mut(key)?;
@@ -601,8 +824,12 @@ fn take_pending_route(
     if remove_entry {
         pending_routes.remove(key);
     }
-    route
+    route.map(|(route, _permit)| route)
 }
+
+#[cfg(test)]
+#[path = "connection_admission_tests.rs"]
+mod admission_tests;
 
 #[cfg(test)]
 mod tests {
@@ -617,18 +844,18 @@ mod tests {
 
     use super::*;
 
-    const ISSUE_288_BURST: usize = 1_025;
-
     #[tokio::test]
-    async fn outbound_mailbox_buffers_bursts_before_subscription() {
+    async fn outbound_mailbox_bounds_bursts_before_subscription() {
         let mailbox = OutboundMailbox::new();
+        let capacity = agent_client_protocol::ConnectionLimits::default().max_queued_frames;
 
-        for index in 0..ISSUE_288_BURST {
+        for index in 0..capacity {
             mailbox.push(format!("message-{index}")).unwrap();
         }
+        assert!(mailbox.push("overflow".into()).is_err());
 
         let mut receiver = mailbox.try_acquire().unwrap();
-        for index in 0..ISSUE_288_BURST {
+        for index in 0..capacity {
             assert_eq!(
                 receiver.recv().await,
                 Some(format!("message-{index}")),
@@ -641,17 +868,21 @@ mod tests {
     async fn outbound_mailbox_does_not_stall_when_subscriber_is_slow() {
         let mailbox = OutboundMailbox::new();
         let mut receiver = mailbox.try_acquire().unwrap();
+        let capacity = agent_client_protocol::ConnectionLimits::default().max_queued_frames;
 
-        for index in 0..ISSUE_288_BURST {
+        for index in 0..capacity {
             mailbox.push(format!("message-{index}")).unwrap();
         }
-        for index in 0..ISSUE_288_BURST {
+        assert!(mailbox.push("overflow".into()).is_err());
+        for index in 0..capacity {
             assert_eq!(
                 receiver.recv().await,
                 Some(format!("message-{index}")),
                 "message {index} should remain ordered"
             );
         }
+        mailbox.push("recovered".into()).unwrap();
+        assert_eq!(receiver.recv().await.as_deref(), Some("recovered"));
     }
 
     #[tokio::test]
@@ -679,6 +910,7 @@ mod tests {
     #[tokio::test]
     async fn slow_session_mailbox_does_not_stall_other_routes() {
         let outbound = HttpOutbound::new();
+        let capacity = agent_client_protocol::ConnectionLimits::default().max_queued_frames;
         let mut slow_session = outbound
             .session_stream("slow-session")
             .await
@@ -691,7 +923,7 @@ mod tests {
             .unwrap();
 
         timeout(Duration::from_secs(1), async {
-            for index in 0..ISSUE_288_BURST {
+            for index in 0..=capacity {
                 let message = RawJsonRpcMessage::notification(
                     "session/update".to_string(),
                     serde_json::json!({
@@ -701,7 +933,15 @@ mod tests {
                 )
                 .unwrap();
                 let serialized = serde_json::to_string(&message).unwrap();
-                outbound.route_outbound(&message, serialized).await.unwrap();
+                let result = outbound.route_outbound(&message, serialized).await;
+                if index == capacity {
+                    assert!(
+                        result.is_err(),
+                        "overflow must be explicit, not silently dropped"
+                    );
+                } else {
+                    result.unwrap();
+                }
             }
 
             let marker = RawJsonRpcMessage::notification(
@@ -727,7 +967,7 @@ mod tests {
             true
         );
 
-        for index in 0..ISSUE_288_BURST {
+        for index in 0..capacity {
             let message = slow_session.recv().await.unwrap();
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&message).unwrap()["params"]["index"],
@@ -772,10 +1012,11 @@ mod tests {
             let future = Box::pin(async move {
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                    .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                         RequestId::Number(1),
                         Ok(serde_json::json!({ "done": true })),
                     )))
+                    .await
                     .unwrap();
                 Ok(())
             });
@@ -801,11 +1042,12 @@ mod tests {
                 emit.notified().await;
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Malformed {
+                    .send_frame(TransportFrame::Malformed {
                         raw: "{not json".to_string(),
                         error: agent_client_protocol::Error::parse_error()
                             .data("transport parse error"),
                     })
+                    .await
                     .unwrap();
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
@@ -832,7 +1074,8 @@ mod tests {
             let future = Box::pin(async move {
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(message))
+                    .send_frame(TransportFrame::Single(message))
+                    .await
                     .unwrap();
                 exit.notified().await;
                 Ok(())
@@ -871,7 +1114,8 @@ mod tests {
                 .expect("test batch is non-empty");
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Batch(batch))
+                    .send_frame(TransportFrame::Batch(batch))
+                    .await
                     .unwrap();
                 exit.notified().await;
                 Ok(())
@@ -898,13 +1142,14 @@ mod tests {
                 emit.notified().await;
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(
+                    .send_frame(TransportFrame::Single(
                         RawJsonRpcMessage::notification(
                             "test/final".to_string(),
                             serde_json::json!({}),
                         )
                         .unwrap(),
                     ))
+                    .await
                     .unwrap();
                 Ok(())
             });
@@ -974,7 +1219,7 @@ mod tests {
             .expect("buffered response should be forwarded before teardown");
 
         assert!(matches!(
-            frame,
+            frame.frame(),
             TransportFrame::Single(RawJsonRpcMessage::Response(
                 agent_client_protocol::schema::v1::Response::Result {
                     id: RequestId::Number(1),
@@ -1045,6 +1290,7 @@ mod tests {
         }));
         let (_connection_id, connection) = registry.create_connection().await;
         let mut connection_rx = connection.subscribe_connection_stream().unwrap();
+        connection.ensure_session("session-1").await;
         let mut session_rx = connection
             .subscribe_session_stream("session-1")
             .await
@@ -1118,7 +1364,7 @@ mod tests {
         let serialized = serde_json::to_string(&batch).unwrap();
 
         outbound
-            .route_outbound_batch(&batch, serialized.clone())
+            .route_outbound_batch(&batch, serialized.clone(), None)
             .await
             .unwrap();
 

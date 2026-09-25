@@ -4,8 +4,9 @@
 use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcMessage, Responder, SessionMessage, TransportBatch, TransportFrame, UntypedMessage,
+    Agent, BudgetedFrame, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage,
+    JsonRpcNotification, RawJsonRpcMessage, Responder, SessionMessage, TransportBatch,
+    TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
         LoadSessionResponse, RequestId, ResumeSessionRequest, ResumeSessionResponse,
@@ -138,7 +139,7 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected session/load")
         };
@@ -153,7 +154,8 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
         ])
         .expect("restore batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("client should accept replay and response");
 
         while peer.rx.next().await.is_some() {}
@@ -206,7 +208,7 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected session/resume")
         };
@@ -219,7 +221,8 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
         ])
         .expect("resume batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("client should accept update and response");
 
         while peer.rx.next().await.is_some() {}
@@ -256,7 +259,7 @@ async fn resume_session_from_preserves_the_existing_request() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected session/resume")
         };
@@ -265,10 +268,11 @@ async fn resume_session_from_preserves_the_existing_request() {
             peer_request
         );
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                 request.id,
                 Ok(serde_json::to_value(ResumeSessionResponse::new())?),
             )))
+            .await
             .expect("client should accept resume response");
         while peer.rx.next().await.is_some() {}
         Ok::<(), Error>(())
@@ -314,11 +318,12 @@ async fn restore_waits_for_routing_acknowledgment_before_publication() {
 
     let peer = async move {
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "test/block-incoming".to_owned(),
                 serde_json::json!({}),
                 RequestId::Number(1),
             )?))
+            .await
             .expect("client should accept the blocking request");
         restore_called_rx
             .await
@@ -381,7 +386,7 @@ async fn failed_restore_removes_routing_before_later_batch_entries() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected session/load")
         };
@@ -395,18 +400,21 @@ async fn failed_restore_removes_routing_before_later_batch_entries() {
         ])
         .expect("failure batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
+            .send_frame(TransportFrame::Batch(batch))
+            .await
             .expect("client should accept failure, probe, and barrier");
 
-        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(retry))) = peer.rx.next().await
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(retry))) =
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected retry session/load")
         };
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                 retry.id,
                 Ok(serde_json::to_value(LoadSessionResponse::new())?),
             )))
+            .await
             .expect("client should accept retry response");
         while peer.rx.next().await.is_some() {}
         Ok::<(), Error>(())
@@ -477,7 +485,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
 
     let peer = async move {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected session/resume")
         };
@@ -490,7 +498,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
             .map_err(Error::into_internal_error)?;
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(notification))) =
-            peer.rx.next().await
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("dropping the restore future should send $/cancel_request")
         };
@@ -504,28 +512,32 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
         ])
         .expect("cancellation probe batch should be non-empty");
         peer.tx
-            .unbounded_send(TransportFrame::Batch(probe_batch))
+            .send_frame(TransportFrame::Batch(probe_batch))
+            .await
             .expect("client should accept cancellation probe and barrier");
         barrier_observed_rx
             .await
             .map_err(Error::into_internal_error)?;
 
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                 request.id,
                 Err(Error::request_cancelled()),
             )))
+            .await
             .expect("client should accept the cancelled request's response");
 
-        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(retry))) = peer.rx.next().await
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(retry))) =
+            peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected retry session/resume")
         };
         peer.tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                 retry.id,
                 Ok(serde_json::to_value(ResumeSessionResponse::new())?),
             )))
+            .await
             .expect("client should accept retry response");
         while peer.rx.next().await.is_some() {}
         Ok::<(), Error>(())

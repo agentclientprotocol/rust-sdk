@@ -34,6 +34,11 @@ attaches one while forking. Successful v2 attachments remain active for the
 connection lifetime, and all three builders expose `on_proxy_session_start` to
 forward proxied setup without coupling later session events to that response.
 
+The native transport targets MCP 2026-07-28: requests carry their own metadata
+and logical IDs, with request-scoped notifications and cancellation rather than
+an MCP connection lifecycle. See [Native MCP-over-ACP](./md/mcp-over-acp.md)
+for the direct rmcp example and current resource-limit caveats.
+
 **Proxy orchestration**
 
 - [`agent-client-protocol-conductor`](./src/agent-client-protocol-conductor/) – Binary and library that manages chains of proxy components.
