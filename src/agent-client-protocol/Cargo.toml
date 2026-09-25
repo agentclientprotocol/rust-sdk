@@ -62,6 +62,7 @@ wasm_js = ["uuid/js"]
 [dependencies]
 agent-client-protocol-schema.workspace = true
 agent-client-protocol-derive.workspace = true
+async-channel.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true
 rustc-hash.workspace = true

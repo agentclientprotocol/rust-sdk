@@ -235,7 +235,7 @@ where
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{
-        Channel, TransportBatch, TransportBatchEntry, TransportFrame,
+        BudgetedFrame, Channel, TransportBatch, TransportBatchEntry, TransportFrame,
         schema::v1::{RequestId, Response as RpcResponse},
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
@@ -251,8 +251,6 @@ mod tests {
     use crate::connection::{AgentFactory, ConnectionRegistry};
 
     use super::*;
-
-    const ISSUE_288_BURST: usize = 1_025;
 
     struct CapturingAgentFactory {
         forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
@@ -273,7 +271,7 @@ mod tests {
                     tx: outgoing,
                 } = agent;
                 while let Some(frame) = incoming.next().await {
-                    match frame {
+                    match frame.into_frame() {
                         TransportFrame::Single(message) => {
                             if forwarded.send(message).is_err() {
                                 break;
@@ -281,9 +279,11 @@ mod tests {
                         }
                         TransportFrame::Malformed { error, .. } => {
                             outgoing
-                                .unbounded_send(TransportFrame::Single(
-                                    RawJsonRpcMessage::response(RequestId::Null, Err(error)),
-                                ))
+                                .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
+                                    RequestId::Null,
+                                    Err(error),
+                                )))
+                                .await
                                 .unwrap();
                         }
                         TransportFrame::Batch(_) => panic!("expected a single JSON-RPC frame"),
@@ -310,7 +310,9 @@ mod tests {
             let (mut agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
             let future = Box::pin(async move {
-                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
+                let Some(TransportFrame::Batch(batch)) =
+                    agent.rx.next().await.map(BudgetedFrame::into_frame)
+                else {
                     panic!("expected one batch frame");
                 };
                 let mut methods = Vec::new();
@@ -331,7 +333,8 @@ mod tests {
                     TransportBatch::from_messages(responses).expect("responses are non-empty");
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Batch(responses))
+                    .send_frame(TransportFrame::Batch(responses))
+                    .await
                     .unwrap();
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
@@ -357,13 +360,14 @@ mod tests {
                 emit.notified().await;
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(
+                    .send_frame(TransportFrame::Single(
                         RawJsonRpcMessage::notification(
                             "test/final".to_string(),
                             serde_json::json!({}),
                         )
                         .unwrap(),
                     ))
+                    .await
                     .unwrap();
                 Ok(())
             });
@@ -390,13 +394,14 @@ mod tests {
                 emit.notified().await;
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(
+                    .send_frame(TransportFrame::Single(
                         RawJsonRpcMessage::notification(
                             "test/final".to_string(),
                             serde_json::json!({}),
                         )
                         .unwrap(),
                     ))
+                    .await
                     .unwrap();
                 Ok(())
             });
@@ -406,8 +411,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_buffers_burst_without_polling_slow_subscriber() {
+    async fn websocket_bounds_burst_and_drains_every_accepted_message() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let capacity = agent_client_protocol::ConnectionLimits::default().max_queued_frames;
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
             forwarded: forwarded_tx,
         })));
@@ -425,11 +431,16 @@ mod tests {
                                 .await;
                             let mut outbound_rx = connection.subscribe_all_outbound().unwrap();
 
-                            for index in 0..ISSUE_288_BURST {
+                            for index in 0..capacity {
                                 connection
                                     .push_all_outbound_for_test(format!("message-{index}"))
                                     .unwrap();
                             }
+                            assert!(
+                                connection
+                                    .push_all_outbound_for_test("overflow".into())
+                                    .is_err()
+                            );
 
                             let mut closed = connection.subscribe_closed();
                             let (mut ws_tx, mut ws_rx) = socket.split();
@@ -457,7 +468,7 @@ mod tests {
         let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
 
         timeout(Duration::from_secs(5), async {
-            for index in 0..ISSUE_288_BURST {
+            for index in 0..capacity {
                 let frame = client.next().await.unwrap().unwrap();
                 let ClientWsMessage::Text(text) = frame else {
                     panic!("expected text frame: {frame:?}");
@@ -466,7 +477,7 @@ mod tests {
             }
         })
         .await
-        .expect("WebSocket should deliver the complete burst");
+        .expect("WebSocket should deliver every accepted frame");
 
         server.abort();
     }

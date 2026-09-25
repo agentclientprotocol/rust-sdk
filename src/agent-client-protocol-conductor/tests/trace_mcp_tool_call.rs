@@ -384,6 +384,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(0)",
                     id: String("id:1"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
@@ -426,6 +427,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Client",
                     id: String("id:0"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
@@ -504,6 +506,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(0)",
                     id: String("id:3"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "sessionId": String("session:0"),
                         "modes": Object {
@@ -554,6 +557,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Client",
                     id: String("id:2"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "sessionId": String("session:0"),
                         "modes": Object {
@@ -665,6 +669,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(1)",
                     id: String("id:6"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "resultType": String("complete"),
                         "supportedVersions": Array [
@@ -692,78 +697,6 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     from: "Proxy(1)",
                     to: "Proxy(0)",
                     id: String("id:7"),
-                    method: "tools/list",
-                    session: None,
-                    params: Object {
-                        "_meta": Object {
-                            "io.modelcontextprotocol/protocolVersion": String("2026-07-28"),
-                            "io.modelcontextprotocol/clientInfo": Object {
-                                "name": String("testy"),
-                                "version": String("0.11.0"),
-                            },
-                            "io.modelcontextprotocol/clientCapabilities": Object {},
-                            "progressToken": Number(0),
-                        },
-                    },
-                },
-            ),
-            Response(
-                ResponseEvent {
-                    ts: 0.0,
-                    from: "Proxy(0)",
-                    to: "Proxy(1)",
-                    id: String("id:7"),
-                    is_error: false,
-                    payload: Object {
-                        "resultType": String("complete"),
-                        "ttlMs": Number(0),
-                        "cacheScope": String("private"),
-                        "tools": Array [
-                            Object {
-                                "name": String("echo"),
-                                "description": String("Echoes back the input message"),
-                                "inputSchema": Object {
-                                    "$schema": String("https://json-schema.org/draft/2020-12/schema"),
-                                    "title": String("EchoParams"),
-                                    "description": String("Parameters for the echo tool"),
-                                    "type": String("object"),
-                                    "properties": Object {
-                                        "message": Object {
-                                            "description": String("The message to echo back"),
-                                            "type": String("string"),
-                                        },
-                                    },
-                                    "required": Array [
-                                        String("message"),
-                                    ],
-                                },
-                                "outputSchema": Object {
-                                    "$schema": String("https://json-schema.org/draft/2020-12/schema"),
-                                    "title": String("EchoOutput"),
-                                    "description": String("Output from the echo tool"),
-                                    "type": String("object"),
-                                    "properties": Object {
-                                        "result": Object {
-                                            "description": String("The echoed message"),
-                                            "type": String("string"),
-                                        },
-                                    },
-                                    "required": Array [
-                                        String("result"),
-                                    ],
-                                },
-                            },
-                        ],
-                    },
-                },
-            ),
-            Request(
-                RequestEvent {
-                    ts: 0.0,
-                    protocol: Mcp,
-                    from: "Proxy(1)",
-                    to: "Proxy(0)",
-                    id: String("id:8"),
                     method: "tools/call",
                     session: None,
                     params: Object {
@@ -788,8 +721,9 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:8"),
+                    id: String("id:7"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "resultType": String("complete"),
                         "content": Array [
@@ -833,6 +767,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Proxy(0)",
                     id: String("id:5"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "stopReason": String("end_turn"),
                     },
@@ -866,6 +801,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     to: "Client",
                     id: String("id:4"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "stopReason": String("end_turn"),
                     },

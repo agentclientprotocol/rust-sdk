@@ -27,9 +27,60 @@
 //! ```
 
 use futures::future::BoxFuture;
-use std::{fmt::Debug, future::Future, marker::PhantomData};
+use std::{
+    fmt::Debug,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{Channel, Result, role::Role};
+
+/// Connection work owned by a component, or a passive endpoint with no driver.
+///
+/// Both can be awaited, but successful completion of a passive driver says
+/// nothing about endpoint lifetime. Bridges must continue copying both halves
+/// until they close. An active driver owns the component's completion signal.
+pub struct ConnectionDriver(Option<BoxFuture<'static, Result<()>>>);
+
+impl ConnectionDriver {
+    /// Wrap work that owns a component's connection lifetime.
+    pub fn new(future: impl Future<Output = Result<()>> + Send + 'static) -> Self {
+        Self(Some(Box::pin(future)))
+    }
+
+    /// An endpoint whose I/O is driven elsewhere, such as an existing Channel.
+    #[must_use]
+    pub fn passive() -> Self {
+        Self(None)
+    }
+
+    /// Whether completion is a no-op rather than an owned lifetime signal.
+    #[must_use]
+    pub fn is_passive(&self) -> bool {
+        self.0.is_none()
+    }
+}
+
+impl Future for ConnectionDriver {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.0.as_mut() {
+            Some(future) => future.as_mut().poll(cx),
+            None => Poll::Ready(Ok(())),
+        }
+    }
+}
+
+impl Debug for ConnectionDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionDriver")
+            .field("passive", &self.is_passive())
+            .finish()
+    }
+}
 
 /// A component that can exchange JSON-RPC messages to an endpoint playing the role `R`
 /// (e.g., an ACP [`Agent`](`crate::role::acp::Agent`) or an MCP [`Server`](`crate::role::mcp::Server`)).
@@ -137,7 +188,8 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// This method returns:
     /// - A `Channel` that can be used to communicate with this component
-    /// - A `BoxFuture` that drives the component's connection logic
+    /// - A [`ConnectionDriver`] that drives the component's connection logic,
+    ///   or explicitly identifies an endpoint driven elsewhere
     ///
     /// The default implementation creates an intermediate channel pair and calls `connect_to`
     /// on one endpoint while returning the other endpoint for the caller to use.
@@ -146,14 +198,14 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// # Returns
     ///
-    /// A tuple of `(Channel, BoxFuture)` where the channel is for the caller to use
+    /// A tuple of `(Channel, ConnectionDriver)` where the channel is for the caller to use
     /// and the future must be polled to drive the connection.
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>)
+    fn into_channel_and_future(self) -> (Channel, ConnectionDriver)
     where
         Self: Sized,
     {
         let (channel_a, channel_b) = Channel::duplex();
-        let future = Box::pin(self.connect_to(channel_b));
+        let future = ConnectionDriver::new(self.connect_to(channel_b));
         (channel_a, future)
     }
 }
@@ -171,8 +223,7 @@ trait ErasedConnectTo<R: Role>: Send {
         client: Box<dyn ErasedConnectTo<R::Counterpart>>,
     ) -> BoxFuture<'static, Result<()>>;
 
-    fn into_channel_and_future_erased(self: Box<Self>)
-    -> (Channel, BoxFuture<'static, Result<()>>);
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, ConnectionDriver);
 }
 
 /// Blanket implementation: any `ConnectTo<R>` can be type-erased.
@@ -195,9 +246,7 @@ impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
         })
     }
 
-    fn into_channel_and_future_erased(
-        self: Box<Self>,
-    ) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, ConnectionDriver) {
         (*self).into_channel_and_future()
     }
 }
@@ -251,7 +300,7 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
             .await
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future(self) -> (Channel, ConnectionDriver) {
         self.inner.into_channel_and_future_erased()
     }
 }

@@ -92,14 +92,15 @@ support and rejects any native declaration that is nevertheless supplied.
 For each schema-selected `McpServer::Acp` entry in a session setup request, the
 polyfill:
 
-1. Creates or reuses a connection-scoped localhost bridge endpoint for the
-   `serverId` and replaces the declaration with the HTTP transport for the
-   final agent.
-2. Retains the native `serverId` so connections can be routed back to the
-   component that provided the server.
-3. Adds a runtime-only bearer credential to the HTTP declaration. The endpoint
-   requires that credential and checks supplied Origin headers; an ephemeral
-   port alone is not access control.
+1. Creates or reuses one connection-scoped loopback listener and replaces the
+   declaration with an HTTP URL whose path encodes the non-secret `serverId`.
+   No per-server listener or route-table entry is allocated.
+2. Routes each request back to the component that owns that native registration.
+   The provider, not possession of the URL, decides whether it still exists.
+3. Adds a runtime-only bearer credential derived from the connection secret and
+   server ID to the HTTP declaration's headers. The endpoint authenticates and
+   checks supplied Origin headers before reading the request body. Credentials
+   never appear in URLs; an ephemeral port alone is not access control.
 4. For each POST, allocates a unique logical MCP request ID and sends
    `mcp/message` to the provider. Two HTTP clients may use the same external
    JSON-RPC ID without sharing routing or state.
@@ -114,10 +115,11 @@ versions include `session/fork` when `unstable_session_fork` is enabled.
 Declarations using another transport are left unchanged, including extension
 transports represented by v2's `McpServer::Other`.
 
-Endpoints are cached by `serverId` across session setup requests on the ACP
-connection. The output declaration is rebuilt for each occurrence, preserving
-that occurrence's `name`, `_meta`, and other unmodified extension fields even
-when its endpoint is reused.
+The same server ID derives the same route and credential on this ACP connection.
+The output declaration is rebuilt for each occurrence, preserving its `name`,
+`_meta`, and other unmodified extension fields. Failed setup and declaration
+churn cannot accumulate per-server endpoint allocations. A server ID must never
+be rebound to a different registration during the connection's lifetime.
 
 The native wire envelopes are documented in the [SDK Protocol
 Reference](./protocol.md#native-mcp-over-acp).
@@ -125,8 +127,8 @@ Reference](./protocol.md#native-mcp-over-acp).
 ## HTTP Mode
 
 `McpOverAcpPolyfill::http()` is the default compatibility shape. It replaces
-the native declaration with an HTTP MCP URL at `http://127.0.0.1:PORT`. The
-embedded server accepts a single JSON-RPC request per POST at `/`, returning
+the native declaration with an HTTP MCP URL at `http://127.0.0.1:PORT/<route>`. The
+embedded server accepts a single JSON-RPC request per POST at that route, returning
 JSON for a terminal-only response or SSE for a request that emits notifications.
 GET and DELETE return 405. Batches and client-originated JSON-RPC responses
 are rejected; there is no standalone GET event stream or MCP session ID.
@@ -148,29 +150,47 @@ other metadata, progress tokens, and opaque retry state are not rewritten.
 
 ## Lifecycle and Failure Behavior
 
-Each POST owns a pending native request, not an MCP session. A terminal result,
-error, response-stream close, or overflow removes that request's routing state.
-The listening endpoint remains available for later requests.
+Each POST owns a pending native request, not an MCP session. Closing its response
+stream cancels that request. A terminal outcome ends native work, but HTTP
+admission remains held until the response body is consumed or dropped. The
+listening endpoint remains available for later requests; releasing the native
+registration makes requests through its old URL fail rather than reviving it.
 
 The adapter limits each response's queued notifications to 16 messages and
-256 KiB of serialized data, with 64 active requests and 32 listening endpoints
-per adapter. A separate terminal-response path avoids stranding completion
-behind a full queue. Overflow explicitly fails and cancels that operation
-without blocking the shared runner or dropping events silently.
+256 KiB of serialized data, admits at most 64 HTTP responses at a time, and caps
+request bodies and terminal payloads at 1 MiB. The body owns the admission permit,
+including while a client is not reading. A separate terminal-response path
+avoids stranding completion behind a full queue. Overflow explicitly fails and
+cancels that operation without blocking the shared runner or dropping events silently.
+
+The bridge unwraps the ACP outcome carrier before creating the HTTP JSON-RPC
+response. MCP error codes/data stay MCP errors; binding failures use their
+separate error codes. Queued notifications precede the terminal response.
 
 Unknown or late provider notifications are ignored; reverse MCP requests are
 not supported. The adapter does not infer ACP session IDs or maintain MCP
 initialization state.
 
-## Remaining scope
+## Native-tool re-export contract
 
-Tools using `x-mcp-header` annotations are currently unsupported and fail
-closed: they are omitted from listings, calls are rejected, and supplied
-`Mcp-Param-*` headers are rejected. For a direct tool call the adapter fetches
-the tool descriptor internally, including pagination, so the caller does not
-need a prior tools/list handshake. That lookup is an explicit per-call cost.
+The adapter creates a **new HTTP endpoint for native tool semantics**. It does
+not preserve another HTTP gateway's parameter-header routing or authorization.
+It removes transport-only `x-mcp-header` annotations from actual schema positions
+in `tools/list` results. Argument schemas and validation keywords, tool ordering,
+pagination, metadata, and similarly named properties/example/default data remain
+unchanged. Annotated native tools remain listed and callable.
 
-This is not yet full HTTP conformance. Native SDK `Channel` and outgoing
-queues also remain unbounded; the HTTP queue limits above do not establish
-end-to-end native backpressure. Native admission/payload limits and the
-remaining transport work are described in [Native MCP-over-ACP](./mcp-over-acp.md).
+Each `tools/call` issues exactly one native call, without hidden descriptor reads
+or a prior client `tools/list` requirement. Native passthrough does not transform
+the original descriptors. `Mcp-Param-*` headers are rejected; they confer no
+authority on this endpoint. Standard MCP method/name/version header checks remain.
+
+If a deployment depends on an existing HTTP gateway's mirrored-parameter policy,
+it must implement that policy at this endpoint or decline this re-export.
+
+## Validation scope
+
+This does not establish every optional MCP feature or complete HTTP conformance.
+In particular, HTTP response limits alone do not prove native transport bounds.
+Owned operation cleanup and end-to-end bounded transport are stabilization gates;
+see [Native MCP-over-ACP](./mcp-over-acp.md).

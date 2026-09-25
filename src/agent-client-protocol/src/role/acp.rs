@@ -886,7 +886,7 @@ fn invalid_initialize_params(error: impl ToString) -> crate::Error {
 
 #[cfg(feature = "unstable_protocol_v2")]
 fn send_initialize_error(
-    tx: &futures::channel::mpsc::UnboundedSender<TransportFrame>,
+    tx: &crate::jsonrpc::FrameSender,
     frame: &TransportFrame,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
@@ -944,8 +944,7 @@ fn send_initialize_error(
         }
     };
 
-    tx.unbounded_send(response)
-        .map_err(crate::util::internal_error)
+    tx.try_send(response).map_err(crate::util::internal_error)
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -972,8 +971,8 @@ async fn reject_initialize(
 
 #[cfg(feature = "unstable_protocol_v2")]
 struct RunningProtocolPeer {
-    rx: futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
-    tx: futures::channel::mpsc::UnboundedSender<TransportFrame>,
+    rx: crate::jsonrpc::FrameReceiver,
+    tx: crate::jsonrpc::FrameSender,
     future: crate::BoxFuture<'static, Result<(), crate::Error>>,
 }
 
@@ -981,14 +980,18 @@ struct RunningProtocolPeer {
 impl RunningProtocolPeer {
     fn new<R: Role>(component: impl ConnectTo<R>) -> Self {
         let (Channel { rx, tx }, future) = component.into_channel_and_future();
-        Self { rx, tx, future }
+        Self {
+            rx,
+            tx,
+            future: Box::pin(future),
+        }
     }
 
     async fn next_frame(self) -> Result<Option<(TransportFrame, Self)>, crate::Error> {
         let Self { mut rx, tx, future } = self;
         match future::select(Box::pin(rx.next()), future).await {
             future::Either::Left((Some(frame), future)) => {
-                Ok(Some((frame, Self { rx, tx, future })))
+                Ok(Some((frame.into_frame(), Self { rx, tx, future })))
             }
             future::Either::Left((None, future)) => {
                 future.await?;
@@ -1001,7 +1004,7 @@ impl RunningProtocolPeer {
                     return Ok(None);
                 };
                 Ok(Some((
-                    frame,
+                    frame.into_frame(),
                     Self {
                         rx,
                         tx,
@@ -1024,9 +1027,7 @@ impl RunningProtocolPeer {
     }
 
     fn send_frame(&self, frame: TransportFrame) -> Result<(), crate::Error> {
-        self.tx
-            .unbounded_send(frame)
-            .map_err(crate::util::internal_error)
+        self.tx.try_send(frame).map_err(crate::util::internal_error)
     }
 }
 

@@ -262,16 +262,29 @@ Ordering](./conductor.md#routing-and-ordering).
 is the common component and transport abstraction. `connect_to` joins a
 component to its counterpart and drives the connection until completion.
 `into_channel_and_future` exposes the canonical low-level boundary as a
-`Channel` plus the future that drives the component:
+`Channel` plus an explicit connection driver:
 
 ```rust,ignore
-fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>);
+fn into_channel_and_future(self) -> (Channel, ConnectionDriver);
 ```
 
-The returned future owns transport failures and lifecycle completion. The
-channel carries only `TransportFrame` wire events. Most components implement
-only `connect_to`; direct transports override `into_channel_and_future` to avoid
-an intermediate copy.
+`ConnectionDriver::new(future)` owns transport failures and component
+completion. `ConnectionDriver::passive()` denotes an endpoint driven elsewhere,
+such as an existing `Channel`; its no-op completion is **not** an EOF signal.
+Both implement `Future`, so drivers can still be joined with application work.
+Dynamic connectors preserve this distinction.
+
+A bridge must poll both copy directions while an active component runs. When
+the component finishes, drain its accepted output without requiring the remote
+sender to close. Between two passive endpoints, preserve independent half-close:
+input EOF must still allow a final response in the other direction.
+
+The channel carries `BudgetedFrame` values containing complete `TransportFrame`
+wire events and their resource permits. Most components implement only
+`connect_to`; direct transports override `into_channel_and_future` to avoid
+an intermediate copy. A forwarded frame keeps its permit through any adapter
+queue, deferred dispatch, or writer. This accounting is internal and does not
+change the JSON-RPC wire shape.
 
 ## Transport Implementations
 

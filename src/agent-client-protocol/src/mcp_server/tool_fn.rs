@@ -1,12 +1,13 @@
 //! Runtime-neutral helpers for registering function-backed MCP tools.
 
 use futures::{
-    SinkExt, StreamExt,
-    channel::{mpsc, oneshot},
-    future::BoxFuture,
+    StreamExt,
+    channel::oneshot,
+    future::{self, BoxFuture, Either},
 };
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
+use std::pin::Pin;
 
 use crate::{ConnectionTo, Error, Role, RunWithConnectionTo};
 
@@ -16,11 +17,12 @@ struct ToolCall<P, R, MyRole: Role> {
     params: P,
     mcp_connection: McpConnectionTo<MyRole>,
     result_tx: futures::channel::oneshot::Sender<Result<R, Error>>,
+    done_tx: oneshot::Sender<()>,
 }
 
 struct ToolFnMutRunner<F, P, R, Counterpart: Role> {
     func: F,
-    call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
+    call_rx: Pin<Box<async_channel::Receiver<ToolCall<P, R, Counterpart>>>>,
     tool_future_fn: Box<
         dyn for<'a> Fn(
                 &'a mut F,
@@ -52,13 +54,34 @@ where
         while let Some(ToolCall {
             params,
             mcp_connection,
-            result_tx,
+            mut result_tx,
+            done_tx,
         }) = call_rx.next().await
         {
-            let result = tool_future_fn(&mut func, params, mcp_connection).await;
-            result_tx
-                .send(result)
-                .map_err(|_| crate::util::internal_error("failed to send MCP result"))?;
+            // The caller may have cancelled while this invocation waited behind
+            // another mutable tool call. Do not start work for a gone caller.
+            if result_tx.is_canceled() {
+                drop(params);
+                drop(mcp_connection);
+                drop(result_tx);
+                let _ = done_tx.send(());
+                continue;
+            }
+            let result = {
+                let cancelled = result_tx.cancellation();
+                futures::pin_mut!(cancelled);
+                match future::select(tool_future_fn(&mut func, params, mcp_connection), cancelled)
+                    .await
+                {
+                    Either::Left((result, _)) => Some(result),
+                    Either::Right(((), _)) => None,
+                }
+            };
+            if let Some(result) = result {
+                // Cancellation after execution is not a runner failure.
+                drop(result_tx.send(result));
+            }
+            let _ = done_tx.send(());
         }
         Ok(())
     }
@@ -66,7 +89,7 @@ where
 
 struct ToolFnRunner<F, P, R, Counterpart: Role> {
     func: F,
-    call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
+    call_rx: Pin<Box<async_channel::Receiver<ToolCall<P, R, Counterpart>>>>,
     tool_future_fn: Box<
         dyn for<'a> Fn(&'a F, P, McpConnectionTo<Counterpart>) -> BoxFuture<'a, Result<R, Error>>
             + Send
@@ -92,9 +115,8 @@ where
             call_rx,
             tool_future_fn,
         } = self;
-        crate::util::process_stream_concurrently(
-            call_rx,
-            async |tool_call| {
+        call_rx
+            .for_each_concurrent(64, |tool_call| {
                 fn hack<'a, F, P, R, MyRole>(
                     func: &'a F,
                     params: P,
@@ -108,7 +130,8 @@ where
                                 + Send
                                 + Sync
                         ),
-                    result_tx: oneshot::Sender<Result<R, Error>>,
+                    mut result_tx: oneshot::Sender<Result<R, Error>>,
+                    done_tx: oneshot::Sender<()>,
                 ) -> BoxFuture<'a, ()>
                 where
                     MyRole: Role,
@@ -117,8 +140,30 @@ where
                     F: Send + Sync,
                 {
                     Box::pin(async move {
-                        let result = tool_future_fn(func, params, mcp_connection).await;
-                        drop(result_tx.send(result));
+                        if result_tx.is_canceled() {
+                            drop(params);
+                            drop(mcp_connection);
+                            drop(result_tx);
+                            let _ = done_tx.send(());
+                            return;
+                        }
+                        let result = {
+                            let cancelled = result_tx.cancellation();
+                            futures::pin_mut!(cancelled);
+                            match future::select(
+                                tool_future_fn(func, params, mcp_connection),
+                                cancelled,
+                            )
+                            .await
+                            {
+                                Either::Left((result, _)) => Some(result),
+                                Either::Right(((), _)) => None,
+                            }
+                        };
+                        if let Some(result) = result {
+                            drop(result_tx.send(result));
+                        }
+                        let _ = done_tx.send(());
                     })
                 }
 
@@ -126,21 +171,27 @@ where
                     params,
                     mcp_connection,
                     result_tx,
+                    done_tx,
                 } = tool_call;
 
-                hack(&func, params, mcp_connection, &*tool_future_fn, result_tx).await;
-                Ok(())
-            },
-            |a, b| Box::pin(a(b)),
-        )
-        .await
+                hack(
+                    &func,
+                    params,
+                    mcp_connection,
+                    &*tool_future_fn,
+                    result_tx,
+                    done_tx,
+                )
+            })
+            .await;
+        Ok(())
     }
 }
 
 struct ToolFnTool<P, Ret, R: Role> {
     name: String,
     description: String,
-    call_tx: mpsc::Sender<ToolCall<P, Ret, R>>,
+    call_tx: async_channel::Sender<ToolCall<P, Ret, R>>,
 }
 
 impl<P, Ret, R> McpTool<R> for ToolFnTool<P, Ret, R>
@@ -162,13 +213,18 @@ where
 
     async fn call_tool(&self, params: P, mcp_connection: McpConnectionTo<R>) -> Result<Ret, Error> {
         let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        mcp_connection.register_cleanup(done_rx);
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        let _done_rx = done_rx;
 
         self.call_tx
-            .clone()
             .send(ToolCall {
                 params,
                 mcp_connection,
                 result_tx,
+                done_tx,
             })
             .await
             .map_err(crate::util::internal_error)?;
@@ -192,7 +248,7 @@ pub fn tool_fn_mut<P, Ret, F, Counterpart>(
     + Send
     + 'static,
 ) -> (
-    impl McpTool<Counterpart> + 'static,
+    impl McpTool<Counterpart, Input = P, Output = Ret> + 'static,
     impl RunWithConnectionTo<Counterpart>,
 )
 where
@@ -201,7 +257,7 @@ where
     Ret: JsonSchema + Serialize + 'static + Send,
     F: AsyncFnMut(P, McpConnectionTo<Counterpart>) -> Result<Ret, Error> + Send,
 {
-    let (call_tx, call_rx) = mpsc::channel(128);
+    let (call_tx, call_rx) = async_channel::bounded(128);
     (
         ToolFnTool {
             name: name.to_string(),
@@ -210,7 +266,7 @@ where
         },
         ToolFnMutRunner {
             func,
-            call_rx,
+            call_rx: Box::pin(call_rx),
             tool_future_fn: Box::new(tool_future_fn),
         },
     )
@@ -230,7 +286,7 @@ pub fn tool_fn<P, Ret, F, Counterpart>(
     + Sync
     + 'static,
 ) -> (
-    impl McpTool<Counterpart> + 'static,
+    impl McpTool<Counterpart, Input = P, Output = Ret> + 'static,
     impl RunWithConnectionTo<Counterpart>,
 )
 where
@@ -239,7 +295,7 @@ where
     Ret: JsonSchema + Serialize + 'static + Send,
     F: AsyncFn(P, McpConnectionTo<Counterpart>) -> Result<Ret, Error> + Send + Sync + 'static,
 {
-    let (call_tx, call_rx) = mpsc::channel(128);
+    let (call_tx, call_rx) = async_channel::bounded(128);
     (
         ToolFnTool {
             name: name.to_string(),
@@ -248,7 +304,7 @@ where
         },
         ToolFnRunner {
             func,
-            call_rx,
+            call_rx: Box::pin(call_rx),
             tool_future_fn: Box::new(tool_future_fn),
         },
     )

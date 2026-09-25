@@ -1,12 +1,11 @@
 use std::panic::Location;
 
-use futures::{FutureExt, channel::mpsc, future::BoxFuture};
+use futures::{FutureExt, StreamExt, future::BoxFuture};
 
 use crate::ConnectionTo;
 use crate::role::Role;
-use crate::util::process_stream_concurrently;
 
-pub type TaskTx = mpsc::UnboundedSender<Task>;
+pub type TaskTx = super::admission::Sender<Task>;
 
 #[must_use]
 pub(crate) struct Task {
@@ -54,13 +53,13 @@ impl Task {
 
 /// The "task actor" manages dynamically spawned tasks.
 pub(super) async fn task_actor<R: Role>(
-    task_rx: mpsc::UnboundedReceiver<Task>,
+    task_rx: super::admission::SimpleReceiver<Task>,
     _cx: &ConnectionTo<R>,
+    max_running_tasks: usize,
 ) -> Result<(), crate::Error> {
-    process_stream_concurrently(
-        task_rx,
-        async |task| task.future.await,
-        |a, b| Box::pin(a(b)),
-    )
-    .await
+    use futures::TryStreamExt as _;
+    task_rx
+        .map(Ok::<_, crate::Error>)
+        .try_for_each_concurrent(max_running_tasks.max(1), |task| task.future)
+        .await
 }

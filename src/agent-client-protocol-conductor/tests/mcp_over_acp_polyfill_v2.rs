@@ -119,13 +119,23 @@ impl ConnectTo<Conductor> for TestProvider {
                             }}}
                         ]}),
                         "tools/call" => serde_json::json!({"content":[]}),
+                        "tools/error" => {
+                            return responder.respond(serde_json::from_value::<
+                                v2::MessageMcpResponse,
+                            >(
+                                serde_json::json!({"error":{"code":-32000,"message":"peer-owned",
+                                    "data":{"source":"backend"}}}),
+                            )?);
+                        }
                         _ => {
                             return responder.respond_with_error(
                                 agent_client_protocol::Error::method_not_found(),
                             );
                         }
                     };
-                    responder.respond(serde_json::from_value::<v2::MessageMcpResponse>(result)?)
+                    responder.respond(serde_json::from_value::<v2::MessageMcpResponse>(
+                        serde_json::json!({"result":result}),
+                    )?)
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -183,10 +193,15 @@ fn initialize() -> v2::InitializeRequest {
 }
 
 async fn post(url: &str, bearer: &str, method: &str, tool: &str) -> serde_json::Value {
-    let address = url.strip_prefix("http://").unwrap();
+    let (address, route) = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
     let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
     let mut params = serde_json::json!({
-        "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}
+        "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities":{}}
     });
     if method == "tools/call" {
         params["name"] = serde_json::json!(tool);
@@ -201,7 +216,7 @@ async fn post(url: &str, bearer: &str, method: &str, tool: &str) -> serde_json::
         String::new()
     };
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: {method}\r\n{name}Content-Length: {}\r\n\r\n{body}",
+        "POST /{route} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: {method}\r\n{name}Content-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();
@@ -258,15 +273,20 @@ async fn modern_http_v2_requests_are_stateless_and_isolated()
                 assert_eq!(server.headers[0].name, "Authorization");
                 (server.url.clone(), server.headers[0].value.clone())
             };
-            // No prior client tools/list: the adapter looks up the descriptor
-            // internally, rejecting annotated tools instead of skipping mirrors.
+            // A direct call does not require discovery or an internal tools/list lookup.
             let direct = post(&url, &bearer, "tools/call", "ping").await;
             assert_eq!(
                 direct,
                 serde_json::json!({"jsonrpc":"2.0","id":"same","result":{"content":[]}})
             );
             let annotated = post(&url, &bearer, "tools/call", "restricted").await;
-            assert_eq!(annotated["error"]["code"], -32602);
+            assert_eq!(annotated["result"], serde_json::json!({"content":[]}));
+            let peer_error = post(&url, &bearer, "tools/error", "").await;
+            assert_eq!(
+                peer_error["error"],
+                serde_json::json!({"code":-32000,
+                "message":"peer-owned","data":{"source":"backend"}})
+            );
             let (a, b) = tokio::join!(
                 post(&url, &bearer, "tools/list", ""),
                 post(&url, &bearer, "tools/list", "")
@@ -274,7 +294,10 @@ async fn modern_http_v2_requests_are_stateless_and_isolated()
             assert_eq!(
                 a,
                 serde_json::json!({"jsonrpc":"2.0","id":"same","result":{"tools":[
-                    {"name":"ping","inputSchema":{"type":"object","properties":{}}}
+                    {"name":"ping","inputSchema":{"type":"object","properties":{}}},
+                    {"name":"restricted","inputSchema":{"type":"object","properties":{
+                        "region":{"type":"string"}
+                    }}}
                 ]}})
             );
             assert_eq!(a, b);
@@ -354,14 +377,15 @@ async fn closing_subscription_stream_cancels_only_its_native_request()
                 let v2::McpServer::Http(server) = &observed[0] else { panic!("expected HTTP endpoint") };
                 (server.url.clone(), server.headers[0].value.clone())
             };
-            let address = url.strip_prefix("http://").unwrap();
+            let (address, route) = url.strip_prefix("http://").unwrap().split_once('/').unwrap();
             let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
             let body = serde_json::json!({
                 "jsonrpc":"2.0","id":73,"method":"subscriptions/listen",
-                "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}
+                "params":{"notifications":{"toolsListChanged":true}, "_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities":{}}}
             }).to_string();
             let request = format!(
-                "POST / HTTP/1.1\r\nHost: {address}\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\n\r\n{body}",
+                "POST /{route} HTTP/1.1\r\nHost: {address}\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: subscriptions/listen\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(request.as_bytes()).await.unwrap();
@@ -405,7 +429,7 @@ async fn closing_subscription_stream_cancels_only_its_native_request()
                 }
             }).await.expect("closing the second stream must cancel its own ACP request");
             let overflow = post(&url, &bearer, "subscriptions/flood", "").await;
-            assert_eq!(overflow["error"]["code"], -32000, "{overflow}");
+            assert_eq!(overflow["error"]["code"], -33000, "{overflow}");
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 while cancelled.load(Ordering::SeqCst) != 3 {
                     tokio::task::yield_now().await;

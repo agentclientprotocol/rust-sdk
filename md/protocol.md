@@ -74,8 +74,8 @@ opt-in `session/fork`):
 ```
 
 `serverId` identifies the declared server and is used to route `mcp/message`
-back to the component that provided it. A provider must not reuse one server ID
-for multiple visible servers on the same ACP connection. The high-level
+back to the component that provided it. A provider must not rebind a server ID
+to another registration on the same ACP connection, even after removal. The high-level
 `agent_client_protocol::mcp_server::McpServer` APIs create this declaration
 automatically.
 
@@ -112,9 +112,30 @@ JSON-RPC ID is renumbered:
 }
 ```
 
-The outer response carries the inner MCP result (including `resultType`) or
-error directly. MRTR `input_required` is a result, not a reverse RPC; retry the
-original operation with fresh metadata/IDs and unchanged opaque state.
+The successful outer ACP response contains exactly one MCP outcome:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 21,
+  "result": {
+    "result": { "resultType": "complete", "content": [] }
+  }
+}
+```
+
+An MCP protocol error uses `{"error": {"code": ..., "message": ..., "data": ...}}`
+inside the successful outer `result`, not an ACP error response. The shared
+`MessageMcpResponse::{Result, Error}` type preserves this distinction. Inner
+results are opaque JSON (including null); inner error data distinguishes null
+from omission. MCP error codes never acquire ACP meanings.
+
+Outer ACP errors describe binding failures: invalid envelope/duplicate ID
+(`-32602`), cancellation (`-32800`), resource exhaustion (`-33000`), unavailable
+registration (`-33001`), or backend/transport failure (`-33002`).
+
+MRTR `input_required` is an MCP result, not a reverse RPC; retry the original
+operation with fresh metadata/IDs and unchanged opaque state.
 
 For `server/discover`, supported versions are restricted to the revision
 exposed by this binding; a backend must actually support that revision.
@@ -148,12 +169,15 @@ mean no parameters. A valid modern request still needs its required
 
 Use [`$/cancel_request`](./request-cancellation.md) with the outer ACP request
 ID. Normal proxy forwarding maps this cancellation hop by hop. It never
-rewrites the logical MCP ID.
+rewrites the logical MCP ID. Advertising this binding requires cancellation
+handling even where the underlying ACP revision makes general cancellation optional.
 
 Each operation owns its backend work. A result, error, cancellation, or
-provider removal ends that operation; sibling requests and subscriptions stay
-independent. There is no MCP connection ID to release. `server/discover` is an
-ordinary optional request, not a prerequisite for tool calls.
+registration removal ends that operation; sibling requests and subscriptions stay
+independent. Cancellation revokes output immediately, but the operation keeps its
+admission slot and logical ID until owned cleanup finishes. There is no MCP
+connection ID to release. `server/discover` is an ordinary optional request,
+not a prerequisite for tool calls.
 
 ## Related Documentation
 

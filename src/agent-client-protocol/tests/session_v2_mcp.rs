@@ -211,7 +211,13 @@ async fn run_mcp_round_trip(
         )
         .block_task()
         .await?;
-    let response = serde_json::from_str(response.0.get()).map_err(Error::into_internal_error)?;
+    let response = match response {
+        v2::MessageMcpResponse::Result { result, .. } => result,
+        v2::MessageMcpResponse::Error { error, .. } => {
+            return Err(Error::new(error.code, error.message));
+        }
+        _ => return Err(Error::internal_error().data("unknown MCP response carrier")),
+    };
 
     Ok(RoundTrip {
         server_id: server_id.to_string(),

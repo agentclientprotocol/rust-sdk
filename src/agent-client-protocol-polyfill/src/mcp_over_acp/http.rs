@@ -8,50 +8,83 @@ use std::{convert::Infallible, sync::Arc};
 use agent_client_protocol::Error;
 use axum::{
     Json, Router,
-    body::Bytes,
-    extract::State,
+    body::{Body, HttpBody as _, to_bytes},
+    extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse, Response, Sse,
         sse::{Event, KeepAlive},
     },
-    routing::post,
+    routing::any,
 };
 use base64::Engine as _;
-use futures::{SinkExt, channel::mpsc};
+use futures::{SinkExt, StreamExt, channel::mpsc};
+use hmac::{Hmac, Mac};
 use serde_json::{Map, Value};
+use sha2::Sha256;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc as tokio_mpsc, oneshot},
+    sync::{Semaphore, mpsc as tokio_mpsc, oneshot},
 };
 
 use super::BridgeMessage;
 
 const VERSION: &str = "2026-07-28";
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
-struct BridgeState {
-    server_id: String,
-    token: String,
+fn server_route(server_id: &str) -> String {
+    // Even an empty opaque ID must occupy a real route segment.
+    format!(
+        "mcp-{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(server_id)
+    )
+}
+
+pub(super) struct BridgeState {
+    secret: [u8; 32],
+    admission: Arc<Semaphore>,
     tx: mpsc::Sender<BridgeMessage>,
 }
 
 pub(super) async fn run_http_listener(
     listener: TcpListener,
-    server_id: String,
-    token: String,
-    tx: mpsc::Sender<BridgeMessage>,
+    state: Arc<BridgeState>,
 ) -> Result<(), Error> {
-    let state = Arc::new(BridgeState {
-        server_id,
-        token,
-        tx,
-    });
     let app = Router::new()
-        .route("/", post(handle_post))
+        .route("/{route}", any(handle_request))
         .with_state(state);
     axum::serve(listener, app)
         .await
         .map_err(Error::into_internal_error)
+}
+
+impl BridgeState {
+    pub(super) fn new(tx: mpsc::Sender<BridgeMessage>) -> Arc<Self> {
+        Arc::new(Self {
+            secret: {
+                let mut secret = [0; 32];
+                secret[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+                secret[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+                secret
+            },
+            admission: Arc::new(Semaphore::new(super::MAX_ACTIVE_REQUESTS)),
+            tx,
+        })
+    }
+
+    fn mac(&self, server_id: &str) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.secret).expect("SHA-256 HMAC key");
+        mac.update(b"mcp-over-acp-http-adapter/server/v1\0");
+        mac.update(server_id.as_bytes());
+        mac
+    }
+
+    pub(super) fn declaration_url(&self, port: u16, server_id: &str) -> (String, String) {
+        let route = server_route(server_id);
+        let token = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(self.mac(server_id).finalize().into_bytes());
+        (format!("http://127.0.0.1:{port}/{route}"), token)
+    }
 }
 
 fn error(status: StatusCode, id: Value, code: i64, message: &str) -> Response {
@@ -89,7 +122,21 @@ pub(super) fn rpc_result(id: Value, request_id: &str, mut result: Value) -> Valu
     serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result})
 }
 
-pub(super) fn rpc_acp_error(id: Value, error: Error) -> Value {
+pub(super) fn rpc_binding_error(id: Value, error: Error) -> Value {
+    let value = serde_json::to_value(error).unwrap_or(Value::Null);
+    let peer_code = value.get("code").and_then(Value::as_i64);
+    let code = match peer_code {
+        Some(-33000 | -33001 | -33002 | -32800) => peer_code.unwrap(),
+        _ => -33002,
+    };
+    let message = value
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("MCP binding failure");
+    rpc_error(id, code, message)
+}
+
+pub(super) fn rpc_peer_error(id: Value, error: Value) -> Value {
     serde_json::json!({"jsonrpc":"2.0", "id":id, "error":error})
 }
 
@@ -114,14 +161,31 @@ fn valid_origin(headers: &HeaderMap) -> bool {
 }
 
 fn accepts_both(headers: &HeaderMap) -> bool {
-    let Some(accept) = header_value(headers, "accept") else {
-        return false;
-    };
-    let types = accept
-        .split(',')
-        .map(|part| part.split(';').next().unwrap_or("").trim());
-    let types: Vec<_> = types.collect();
-    types.contains(&"application/json") && types.contains(&"text/event-stream")
+    let mut json = false;
+    let mut sse = false;
+    for value in headers.get_all(header::ACCEPT) {
+        let Ok(value) = value.to_str() else {
+            return false;
+        };
+        for item in value.split(',') {
+            let mut parts = item.split(';');
+            let media = parts.next().unwrap_or("").trim();
+            let mut quality = 1.0;
+            for part in parts {
+                if let Some((key, q)) = part.trim().split_once('=')
+                    && key.trim().eq_ignore_ascii_case("q")
+                {
+                    quality = q.trim().parse::<f32>().unwrap_or(0.0);
+                }
+            }
+            if quality <= 0.0 || quality > 1.0 {
+                continue;
+            }
+            json |= media.eq_ignore_ascii_case("application/json");
+            sse |= media.eq_ignore_ascii_case("text/event-stream");
+        }
+    }
+    json && sse
 }
 
 fn mirrored_name<'a>(method: &str, params: &'a Map<String, Value>) -> Option<&'a str> {
@@ -147,14 +211,16 @@ fn matches_mirror(header: Option<&str>, body: &str) -> bool {
             .is_ok_and(|bytes| bytes == body.as_bytes())
     } else {
         // Literal sentinel-looking values must be encoded to avoid ambiguity.
-        !header.starts_with("=?base64?") && header == body
+        !(header.starts_with("=?base64?") && header.ends_with("?=")) && header == body
     }
 }
 
-async fn handle_post(
+async fn handle_request(
     State(state): State<Arc<BridgeState>>,
+    Path(route): Path<String>,
+    method: axum::http::Method,
     headers: HeaderMap,
-    body: Bytes,
+    body: Body,
 ) -> Response {
     if [
         "origin",
@@ -176,12 +242,59 @@ async fn handle_post(
     if !valid_origin(&headers) {
         return error(StatusCode::FORBIDDEN, Value::Null, -32600, "Invalid Origin");
     }
-    if header_value(&headers, "authorization") != Some(&format!("Bearer {}", state.token)) {
+    if route.len() > 4096 {
         return error(
-            StatusCode::UNAUTHORIZED,
+            StatusCode::NOT_FOUND,
+            Value::Null,
+            -32601,
+            "Unknown MCP route",
+        );
+    }
+    let server_id = {
+        let decoded = route.strip_prefix("mcp-").and_then(|encoded| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .ok()
+        });
+        let Some(server_id) = decoded
+            .and_then(|id| String::from_utf8(id).ok())
+            .filter(|id| server_route(id) == route)
+        else {
+            return error(
+                StatusCode::NOT_FOUND,
+                Value::Null,
+                -32601,
+                "Unknown MCP route",
+            );
+        };
+        let authorization =
+            header_value(&headers, "authorization").and_then(|value| value.split_once(' '));
+        if !authorization.is_some_and(|(scheme, supplied)| {
+            scheme.eq_ignore_ascii_case("bearer")
+                && base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(supplied)
+                    .is_ok_and(|tag| state.mac(&server_id).verify_slice(&tag).is_ok())
+        }) {
+            let mut response = error(
+                StatusCode::UNAUTHORIZED,
+                Value::Null,
+                -32600,
+                "Unauthorized",
+            );
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                "Bearer".parse().expect("static header"),
+            );
+            return response;
+        }
+        server_id
+    };
+    if method != axum::http::Method::POST {
+        return error(
+            StatusCode::METHOD_NOT_ALLOWED,
             Value::Null,
             -32600,
-            "Unauthorized",
+            "Only POST is supported",
         );
     }
     if !accepts_both(&headers) {
@@ -192,9 +305,12 @@ async fn handle_post(
             "Accept must include application/json and text/event-stream",
         );
     }
-    if header_value(&headers, header::CONTENT_TYPE.as_str())
-        .is_none_or(|value| !value.eq_ignore_ascii_case("application/json"))
-    {
+    if header_value(&headers, header::CONTENT_TYPE.as_str()).is_none_or(|value| {
+        !value
+            .split(';')
+            .next()
+            .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
+    }) {
         return error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Value::Null,
@@ -202,6 +318,50 @@ async fn handle_post(
             "Expected application/json",
         );
     }
+    // Acquire before reading a potentially slow/large request body. The permit
+    // stays owned by the response body until the client consumes or drops it.
+    let Ok(permit) = state.admission.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            Value::Null,
+            -33000,
+            "Too many outstanding MCP responses",
+        );
+    };
+    let response = handle_admitted_request(state, server_id, headers, body).await;
+    let (mut parts, body) = response.into_parts();
+    if let Some(length) = body.size_hint().exact() {
+        parts
+            .headers
+            .entry(header::CONTENT_LENGTH)
+            .or_insert_with(|| length.to_string().parse().expect("decimal body length"));
+    }
+    // One ownership rule for every admitted response, including validation
+    // failures that echo a potentially large, but valid, external request ID.
+    let stream = async_stream::stream! {
+        let _permit = permit;
+        let mut body = body.into_data_stream();
+        while let Some(chunk) = body.next().await {
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
+async fn handle_admitted_request(
+    state: Arc<BridgeState>,
+    server_id: String,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let Ok(body) = to_bytes(body, MAX_REQUEST_BODY_BYTES).await else {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Value::Null,
+            -33000,
+            "Request body too large",
+        );
+    };
     let body: Value = match serde_json::from_slice(&body) {
         Ok(body) => body,
         Err(_) => return error(StatusCode::BAD_REQUEST, Value::Null, -32700, "Parse error"),
@@ -301,9 +461,8 @@ async fn handle_post(
             );
         }
     }
-    // Tool schemas with x-mcp-header annotations are not tracked in this adapter.
-    // Fail closed on supplied mirrored parameter headers; support for annotations
-    // requires a request-scoped schema lookup and validation before forwarding.
+    // This endpoint re-exports native tools without transport-only x-mcp-header
+    // annotations. Mirrored parameter headers have no authority here.
     if headers
         .keys()
         .any(|key| key.as_str().starts_with("mcp-param-"))
@@ -318,6 +477,7 @@ async fn handle_post(
     if method == "initialize" || method.starts_with("notifications/") {
         return error(StatusCode::NOT_FOUND, id, -32601, "Method not found");
     }
+    let id_for_bridge_error = id.clone();
     let (notification_tx, mut response_rx) = tokio_mpsc::channel(super::MAX_QUEUED_NOTIFICATIONS);
     let response_tx = super::StreamSender {
         tx: notification_tx,
@@ -325,7 +485,7 @@ async fn handle_post(
     };
     let (terminal_tx, mut terminal_rx) = oneshot::channel();
     let message = BridgeMessage::Request {
-        server_id: state.server_id.clone(),
+        server_id,
         request_id: uuid::Uuid::new_v4().to_string(),
         http_id: id,
         method: method.into(),
@@ -337,8 +497,8 @@ async fn handle_post(
     if tx.send(message).await.is_err() {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
-            Value::Null,
-            -32603,
+            id_for_bridge_error.clone(),
+            -33002,
             "ACP bridge unavailable",
         );
     }
@@ -354,8 +514,8 @@ async fn handle_post(
     let Some(first) = first else {
         return error(
             StatusCode::SERVICE_UNAVAILABLE,
-            Value::Null,
-            -32603,
+            id_for_bridge_error,
+            -33002,
             "ACP bridge closed",
         );
     };
@@ -365,7 +525,20 @@ async fn handle_post(
         } else {
             StatusCode::OK
         };
-        return (status, Json(first)).into_response();
+        let payload = first.to_string();
+        let length = payload.len().to_string();
+        let stream = async_stream::stream! {
+            yield Ok::<_, Infallible>(axum::body::Bytes::from(payload));
+        };
+        return (
+            status,
+            [
+                (header::CONTENT_TYPE, "application/json".to_string()),
+                (header::CONTENT_LENGTH, length),
+            ],
+            Body::from_stream(stream),
+        )
+            .into_response();
     }
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(Event::default().data(first.to_string()));
@@ -402,6 +575,169 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn stateless_declarations_do_not_allocate_routes() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = BridgeState::new(tx);
+        let first = state.declaration_url(1234, "server/one");
+        let other = state.declaration_url(1234, "server/two");
+        assert_eq!(first, state.declaration_url(1234, "server/one"));
+        assert_ne!(first, other);
+        assert!(state.declaration_url(1234, "").0.ends_with("/mcp-"));
+        for i in 0..1000 {
+            let (url, bearer) = state.declaration_url(1234, &i.to_string());
+            assert!(url.starts_with("http://127.0.0.1:1234/"));
+            assert!(!url.contains(&bearer));
+        }
+    }
+
+    #[tokio::test]
+    async fn bridge_failure_preserves_valid_external_id() {
+        let (tx, rx) = mpsc::channel(1);
+        let state = BridgeState::new(tx);
+        drop(rx);
+        let (_, token) = state.declaration_url(8000, "server");
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:8000".parse().unwrap());
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("mcp-protocol-version", VERSION.parse().unwrap());
+        headers.insert("mcp-method", "tools/list".parse().unwrap());
+        let response = handle_request(
+            State(state),
+            Path(server_route("server")),
+            axum::http::Method::POST,
+            headers,
+            Body::from(
+                serde_json::json!({"jsonrpc":"2.0","id":"external",
+                "method":"tools/list","params":{"_meta":{
+                    "io.modelcontextprotocol/protocolVersion":VERSION,
+                    "io.modelcontextprotocol/clientCapabilities":{}}}})
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bytes = to_bytes(response.into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["id"], "external");
+        assert_eq!(body["error"]["code"], -33002);
+    }
+
+    #[tokio::test]
+    async fn unread_validation_errors_hold_admission_until_consumed_or_dropped() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = BridgeState::new(tx);
+        let (_, token) = state.declaration_url(8000, "server");
+        let route = server_route("server");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        headers.insert("content-type", "application/json".parse().unwrap());
+        // No method: validation must echo this large known ID without releasing
+        // the permit while the client still owns its unread response.
+        let id = "external".repeat(32 * 1024);
+        let body = serde_json::json!({"jsonrpc":"2.0", "id":id}).to_string();
+        let send = || {
+            handle_request(
+                State(state.clone()),
+                Path(route.clone()),
+                axum::http::Method::POST,
+                headers.clone(),
+                Body::from(body.clone()),
+            )
+        };
+        let mut responses = Vec::new();
+        for _ in 0..super::super::MAX_ACTIVE_REQUESTS {
+            let response = send().await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            responses.push(response);
+        }
+        assert_eq!(send().await.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let bytes = to_bytes(responses.pop().unwrap().into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["id"], id);
+        assert_eq!(error["error"]["code"], -32600);
+        assert_eq!(state.admission.available_permits(), 1);
+        responses.push(send().await);
+        assert_eq!(state.admission.available_permits(), 0);
+
+        drop(responses.pop());
+        assert_eq!(state.admission.available_permits(), 1);
+        let recovered = send().await;
+        assert_eq!(recovered.status(), StatusCode::BAD_REQUEST);
+        drop(recovered);
+        drop(responses);
+        assert_eq!(
+            state.admission.available_permits(),
+            super::super::MAX_ACTIVE_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn unread_terminal_bodies_hold_admission_until_drop() {
+        let (tx, mut rx) = mpsc::channel(128);
+        let state = BridgeState::new(tx);
+        let (_, token) = state.declaration_url(8000, "server");
+        let route = server_route("server");
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:8000".parse().unwrap());
+        headers.insert("authorization", format!("bearer {token}").parse().unwrap());
+        headers.insert("accept", "application/json".parse().unwrap());
+        headers.append("accept", "text/event-stream;q=0.8".parse().unwrap());
+        headers.insert(
+            "content-type",
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert("mcp-protocol-version", VERSION.parse().unwrap());
+        headers.insert("mcp-method", "tools/list".parse().unwrap());
+        tokio::spawn(async move {
+            while let Some(BridgeMessage::Request {
+                terminal_tx,
+                http_id,
+                ..
+            }) = rx.next().await
+            {
+                drop(terminal_tx.send(rpc_result(http_id, "", serde_json::json!({"tools":[]}))));
+            }
+        });
+        let body = serde_json::json!({"jsonrpc":"2.0","id":"known","method":"tools/list",
+            "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":VERSION,
+                "io.modelcontextprotocol/clientCapabilities":{}}}})
+        .to_string();
+        let send = || {
+            handle_request(
+                State(state.clone()),
+                Path(route.clone()),
+                axum::http::Method::POST,
+                headers.clone(),
+                Body::from(body.clone()),
+            )
+        };
+        let mut responses = Vec::new();
+        for _ in 0..super::super::MAX_ACTIVE_REQUESTS {
+            let response = send().await;
+            assert_eq!(response.status(), StatusCode::OK);
+            responses.push(response);
+        }
+        assert_eq!(send().await.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(responses.pop());
+        let recovered = send().await;
+        assert_eq!(recovered.status(), StatusCode::OK);
+    }
+
+    #[test]
     fn accepts_only_both_media_types() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -410,6 +746,13 @@ mod tests {
         );
         assert!(accepts_both(&headers));
         headers.insert("accept", "application/json".parse().unwrap());
+        assert!(!accepts_both(&headers));
+        headers.append("accept", "text/event-stream;q=0.9".parse().unwrap());
+        assert!(accepts_both(&headers));
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream;q=0".parse().unwrap(),
+        );
         assert!(!accepts_both(&headers));
     }
 
@@ -425,6 +768,10 @@ mod tests {
         assert!(!matches_mirror(
             Some("=?base64?literal?="),
             "=?base64?literal?="
+        ));
+        assert!(matches_mirror(
+            Some("=?base64?unfinished"),
+            "=?base64?unfinished"
         ));
     }
 
@@ -478,13 +825,14 @@ mod tests {
     async fn rejects_legacy_methods_and_invalid_headers_over_real_http() {
         async fn exchange(
             address: std::net::SocketAddr,
+            route: &str,
             method: &str,
             headers: &str,
             body: &str,
         ) -> String {
             let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
             let request = format!(
-                "{method} / HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n{headers}Content-Length: {}\r\n\r\n{body}",
+                "{method} /{route} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n{headers}Content-Length: {}\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(request.as_bytes()).await.unwrap();
@@ -495,38 +843,52 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, _rx) = mpsc::channel(8);
-        let task = tokio::spawn(run_http_listener(
-            listener,
-            "server".into(),
-            "secret".into(),
-            tx,
-        ));
-        let legacy = exchange(address, "GET", "", "").await;
+        let state = BridgeState::new(tx);
+        let (url, token) = state.declaration_url(address.port(), "server");
+        let route = url.rsplit('/').next().unwrap();
+        let task = tokio::spawn(run_http_listener(listener, state));
+        let auth = format!("Authorization: Bearer {token}\r\n");
+        let legacy = exchange(address, route, "GET", &auth, "").await;
         assert!(legacy.starts_with("HTTP/1.1 405"), "{legacy}");
-        let delete = exchange(address, "DELETE", "", "").await;
+        let delete = exchange(address, route, "DELETE", &auth, "").await;
         assert!(delete.starts_with("HTTP/1.1 405"), "{delete}");
-        let invalid_origin = exchange(address, "POST", "Origin: http://evil.test\r\n", "{}").await;
+        let invalid_origin =
+            exchange(address, route, "POST", "Origin: http://evil.test\r\n", "{}").await;
         assert!(
             invalid_origin.starts_with("HTTP/1.1 403"),
             "{invalid_origin}"
         );
-        let invalid_auth = exchange(address, "POST", "", "{}").await;
+        let invalid_get_origin =
+            exchange(address, route, "GET", "Origin: http://evil.test\r\n", "").await;
+        assert!(
+            invalid_get_origin.starts_with("HTTP/1.1 403"),
+            "{invalid_get_origin}"
+        );
+        let invalid_auth = exchange(address, route, "POST", "", "{}").await;
         assert!(invalid_auth.starts_with("HTTP/1.1 401"), "{invalid_auth}");
+        assert!(
+            invalid_auth
+                .to_ascii_lowercase()
+                .contains("www-authenticate: bearer"),
+            "{invalid_auth}"
+        );
         let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list",
             "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":VERSION,
                 "io.modelcontextprotocol/clientCapabilities":{}}}})
         .to_string();
-        let headers = "Authorization: Bearer secret\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: wrong/method\r\n";
-        let mismatch = exchange(address, "POST", headers, &body).await;
+        let headers = format!(
+            "{auth}Accept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: wrong/method\r\n"
+        );
+        let mismatch = exchange(address, route, "POST", &headers, &body).await;
         assert!(mismatch.starts_with("HTTP/1.1 400"), "{mismatch}");
         assert!(mismatch.contains("-32020"), "{mismatch}");
-        let batch = exchange(address, "POST", headers, "[]").await;
+        let batch = exchange(address, route, "POST", &headers, "[]").await;
         assert!(batch.starts_with("HTTP/1.1 400"), "{batch}");
         let headers = headers.replace("wrong/method", "tools/list");
         let fractional_id = body.replace("\"id\":1", "\"id\":1.5");
         let fractional = tokio::time::timeout(
             std::time::Duration::from_secs(3),
-            exchange(address, "POST", &headers, &fractional_id),
+            exchange(address, route, "POST", &headers, &fractional_id),
         )
         .await
         .expect("an invalid request ID must be rejected before forwarding");

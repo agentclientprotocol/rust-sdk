@@ -102,7 +102,9 @@ pub(crate) async fn handle_post(
                 )
                     .into_response();
             };
-            if let Some(initialize_failed) = initialize_response_failed(&frame, &initialize_id) {
+            if let Some(initialize_failed) =
+                initialize_response_failed(frame.frame(), &initialize_id)
+            {
                 break (frame, initialize_failed);
             }
 
@@ -114,7 +116,7 @@ pub(crate) async fn handle_post(
                 return (StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
             }
         };
-        let init_response = match init_response_frame.to_json() {
+        let init_response = match init_response_frame.frame().to_json() {
             Ok(response) => response,
             Err(e) => {
                 initialize_cleanup.cleanup().await;
@@ -143,6 +145,7 @@ pub(crate) async fn handle_post(
 
     let mut session_routes = Vec::new();
     let mut pending_routes = Vec::new();
+    let mut cancellations = Vec::new();
     match &mut frame {
         TransportFrame::Single(message) => {
             let route = match prepare_message_route(message, session_id.as_deref()) {
@@ -150,6 +153,7 @@ pub(crate) async fn handle_post(
                 Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
             };
             collect_route(message, route, &mut session_routes, &mut pending_routes);
+            cancellations.extend(crate::protocol::cancelled_request_id(message));
             trace!(connection_id = %connection_id, ?message, "POST → agent");
         }
         TransportFrame::Batch(batch) => {
@@ -162,6 +166,7 @@ pub(crate) async fn handle_post(
                     Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
                 };
                 collect_route(message, route, &mut session_routes, &mut pending_routes);
+                cancellations.extend(crate::protocol::cancelled_request_id(message));
             }
             trace!(connection_id = %connection_id, ?frame, "POST batch → agent");
         }
@@ -170,16 +175,26 @@ pub(crate) async fn handle_post(
         }
     }
 
-    for session_id in session_routes {
-        connection.ensure_session(&session_id).await;
-    }
-    for (request_id, route) in pending_routes {
-        connection.record_pending_route(request_id, route).await;
-    }
-
-    if connection.send_frame_to_agent(frame).is_err() {
+    let admitted = match connection.admit_frame_to_agent(frame) {
+        Ok(frame) => frame,
+        Err(error) => return (StatusCode::TOO_MANY_REQUESTS, error).into_response(),
+    };
+    let permit = admitted.permit().clone();
+    let new_sessions = match connection
+        .register_post_routes(&session_routes, &pending_routes, &permit)
+        .await
+    {
+        Ok(new_sessions) => new_sessions,
+        Err(error) => return (StatusCode::TOO_MANY_REQUESTS, error).into_response(),
+    };
+    drop(permit);
+    if connection.send_budgeted_frame_to_agent(admitted).is_err() {
+        connection
+            .rollback_post_routes(&new_sessions, &pending_routes)
+            .await;
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    connection.cancel_pending_routes(&cancellations).await;
     StatusCode::ACCEPTED.into_response()
 }
 
@@ -356,7 +371,7 @@ pub(crate) async fn handle_get(
     let Some(mut receiver) = receiver else {
         return (
             StatusCode::CONFLICT,
-            "outbound stream already has a subscriber",
+            "outbound stream missing or already has a subscriber",
         )
             .into_response();
     };
@@ -480,8 +495,8 @@ mod tests {
     use std::sync::Arc;
 
     use agent_client_protocol::{
-        Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
-        schema::v1::RequestId,
+        BudgetedFrame, Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry,
+        TransportFrame, schema::v1::RequestId,
     };
     use futures::{StreamExt, future::BoxFuture};
     use serde_json::json;
@@ -492,8 +507,6 @@ mod tests {
 
     use super::*;
     use crate::connection::AgentFactory;
-
-    const ISSUE_288_BURST: usize = 1_025;
 
     struct CapturingAgentFactory {
         forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
@@ -514,7 +527,7 @@ mod tests {
                     tx: _,
                 } = agent;
                 while let Some(frame) = incoming.next().await {
-                    let TransportFrame::Single(message) = frame else {
+                    let TransportFrame::Single(message) = frame.into_frame() else {
                         panic!("expected a single JSON-RPC frame");
                     };
                     if forwarded.send(message).is_err() {
@@ -539,15 +552,16 @@ mod tests {
         ) {
             let (mut agent, transport) = Channel::duplex();
             let future = Box::pin(async move {
-                match agent.rx.next().await {
+                match agent.rx.next().await.map(BudgetedFrame::into_frame) {
                     Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) => {
                         agent
                             .tx
-                            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                                 request.id,
                                 Err(agent_client_protocol::Error::invalid_request()
                                     .data("initialize rejected")),
                             )))
+                            .await
                             .unwrap();
                     }
                     Some(TransportFrame::Batch(batch)) => {
@@ -567,10 +581,11 @@ mod tests {
                         });
                         agent
                             .tx
-                            .unbounded_send(TransportFrame::Batch(
+                            .send_frame(TransportFrame::Batch(
                                 TransportBatch::from_messages(responses)
                                     .expect("request batch has responses"),
                             ))
+                            .await
                             .unwrap();
                     }
                     Some(TransportFrame::Single(_) | TransportFrame::Malformed { .. }) | None => {}
@@ -619,7 +634,9 @@ mod tests {
             let (mut agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
             let future = Box::pin(async move {
-                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
+                let Some(TransportFrame::Batch(batch)) =
+                    agent.rx.next().await.map(BudgetedFrame::into_frame)
+                else {
                     panic!("expected one batch frame");
                 };
                 let mut methods = Vec::new();
@@ -666,7 +683,8 @@ mod tests {
                     TransportBatch::from_messages(responses).expect("responses are non-empty");
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Batch(responses))
+                    .send_frame(TransportFrame::Batch(responses))
+                    .await
                     .unwrap();
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
@@ -686,7 +704,9 @@ mod tests {
         ) {
             let (mut agent, transport) = Channel::duplex();
             let future = Box::pin(async move {
-                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
+                let Some(TransportFrame::Batch(batch)) =
+                    agent.rx.next().await.map(BudgetedFrame::into_frame)
+                else {
                     panic!("expected one initial batch frame");
                 };
                 let responses = batch.entries().filter_map(|entry| {
@@ -702,20 +722,22 @@ mod tests {
 
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Single(
+                    .send_frame(TransportFrame::Single(
                         RawJsonRpcMessage::notification(
                             "custom/during-initialize".into(),
                             json!({ "phase": "before-response" }),
                         )
                         .expect("test notification should serialize"),
                     ))
+                    .await
                     .unwrap();
                 agent
                     .tx
-                    .unbounded_send(TransportFrame::Batch(
+                    .send_frame(TransportFrame::Batch(
                         TransportBatch::from_messages(responses)
                             .expect("initial batch has response-bearing requests"),
                     ))
+                    .await
                     .unwrap();
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
@@ -989,6 +1011,7 @@ mod tests {
         })));
         let (connection_id, connection) = registry.create_connection().await;
         let mut connection_outbound = connection.subscribe_connection_stream().unwrap();
+        connection.ensure_session("session-1").await;
         let mut session_outbound = connection
             .subscribe_session_stream("session-1")
             .await
@@ -1057,6 +1080,7 @@ mod tests {
         })));
         let (connection_id, connection) = registry.create_connection().await;
         let mut connection_outbound = connection.subscribe_connection_stream().unwrap();
+        connection.ensure_session("session-1").await;
         let mut session_outbound = connection
             .subscribe_session_stream("session-1")
             .await
@@ -1258,8 +1282,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sse_buffers_burst_without_polling_slow_subscriber() {
+    async fn sse_bounds_burst_and_drains_every_accepted_message() {
         let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let capacity = agent_client_protocol::ConnectionLimits::default().max_queued_frames;
         let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
             forwarded: forwarded_tx,
         })));
@@ -1275,11 +1300,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
 
         timeout(Duration::from_secs(1), async {
-            for index in 0..ISSUE_288_BURST {
+            for index in 0..capacity {
                 connection
                     .push_connection_stream_for_test(format!("message-{index}"))
                     .unwrap();
             }
+            assert!(
+                connection
+                    .push_connection_stream_for_test("overflow".into())
+                    .is_err()
+            );
         })
         .await
         .expect("enqueueing must not wait for the SSE body to be polled");
@@ -1297,7 +1327,7 @@ mod tests {
             .lines()
             .filter_map(|line| line.strip_prefix("data: "))
             .collect::<Vec<_>>();
-        let expected = (0..ISSUE_288_BURST)
+        let expected = (0..capacity)
             .map(|index| format!("message-{index}"))
             .collect::<Vec<_>>();
         assert_eq!(
@@ -1313,6 +1343,8 @@ mod tests {
             forwarded: forwarded_tx,
         })));
         let (connection_id, connection) = registry.create_connection().await;
+        connection.ensure_session("session-1").await;
+        connection.ensure_session("session-2").await;
         let request = |session_id: Option<&str>| {
             let mut request = Request::builder()
                 .method("GET")

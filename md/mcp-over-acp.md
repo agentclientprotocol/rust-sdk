@@ -15,14 +15,31 @@ Attach an `mcp_server::McpServer` to session setup through the existing builder
 APIs. It publishes a `McpServer::Acp` declaration with a provider-generated
 `serverId`.
 
-Each incoming `mcp/message` invokes the backend factory for one operation.
-The MCP request context exposes `server_id()` and `request_id()`; standalone
-MCP serving has neither. Tool definitions can be shared, but per-request MCP
-metadata and capabilities must not be inferred from previous operations.
+`McpService` is a reusable application service. Each `execute` call owns one
+operation future and receives an `McpRequestContext` with `server_id()`,
+`request_id()`, validated `metadata()`, cancellation, and an async
+`send_notification` method. Share tool implementations, caches, and connection
+pools deliberately; never infer a request's identity or capabilities from a
+previous operation.
 
-The rmcp integration can construct tools through its builder or wrap a supplied
-rmcp 3.4 service. The normal rmcp service can process a modern request without
-`initialize` when its inner `_meta` declares the modern version and capabilities.
+Use `McpServer::new_service` for a native service, or
+`new_service_with_standalone` when also exposing an independent standalone
+transport. The connector-based factory remains an explicit adapter for backends
+that require per-operation construction; stateless MCP does not require it.
+
+The rmcp integration's builder and `from_rmcp` use the reusable service path
+for ACP attachments. Each operation uses rmcp's direct, one-request transport
+without `initialize`. Its wrapper supervises rmcp handler futures through
+cancellation and cleanup instead of merely dropping detached task handles.
+
+Custom `McpService` implementations must observe `operation_cancellation()` and
+return only after their owned cleanup finishes. The binding waits for this
+completion; it cannot forcibly terminate detached application work.
+
+The scoped `tool_fn` helpers continue to provide `McpConnectionTo` for host ACP
+access. For decisions using the full MCP metadata/capabilities, implement
+`McpService` or an rmcp handler receiving its `RequestContext`. Standalone MCP
+connections have no ACP server or logical request ID.
 
 ## Consuming tools
 
@@ -44,9 +61,17 @@ stream notifications. Route by server and logical request ID. Do not block
 the ACP dispatch loop waiting for peer traffic; use a spawned task or the
 connection's application future.
 
-The final response is the MCP result directly, including its `resultType`, or
-the original MCP error. For MRTR, process the `input_required` result and send
-a fresh request with `inputResponses` and the exact opaque `requestState`.
+The final successful ACP response is `MessageMcpResponse::Result { result, .. }`
+or `MessageMcpResponse::Error { error, .. }`. Match that carrier before interpreting
+the MCP outcome. The result preserves all MCP fields, including `resultType`;
+the error preserves its MCP code, message, optional data, and extensions.
+An MCP code must never be treated as an ACP code: for example, inner `-32000`
+does not mean ACP authentication is required.
+
+Outer ACP failures instead describe invalid binding input, cancellation,
+resource exhaustion, an unavailable registration, or a failed backend/transport.
+For MRTR, process the inner `input_required` result and send a fresh request
+with `inputResponses` and the exact opaque `requestState`.
 
 Discovery reports only the MCP revision exposed by this binding, even if the
 hosted backend also supports older revisions through other transports.
@@ -59,22 +84,35 @@ arrive as request-scoped notifications, with the logical request ID in
 that subscription's state or lifetime.
 
 Use `SentRequest::cancel` (or drop an unconsumed request) to cancel the outer
-ACP operation. The provider stops that operation's backend work and returns a
-result or cancellation error. Removing a provider stops its outstanding work;
-no separate `mcp/disconnect` exchange exists.
+ACP operation. The provider revokes output immediately and stops that operation's
+owned backend work; its admission slot and logical ID remain held until cleanup
+finishes. Cancellation produces an outer cancellation error unless completion
+already won the race. Removing a registration or receiving transport EOF cancels
+its outstanding work; no separate `mcp/disconnect` exchange exists.
 
 ## Resource limits and remaining work
 
-The native provider admits at most 64 concurrent operations per declared
-server and checks a 16 MiB serialized payload limit before starting work or
-forwarding backend responses/notifications. Rejected work reports an error;
-completion and cancellation release the admission slot.
+The native binding has per-registration admission and serialized payload limits.
+Resource exhaustion is an outer `MCP_RESOURCE_EXHAUSTED` (`-33000`) failure, not
+ACP authentication and not an inner MCP tool error.
 
-These are not end-to-end memory bounds. The public SDK `Channel` and outgoing
-queues remain unbounded. A bounded native transport path is still required
-before stabilization; admission and per-message size checks do not prevent
-accumulation behind a slow peer. The [HTTP adapter](./mcp-bridge.md) separately
-bounds its own response queues and fails/cancels an overflowing operation.
+The transport revision introduces finite `ConnectionLimits` and `BudgetedFrame`
+ownership. Adapters must keep the frame's permit through staging, deferred
+dispatch, and writes; extracting a payload must not silently release its charge
+while retaining the data. Async producers await capacity; synchronous dispatch
+must fail explicitly instead of blocking the dispatcher needed to free capacity.
+
+The same item-limit policy currently governs frame queues, pending requests,
+running tasks, dynamic handlers, and deferred dispatch; the default is 32.
+The shared payload budget defaults to 64 MiB with a 16 MiB frame maximum and
+reserved response/cancellation capacity. These are serialized-payload charges,
+not an exact bound on total process memory or allocations inside user code.
+
+Regression coverage includes sender-clone saturation, cross-budget forwarding,
+retained responses and callbacks, EOF draining, and cancellation while cleanup is
+paused. The [HTTP adapter](./mcp-bridge.md) separately owns its response-body permits
+and fails/cancels overflowing operations. Full MCP conformance and protocol
+stabilization remain separate from this implementation evidence.
 
 ## Runnable example
 
@@ -87,3 +125,4 @@ cargo run -p agent-client-protocol-rmcp \
 This direct ACP example uses actual rmcp tools without the HTTP polyfill.
 See the [protocol reference](./protocol.md#native-mcp-over-acp) for wire details
 and the [RFD](https://agentclientprotocol.com/rfds/mcp-over-acp) for the design.
+The [migration guide](./migration-stateless-mcp.md) lists the breaking changes.

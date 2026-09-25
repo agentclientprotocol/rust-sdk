@@ -1,4 +1,4 @@
-//! Request-scoped native MCP transport. An ACP request owns exactly one backend instance.
+//! Request-scoped native MCP transport. Each ACP request owns execution and cleanup.
 
 use futures::{
     StreamExt,
@@ -15,19 +15,21 @@ use std::{
 
 use crate::{
     Agent, Channel, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder, Role,
-    TransportFrame,
-    mcp_server::{McpConnectionContext, McpConnectionTo, McpServerConnect},
+    JsonRpcNotification, JsonRpcRequest, RawJsonRpcMessage, Responder, Role, TransportFrame,
+    mcp_server::{
+        MCP_BACKEND_FAILURE, MCP_RESOURCE_EXHAUSTED, McpConnectionContext, McpConnectionTo,
+        McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpServerConnect,
+        McpService,
+    },
     role::HasPeer,
     schema::v1::{
-        McpRequestId, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
+        McpError, McpRequestId, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
         MessageMcpResponse, RequestId,
     },
     util::MatchDispatchFrom,
 };
 
-// These bound admitted work and individual payloads, not the SDK's underlying
-// Channel/outgoing queues. End-to-end native backpressure is separate transport work.
+// These bound admitted work and individual payloads.
 const MAX_ACTIVE_REQUESTS: usize = 64;
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 const MCP_VERSION: &str = "2026-07-28";
@@ -38,8 +40,7 @@ pub(super) struct V1McpProtocol;
 pub(super) struct V2McpProtocol;
 
 pub(super) trait McpProtocol: Send + 'static {
-    type MessageRequest: JsonRpcRequest<Response = Self::MessageResponse>;
-    type MessageResponse: JsonRpcResponse;
+    type MessageRequest: JsonRpcRequest<Response = MessageMcpResponse>;
     type MessageNotification: JsonRpcNotification;
 
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId;
@@ -55,7 +56,6 @@ pub(super) trait McpProtocol: Send + 'static {
 
 impl McpProtocol for V1McpProtocol {
     type MessageRequest = MessageMcpRequest;
-    type MessageResponse = MessageMcpResponse;
     type MessageNotification = MessageMcpNotification;
 
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId {
@@ -77,10 +77,56 @@ impl McpProtocol for V1McpProtocol {
     }
 }
 
+fn into_mcp_error(error: crate::Error) -> McpError {
+    let mut mcp = McpError::new(error.code.into(), error.message);
+    if let Some(data) = error.data {
+        mcp = mcp.data(data);
+    }
+    mcp
+}
+
+fn outcome_response(outcome: McpOutcome) -> Result<MessageMcpResponse, crate::Error> {
+    let response = match outcome {
+        McpOutcome::Result(value) => MessageMcpResponse::success(value),
+        McpOutcome::Error(error) => MessageMcpResponse::error(error),
+    };
+    check_payload_size(&response, MAX_PAYLOAD_BYTES)?;
+    Ok(response)
+}
+
+fn project_outcome(outcome: McpOutcome, is_discovery: bool) -> Result<McpOutcome, crate::Error> {
+    match outcome {
+        McpOutcome::Result(mut value) if is_discovery => {
+            constrain_discovery_versions(&mut value)?;
+            Ok(McpOutcome::Result(value))
+        }
+        other => Ok(other),
+    }
+}
+
+fn send_outcome(
+    responder: Responder<MessageMcpResponse>,
+    result: Result<McpOutcome, crate::Error>,
+    is_discovery: bool,
+) -> Result<(), crate::Error> {
+    match result {
+        Ok(outcome) => {
+            // Projection failures are MCP outcomes; binding and size failures
+            // remain named outer ACP errors, regardless of backend type.
+            let outcome = project_outcome(outcome, is_discovery)
+                .unwrap_or_else(|error| McpOutcome::Error(into_mcp_error(error)));
+            match outcome_response(outcome) {
+                Ok(response) => responder.respond(response),
+                Err(error) => responder.respond_with_error(error),
+            }
+        }
+        Err(error) => responder.respond_with_error(error),
+    }
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 impl McpProtocol for V2McpProtocol {
     type MessageRequest = crate::schema::v2::MessageMcpRequest;
-    type MessageResponse = crate::schema::v2::MessageMcpResponse;
     type MessageNotification = crate::schema::v2::MessageMcpNotification;
 
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId {
@@ -107,6 +153,7 @@ impl McpProtocol for V2McpProtocol {
 pub(super) struct McpActiveSession<Counterpart: Role, Protocol = V1McpProtocol> {
     server_id: McpServerAcpId,
     mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
+    service: Option<Arc<dyn McpService<Counterpart>>>,
     active: ActiveRequests,
     protocol: PhantomData<fn() -> Protocol>,
 }
@@ -138,7 +185,7 @@ fn admit_request(
     }
     if requests.len() >= MAX_ACTIVE_REQUESTS {
         return Err(
-            crate::Error::new(-32000, "MCP active request limit exceeded")
+            crate::Error::new(MCP_RESOURCE_EXHAUSTED, "MCP active request limit exceeded")
                 .data(serde_json::json!({"limit": MAX_ACTIVE_REQUESTS})),
         );
     }
@@ -168,7 +215,7 @@ fn check_payload_size(value: &impl serde::Serialize, limit: usize) -> Result<(),
         }
     }
     serde_json::to_writer(Budget(limit), value).map_err(|_| {
-        crate::Error::new(-32000, "MCP payload limit exceeded")
+        crate::Error::new(MCP_RESOURCE_EXHAUSTED, "MCP payload limit exceeded")
             .data(serde_json::json!({"limitBytes": limit}))
     })
 }
@@ -178,13 +225,15 @@ where
     Counterpart: HasPeer<Agent>,
     Protocol: McpProtocol,
 {
-    pub fn new(
+    pub fn new_with_service(
         server_id: McpServerAcpId,
         mcp_connect: Arc<dyn McpServerConnect<Counterpart>>,
+        service: Option<Arc<dyn McpService<Counterpart>>>,
     ) -> Self {
         Self {
             server_id,
             mcp_connect,
+            service,
             active: Arc::default(),
             protocol: PhantomData,
         }
@@ -193,15 +242,10 @@ where
     fn handle_request(
         &mut self,
         request: Protocol::MessageRequest,
-        responder: Responder<Protocol::MessageResponse>,
+        responder: Responder<MessageMcpResponse>,
         connection: &ConnectionTo<Counterpart>,
-    ) -> Result<
-        Handled<(
-            Protocol::MessageRequest,
-            Responder<Protocol::MessageResponse>,
-        )>,
-        crate::Error,
-    > {
+    ) -> Result<Handled<(Protocol::MessageRequest, Responder<MessageMcpResponse>)>, crate::Error>
+    {
         let server_id = Protocol::server_id(&request);
         if server_id != self.server_id {
             return Ok(Handled::No {
@@ -211,10 +255,13 @@ where
         }
         let request_id = Protocol::request_id(&request);
         let (method, params) = Protocol::into_request(request);
-        if let Err(error) = validate_modern_request(&method, params.as_ref())
-            .and_then(|()| check_payload_size(&(&method, &params, &request_id), MAX_PAYLOAD_BYTES))
+        if let Err(error) = check_payload_size(&(&method, &params, &request_id), MAX_PAYLOAD_BYTES)
         {
             responder.respond_with_error(error)?;
+            return Ok(Handled::Yes);
+        }
+        if let Err(error) = validate_modern_request(&method, params.as_ref()) {
+            responder.respond(outcome_response(McpOutcome::Error(into_mcp_error(error)))?)?;
             return Ok(Handled::Yes);
         }
         let (guard, stop_rx) = match admit_request(&self.active, request_id.clone()) {
@@ -225,30 +272,143 @@ where
             }
         };
 
-        let backend = self.mcp_connect.connect(McpConnectionTo {
+        if let Some(service) = self.service.clone() {
+            let metadata = params
+                .as_ref()
+                .and_then(|params| params.get("_meta"))
+                .and_then(Value::as_object)
+                .expect("validated MCP metadata")
+                .clone();
+            let cancellation = responder.cancellation();
+            let operation_cancellation = McpOperationCancellation::new();
+            let alive = Arc::new(futures::lock::Mutex::new(true));
+            let send_connection = connection.clone();
+            let send_server_id = server_id.clone();
+            let send_request_id = request_id.clone();
+            let send_cancellation = cancellation.clone();
+            let send_operation_cancellation = operation_cancellation.clone();
+            let send_alive = alive.clone();
+            let notify = Arc::new(move |method: String, params: Option<Map<String, Value>>| {
+                let connection = send_connection.clone();
+                let server_id = send_server_id.clone();
+                let request_id = send_request_id.clone();
+                let cancellation = send_cancellation.clone();
+                let operation_cancellation = send_operation_cancellation.clone();
+                let alive = send_alive.clone();
+                let send = async move {
+                    let active = alive.lock().await;
+                    if !*active
+                        || cancellation.is_cancelled()
+                        || operation_cancellation.is_cancelled()
+                    {
+                        return Err(crate::Error::request_cancelled());
+                    }
+                    check_payload_size(&(&method, &params), MAX_PAYLOAD_BYTES)?;
+                    let send = connection.send_notification_to_async(
+                        Agent,
+                        Protocol::notification(server_id, request_id, method, params),
+                    );
+                    futures::pin_mut!(send);
+                    let cancelled = async {
+                        let peer = cancellation.cancelled();
+                        let operation = operation_cancellation.cancelled();
+                        let shutdown = connection.shutdown_requested();
+                        futures::pin_mut!(peer, operation, shutdown);
+                        let peer_or_operation = future::select(peer, operation);
+                        futures::pin_mut!(peer_or_operation);
+                        let _reason = future::select(peer_or_operation, shutdown).await;
+                    };
+                    futures::pin_mut!(cancelled);
+                    let result = match future::select(send, cancelled).await {
+                        Either::Left((result, _)) => result,
+                        Either::Right(((), _)) => Err(crate::Error::request_cancelled()),
+                    };
+                    drop(active);
+                    result
+                };
+                Box::pin(send) as futures::future::BoxFuture<'static, Result<(), crate::Error>>
+            });
+            let context = McpRequestContext::new(
+                server_id.clone(),
+                request_id.clone(),
+                McpConnectionTo {
+                    context: McpConnectionContext::Acp {
+                        server_id,
+                        request_id,
+                    },
+                    connection: connection.clone(),
+                    cleanup: Some(Arc::default()),
+                },
+                metadata,
+                cancellation.clone(),
+                operation_cancellation.clone(),
+                notify,
+            );
+            let is_discovery = method == "server/discover";
+            let shutdown_connection = connection.clone();
+            connection.spawn(async move {
+                let request = McpRequest { method, params };
+                let cleanup_connection = context.connection().clone();
+                let operation = service.execute(request, context);
+                let stop = async {
+                    let cancelled = cancellation.cancelled();
+                    let shutdown = shutdown_connection.shutdown_requested();
+                    futures::pin_mut!(cancelled);
+                    futures::pin_mut!(shutdown);
+                    let stop_rx = stop_rx;
+                    futures::pin_mut!(stop_rx);
+                    let cancel_or_shutdown = future::select(cancelled, shutdown);
+                    futures::pin_mut!(cancel_or_shutdown);
+                    let _reason = future::select(cancel_or_shutdown, stop_rx).await;
+                };
+                let result = match future::select(operation, Box::pin(stop)).await {
+                    Either::Left((result, _)) => result,
+                    Either::Right(((), operation)) => {
+                        operation_cancellation.cancel();
+                        *alive.lock().await = false;
+                        // Do not discard the operation future: its completion
+                        // includes rmcp handler cancellation and actor join.
+                        drop(operation.await);
+                        Err(crate::Error::request_cancelled())
+                    }
+                };
+                *alive.lock().await = false;
+                cleanup_connection.wait_cleanup().await;
+                // Operation futures have been dropped and cannot send late output.
+                drop(guard);
+                let response = send_outcome(responder, result, is_discovery);
+                if let Err(error) = response {
+                    tracing::debug!(?error, "cannot send MCP response");
+                }
+                Ok(())
+            })?;
+            return Ok(Handled::Yes);
+        }
+
+        let cleanup_connection = McpConnectionTo {
             context: McpConnectionContext::Acp {
                 server_id: server_id.clone(),
                 request_id: request_id.clone(),
             },
             connection: connection.clone(),
-        });
+            cleanup: Some(Arc::default()),
+        };
+        let backend = self.mcp_connect.connect(cleanup_connection.clone());
         let connection_for_task = connection.clone();
         let cancellation = responder.cancellation();
         let (mut client, server) = Channel::duplex();
-        // Dropping this sender when the request completes stops the backend even if it
-        // has outstanding work after emitting its final response.
+        // Keep the operation admitted until its backend has actually stopped.
         let (backend_stop_tx, backend_stop_rx) = oneshot::channel::<()>();
+        let (backend_done_tx, mut backend_done_rx) = oneshot::channel();
         let spawn_result = connection.spawn(async move {
-            let run = backend.connect_to(server);
-            futures::pin_mut!(run);
-            let stop = backend_stop_rx;
-            futures::pin_mut!(stop);
-            match future::select(run, stop).await {
-                Either::Left((Err(error), _)) => {
-                    tracing::warn!(?error, "request-scoped MCP backend failed");
-                }
-                Either::Left((Ok(()), _)) | Either::Right((_, _)) => {}
-            }
+            // Own (not merely borrow) the future so cancellation drops its
+            // backend before the completion acknowledgement is published.
+            let run = Box::pin(backend.connect_to(server));
+            let outcome = match future::select(run, backend_stop_rx).await {
+                Either::Left((result, _)) => result,
+                Either::Right((_, _)) => Ok(()),
+            };
+            drop(backend_done_tx.send(outcome));
             Ok(())
         });
         if let Err(error) = spawn_result {
@@ -267,62 +427,73 @@ where
                 )?;
                 client
                     .tx
-                    .unbounded_send(TransportFrame::Single(raw))
+                    .send_frame(TransportFrame::Single(raw))
+                    .await
                     .map_err(crate::Error::into_internal_error)?;
-                while let Some(frame) = client.rx.next().await {
+                while let Some(budgeted) = client.rx.next().await {
+                    let (frame, _permit) = budgeted.into_parts();
                     let TransportFrame::Single(message) = frame else {
-                        return Err(crate::Error::invalid_request()
-                            .data("MCP backends must send individual valid JSON-RPC messages"));
+                        return Err(crate::Error::new(
+                            MCP_BACKEND_FAILURE,
+                            "MCP backends must send individual valid JSON-RPC messages",
+                        ));
                     };
                     if matches!(message, RawJsonRpcMessage::Response(_))
                         && message.response_id() != Some(&inner_id)
                     {
-                        return Err(crate::Error::invalid_params()
-                            .data("MCP backend returned a different request ID"));
+                        return Err(crate::Error::new(
+                            MCP_BACKEND_FAILURE,
+                            "MCP backend returned a different request ID",
+                        ));
                     }
                     match message {
                         RawJsonRpcMessage::Response(response) => {
-                            check_payload_size(&response, MAX_PAYLOAD_BYTES)?;
                             // Returning ends notification forwarding before the terminal reply.
                             return match response {
-                                crate::schema::v1::Response::Result { mut result, .. } => {
-                                    if is_discovery {
-                                        constrain_discovery_versions(&mut result)?;
-                                    }
-                                    Ok(result)
+                                crate::schema::v1::Response::Result { result, .. } => {
+                                    Ok(McpOutcome::Result(result))
                                 }
-                                crate::schema::v1::Response::Error { error, .. } => Err(error),
+                                crate::schema::v1::Response::Error { error, .. } => {
+                                    Ok(McpOutcome::Error(into_mcp_error(error)))
+                                }
                             };
                         }
                         RawJsonRpcMessage::Notification(notification) => {
                             check_payload_size(&notification, MAX_PAYLOAD_BYTES)?;
-                            let params =
-                                match notification.params {
-                                    Some(params) => match params.into_value() {
-                                        Value::Object(map) => Some(map),
-                                        _ => return Err(crate::Error::invalid_params().data(
+                            let params = match notification.params {
+                                Some(params) => match params.into_value() {
+                                    Value::Object(map) => Some(map),
+                                    _ => {
+                                        return Err(crate::Error::new(
+                                            MCP_BACKEND_FAILURE,
                                             "MCP backend notification parameters must be an object",
-                                        )),
-                                    },
-                                    None => None,
-                                };
-                            connection_for_task.send_notification_to(
-                                Agent,
-                                Protocol::notification(
-                                    server_id.clone(),
-                                    request_id.clone(),
-                                    notification.method.to_string(),
-                                    params,
-                                ),
-                            )?;
+                                        ));
+                                    }
+                                },
+                                None => None,
+                            };
+                            connection_for_task
+                                .send_notification_to_async(
+                                    Agent,
+                                    Protocol::notification(
+                                        server_id.clone(),
+                                        request_id.clone(),
+                                        notification.method.to_string(),
+                                        params,
+                                    ),
+                                )
+                                .await?;
                         }
                         RawJsonRpcMessage::Request(_) => {
-                            return Err(crate::Error::method_not_found()
-                                .data("reverse MCP requests are not supported"));
+                            return Err(crate::Error::new(
+                                MCP_BACKEND_FAILURE,
+                                "reverse MCP requests are not supported",
+                            ));
                         }
                     }
                 }
-                Err(crate::util::internal_error(
+                Err(crate::Error::new(
+                    MCP_BACKEND_FAILURE,
                     "MCP backend closed without a response",
                 ))
             };
@@ -330,26 +501,39 @@ where
                 .run_until_cancelled(async {
                     let process = process;
                     futures::pin_mut!(process);
-                    let stop = stop_rx;
+                    let stop = async {
+                        let _reason = future::select(
+                            stop_rx,
+                            Box::pin(connection_for_task.shutdown_requested()),
+                        )
+                        .await;
+                    };
                     futures::pin_mut!(stop);
-                    match future::select(process, stop).await {
+                    let work = async {
+                        match future::select(process, stop).await {
+                            Either::Left((result, _)) => result,
+                            Either::Right(((), _)) => Err(crate::Error::request_cancelled()),
+                        }
+                    };
+                    futures::pin_mut!(work);
+                    match future::select(work, &mut backend_done_rx).await {
                         Either::Left((result, _)) => result,
-                        Either::Right((_, _)) => Err(crate::Error::request_cancelled()),
+                        Either::Right((Ok(Err(error)), _)) => Err(error),
+                        // The backend can finish immediately after queueing its
+                        // reply. Drain the channel before calling that an EOF.
+                        Either::Right((Ok(Ok(())) | Err(_), work)) => work.await,
                     }
                 })
                 .await;
-            // No more notifications can be forwarded after `process` is dropped.
-            // Release the ID before publishing the final response so a caller can
-            // immediately reuse it for the next independent operation.
+            // Revoking the channel stops any late output. A cancellation is only
+            // caller-visible now; cleanup and ID release happen after backend exit.
             drop(backend_stop_tx);
+            // The receiver can have already completed in the race above. Polling
+            // it again then returns immediately; otherwise this joins cleanup.
+            drop(backend_done_rx.await);
+            cleanup_connection.wait_cleanup().await;
             drop(guard);
-            let response = match result {
-                Ok(value) => match Protocol::MessageResponse::from_value("mcp/message", value) {
-                    Ok(response) => responder.respond(response),
-                    Err(error) => responder.respond_with_error(error),
-                },
-                Err(error) => responder.respond_with_error(error),
-            };
+            let response = send_outcome(responder, result, is_discovery);
             if let Err(error) = response {
                 tracing::debug!(?error, "cannot send request-scoped MCP response");
             }
@@ -445,11 +629,33 @@ fn validate_modern_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveRequests, MAX_ACTIVE_REQUESTS, admit_request, check_payload_size,
-        constrain_discovery_versions, validate_modern_request,
+        ActiveRequests, MAX_ACTIVE_REQUESTS, MAX_PAYLOAD_BYTES, McpOutcome, admit_request,
+        check_payload_size, constrain_discovery_versions, into_mcp_error, outcome_response,
+        validate_modern_request,
     };
-    use crate::schema::v1::McpRequestId;
+    use crate::{
+        mcp_server::MCP_RESOURCE_EXHAUSTED,
+        schema::v1::{McpError, McpRequestId},
+    };
     use serde_json::json;
+
+    #[test]
+    fn both_outcome_branches_obey_the_binding_payload_limit() {
+        for outcome in [
+            McpOutcome::Result(json!("x".repeat(MAX_PAYLOAD_BYTES))),
+            McpOutcome::Error(
+                McpError::new(-32000, "peer error").data(json!("x".repeat(MAX_PAYLOAD_BYTES))),
+            ),
+        ] {
+            let error = outcome_response(outcome).expect_err("oversized carrier must be rejected");
+            assert_eq!(i32::from(error.code), MCP_RESOURCE_EXHAUSTED);
+        }
+        let result = outcome_response(McpOutcome::Result(serde_json::Value::Null)).unwrap();
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({"result":null})
+        );
+    }
 
     #[test]
     fn only_modern_request_metadata_is_accepted() {
@@ -502,7 +708,7 @@ mod tests {
         let overload = admit_request(&active, McpRequestId::new("extra"))
             .err()
             .unwrap();
-        assert_eq!(i32::from(overload.code), -32000);
+        assert_eq!(i32::from(overload.code), MCP_RESOURCE_EXHAUSTED);
         drop(admitted.pop());
         let replacement = admit_request(&active, McpRequestId::new("replacement")).unwrap();
         assert_eq!(active.lock().unwrap().len(), MAX_ACTIVE_REQUESTS);
@@ -534,5 +740,31 @@ mod tests {
         let mut unsupported = json!({"supportedVersions": ["2025-11-25"]});
         assert!(constrain_discovery_versions(&mut unsupported).is_err());
         assert!(constrain_discovery_versions(&mut json!({})).is_err());
+    }
+
+    #[test]
+    fn mcp_validation_errors_use_inner_carrier_and_preserve_null_data() {
+        let unsupported = validate_modern_request(
+            "tools/list",
+            json!({"_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2025-03-26",
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }})
+            .as_object(),
+        )
+        .expect_err("unsupported inner version");
+        let response = outcome_response(McpOutcome::Error(into_mcp_error(unsupported))).unwrap();
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["error"]["code"],
+            -32022
+        );
+        let response = outcome_response(McpOutcome::Error(
+            McpError::new(-32000, "opaque MCP error").data(serde_json::Value::Null),
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            json!({"error": {"code": -32000, "message": "opaque MCP error", "data": null}})
+        );
     }
 }

@@ -367,6 +367,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     to: "Client",
                     id: String("id:0"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "protocolVersion": Number(1),
                         "agentCapabilities": Object {
@@ -430,6 +431,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     to: "Client",
                     id: String("id:1"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "sessionId": String("session:0"),
                         "modes": Object {
@@ -521,6 +523,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     to: "Client",
                     id: String("id:2"),
                     is_error: false,
+                    error_domain: None,
                     payload: Object {
                         "stopReason": String("end_turn"),
                     },

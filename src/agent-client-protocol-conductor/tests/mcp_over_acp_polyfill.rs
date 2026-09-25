@@ -73,7 +73,7 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
                     assert_eq!(request.server_id.to_string(), SERVER_ID);
                     self.request_count.fetch_add(1, Ordering::SeqCst);
                     responder.respond(serde_json::from_value::<MessageMcpResponse>(
-                        serde_json::json!({"tools": []}),
+                        serde_json::json!({"result":{"tools": []}}),
                     )?)
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -147,13 +147,18 @@ fn native_server() -> McpServer {
 }
 
 async fn http_post(url: &str, bearer: &str, id: i64) -> serde_json::Value {
-    let address = url.strip_prefix("http://").unwrap();
+    let (address, route) = url
+        .strip_prefix("http://")
+        .unwrap()
+        .split_once('/')
+        .unwrap();
     let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
     let body = serde_json::json!({"jsonrpc":"2.0","id":id,"method":"tools/list",
-        "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}})
+        "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28",
+            "io.modelcontextprotocol/clientCapabilities":{}}}})
     .to_string();
     let request = format!(
-        "POST / HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\nContent-Length: {}\r\n\r\n{body}",
+        "POST /{route} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nAuthorization: {bearer}\r\nAccept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: tools/list\r\nContent-Length: {}\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(request.as_bytes()).await.unwrap();

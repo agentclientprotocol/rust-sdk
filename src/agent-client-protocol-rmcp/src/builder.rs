@@ -15,6 +15,8 @@ use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+use acp::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
 use agent_client_protocol as acp;
 use agent_client_protocol::{
     ByteStreams, ChainRun, ConnectTo, DynConnectTo, NullRun, RunWithConnectionTo,
@@ -231,19 +233,43 @@ where
     /// feature, it can also be attached through
     /// `SessionBuilder::with_mcp_server` or `Builder::with_mcp_server`.
     pub fn build(self) -> McpServer<Counterpart, Runner> {
-        McpServer::new(
-            McpServerBuilt {
-                name: self.name,
-                data: Arc::new(self.data),
-            },
-            self.runner,
-        )
+        let built = McpServerBuilt {
+            name: self.name,
+            data: Arc::new(self.data),
+        };
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        {
+            let standalone = McpServerBuilt {
+                name: built.name.clone(),
+                data: built.data.clone(),
+            };
+            McpServer::new_service_with_standalone(built, standalone, self.runner)
+        }
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        {
+            McpServer::new(built, self.runner)
+        }
     }
 }
 
 struct McpServerBuilt<Counterpart: Role> {
     name: String,
     data: Arc<McpToolRegistry<Counterpart>>,
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> {
+    fn execute(
+        &self,
+        request: McpRequest,
+        context: McpRequestContext<Counterpart>,
+    ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
+        let handler = McpServerConnection {
+            data: self.data.clone(),
+            mcp_connection: context.connection().clone(),
+        };
+        crate::native::execute(Arc::new(handler), request, context)
+    }
 }
 
 impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {

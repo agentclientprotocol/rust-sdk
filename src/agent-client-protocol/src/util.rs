@@ -1,10 +1,5 @@
 // Types re-exported from crate root
 
-use futures::{
-    future::BoxFuture,
-    stream::{Stream, StreamExt},
-};
-
 mod typed;
 pub use typed::{MatchDispatch, MatchDispatchFrom, TypeNotification};
 
@@ -112,73 +107,4 @@ pub fn run_until<T, E>(
             }
         }
     })
-}
-
-/// Process items from a stream concurrently.
-///
-/// For each item received from `stream`, calls `process_fn` to create a future,
-/// then runs all futures concurrently. If any future returns an error,
-/// stops processing and returns that error.
-///
-/// This is useful for patterns where you receive work items from a channel
-/// and want to process them concurrently while respecting backpressure.
-pub(crate) async fn process_stream_concurrently<T, F>(
-    stream: impl Stream<Item = T>,
-    process_fn: F,
-    process_fn_hack: impl for<'a> Fn(&'a F, T) -> BoxFuture<'a, Result<(), crate::Error>>,
-) -> Result<(), crate::Error>
-where
-    F: AsyncFn(T) -> Result<(), crate::Error>,
-{
-    use std::pin::pin;
-
-    use futures::stream::{FusedStream, FuturesUnordered};
-    use futures_concurrency::future::Race;
-
-    enum Event<T> {
-        NewItem(Option<T>),
-        FutureCompleted(Option<Result<(), crate::Error>>),
-    }
-
-    let mut stream = pin!(stream.fuse());
-    let mut futures: FuturesUnordered<_> = FuturesUnordered::new();
-
-    loop {
-        // If we have no futures to run, wait until we do.
-        if futures.is_empty() {
-            match stream.next().await {
-                Some(item) => futures.push(process_fn_hack(&process_fn, item)),
-                None => return Ok(()),
-            }
-            continue;
-        }
-
-        // If there are no more items coming in, just drain our queue and return.
-        if stream.is_terminated() {
-            while let Some(result) = futures.next().await {
-                result?;
-            }
-            return Ok(());
-        }
-
-        // Otherwise, race between getting a new item and completing a future.
-        let event = (async { Event::NewItem(stream.next().await) }, async {
-            Event::FutureCompleted(futures.next().await)
-        })
-            .race()
-            .await;
-
-        match event {
-            Event::NewItem(Some(item)) => {
-                futures.push(process_fn_hack(&process_fn, item));
-            }
-            Event::FutureCompleted(Some(result)) => {
-                result?;
-            }
-            Event::NewItem(None) | Event::FutureCompleted(None) => {
-                // Stream closed, loop will catch is_terminated
-                // No futures were pending, shouldn't happen since we checked is_empty
-            }
-        }
-    }
 }

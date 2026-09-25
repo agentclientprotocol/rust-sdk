@@ -90,14 +90,17 @@ async fn response_dispatch_handler_error_reaches_the_local_request_awaiter() {
                     .next()
                     .await
                     .expect("connection should send one request");
-                let TransportFrame::Single(RawJsonRpcMessage::Request(request)) = frame else {
+                let TransportFrame::Single(RawJsonRpcMessage::Request(request)) =
+                    frame.into_frame()
+                else {
                     panic!("expected one standalone request");
                 };
                 peer.tx
-                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                    .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
                         request.id,
                         Ok(serde_json::json!({ "result": "ignored" })),
                     )))
+                    .await
                     .expect("connection should accept the test response");
                 Ok::<(), agent_client_protocol::Error>(())
             };

@@ -1,7 +1,8 @@
 use std::{future::Future, time::Duration};
 
 use agent_client_protocol::{
-    Channel, RawJsonRpcMessage, TransportBatch, TransportFrame, schema::v1::RequestId,
+    BudgetedFrame, Channel, RawJsonRpcMessage, TransportBatch, TransportFrame,
+    schema::v1::RequestId,
 };
 use serde_json::{Value, json};
 
@@ -15,7 +16,7 @@ struct Peer(Channel);
 impl Peer {
     async fn request(&mut self, method: &str, session: Option<&str>) -> RequestId {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
-            self.0.rx.next().await
+            self.0.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected {method}");
         };
@@ -34,7 +35,7 @@ impl Peer {
     fn respond(&self, id: RequestId, result: Result<Value, Error>) {
         self.0
             .tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+            .try_send(TransportFrame::Single(RawJsonRpcMessage::response(
                 id, result,
             )))
             .unwrap();
@@ -43,7 +44,7 @@ impl Peer {
     fn replay_and_respond(&self, id: RequestId, session: &str, text: &str) {
         self.0
             .tx
-            .unbounded_send(TransportFrame::Batch(
+            .try_send(TransportFrame::Batch(
                 TransportBatch::from_messages([
                     update(session, text),
                     RawJsonRpcMessage::response(id, Ok(json!({}))),
@@ -83,7 +84,7 @@ impl Peer {
         while let Some(frame) = self.0.rx.next().await {
             assert!(
                 matches!(
-                    frame,
+                    frame.frame(),
                     TransportFrame::Single(RawJsonRpcMessage::Notification(_))
                 ),
                 "unexpected request during shutdown: {frame:?}"
@@ -191,7 +192,8 @@ async fn concurrent_loaders_share_one_resume_and_projection() {
             abandon.await.unwrap();
             peer.0
                 .tx
-                .unbounded_send(TransportFrame::Single(update(SESSION, "hello")))
+                .send_frame(TransportFrame::Single(update(SESSION, "hello")))
+                .await
                 .unwrap();
             peer.respond(resume, Ok(response));
             // A second resume or an early/duplicate close fails this script.
@@ -228,13 +230,14 @@ async fn abandoned_resume_is_drained_and_closed_before_fresh_replay() {
             // Pre-close traffic must also drain before installing a new recipient.
             peer.0
                 .tx
-                .unbounded_send(TransportFrame::Batch(
+                .send_frame(TransportFrame::Batch(
                     TransportBatch::from_messages([
                         update(SESSION, "closing"),
                         RawJsonRpcMessage::response(close, Ok(json!({}))),
                     ])
                     .unwrap(),
                 ))
+                .await
                 .unwrap();
             let fresh = peer.request("session/resume", Some(SESSION)).await;
             peer.replay_and_respond(fresh, SESSION, "hello");
@@ -277,13 +280,14 @@ async fn delayed_close_blocks_only_its_session() {
             release_close.await.unwrap();
             peer.0
                 .tx
-                .unbounded_send(TransportFrame::Batch(
+                .send_frame(TransportFrame::Batch(
                     TransportBatch::from_messages([
                         update(OTHER, "+live"),
                         RawJsonRpcMessage::response(close, Ok(json!({}))),
                     ])
                     .unwrap(),
                 ))
+                .await
                 .unwrap();
             let fresh = peer.request("session/resume", Some(SESSION)).await;
             peer.replay_and_respond(fresh, SESSION, "fresh");
@@ -370,7 +374,7 @@ async fn disconnect_during_cleanup_fails_waiting_reopen() {
             // A replacement resume must never have been published.
             while let Some(frame) = peer.0.rx.next().await {
                 assert!(matches!(
-                    frame,
+                    frame.into_frame(),
                     TransportFrame::Single(RawJsonRpcMessage::Notification(_))
                 ));
             }
@@ -511,7 +515,7 @@ async fn eof_follows_received_replay_and_response_but_fails_unanswered_loads() {
             drop(peer.0.tx);
             while let Some(frame) = peer.0.rx.next().await {
                 assert!(matches!(
-                    frame,
+                    frame.into_frame(),
                     TransportFrame::Single(RawJsonRpcMessage::Notification(_))
                 ));
             }

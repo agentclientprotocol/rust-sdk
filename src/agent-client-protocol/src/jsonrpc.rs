@@ -18,13 +18,15 @@ use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
 };
+use std::task::{Context, Poll, Waker};
 use uuid::Uuid;
 
 use futures::FutureExt;
-use futures::channel::{mpsc, oneshot};
+use futures::channel::oneshot;
 use futures::future::{self, BoxFuture, Either};
-use futures::{AsyncRead, AsyncWrite, StreamExt};
+use futures::{AsyncRead, AsyncWrite, Sink, SinkExt, StreamExt};
 
+mod admission;
 pub(crate) mod close;
 mod dynamic_handler;
 pub(crate) mod handlers;
@@ -85,6 +87,31 @@ pub enum TransportFrame {
     },
     /// Entries retained from one non-empty JSON-RPC batch, kept in source order.
     Batch(TransportBatch),
+}
+
+/// Finite transport and runtime admission limits. The byte budget is shared
+/// across both directions of one in-memory duplex.
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectionLimits {
+    /// Maximum UTF-8 bytes in one JSON-RPC frame.
+    pub max_frame_bytes: usize,
+    /// Shared serialized-payload budget, including queued frames and runtime
+    /// messages. One maximum frame's worth is reserved for responses/cancellation.
+    pub max_queued_bytes: usize,
+    /// Per-queue item limit and runtime admission limit for pending requests,
+    /// running tasks, dynamic handlers, and deferred dispatch. Values below one
+    /// are treated as one. Byte capacity is enforced separately.
+    pub max_queued_frames: usize,
+}
+
+impl Default for ConnectionLimits {
+    fn default() -> Self {
+        Self {
+            max_frame_bytes: transport_actor::MAX_FRAME_BYTES,
+            max_queued_bytes: 64 * 1024 * 1024,
+            max_queued_frames: admission::QUEUE_CAPACITY,
+        }
+    }
 }
 
 /// A structurally non-empty JSON-RPC batch retained across framed relays.
@@ -236,6 +263,48 @@ impl Serialize for TransportBatch {
 }
 
 impl TransportFrame {
+    fn is_control(&self) -> bool {
+        fn message_is_control(message: &RawJsonRpcMessage) -> bool {
+            match message {
+                RawJsonRpcMessage::Response(_) => true,
+                RawJsonRpcMessage::Notification(notification) => {
+                    if matches!(
+                        notification.method.as_ref(),
+                        "$/cancel_request" | "$/cancelRequest"
+                    ) {
+                        return true;
+                    }
+                    if !crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(
+                        &notification.method,
+                    ) {
+                        return false;
+                    }
+                    let Some(RawJsonRpcParams::Object(envelope)) = &notification.params else {
+                        return false;
+                    };
+                    let Some(method) = envelope.get("method").and_then(serde_json::Value::as_str)
+                    else {
+                        return false;
+                    };
+                    let (method, _) = peel_successor_envelopes(
+                        method,
+                        envelope.get("params").unwrap_or(&serde_json::Value::Null),
+                    );
+                    matches!(method, "$/cancel_request" | "$/cancelRequest")
+                }
+                RawJsonRpcMessage::Request(_) => false,
+            }
+        }
+        match self {
+            Self::Single(message) => message_is_control(message),
+            Self::Batch(batch) => batch.entries().all(|entry| match entry {
+                TransportBatchEntry::Message(message) => message_is_control(message),
+                TransportBatchEntry::Malformed { .. } => false,
+            }),
+            Self::Malformed { .. } => false,
+        }
+    }
+
     fn inspect_messages(
         &self,
         observer: &mut impl FnMut(&RawJsonRpcMessage) -> Result<(), crate::Error>,
@@ -1898,15 +1967,22 @@ impl<
             context: _,
         } = self;
 
-        let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
-        let (new_task_tx, new_task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
-        let pending_replies = PendingReplies::default();
-
         // Convert transport into server - this returns a channel for us to use
         // and a future that runs the transport.
         let transport_component = crate::DynConnectTo::new(transport);
         let (transport_channel, transport_future) = transport_component.into_channel_and_future();
+        let limits = transport_channel.tx.admission().limits();
+        let (outgoing_tx, outgoing_rx) = admission::budgeted_channel(
+            transport_channel.tx.admission(),
+            OutgoingMessage::charged_bytes,
+            OutgoingMessage::with_permit,
+            OutgoingMessage::is_control,
+            OutgoingMessage::is_urgent,
+        );
+        let (new_task_tx, new_task_rx) = admission::channel_with_capacity(limits.max_queued_frames);
+        let (dynamic_handler_tx, dynamic_handler_rx) =
+            admission::channel_with_capacity(limits.max_queued_frames);
+        let pending_replies = PendingReplies::with_capacity(limits.max_queued_frames);
         let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
         let transport_completion = transport_completion_rx
             .map(|result| {
@@ -1965,8 +2041,13 @@ impl<
                                 pending_replies,
                                 transport_outgoing_tx,
                                 protocol_compat,
+                                connection.incoming_closed.clone(),
                             ),
-                            task_actor::task_actor(new_task_rx, &connection),
+                            task_actor::task_actor(
+                                new_task_rx,
+                                &connection,
+                                limits.max_queued_frames
+                            ),
                             runner.run_with_connection_to(connection.clone()),
                         )?;
                         Ok(())
@@ -1985,8 +2066,16 @@ impl<
                 };
 
                 run_until_connection_close(
-                    background,
-                    main_fn(connection.clone()),
+                    async {
+                        let result = background.await;
+                        connection.incoming_closed.request_shutdown();
+                        result
+                    },
+                    async {
+                        let result = main_fn(connection.clone()).await;
+                        connection.incoming_closed.request_shutdown();
+                        result
+                    },
                     connection.incoming_closed.clone(),
                 )
                 .await
@@ -2098,6 +2187,8 @@ pub(crate) struct ResponsePayload {
     /// the dispatch loop; ordinary blocking consumers, local error paths, and
     /// responses routed later do not.
     pub(crate) ack_tx: Option<oneshot::Sender<()>>,
+    /// Admission remains with an SDK-owned result until it is consumed or dropped.
+    retained_bytes: Option<FramePermit>,
 }
 
 type ResponseRouteHook =
@@ -2141,7 +2232,7 @@ impl std::fmt::Debug for ResponsePayload {
         f.debug_struct("ResponsePayload")
             .field("result", &self.result)
             .field("ack_tx", &self.ack_tx.as_ref().map(|_| "..."))
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -2162,6 +2253,8 @@ impl ResponseOrdering {
 
 struct PendingReply {
     method: String,
+    /// The method and map key outlive the outgoing frame.
+    metadata_bytes: Option<FramePermit>,
     role_id: RoleId,
     sender: oneshot::Sender<ResponsePayload>,
     cancellation_disarm: SentRequestCancellationDisarm,
@@ -2177,6 +2270,7 @@ impl PendingReply {
             .send(ResponsePayload {
                 result: Err(error),
                 ack_tx: None,
+                retained_bytes: self.metadata_bytes,
             })
             .is_err()
         {
@@ -2190,10 +2284,20 @@ impl PendingReply {
     }
 }
 
-#[derive(Default)]
 struct PendingRepliesInner {
     incoming_closed: bool,
     replies: HashMap<RequestId, PendingReply>,
+    max_pending: usize,
+}
+
+impl Default for PendingRepliesInner {
+    fn default() -> Self {
+        Self {
+            incoming_closed: false,
+            replies: HashMap::new(),
+            max_pending: admission::QUEUE_CAPACITY,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -2202,6 +2306,15 @@ struct PendingReplies {
 }
 
 impl PendingReplies {
+    fn with_capacity(max_pending: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(PendingRepliesInner {
+                max_pending: max_pending.max(1),
+                ..PendingRepliesInner::default()
+            })),
+        }
+    }
+
     fn registrar(&self) -> PendingRepliesRegistrar {
         PendingRepliesRegistrar {
             inner: Arc::downgrade(&self.inner),
@@ -2222,6 +2335,36 @@ impl PendingReplies {
             .expect("pending replies mutex poisoned")
             .replies
             .remove(id)
+    }
+
+    fn mark_published(&self, id: &RequestId) -> bool {
+        let inner = self.inner.lock().expect("pending replies mutex poisoned");
+        let Some(reply) = inner.replies.get(id) else {
+            return false;
+        };
+        reply
+            .cancellation_disarm
+            .published
+            .store(true, Ordering::Release);
+        true
+    }
+
+    /// Cancellation may bypass queued work, but must never reach the peer
+    /// before a request that we subsequently publish. Settle that case locally.
+    fn cancel_unpublished(&self, id: &RequestId) -> bool {
+        let reply = {
+            let mut inner = self.inner.lock().expect("pending replies mutex poisoned");
+            if inner
+                .replies
+                .get(id)
+                .is_none_or(|reply| reply.cancellation_disarm.published.load(Ordering::Acquire))
+            {
+                return false;
+            }
+            inner.replies.remove(id).expect("pending reply checked")
+        };
+        reply.fail(crate::Error::request_cancelled());
+        true
     }
 
     /// Atomically reject new subscriptions and fail every existing one.
@@ -2274,6 +2417,12 @@ impl PendingRepliesRegistrar {
             let mut inner = inner.lock().expect("pending replies mutex poisoned");
             if inner.incoming_closed {
                 Err(reply)
+            } else if !inner.replies.contains_key(&id) && inner.replies.len() >= inner.max_pending {
+                drop(inner);
+                reply.fail(crate::util::internal_error(
+                    "pending request capacity exceeded",
+                ));
+                return false;
             } else {
                 Ok(inner.replies.insert(id, reply))
             }
@@ -2303,6 +2452,17 @@ impl PendingRepliesRegistrar {
             .expect("pending replies mutex poisoned")
             .replies
             .remove(id)
+    }
+
+    fn discard_abandoned(&self, id: &RequestId) -> Option<PendingReply> {
+        let inner = self.inner.upgrade()?;
+        let mut inner = inner.lock().expect("pending replies mutex poisoned");
+        // Framework response hooks own cleanup even when their consumer drops.
+        // Keep their bounded registration until the reply arrives or EOF fails it.
+        if inner.replies.get(id)?.response_route_hook.is_some() {
+            return None;
+        }
+        inner.replies.remove(id)
     }
 }
 
@@ -2653,6 +2813,14 @@ fn peel_successor_envelopes<'message>(
     (method, params)
 }
 
+fn outgoing_cancellation_id(message: &UntypedMessage) -> Option<RequestId> {
+    let (method, params) = peel_successor_envelopes(&message.method, &message.params);
+    if !matches!(method, "$/cancel_request" | "$/cancelRequest") {
+        return None;
+    }
+    serde_json::from_value(params.get("requestId")?.clone()).ok()
+}
+
 /// Whether a notification is a `$/cancel_request`, even when it is still
 /// wrapped in `_proxy/successor` envelopes.
 ///
@@ -2718,6 +2886,7 @@ impl ResponseDestination {
             remaining: slot_count,
             responses: (0..slot_count).map(|_| None).collect(),
             abandoned: (0..slot_count).map(|_| None).collect(),
+            permits: (0..slot_count).map(|_| None).collect(),
             active_handler_attempts: (0..slot_count).map(|_| 0).collect(),
             dispatch_complete: false,
             emitted: false,
@@ -2737,17 +2906,29 @@ impl ResponseDestination {
         )
     }
 
-    fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
+    fn complete_admitted(
+        self,
+        response: RawJsonRpcMessage,
+        permit: Option<FramePermit>,
+    ) -> Option<(TransportFrame, Option<FramePermit>)> {
         match self {
-            Self::Individual(slot) => slot.complete(response),
-            Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
+            Self::Individual(slot) => slot.complete(response).map(|frame| (frame, permit)),
+            Self::Batch(slot) => slot
+                .complete_admitted(response, permit)
+                .map(batch_response_frame_admitted),
         }
     }
 
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<TransportFrame> {
+    fn abandon_admitted(
+        self,
+        fallback: RawJsonRpcMessage,
+        permit: Option<FramePermit>,
+    ) -> Option<(TransportFrame, Option<FramePermit>)> {
         match self {
             Self::Individual(_) => None,
-            Self::Batch(slot) => slot.abandon(fallback).map(batch_response_frame),
+            Self::Batch(slot) => slot
+                .abandon_admitted(fallback, permit)
+                .map(batch_response_frame_admitted),
         }
     }
 
@@ -2769,10 +2950,19 @@ impl ResponseDestination {
         })
     }
 
-    fn finish_handler_attempt(self) -> Option<TransportFrame> {
+    fn finish_handler_attempt_admitted(
+        self,
+        permit: Option<FramePermit>,
+    ) -> Option<(TransportFrame, Option<FramePermit>)> {
         match self {
             Self::Individual(_) => None,
-            Self::Batch(slot) => slot.finish_handler_attempt().map(batch_response_frame),
+            Self::Batch(slot) => slot.finish_handler_attempt().map(|ready| {
+                let (frame, mut charge) = batch_response_frame_admitted(ready);
+                if let (Some(charge), Some(permit)) = (&mut charge, permit) {
+                    charge.join(permit);
+                }
+                (frame, charge)
+            }),
         }
     }
 }
@@ -2800,6 +2990,20 @@ fn batch_response_frame(responses: Vec<RawJsonRpcMessage>) -> TransportFrame {
     )
 }
 
+fn batch_response_frame_admitted(ready: BatchReady) -> (TransportFrame, Option<FramePermit>) {
+    let mut permits = ready.permits.into_iter();
+    let mut charge = permits.next();
+    for permit in permits {
+        charge.as_mut().expect("first permit exists").join(permit);
+    }
+    (batch_response_frame(ready.responses), charge)
+}
+
+struct BatchReady {
+    responses: Vec<RawJsonRpcMessage>,
+    permits: Vec<FramePermit>,
+}
+
 #[derive(Clone)]
 struct BatchDispatchCompletion {
     state: Arc<Mutex<BatchResponseState>>,
@@ -2814,7 +3018,10 @@ impl std::fmt::Debug for BatchDispatchCompletion {
 }
 
 impl BatchDispatchCompletion {
-    fn complete(self) -> Option<TransportFrame> {
+    fn complete_admitted(
+        self,
+        permit: Option<FramePermit>,
+    ) -> Option<(TransportFrame, Option<FramePermit>)> {
         let mut state = self
             .state
             .lock()
@@ -2827,7 +3034,13 @@ impl BatchDispatchCompletion {
         for index in 0..state.responses.len() {
             promote_abandoned_response(&mut state, index);
         }
-        take_completed_batch(&mut state).map(batch_response_frame)
+        take_completed_batch(&mut state).map(|ready| {
+            let (frame, mut charge) = batch_response_frame_admitted(ready);
+            if let (Some(charge), Some(permit)) = (&mut charge, permit) {
+                charge.join(permit);
+            }
+            (frame, charge)
+        })
     }
 }
 
@@ -2841,14 +3054,14 @@ fn promote_abandoned_response(state: &mut BatchResponseState, index: usize) {
     }
 }
 
-fn take_completed_batch(state: &mut BatchResponseState) -> Option<Vec<RawJsonRpcMessage>> {
+fn take_completed_batch(state: &mut BatchResponseState) -> Option<BatchReady> {
     if !state.dispatch_complete || state.remaining != 0 || state.emitted {
         return None;
     }
 
     state.emitted = true;
-    Some(
-        state
+    Some(BatchReady {
+        responses: state
             .responses
             .iter_mut()
             .map(|response| {
@@ -2857,7 +3070,8 @@ fn take_completed_batch(state: &mut BatchResponseState) -> Option<Vec<RawJsonRpc
                     .expect("completed JSON-RPC batch has every response slot")
             })
             .collect(),
-    )
+        permits: state.permits.iter_mut().filter_map(Option::take).collect(),
+    })
 }
 
 #[derive(Clone)]
@@ -2884,7 +3098,7 @@ impl BatchResponseSlot {
         state.active_handler_attempts[self.index] += 1;
     }
 
-    fn finish_handler_attempt(self) -> Option<Vec<RawJsonRpcMessage>> {
+    fn finish_handler_attempt(self) -> Option<BatchReady> {
         let mut state = self
             .state
             .lock()
@@ -2898,7 +3112,11 @@ impl BatchResponseSlot {
         take_completed_batch(&mut state)
     }
 
-    fn complete(self, response: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
+    fn complete_admitted(
+        self,
+        response: RawJsonRpcMessage,
+        permit: Option<FramePermit>,
+    ) -> Option<BatchReady> {
         let mut state = self
             .state
             .lock()
@@ -2924,11 +3142,16 @@ impl BatchResponseSlot {
 
         state.abandoned[self.index] = None;
         state.responses[self.index] = Some(response);
+        state.permits[self.index] = permit;
         state.remaining -= 1;
         take_completed_batch(&mut state)
     }
 
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
+    fn abandon_admitted(
+        self,
+        fallback: RawJsonRpcMessage,
+        permit: Option<FramePermit>,
+    ) -> Option<BatchReady> {
         let mut state = self
             .state
             .lock()
@@ -2950,6 +3173,7 @@ impl BatchResponseSlot {
         } else {
             state.abandoned[self.index] = Some(fallback);
         }
+        state.permits[self.index] = permit;
         take_completed_batch(&mut state)
     }
 }
@@ -2958,6 +3182,7 @@ struct BatchResponseState {
     remaining: usize,
     responses: Vec<Option<RawJsonRpcMessage>>,
     abandoned: Vec<Option<RawJsonRpcMessage>>,
+    permits: Vec<Option<FramePermit>>,
     active_handler_attempts: Vec<usize>,
     dispatch_complete: bool,
     emitted: bool,
@@ -2995,6 +3220,8 @@ struct ResponseReplyTarget {
     sender: Arc<Mutex<Option<oneshot::Sender<ResponsePayload>>>>,
     ordering: ResponseOrdering,
     dispatch: ResponseDispatch,
+    /// Keep the original frame admitted while a handler defers routing.
+    frame_bytes: Option<FramePermit>,
 }
 
 impl ResponseReplyTarget {
@@ -3013,8 +3240,39 @@ impl ResponseReplyTarget {
             return;
         };
 
+        // A transformed result may be larger than the wire response. Each
+        // result (including each member of a batch) therefore needs its own
+        // charge; cloning the batch's frame permit does not charge each result.
+        // Never wait here: this router may hold the only permit whose release
+        // would make room. On rejection deliver a bounded error instead.
+        let (result, retained_bytes) = if let Some(frame) = self.frame_bytes {
+            let bytes = match &result {
+                Ok(value) => serde_json::to_vec(value).map(|json| json.len()),
+                Err(error) => serde_json::to_vec(error).map(|json| json.len()),
+            };
+            match bytes.ok().and_then(|bytes| {
+                FrameAdmission(frame.inner.budget.clone()).try_reserve_bytes(bytes, true)
+            }) {
+                Some(permit) => (result, Some(permit)),
+                None => (
+                    Err(crate::util::internal_error(
+                        "retained response byte capacity exceeded",
+                    )),
+                    Some(frame),
+                ),
+            }
+        } else {
+            (result, None)
+        };
         let ack_tx = self.dispatch.acknowledgment(&self.ordering);
-        if sender.send(ResponsePayload { result, ack_tx }).is_err() {
+        if sender
+            .send(ResponsePayload {
+                result,
+                ack_tx,
+                retained_bytes,
+            })
+            .is_err()
+        {
             tracing::debug!(
                 method = %self.method,
                 id = ?self.id,
@@ -3064,7 +3322,7 @@ impl ResponseDispatch {
 
 enum HandlerErrorTarget {
     Request(RequestReplyTarget),
-    Response(ResponseReplyTarget),
+    Response(Box<ResponseReplyTarget>),
 }
 
 impl HandlerErrorTarget {
@@ -3081,6 +3339,13 @@ impl HandlerErrorTarget {
 
 #[derive(Debug)]
 enum OutgoingMessage {
+    /// Retain application admission across queueing, readiness, conversion, and
+    /// transport publication. Legacy test-only queues can still carry bare messages.
+    Admitted {
+        message: Box<OutgoingMessage>,
+        permit: FramePermit,
+    },
+
     /// Close the outgoing application queue and acknowledge after every
     /// already-accepted message has entered the raw transport queue.
     CloseAfterDraining { done: oneshot::Sender<()> },
@@ -3145,6 +3410,99 @@ enum OutgoingMessage {
         error: crate::Error,
         destination: ResponseDestination,
     },
+}
+
+impl OutgoingMessage {
+    fn charged_bytes(&self) -> Result<usize, crate::Error> {
+        // Include space for the JSON-RPC envelope and request ID. A transformed
+        // frame that exceeds this estimate must grow the *same* permit, never
+        // await an independent reservation while retaining the first.
+        const ENVELOPE: usize = 64;
+        let bytes = match self {
+            Self::Admitted { message, .. } => return message.charged_bytes(),
+            Self::Request {
+                id,
+                method,
+                untyped,
+                ..
+            } => {
+                serde_json::to_vec(&untyped.params)
+                    .map_err(crate::Error::into_internal_error)?
+                    .len()
+                    + untyped.method.len()
+                    + method.len()
+                    + serde_json::to_vec(id)
+                        .map_err(crate::Error::into_internal_error)?
+                        .len()
+            }
+            Self::Notification { untyped } => {
+                serde_json::to_vec(&untyped.params)
+                    .map_err(crate::Error::into_internal_error)?
+                    .len()
+                    + untyped.method.len()
+            }
+            Self::Response {
+                id,
+                method,
+                response,
+                ..
+            } => {
+                serde_json::to_vec(response)
+                    .map_err(crate::Error::into_internal_error)?
+                    .len()
+                    + method.len()
+                    + serde_json::to_vec(id)
+                        .map_err(crate::Error::into_internal_error)?
+                        .len()
+            }
+            Self::UncorrelatedErrorResponse { error, .. } => serde_json::to_vec(error)
+                .map_err(crate::Error::into_internal_error)?
+                .len(),
+            Self::AbandonedBatchResponse { id, method, .. } => {
+                method.len()
+                    + serde_json::to_vec(id)
+                        .map_err(crate::Error::into_internal_error)?
+                        .len()
+            }
+            Self::CloseAfterDraining { .. }
+            | Self::BatchDispatchComplete { .. }
+            | Self::BatchHandlerAttemptComplete { .. } => 0,
+        };
+        Ok(if bytes == 0 {
+            1
+        } else {
+            bytes.saturating_add(ENVELOPE)
+        })
+    }
+
+    fn is_control(&self) -> bool {
+        match self {
+            Self::Admitted { message, .. } => message.is_control(),
+            Self::Notification { untyped } => outgoing_cancellation_id(untyped).is_some(),
+            Self::CloseAfterDraining { .. }
+            | Self::BatchDispatchComplete { .. }
+            | Self::BatchHandlerAttemptComplete { .. }
+            | Self::Response { .. }
+            | Self::UncorrelatedErrorResponse { .. }
+            | Self::AbandonedBatchResponse { .. } => true,
+            Self::Request { .. } => false,
+        }
+    }
+
+    fn is_urgent(&self) -> bool {
+        match self {
+            Self::Admitted { message, .. } => message.is_urgent(),
+            Self::Notification { untyped } => outgoing_cancellation_id(untyped).is_some(),
+            _ => false,
+        }
+    }
+
+    fn with_permit(self, permit: FramePermit) -> Self {
+        Self::Admitted {
+            message: Box::new(self),
+            permit,
+        }
+    }
 }
 
 /// Return type from JrHandler; indicates whether the request was handled or not.
@@ -3227,6 +3585,11 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     /// Wait until the incoming transport reaches clean EOF.
     pub async fn incoming_closed(&self) {
         self.inner.incoming_closed().await;
+    }
+
+    /// Wait for EOF or connection termination, before close callbacks run.
+    pub async fn shutdown_requested(&self) {
+        self.inner.shutdown_requested().await;
     }
 
     /// Return whether clean incoming-EOF processing has completed.
@@ -3337,6 +3700,17 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         self.inner.send_notification(notification)
     }
 
+    /// Await outbound capacity outside the dispatch loop.
+    pub async fn send_notification_async<N: JsonRpcNotification>(
+        &self,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.send_notification_async(notification).await
+    }
+
     /// Send an outgoing notification to a specific peer.
     pub fn send_notification_to<Peer: Role, N: JsonRpcNotification>(
         &self,
@@ -3347,6 +3721,20 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         self.inner.send_notification_to(peer, notification)
+    }
+
+    /// Await outbound capacity outside the dispatch loop.
+    pub async fn send_notification_to_async<Peer: Role, N: JsonRpcNotification>(
+        &self,
+        peer: Peer,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner
+            .send_notification_to_async(peer, notification)
+            .await
     }
 
     /// Send a `$/cancel_request` notification to the default counterpart peer.
@@ -3431,7 +3819,7 @@ pub struct ConnectionTo<Counterpart: Role> {
     counterpart: Counterpart,
     message_tx: OutgoingMessageTx,
     task_tx: TaskTx,
-    dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+    dynamic_handler_tx: admission::Sender<DynamicHandlerMessage<Counterpart>>,
     transport_completion: SharedTransportCompletion,
     pending_replies: PendingRepliesRegistrar,
     #[cfg_attr(
@@ -3457,23 +3845,45 @@ struct IncomingClosedState {
     closed: AtomicBool,
     signal_tx: Mutex<Option<oneshot::Sender<()>>>,
     signal_rx: future::Shared<BoxFuture<'static, ()>>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    shutdown_rx: future::Shared<BoxFuture<'static, ()>>,
 }
 
 impl IncomingClosed {
     fn new() -> Self {
         let (signal_tx, signal_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         Self {
             state: Arc::new(IncomingClosedState {
                 closing: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
                 signal_tx: Mutex::new(Some(signal_tx)),
                 signal_rx: signal_rx.map(|_| ()).boxed().shared(),
+                shutdown_tx: Mutex::new(Some(shutdown_tx)),
+                shutdown_rx: shutdown_rx.map(|_| ()).boxed().shared(),
             }),
         }
     }
 
     fn begin_close(&self) {
         self.state.closing.store(true, Ordering::Release);
+        self.request_shutdown();
+    }
+
+    fn request_shutdown(&self) {
+        if let Some(tx) = self
+            .state
+            .shutdown_tx
+            .lock()
+            .expect("shutdown mutex poisoned")
+            .take()
+        {
+            let _ = tx.send(());
+        }
+    }
+
+    async fn shutdown_requested(&self) {
+        self.state.shutdown_rx.clone().await;
     }
 
     fn finish_close(&self) {
@@ -3583,9 +3993,9 @@ fn run_until_connection_close<R>(
 impl<Counterpart: Role> ConnectionTo<Counterpart> {
     fn new(
         counterpart: Counterpart,
-        message_tx: mpsc::UnboundedSender<OutgoingMessage>,
-        task_tx: mpsc::UnboundedSender<Task>,
-        dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+        message_tx: OutgoingMessageTx,
+        task_tx: TaskTx,
+        dynamic_handler_tx: admission::Sender<DynamicHandlerMessage<Counterpart>>,
         transport_completion: SharedTransportCompletion,
         pending_replies: PendingRepliesRegistrar,
         protocol_mode: ProtocolMode,
@@ -3624,6 +4034,12 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.incoming_closed.closed().await;
     }
 
+    /// Resolves on transport EOF or local completion, before close callbacks
+    /// or outgoing drain. Cancel connection-owned work when this fires.
+    pub async fn shutdown_requested(&self) {
+        self.incoming_closed.shutdown_requested().await;
+    }
+
     /// Return whether clean incoming-EOF processing has completed.
     ///
     /// This remains `false` while [`Builder::on_close`] callbacks are running.
@@ -3636,10 +4052,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// the protocol actor, and wait for the transport sink to finish them.
     async fn drain_outgoing(&self) -> Result<(), crate::Error> {
         let (done_tx, done_rx) = oneshot::channel();
-        let marker_result = send_raw_message(
-            &self.message_tx,
-            OutgoingMessage::CloseAfterDraining { done: done_tx },
-        );
+        let marker_result = self
+            .message_tx
+            .send(OutgoingMessage::CloseAfterDraining { done: done_tx })
+            .await
+            .map_err(crate::util::internal_error);
         let marker_result = match marker_result {
             Ok(()) => done_rx.await.map_err(|error| {
                 crate::util::internal_error(format!(
@@ -4094,13 +4511,18 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         }
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
-        let cancellation =
-            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
+        let cancellation = SentRequestCancellation::new(
+            self.message_tx.clone(),
+            self.pending_replies.clone(),
+            remote_style,
+            id.clone(),
+        );
         if self.is_incoming_closing() {
             cancellation.disarm();
             drop(response_tx.send(ResponsePayload {
                 result: Err(incoming_transport_closed_error(&method)),
                 ack_tx: None,
+                retained_bytes: None,
             }));
             return SentRequest::new(
                 id,
@@ -4115,12 +4537,47 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
         match request.to_untyped_message() {
             Ok(untyped) => {
+                // The queue's frame charge is released after transport publication,
+                // but the pending map retains its own copies of the method and ID.
+                // Charge those strings (plus a fixed entry allowance) separately.
+                let metadata_bytes = self.message_tx.byte_admission().and_then(|budget| {
+                    budget.try_reserve_bytes(
+                        method
+                            .len()
+                            .saturating_add(match &id {
+                                RequestId::Str(value) => value.len(),
+                                _ => 32,
+                            })
+                            .saturating_add(64),
+                        true,
+                    )
+                });
+                if self.message_tx.byte_admission().is_some() && metadata_bytes.is_none() {
+                    cancellation.disarm();
+                    drop(response_tx.send(ResponsePayload {
+                        result: Err(crate::util::internal_error(
+                            "pending request metadata byte capacity exceeded",
+                        )),
+                        ack_tx: None,
+                        retained_bytes: None,
+                    }));
+                    return SentRequest::new(
+                        id,
+                        method.clone(),
+                        self.task_tx.clone(),
+                        response_rx,
+                        cancellation,
+                        response_ordering,
+                    )
+                    .map(move |json| <Req::Response>::from_value(&method, json));
+                }
                 // Register before enqueueing so incoming EOF can fail every
                 // observable request before close callbacks begin. The
                 // outgoing actor checks that the registration still exists
                 // before sending the request.
                 let pending_reply = PendingReply {
                     method: method.clone(),
+                    metadata_bytes,
                     role_id,
                     sender: response_tx,
                     cancellation_disarm: cancellation.disarm_handle(),
@@ -4142,10 +4599,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
                     if let Err(error) = self.message_tx.unbounded_send(message) {
                         cancellation.disarm();
-
-                        let OutgoingMessage::Request { id, method, .. } = error.into_inner() else {
-                            unreachable!();
-                        };
+                        // A rejected queue item may be wrapped in Admitted.
+                        // Drop it to release its admission before failing the waiter.
+                        drop(error.into_inner());
 
                         if let Some(pending_reply) = self.pending_replies.remove(&id) {
                             if self.is_incoming_closing() {
@@ -4169,6 +4625,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                             "failed to create untyped request for `{method}`: {err}"
                         ))),
                         ack_tx: None,
+                        retained_bytes: None,
                     })
                     .unwrap();
             }
@@ -4212,6 +4669,18 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.send_notification_to(self.counterpart.clone(), notification)
     }
 
+    /// Await outbound capacity for a producer outside ordered dispatch.
+    pub async fn send_notification_async<N: JsonRpcNotification>(
+        &self,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.send_notification_to_async(self.counterpart.clone(), notification)
+            .await
+    }
+
     /// Send an outgoing notification to a specific peer (no reply expected).
     ///
     /// The message will be transformed according to the [`HasPeer`](crate::role::HasPeer)
@@ -4244,6 +4713,25 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 untyped: transformed,
             },
         )
+    }
+
+    /// Await outbound capacity for a producer outside ordered dispatch.
+    pub async fn send_notification_to_async<Peer: Role, N: JsonRpcNotification>(
+        &self,
+        peer: Peer,
+        notification: N,
+    ) -> Result<(), crate::Error>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        let remote_style = self.counterpart.remote_style(peer);
+        let transformed = remote_style.transform_outgoing_message(notification)?;
+        self.message_tx
+            .send(OutgoingMessage::Notification {
+                untyped: transformed,
+            })
+            .await
+            .map_err(crate::util::internal_error)
     }
 
     /// Send a `$/cancel_request` notification for an arbitrary request ID to
@@ -4722,7 +5210,7 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
 
     /// Shared route used to deliver a dispatch-handler error to the same waiter.
-    reply_target: ResponseReplyTarget,
+    reply_target: Box<ResponseReplyTarget>,
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
@@ -4741,9 +5229,15 @@ impl ResponseRouter<serde_json::Value> {
     /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
-    fn new(id: RequestId, pending_reply: PendingReply, dispatch: ResponseDispatch) -> Self {
+    fn new(
+        id: RequestId,
+        pending_reply: PendingReply,
+        dispatch: ResponseDispatch,
+        frame_bytes: Option<FramePermit>,
+    ) -> Self {
         let PendingReply {
             method,
+            metadata_bytes: _,
             role_id,
             sender,
             cancellation_disarm,
@@ -4756,6 +5250,7 @@ impl ResponseRouter<serde_json::Value> {
             sender: Arc::new(Mutex::new(Some(sender))),
             ordering,
             dispatch,
+            frame_bytes,
         };
         let send_target = reply_target.clone();
         // A response for the request reached this router, so the request is
@@ -4779,7 +5274,7 @@ impl ResponseRouter<serde_json::Value> {
                 send_target.route(response);
                 Ok(())
             }),
-            reply_target,
+            reply_target: Box::new(reply_target),
         }
     }
 
@@ -5474,12 +5969,14 @@ pub struct SentRequest<T> {
 #[derive(Clone, Debug)]
 pub(crate) struct SentRequestCancellationDisarm {
     armed: Arc<AtomicBool>,
+    published: Arc<AtomicBool>,
 }
 
 impl SentRequestCancellationDisarm {
     fn new() -> Self {
         Self {
             armed: Arc::new(AtomicBool::new(true)),
+            published: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -5490,6 +5987,8 @@ impl SentRequestCancellationDisarm {
 
 struct SentRequestCancellation {
     message_tx: OutgoingMessageTx,
+    pending_replies: PendingRepliesRegistrar,
+    retain_pending_on_drop: AtomicBool,
     remote_style: crate::role::RemoteStyle,
     request_id: RequestId,
     disarm: SentRequestCancellationDisarm,
@@ -5498,11 +5997,14 @@ struct SentRequestCancellation {
 impl SentRequestCancellation {
     fn new(
         message_tx: OutgoingMessageTx,
+        pending_replies: PendingRepliesRegistrar,
         remote_style: crate::role::RemoteStyle,
         request_id: RequestId,
     ) -> Self {
         Self {
             message_tx,
+            pending_replies,
+            retain_pending_on_drop: AtomicBool::new(false),
             remote_style,
             request_id,
             disarm: SentRequestCancellationDisarm::new(),
@@ -5536,6 +6038,11 @@ impl Drop for SentRequestCancellation {
     fn drop(&mut self) {
         if let Err(error) = self.send() {
             tracing::debug!(?error, "failed to auto-cancel dropped request");
+        }
+        // The receiver is gone now; waiting for a peer response would retain
+        // the pending method and map key without any possible consumer.
+        if !self.retain_pending_on_drop.load(Ordering::Acquire) {
+            self.pending_replies.discard_abandoned(&self.request_id);
         }
     }
 }
@@ -5616,7 +6123,7 @@ impl SentRequest<serde_json::Value> {
     fn new(
         id: RequestId,
         method: String,
-        task_tx: mpsc::UnboundedSender<Task>,
+        task_tx: TaskTx,
         response_rx: oneshot::Receiver<ResponsePayload>,
         cancellation: SentRequestCancellation,
         response_ordering: ResponseOrdering,
@@ -5649,6 +6156,11 @@ impl<T> SentRequest<T> {
     /// handle while automatic cancellation is armed.
     pub fn detach(self) {
         self.cancellation.disarm();
+        // A detached request must stay registered until it has been
+        // published: the outgoing actor skips unregistered requests.
+        self.cancellation
+            .retain_pending_on_drop
+            .store(true, Ordering::Release);
     }
 
     /// Send a `$/cancel_request` notification for this outgoing request.
@@ -5870,7 +6382,11 @@ impl<T> SentRequest<T> {
             .await;
 
             match response {
-                Ok(ResponsePayload { result, ack_tx }) => {
+                Ok(ResponsePayload {
+                    result,
+                    ack_tx,
+                    retained_bytes,
+                }) => {
                     // Convert the result using to_result for Ok values
                     let typed_result = match result {
                         Ok(json_value) => to_result(json_value),
@@ -5878,6 +6394,7 @@ impl<T> SentRequest<T> {
                     };
 
                     let outcome = handle(Ok(typed_result)).await;
+                    drop(retained_bytes);
 
                     // Ack AFTER the handler completes - this is the key
                     // difference from block_task. The dispatch loop waits for
@@ -5974,6 +6491,7 @@ impl<T> SentRequest<T> {
             Ok(ResponsePayload {
                 result: Ok(json_value),
                 ack_tx,
+                retained_bytes: _,
             }) => {
                 // Blocking consumers ack before converting or returning the
                 // value, so dispatch can continue while the caller processes it.
@@ -5988,6 +6506,7 @@ impl<T> SentRequest<T> {
             Ok(ResponsePayload {
                 result: Err(err),
                 ack_tx,
+                retained_bytes: _,
             }) => {
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
@@ -6020,11 +6539,16 @@ impl<T> SentRequest<T> {
         .await;
 
         let (result, ack_tx) = match response {
-            Ok(ResponsePayload { result, ack_tx }) => {
+            Ok(ResponsePayload {
+                result,
+                ack_tx,
+                retained_bytes,
+            }) => {
                 let typed_result = match result {
                     Ok(json_value) => (self.to_result)(json_value),
                     Err(error) => Err(error),
                 };
+                drop(retained_bytes);
                 (typed_result, ack_tx)
             }
             Err(error) => (
@@ -6339,8 +6863,9 @@ where
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        self.into_channel_transport()
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
+        let (channel, driver) = self.into_channel_transport();
+        (channel, crate::ConnectionDriver::new(driver))
     }
 }
 
@@ -6404,11 +6929,9 @@ where
         impl futures::Sink<String, Error = std::io::Error> + Send + 'static,
         impl futures::Stream<Item = std::io::Result<String>> + Send + 'static,
     > {
-        use futures::AsyncBufReadExt;
-        use futures::io::BufReader;
         let Self { outgoing, incoming } = self;
 
-        let incoming_lines = Box::pin(BufReader::new(incoming).lines());
+        let incoming_lines = Box::pin(transport_actor::bounded_lines(Box::pin(incoming)));
         let outgoing_lines =
             futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
                 write_line(&mut writer, line).await?;
@@ -6440,7 +6963,7 @@ where
         ConnectTo::<R>::connect_to(self.into_lines(), client).await
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
         ConnectTo::<R>::into_channel_and_future(self.into_lines())
     }
 }
@@ -6470,9 +6993,555 @@ where
 #[derive(Debug)]
 pub struct Channel {
     /// Receives frames from the counterpart.
-    pub rx: mpsc::UnboundedReceiver<TransportFrame>,
+    pub rx: FrameReceiver,
     /// Sends frames to the counterpart.
-    pub tx: mpsc::UnboundedSender<TransportFrame>,
+    pub tx: FrameSender,
+}
+
+/// The byte charge for a frame. Clones refer to the same charge; releasing it
+/// requires dropping *every* copy, including deferred dispatch/writer copies.
+#[derive(Clone, Debug)]
+pub struct FramePermit {
+    inner: Arc<FramePermitInner>,
+    additional: Vec<FramePermit>,
+}
+
+impl FramePermit {
+    /// Number of bytes held until every copy of this permit is dropped.
+    pub fn charged_bytes(&self) -> usize {
+        self.inner.bytes.load(Ordering::Acquire)
+            + self
+                .additional
+                .iter()
+                .map(Self::charged_bytes)
+                .sum::<usize>()
+    }
+
+    fn join(&mut self, other: FramePermit) {
+        self.additional.push(other);
+    }
+
+    fn charged_for(&self, budget: &Arc<FrameBudget>) -> usize {
+        let own = if Arc::ptr_eq(&self.inner.budget, budget) {
+            self.inner.bytes.load(Ordering::Acquire)
+        } else {
+            0
+        };
+        own + self
+            .additional
+            .iter()
+            .map(|permit| permit.charged_for(budget))
+            .sum::<usize>()
+    }
+
+    fn cover_budget(
+        &self,
+        budget: &Arc<FrameBudget>,
+        bytes: usize,
+        data: bool,
+    ) -> Result<(), crate::Error> {
+        if Arc::ptr_eq(&self.inner.budget, budget) {
+            self.cover_frame(bytes, data)
+        } else {
+            self.additional
+                .iter()
+                .find(|permit| permit.charged_for(budget) > 0)
+                .expect("destination charge exists")
+                .cover_budget(budget, bytes, data)
+        }
+    }
+
+    fn cover_frame(&self, bytes: usize, data: bool) -> Result<(), crate::Error> {
+        let budget = &self.inner.budget;
+        // Aggregated batch permits can exceed the maximum size of one frame.
+        // That must not allow an oversized frame to bypass the per-frame limit.
+        if bytes > budget.limits.max_frame_bytes {
+            return Err(
+                crate::Error::invalid_request().data("frame exceeds connection byte budget")
+            );
+        }
+        if data && !self.inner.data {
+            return Err(crate::Error::invalid_request()
+                .data("data frame cannot grow a control reservation"));
+        }
+        let charged = self.charged_for(budget);
+        if bytes <= charged {
+            return Ok(());
+        }
+        let delta = bytes - charged;
+        let mut state = budget.state.lock().expect("frame budget poisoned");
+        if state
+            .used
+            .checked_add(delta)
+            .is_none_or(|used| used > budget.limits.max_queued_bytes)
+            || data
+                && state.data_used.checked_add(delta).is_none_or(|used| {
+                    used > budget
+                        .limits
+                        .max_queued_bytes
+                        .saturating_sub(budget.limits.max_frame_bytes)
+                })
+        {
+            return Err(crate::Error::invalid_request()
+                .data("outgoing frame exceeds admitted byte capacity"));
+        }
+        state.used += delta;
+        if self.inner.data {
+            state.data_used += delta;
+        }
+        self.inner.bytes.fetch_add(delta, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct FramePermitInner {
+    budget: Arc<FrameBudget>,
+    bytes: std::sync::atomic::AtomicUsize,
+    data: bool,
+}
+
+impl Drop for FramePermitInner {
+    fn drop(&mut self) {
+        let mut state = self.budget.state.lock().expect("frame budget poisoned");
+        let bytes = self.bytes.load(Ordering::Acquire);
+        state.used -= bytes;
+        if self.data {
+            state.data_used -= bytes;
+        }
+        let waiters = state
+            .waiters
+            .iter()
+            .map(|(_, waker)| waker.clone())
+            .collect::<Vec<_>>();
+        drop(state);
+        for waker in waiters {
+            waker.wake();
+        }
+    }
+}
+
+#[derive(Debug)]
+struct FrameBudget {
+    limits: ConnectionLimits,
+    state: Mutex<FrameBudgetState>,
+}
+
+#[derive(Debug, Default)]
+struct FrameBudgetState {
+    used: usize,
+    data_used: usize,
+    waiters: Vec<(usize, Waker)>,
+    next_waiter: usize,
+}
+
+struct FrameWaiter {
+    budget: Arc<FrameBudget>,
+    id: Option<usize>,
+}
+
+impl Drop for FrameWaiter {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            self.budget
+                .state
+                .lock()
+                .expect("frame budget poisoned")
+                .waiters
+                .retain(|(registered, _)| *registered != id);
+        }
+    }
+}
+
+impl FrameBudget {
+    fn try_reserve(self: &Arc<Self>, bytes: usize, data: bool) -> Option<FramePermit> {
+        let mut state = self.state.lock().expect("frame budget poisoned");
+        if bytes > self.limits.max_frame_bytes
+            || state.used.checked_add(bytes)? > self.limits.max_queued_bytes
+            || data
+                && state.data_used.checked_add(bytes)?
+                    > self
+                        .limits
+                        .max_queued_bytes
+                        .saturating_sub(self.limits.max_frame_bytes)
+        {
+            return None;
+        }
+        state.used += bytes;
+        if data {
+            state.data_used += bytes;
+        }
+        Some(FramePermit {
+            inner: Arc::new(FramePermitInner {
+                budget: self.clone(),
+                bytes: std::sync::atomic::AtomicUsize::new(bytes),
+                data,
+            }),
+            additional: Vec::new(),
+        })
+    }
+
+    async fn reserve(
+        self: &Arc<Self>,
+        bytes: usize,
+        data: bool,
+    ) -> Result<FramePermit, crate::Error> {
+        if bytes > self.limits.max_frame_bytes || bytes > self.limits.max_queued_bytes {
+            return Err(
+                crate::Error::invalid_request().data("frame exceeds connection byte budget")
+            );
+        }
+        if data
+            && bytes
+                > self
+                    .limits
+                    .max_queued_bytes
+                    .saturating_sub(self.limits.max_frame_bytes)
+        {
+            return Err(
+                crate::Error::invalid_request().data("data frame exceeds connection byte budget")
+            );
+        }
+        let mut waiter = FrameWaiter {
+            budget: self.clone(),
+            id: None,
+        };
+        future::poll_fn(|cx| {
+            let mut state = self.state.lock().expect("frame budget poisoned");
+            if state
+                .used
+                .checked_add(bytes)
+                .is_some_and(|used| used <= self.limits.max_queued_bytes)
+                && (!data
+                    || state.data_used.checked_add(bytes).is_some_and(|used| {
+                        used <= self
+                            .limits
+                            .max_queued_bytes
+                            .saturating_sub(self.limits.max_frame_bytes)
+                    }))
+            {
+                state.used += bytes;
+                if data {
+                    state.data_used += bytes;
+                }
+                Poll::Ready(Ok(FramePermit {
+                    inner: Arc::new(FramePermitInner {
+                        budget: self.clone(),
+                        bytes: std::sync::atomic::AtomicUsize::new(bytes),
+                        data,
+                    }),
+                    additional: Vec::new(),
+                }))
+            } else {
+                if let Some(id) = waiter.id {
+                    let (_, waker) = state
+                        .waiters
+                        .iter_mut()
+                        .find(|(registered, _)| *registered == id)
+                        .expect("registered budget waiter");
+                    waker.clone_from(cx.waker());
+                } else {
+                    let id = state.next_waiter;
+                    state.next_waiter = state.next_waiter.wrapping_add(1);
+                    state.waiters.push((id, cx.waker().clone()));
+                    waiter.id = Some(id);
+                }
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+/// A frame with its retained byte admission. Forward this envelope rather
+/// than extracting the frame when placing data into another queue.
+#[derive(Debug)]
+pub struct BudgetedFrame {
+    frame: TransportFrame,
+    permit: FramePermit,
+}
+
+impl BudgetedFrame {
+    /// Borrow the frame without releasing admission.
+    #[must_use]
+    pub fn frame(&self) -> &TransportFrame {
+        &self.frame
+    }
+
+    /// Borrow the charge when retaining metadata derived from this frame.
+    /// Cloning the permit retains admission without cloning the payload.
+    #[must_use]
+    pub fn permit(&self) -> &FramePermit {
+        &self.permit
+    }
+
+    /// Separate the frame and permit for deferred processing. Keep the permit
+    /// alongside any deferred output until that output has been consumed.
+    #[must_use]
+    pub fn into_parts(self) -> (TransportFrame, FramePermit) {
+        (self.frame, self.permit)
+    }
+
+    /// Release the frame's admission explicitly after consuming it.
+    #[must_use]
+    pub fn into_frame(self) -> TransportFrame {
+        self.frame
+    }
+}
+
+/// Pollable receive half of an in-memory duplex.
+#[derive(Debug)]
+pub struct FrameReceiver(std::pin::Pin<Box<async_channel::Receiver<BudgetedFrame>>>);
+
+impl futures::Stream for FrameReceiver {
+    type Item = BudgetedFrame;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        self.0.as_mut().poll_next(cx)
+    }
+}
+
+/// Backpressured frame sink. A synchronous send fails when its finite queue is full;
+/// asynchronous producers should use [`SinkExt::send`] instead.
+pub struct FrameSender {
+    tx: async_channel::Sender<BudgetedFrame>,
+    budget: Arc<FrameBudget>,
+    pending: Mutex<Option<BoxFuture<'static, Result<(), crate::Error>>>>,
+}
+
+impl std::fmt::Debug for FrameSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FrameSender")
+            .field("tx", &self.tx)
+            .field("budget", &self.budget)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Shared byte admission independent of a channel's send half. Used when an
+/// adapter stages frames before forwarding them to the channel sink.
+#[derive(Clone, Debug)]
+pub struct FrameAdmission(Arc<FrameBudget>);
+
+impl FrameAdmission {
+    /// Limits shared by both halves of the duplex connection.
+    #[must_use]
+    pub fn limits(&self) -> ConnectionLimits {
+        self.0.limits
+    }
+
+    fn try_reserve_bytes(&self, bytes: usize, data: bool) -> Option<FramePermit> {
+        self.0.try_reserve(bytes, data)
+    }
+
+    async fn reserve_bytes(&self, bytes: usize, data: bool) -> Result<FramePermit, crate::Error> {
+        self.0.reserve(bytes, data).await
+    }
+
+    /// Admit a frame before placing it into any staging queue.
+    pub fn try_admit(&self, frame: TransportFrame) -> Result<BudgetedFrame, FrameSendError> {
+        let bytes = frame
+            .to_json()
+            .map_err(|_| FrameSendError {
+                frame: Box::new(frame.clone()),
+                reason: "cannot serialize outgoing JSON-RPC frame",
+            })?
+            .len();
+        let Some(permit) = self.0.try_reserve(bytes, !frame.is_control()) else {
+            return Err(FrameSendError {
+                frame: Box::new(frame),
+                reason: "outgoing frame byte capacity exceeded",
+            });
+        };
+        Ok(BudgetedFrame { frame, permit })
+    }
+
+    /// Wait for byte capacity when staging a frame outside inline dispatch.
+    pub async fn admit(&self, frame: TransportFrame) -> Result<BudgetedFrame, crate::Error> {
+        let bytes = frame.to_json()?.len();
+        let permit = self.0.reserve(bytes, !frame.is_control()).await?;
+        Ok(BudgetedFrame { frame, permit })
+    }
+}
+
+impl Clone for FrameSender {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            budget: self.budget.clone(),
+            pending: Mutex::new(None),
+        }
+    }
+}
+
+/// Failure to admit a frame (capacity, size, or closed receiver). The original
+/// frame remains available to callers; nothing is silently discarded.
+#[derive(Debug)]
+pub struct FrameSendError {
+    frame: Box<TransportFrame>,
+    reason: &'static str,
+}
+
+impl std::fmt::Display for FrameSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason)
+    }
+}
+
+impl std::error::Error for FrameSendError {}
+
+impl FrameSendError {
+    /// Recover the frame that was not admitted.
+    pub fn into_inner(self) -> TransportFrame {
+        *self.frame
+    }
+}
+
+impl FrameSender {
+    /// Obtain the byte admission handle without retaining this channel sender.
+    pub fn admission(&self) -> FrameAdmission {
+        FrameAdmission(self.budget.clone())
+    }
+
+    /// Fail immediately rather than blocking a protocol dispatcher on its own output.
+    pub fn try_send(&self, frame: TransportFrame) -> Result<(), FrameSendError> {
+        let budgeted = self.admission().try_admit(frame)?;
+        self.tx.try_send(budgeted).map_err(|error| FrameSendError {
+            frame: Box::new(error.into_inner().frame),
+            reason: "outgoing frame queue full or closed",
+        })
+    }
+
+    /// Await byte and frame capacity outside ordered dispatch.
+    pub async fn send_frame(&self, frame: TransportFrame) -> Result<(), crate::Error> {
+        let bytes = frame.to_json()?.len();
+        let permit = match future::select(
+            Box::pin(self.budget.reserve(bytes, !frame.is_control())),
+            Box::pin(self.tx.closed()),
+        )
+        .await
+        {
+            Either::Left((result, _)) => result?,
+            Either::Right(((), _)) => {
+                return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
+            }
+        };
+        self.tx
+            .send(BudgetedFrame { frame, permit })
+            .await
+            .map_err(crate::util::internal_error)
+    }
+
+    /// Transfer an application message's charge into its framed representation.
+    /// Any transform expansion must grow that lease immediately, rather than
+    /// awaiting capacity held by this very message.
+    async fn send_admitted(
+        &self,
+        frame: TransportFrame,
+        permit: FramePermit,
+    ) -> Result<(), crate::Error> {
+        let bytes = frame.to_json()?.len();
+        permit.cover_frame(bytes, !frame.is_control())?;
+        self.tx
+            .send(BudgetedFrame { frame, permit })
+            .await
+            .map_err(crate::util::internal_error)
+    }
+
+    /// Stop accepting frames on this queue.
+    pub fn close_channel(&self) {
+        self.tx.close();
+        self.pending.lock().expect("frame sender poisoned").take();
+    }
+
+    /// Return whether the receiving endpoint has closed.
+    pub fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
+
+impl Sink<BudgetedFrame> for FrameSender {
+    type Error = crate::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.poll_flush(cx)
+    }
+
+    fn start_send(
+        self: std::pin::Pin<&mut Self>,
+        mut item: BudgetedFrame,
+    ) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        if this.tx.is_closed() {
+            return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
+        }
+        let bytes = item.frame.to_json()?.len();
+        let data = !item.frame.is_control();
+        if bytes > this.budget.limits.max_frame_bytes {
+            return Err(
+                crate::Error::invalid_request().data("frame exceeds connection byte budget")
+            );
+        }
+        if item.permit.charged_for(&this.budget) > 0 {
+            item.permit.cover_budget(&this.budget, bytes, data)?;
+        } else {
+            let permit = this.budget.try_reserve(bytes, data).ok_or_else(|| {
+                crate::Error::invalid_request().data("outgoing frame byte capacity exceeded")
+            })?;
+            item.permit.join(permit);
+        }
+        let mut pending = this.pending.lock().expect("frame sender poisoned");
+        if pending.is_some() {
+            return Err(crate::Error::invalid_request().data("frame sender not ready"));
+        }
+        let tx = this.tx.clone();
+        *pending = Some(Box::pin(async move {
+            tx.send(item).await.map_err(crate::util::internal_error)
+        }));
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        let mut pending = this.pending.lock().expect("frame sender poisoned");
+        let Some(send) = pending.as_mut() else {
+            return Poll::Ready(if this.tx.is_closed() {
+                Err(crate::Error::invalid_request().data("outgoing frame queue closed"))
+            } else {
+                Ok(())
+            });
+        };
+        match send.as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                pending.take();
+                Poll::Ready(result)
+            }
+        }
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut *this).poll_flush(cx) {
+            Poll::Ready(Ok(())) => {
+                this.tx.close();
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
 }
 
 impl Channel {
@@ -6481,10 +7550,36 @@ impl Channel {
     /// Frames sent through either endpoint are received by the other endpoint.
     #[must_use]
     pub fn duplex() -> (Self, Self) {
-        let (a_tx, b_rx) = mpsc::unbounded();
-        let (b_tx, a_rx) = mpsc::unbounded();
+        Self::duplex_with_limits(ConnectionLimits::default())
+    }
 
-        (Self { rx: a_rx, tx: a_tx }, Self { rx: b_rx, tx: b_tx })
+    /// Create a connected pair sharing one finite byte budget.
+    #[must_use]
+    pub fn duplex_with_limits(limits: ConnectionLimits) -> (Self, Self) {
+        let budget = Arc::new(FrameBudget {
+            limits,
+            state: Mutex::new(FrameBudgetState::default()),
+        });
+        let (a_tx, b_rx) = async_channel::bounded(limits.max_queued_frames.max(1));
+        let (b_tx, a_rx) = async_channel::bounded(limits.max_queued_frames.max(1));
+        (
+            Self {
+                rx: FrameReceiver(Box::pin(a_rx)),
+                tx: FrameSender {
+                    tx: a_tx,
+                    budget: budget.clone(),
+                    pending: Mutex::new(None),
+                },
+            },
+            Self {
+                rx: FrameReceiver(Box::pin(b_rx)),
+                tx: FrameSender {
+                    tx: b_tx,
+                    budget,
+                    pending: Mutex::new(None),
+                },
+            },
+        )
     }
 
     /// Copy frames from `rx` to `tx` until the input closes.
@@ -6495,7 +7590,8 @@ impl Channel {
     pub(crate) async fn copy(mut self) -> Result<(), crate::Error> {
         while let Some(frame) = self.rx.next().await {
             self.tx
-                .unbounded_send(frame)
+                .send(frame)
+                .await
                 .map_err(crate::util::internal_error)?;
         }
         Ok(())
@@ -6518,27 +7614,29 @@ impl Channel {
     ) -> Result<(), crate::Error> {
         let Self {
             rx: mut left_rx,
-            tx: left_tx,
+            tx: mut left_tx,
         } = left;
         let Self {
             rx: mut right_rx,
-            tx: right_tx,
+            tx: mut right_tx,
         } = right;
 
         let left_to_right = async move {
             while let Some(frame) = left_rx.next().await {
-                frame.inspect_messages(&mut left_to_right)?;
+                frame.frame().inspect_messages(&mut left_to_right)?;
                 right_tx
-                    .unbounded_send(frame)
+                    .send(frame)
+                    .await
                     .map_err(crate::util::internal_error)?;
             }
             Ok::<(), crate::Error>(())
         };
         let right_to_left = async move {
             while let Some(frame) = right_rx.next().await {
-                frame.inspect_messages(&mut right_to_left)?;
+                frame.frame().inspect_messages(&mut right_to_left)?;
                 left_tx
-                    .unbounded_send(frame)
+                    .send(frame)
+                    .await
                     .map_err(crate::util::internal_error)?;
             }
             Ok::<(), crate::Error>(())
@@ -6552,25 +7650,46 @@ impl Channel {
 impl<R: Role> ConnectTo<R> for Channel {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (client_channel, client_future) = client.into_channel_and_future();
+        let passive = client_future.is_passive();
 
-        let ((), (), ()) = futures::try_join!(
-            Channel {
-                rx: client_channel.rx,
-                tx: self.tx,
+        let outbound = Channel {
+            rx: client_channel.rx,
+            tx: self.tx,
+        }
+        .copy();
+        let inbound = Channel {
+            rx: self.rx,
+            tx: client_channel.tx,
+        }
+        .copy();
+        if passive {
+            // Neither channel owns the remote application. Preserve half-close:
+            // input EOF must still allow responses to drain the other way.
+            futures::try_join!(inbound, outbound)?;
+            return Ok(());
+        }
+        // Poll output while the client is running: its requests may be needed
+        // to let either peer finish. A raw Channel has a no-op driver, so driver
+        // completion alone is not a signal to stop forwarding its input.
+        let local = async move {
+            futures::try_join!(client_future, outbound)?;
+            Ok::<(), crate::Error>(())
+        };
+        match future::select(Box::pin(local), Box::pin(inbound)).await {
+            Either::Left((result, _inbound)) => {
+                // The local client has finished and its accepted output drained.
+                // Do not also wait for a remote sender that can remain alive.
+                result
             }
-            .copy(),
-            Channel {
-                rx: self.rx,
-                tx: client_channel.tx,
+            Either::Right((result, local)) => {
+                result?;
+                local.await
             }
-            .copy(),
-            client_future,
-        )?;
-        Ok(())
+        }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        (self, Box::pin(future::ready(Ok(()))))
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
+        (self, crate::ConnectionDriver::passive())
     }
 }
 
@@ -6578,14 +7697,747 @@ impl<R: Role> ConnectTo<R> for Channel {
 mod tests {
     use super::*;
 
+    struct SendOneThenFinish;
+
+    impl ConnectTo<crate::role::UntypedRole> for SendOneThenFinish {
+        async fn connect_to(
+            self,
+            peer: impl ConnectTo<crate::role::UntypedRole>,
+        ) -> Result<(), crate::Error> {
+            let (channel, driver) = peer.into_channel_and_future();
+            channel
+                .tx
+                .send_frame(TransportFrame::Single(RawJsonRpcMessage::notification(
+                    "finished".into(),
+                    serde_json::json!({}),
+                )?))
+                .await
+                .map_err(crate::util::internal_error)?;
+            drop(channel);
+            driver.await
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_connect_finishes_without_remote_eof_after_local_drain() {
+        let (local, mut remote) = Channel::duplex();
+        let connection = tokio::spawn(ConnectTo::<crate::role::UntypedRole>::connect_to(
+            local,
+            SendOneThenFinish,
+        ));
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(2), remote.rx.next())
+            .await
+            .expect("accepted frame should arrive")
+            .expect("channel open");
+        assert!(matches!(
+            frame.frame(),
+            TransportFrame::Single(RawJsonRpcMessage::Notification(_))
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(2), connection)
+            .await
+            .expect("local completion must not wait for remote sender")
+            .expect("connection task")
+            .expect("connection result");
+        // Retaining the remote sender did not block local completion. The
+        // completed endpoint has now closed its receiving half.
+        assert!(remote.tx.is_closed());
+    }
+
+    #[tokio::test]
+    async fn frame_permits_survive_dequeue_until_consumed() {
+        let frame = TransportFrame::Single(
+            RawJsonRpcMessage::notification("capacity".into(), serde_json::json!({})).unwrap(),
+        );
+        let bytes = frame.to_json().unwrap().len();
+        let (left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes * 2,
+            max_queued_bytes: bytes * 4,
+            max_queued_frames: 8,
+        });
+        left.tx.try_send(frame.clone()).unwrap();
+        left.tx.try_send(frame.clone()).unwrap();
+        let held = right.rx.next().await.unwrap();
+        assert_eq!(
+            held.frame().to_json().unwrap().len(),
+            held.permit.charged_bytes()
+        );
+        assert!(
+            left.tx.try_send(frame.clone()).is_err(),
+            "dequeue must not release byte admission"
+        );
+        drop(held);
+        left.tx
+            .try_send(frame)
+            .expect("dropping the last permit releases capacity");
+    }
+
+    fn capacity_frame() -> TransportFrame {
+        TransportFrame::Single(
+            RawJsonRpcMessage::notification("capacity".into(), serde_json::json!({})).unwrap(),
+        )
+    }
+
+    #[test]
+    fn cloned_frame_senders_do_not_expand_queue_capacity() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes * 2,
+            max_queued_bytes: bytes * 5000,
+            max_queued_frames: 2,
+        });
+        let clones = (0..3000).map(|_| left.tx.clone()).collect::<Vec<_>>();
+        clones[0].try_send(frame.clone()).unwrap();
+        clones[1].try_send(frame.clone()).unwrap();
+        for tx in &clones {
+            assert!(tx.try_send(frame.clone()).is_err());
+        }
+        drop(right.rx.next().now_or_never().unwrap());
+        clones[2999]
+            .try_send(frame)
+            .expect("one dequeue restores precisely one slot");
+    }
+
+    #[test]
+    fn task_and_dynamic_queues_remain_bounded_across_clones() {
+        for name in ["task", "dynamic"] {
+            let (tx, mut rx) = admission::channel_with_capacity::<usize>(2);
+            let clones = (0..3000).map(|_| tx.clone()).collect::<Vec<_>>();
+            clones[0].unbounded_send(0).unwrap();
+            clones[1].unbounded_send(1).unwrap();
+            assert!(
+                clones
+                    .iter()
+                    .all(|sender| sender.unbounded_send(2).is_err()),
+                "{name}"
+            );
+            assert_eq!(rx.next().now_or_never().unwrap(), Some(0));
+            clones[2999]
+                .unbounded_send(3)
+                .expect("dequeue restores one slot");
+        }
+    }
+
+    #[tokio::test]
+    async fn imported_frames_obey_destination_frame_and_byte_limits() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (source, mut source_peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes * 2,
+            max_queued_bytes: bytes * 8,
+            max_queued_frames: 2,
+        });
+        source.tx.try_send(frame.clone()).unwrap();
+        let held = source_peer.rx.next().await.unwrap();
+        let lease = held.permit.clone();
+        let source_budget = source.tx.budget.clone();
+        let (mut smaller, _peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes - 1,
+            max_queued_bytes: bytes * 8,
+            max_queued_frames: 2,
+        });
+        assert!(smaller.tx.send(held).await.is_err());
+        assert_eq!(source_budget.state.lock().unwrap().used, bytes);
+        drop(lease);
+        assert_eq!(source_budget.state.lock().unwrap().used, 0);
+
+        source.tx.try_send(frame.clone()).unwrap();
+        let held = source_peer.rx.next().await.unwrap();
+        let lease = held.permit.clone();
+        let (mut smaller, _peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 2 - 1,
+            max_queued_frames: 2,
+        });
+        assert!(smaller.tx.send(held).await.is_err());
+        assert_eq!(source_budget.state.lock().unwrap().used, bytes);
+        drop(lease);
+        assert_eq!(source_budget.state.lock().unwrap().used, 0);
+        source
+            .tx
+            .try_send(frame)
+            .expect("rejected import releases source lease");
+    }
+
+    #[tokio::test]
+    async fn same_budget_frame_handoff_does_not_charge_twice() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (mut left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 2,
+            max_queued_frames: 2,
+        });
+        left.tx.try_send(frame).unwrap();
+        let held = right.rx.next().await.unwrap();
+        right.tx.send(held).await.unwrap();
+        let held = left.rx.next().await.unwrap();
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, bytes);
+        drop(held);
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, 0);
+    }
+
+    #[tokio::test]
+    async fn imported_frame_retains_independent_budget_charges_without_recharging_on_return() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let limits = ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 2,
+            max_queued_frames: 2,
+        };
+        let (source, mut source_peer) = Channel::duplex_with_limits(limits);
+        let (mut destination, mut destination_peer) = Channel::duplex_with_limits(limits);
+        source.tx.try_send(frame).unwrap();
+        destination
+            .tx
+            .send(source_peer.rx.next().await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, bytes);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, bytes);
+        let imported = destination_peer.rx.next().await.unwrap();
+        destination_peer.tx.send(imported).await.unwrap();
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, bytes);
+        drop(destination.rx.next().await.unwrap());
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 0);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn cancelled_byte_waiters_are_unregistered() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, _right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 2,
+            max_queued_frames: 2,
+        });
+        let _held = left.tx.admission().try_admit(frame.clone()).unwrap();
+        for _ in 0..1000 {
+            {
+                let waiting = left.tx.budget.reserve(bytes, true);
+                futures::pin_mut!(waiting);
+                assert!(waiting.as_mut().now_or_never().is_none());
+            }
+            assert!(left.tx.budget.state.lock().unwrap().waiters.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn closing_receiver_wakes_byte_blocked_sender() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 2,
+            max_queued_frames: 2,
+        });
+        let _held = left.tx.admission().try_admit(frame.clone()).unwrap();
+        let mut waiting = Box::pin(left.tx.send_frame(frame));
+        assert!(waiting.as_mut().now_or_never().is_none());
+        drop(right);
+        assert!(waiting.await.is_err());
+        assert!(left.tx.budget.state.lock().unwrap().waiters.is_empty());
+    }
+
+    #[test]
+    fn cancelling_queued_async_send_releases_its_byte_charge() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 4,
+            max_queued_frames: 1,
+        });
+        left.tx.try_send(frame.clone()).unwrap();
+        {
+            let waiting = left.tx.send_frame(frame.clone());
+            futures::pin_mut!(waiting);
+            assert!(waiting.as_mut().now_or_never().is_none());
+            assert_eq!(left.tx.budget.state.lock().unwrap().used, bytes * 2);
+        }
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, bytes);
+        drop(right.rx.next().now_or_never().unwrap());
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn closing_sender_drops_pending_sink_frame_charge() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (mut left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 4,
+            max_queued_frames: 1,
+        });
+        left.tx.try_send(frame.clone()).unwrap();
+        let admitted = left.tx.admission().try_admit(frame).unwrap();
+        std::pin::Pin::new(&mut left.tx)
+            .start_send(admitted)
+            .unwrap();
+        assert!(
+            std::pin::Pin::new(&mut left.tx)
+                .poll_flush(&mut Context::from_waker(futures::task::noop_waker_ref()))
+                .is_pending()
+        );
+        left.tx.close_channel();
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, bytes);
+        drop(right.rx.next().now_or_never().unwrap());
+        assert_eq!(left.tx.budget.state.lock().unwrap().used, 0);
+    }
+
+    fn application_channel(
+        admission: FrameAdmission,
+    ) -> (
+        outgoing_actor::OutgoingMessageTx,
+        admission::Receiver<OutgoingMessage>,
+    ) {
+        admission::budgeted_channel(
+            admission,
+            OutgoingMessage::charged_bytes,
+            OutgoingMessage::with_permit,
+            OutgoingMessage::is_control,
+            OutgoingMessage::is_urgent,
+        )
+    }
+
+    #[test]
+    fn application_byte_wait_is_interrupted_by_receiver_close() {
+        let message = || OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("held", serde_json::json!({})).unwrap(),
+        };
+        let charge = message().charged_bytes().unwrap();
+        let (channel, _peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: charge,
+            max_queued_bytes: charge * 2,
+            max_queued_frames: 2,
+        });
+        let (tx, mut rx) = application_channel(channel.tx.admission());
+        tx.unbounded_send(message()).unwrap();
+        let held = rx.next().now_or_never().unwrap().unwrap();
+        let mut blocked = Box::pin(tx.send(message()));
+        assert!(blocked.as_mut().now_or_never().is_none());
+        drop(rx);
+        assert!(
+            blocked
+                .now_or_never()
+                .expect("closed queue must wake a byte waiter")
+                .is_err()
+        );
+        // The held payload deliberately outlives closure of its queue.
+        drop(held);
+    }
+
+    #[test]
+    fn unbudgeted_control_queue_reports_its_configured_capacity() {
+        let (tx, _rx) = admission::channel_with_capacity::<Task>(2);
+        assert_eq!(tx.queue_capacity(), 2);
+        assert_eq!(tx.clone().queue_capacity(), 2);
+    }
+
+    #[test]
+    fn routed_results_have_independent_retained_charges() {
+        let limits = ConnectionLimits {
+            max_frame_bytes: 1024,
+            max_queued_bytes: 2700,
+            max_queued_frames: 8,
+        };
+        let (channel, _) = Channel::duplex_with_limits(limits);
+        let admission = channel.tx.admission();
+        let initial = admission.try_reserve_bytes(100, true).unwrap();
+        let value = serde_json::json!("x".repeat(700));
+        let mut receivers = Vec::new();
+        for i in 0..2 {
+            let (sender, receiver) = oneshot::channel();
+            let id = RequestId::Str(format!("response-{i}"));
+            let pending = PendingReply {
+                method: "test".into(),
+                metadata_bytes: None,
+                role_id: crate::role::UntypedRole.role_id(),
+                sender,
+                cancellation_disarm: SentRequestCancellationDisarm::new(),
+                ordering: ResponseOrdering::default(),
+                response_route_hook: None,
+            };
+            let (dispatch, _) = incoming_actor::dispatch_from_response(
+                id,
+                pending,
+                Ok(value.clone()),
+                Some(initial.clone()),
+            );
+            let Dispatch::Response(result, router) = dispatch else {
+                panic!("response expected")
+            };
+            router.route_with_result(result).unwrap();
+            receivers.push(receiver);
+        }
+        drop(initial);
+        let used = admission.0.state.lock().unwrap().used;
+        assert_eq!(used, 2 * serde_json::to_vec(&value).unwrap().len());
+        let first = futures::executor::block_on(receivers.remove(0)).unwrap();
+        assert!(first.result.is_ok());
+        assert!(admission.0.state.lock().unwrap().used > 0);
+        drop(first);
+        drop(receivers);
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn oversized_transformed_result_fails_without_waiting_on_its_frame() {
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 512,
+            max_queued_bytes: 1000,
+            max_queued_frames: 8,
+        });
+        let admission = channel.tx.admission();
+        let frame = admission.try_reserve_bytes(200, true).unwrap();
+        let (sender, receiver) = oneshot::channel();
+        let pending = PendingReply {
+            method: "transform".into(),
+            metadata_bytes: None,
+            role_id: crate::role::UntypedRole.role_id(),
+            sender,
+            cancellation_disarm: SentRequestCancellationDisarm::new(),
+            ordering: ResponseOrdering::default(),
+            response_route_hook: None,
+        };
+        let (dispatch, _) = incoming_actor::dispatch_from_response(
+            RequestId::Str("transform".into()),
+            pending,
+            Ok(serde_json::json!(null)),
+            Some(frame.clone()),
+        );
+        let Dispatch::Response(_, router) = dispatch else {
+            panic!("response expected")
+        };
+        router.route(serde_json::json!("x".repeat(400))).unwrap();
+        drop(frame);
+        let received = futures::executor::block_on(receiver).unwrap();
+        assert!(received.result.is_err());
+        drop(received);
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn callback_keeps_result_admitted_until_callback_finishes() {
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 1024,
+            max_queued_bytes: 2700,
+            max_queued_frames: 8,
+        });
+        let admission = channel.tx.admission();
+        let (message_tx, _message_rx) = application_channel(admission.clone());
+        let (task_tx, mut task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
+        let pending = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let sent = connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("callback", serde_json::json!({})).unwrap(),
+        );
+        let id = sent.id().clone();
+        let frame = admission.try_reserve_bytes(100, true).unwrap();
+        let pending_reply = pending.remove(&id).unwrap();
+        let (dispatch, _) = incoming_actor::dispatch_from_response(
+            id,
+            pending_reply,
+            Ok(serde_json::json!("x".repeat(500))),
+            Some(frame.clone()),
+        );
+        let Dispatch::Response(result, router) = dispatch else {
+            panic!("response expected")
+        };
+        router.route_with_result(result).unwrap();
+        drop(frame);
+        let (finish_tx, finish_rx) = oneshot::channel::<()>();
+        sent.on_receiving_result(move |result| async move {
+            assert!(result.is_ok());
+            finish_rx.await.unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let task = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut task_rx))
+            .unwrap()
+            .unwrap();
+        let mut running = Box::pin(task.run_for_test());
+        assert!(running.as_mut().now_or_never().is_none());
+        assert!(admission.0.state.lock().unwrap().used >= 500);
+        finish_tx.send(()).unwrap();
+        futures::executor::block_on(running).unwrap();
+        // The outgoing frame is still queued; only the callback's result
+        // charge has been released.
+        assert!(admission.0.state.lock().unwrap().used < 500);
+    }
+
+    #[test]
+    fn cloned_application_senders_respect_item_capacity_independently_of_bytes() {
+        let message = || OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("capacity", serde_json::json!({})).unwrap(),
+        };
+        let charge = message().charged_bytes().unwrap();
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: charge * 2,
+            max_queued_bytes: charge * 6000,
+            max_queued_frames: 2,
+        });
+        let (tx, mut rx) = application_channel(channel.tx.admission());
+        let clones = (0..3000).map(|_| tx.clone()).collect::<Vec<_>>();
+        clones[0].unbounded_send(message()).unwrap();
+        clones[1].unbounded_send(message()).unwrap();
+        assert!(
+            clones
+                .iter()
+                .all(|sender| sender.unbounded_send(message()).is_err())
+        );
+        drop(rx.next().now_or_never().unwrap());
+        clones[2999].unbounded_send(message()).unwrap();
+    }
+
+    #[test]
+    fn application_payload_is_charged_after_dequeue_until_dropped() {
+        let message = OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("capacity", serde_json::json!({"value": "123"})).unwrap(),
+        };
+        let charge = message.charged_bytes().unwrap();
+        let frame_bytes = charge + 32;
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: frame_bytes,
+            max_queued_bytes: frame_bytes + 2 * charge,
+            max_queued_frames: 3,
+        });
+        let (tx, mut rx) = application_channel(channel.tx.admission());
+        tx.unbounded_send(OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("capacity", serde_json::json!({"value": "123"})).unwrap(),
+        })
+        .unwrap();
+        tx.unbounded_send(OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("capacity", serde_json::json!({"value": "123"})).unwrap(),
+        })
+        .unwrap();
+        let held = rx.next().now_or_never().unwrap().unwrap();
+        assert!(
+            tx.unbounded_send(message).is_err(),
+            "dequeue must retain application admission"
+        );
+        drop(held);
+        tx.unbounded_send(OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("capacity", serde_json::json!({"value": "123"})).unwrap(),
+        })
+        .expect("capacity is recovered after the retained application message is dropped");
+    }
+
+    #[tokio::test]
+    async fn application_lease_moves_into_writer_frame_without_recharging() {
+        let message = OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("handoff", serde_json::json!({"value": "abc"})).unwrap(),
+        };
+        let charge = message.charged_bytes().unwrap();
+        let frame_bytes = charge + 16;
+        let (sender, mut receiver) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: frame_bytes,
+            max_queued_bytes: frame_bytes + charge,
+            max_queued_frames: 2,
+        });
+        let (tx, mut application_rx) = application_channel(sender.tx.admission());
+        tx.unbounded_send(message).unwrap();
+        let OutgoingMessage::Admitted { message, permit } = application_rx.next().await.unwrap()
+        else {
+            panic!("application admission must wrap the queued payload");
+        };
+        let OutgoingMessage::Notification { untyped } = *message else {
+            panic!("expected notification");
+        };
+        let frame = TransportFrame::Single(untyped.into_raw_jsonrpc_message(None).unwrap());
+        sender.tx.send_admitted(frame, permit).await.unwrap();
+        let held = receiver.rx.next().await.unwrap();
+        assert!(
+            tx.unbounded_send(OutgoingMessage::Notification {
+                untyped: UntypedMessage::new("handoff", serde_json::json!({"value": "abc"}))
+                    .unwrap(),
+            })
+            .is_err(),
+            "writer-held frame keeps its application charge"
+        );
+        drop(held);
+        tx.unbounded_send(OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("handoff", serde_json::json!({"value": "abc"})).unwrap(),
+        })
+        .expect("capacity is recovered after the writer frame is released");
+    }
+
+    #[test]
+    fn cancellation_lane_is_ready_when_data_queue_is_full() {
+        let ordinary = OutgoingMessage::Notification {
+            untyped: UntypedMessage::new("ordinary", serde_json::json!({})).unwrap(),
+        };
+        let cancel = OutgoingMessage::Notification {
+            untyped: UntypedMessage::new(
+                "$/cancel_request",
+                serde_json::json!({"requestId":"one"}),
+            )
+            .unwrap(),
+        };
+        let frame_bytes = ordinary
+            .charged_bytes()
+            .unwrap()
+            .max(cancel.charged_bytes().unwrap())
+            + 16;
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: frame_bytes,
+            max_queued_bytes: frame_bytes * 2,
+            max_queued_frames: 1,
+        });
+        let (tx, mut rx) = application_channel(channel.tx.admission());
+        tx.unbounded_send(ordinary).unwrap();
+        tx.unbounded_send(cancel)
+            .expect("cancellation has a separate control lane");
+        assert!(rx.next().now_or_never().unwrap().unwrap().is_urgent());
+    }
+
+    #[test]
+    fn cancellation_passes_waiting_request_and_saturated_data_lane() {
+        let (transport, mut peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 1024,
+            max_queued_bytes: 4096,
+            max_queued_frames: 1,
+        });
+        let (message_tx, message_rx) = application_channel(transport.tx.admission());
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_tx, _dynamic_rx) = admission::channel();
+        let pending_replies = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx.clone(),
+            task_tx,
+            dynamic_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending_replies.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let sent = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("not-ready", serde_json::json!({})).unwrap(),
+            async move { ready_rx.await.map_err(crate::Error::into_internal_error) },
+        );
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            transport.tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+            IncomingClosed::new(),
+        ));
+        assert!(actor.as_mut().now_or_never().is_none());
+        message_tx
+            .unbounded_send(OutgoingMessage::Notification {
+                untyped: UntypedMessage::new("data", serde_json::json!({})).unwrap(),
+            })
+            .unwrap();
+        connection
+            .send_cancel_request(sent.id().clone())
+            .expect("urgent lane should remain available");
+        assert!(actor.as_mut().now_or_never().is_none());
+        let error = sent
+            .block_task()
+            .now_or_never()
+            .expect("cancel settles without readiness")
+            .expect_err("unpublished request must be cancelled locally");
+        assert_eq!(error.code, crate::ErrorCode::RequestCancelled);
+        assert!(
+            ready_tx.send(()).is_err(),
+            "cancelled readiness future must be dropped"
+        );
+        let data = peer.rx.next().now_or_never().unwrap().unwrap();
+        assert!(
+            matches!(data.frame(), TransportFrame::Single(RawJsonRpcMessage::Notification(n))
+            if n.method.as_ref() == "data")
+        );
+        assert!(
+            peer.rx.next().now_or_never().is_none(),
+            "never publish a request after its cancellation"
+        );
+    }
+
+    #[test]
+    fn cancellation_of_queued_request_does_not_wait_for_unrelated_readiness() {
+        let (transport, mut peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 1024,
+            max_queued_bytes: 8192,
+            max_queued_frames: 1,
+        });
+        let (message_tx, message_rx) = application_channel(transport.tx.admission());
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_tx, _dynamic_rx) = admission::channel();
+        let pending_replies = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending_replies.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let first = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("first", serde_json::json!({})).unwrap(),
+            async move { ready_rx.await.map_err(crate::Error::into_internal_error) },
+        );
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            transport.tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+            IncomingClosed::new(),
+        ));
+        assert!(actor.as_mut().now_or_never().is_none());
+        let second = connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("second", serde_json::json!({})).unwrap(),
+        );
+        second.cancel().unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let error = second
+            .block_task()
+            .now_or_never()
+            .expect("queued cancellation cannot wait for first")
+            .expect_err("second request was never published");
+        assert_eq!(error.code, crate::ErrorCode::RequestCancelled);
+        assert!(peer.rx.next().now_or_never().is_none());
+
+        ready_tx.send(()).unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let frame = peer.rx.next().now_or_never().unwrap().unwrap();
+        assert!(
+            matches!(frame.frame(), TransportFrame::Single(RawJsonRpcMessage::Request(r))
+            if r.method.as_ref() == "first")
+        );
+        drop(frame);
+        assert!(
+            peer.rx.next().now_or_never().is_none(),
+            "second must not run later"
+        );
+        first.detach();
+    }
+
     #[cfg(feature = "unstable_protocol_v2")]
     fn connection_with_task_receiver() -> (
         ConnectionTo<crate::role::UntypedRole>,
-        mpsc::UnboundedReceiver<Task>,
+        admission::SimpleReceiver<Task>,
     ) {
-        let (message_tx, _message_rx) = mpsc::unbounded();
-        let (task_tx, task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, _message_rx) = admission::channel();
+        let (task_tx, task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
@@ -6708,9 +8560,9 @@ mod tests {
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn v2_proxy_rejects_explicitly_prewrapped_initialize_request() {
-        let (message_tx, message_rx) = mpsc::unbounded();
-        let (task_tx, _task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, message_rx) = admission::channel();
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
@@ -6734,12 +8586,21 @@ mod tests {
         };
         let sent = connection.send_request_to(Agent, request);
 
-        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let (
+            Channel {
+                tx: transport_tx, ..
+            },
+            Channel {
+                rx: mut transport_rx,
+                ..
+            },
+        ) = Channel::duplex();
         let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
             message_rx,
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::v2_proxy()),
+            IncomingClosed::new(),
         ));
         assert!(
             actor.as_mut().now_or_never().is_none(),
@@ -6859,11 +8720,11 @@ mod tests {
 
     fn connection_with_dynamic_handler_receiver() -> (
         ConnectionTo<crate::role::UntypedRole>,
-        mpsc::UnboundedReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
+        admission::SimpleReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
     ) {
-        let (message_tx, _message_rx) = mpsc::unbounded();
-        let (task_tx, _task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, _message_rx) = admission::channel();
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_handler_tx, dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
@@ -6900,12 +8761,12 @@ mod tests {
 
     fn connection_for_response_hook_tests() -> (
         ConnectionTo<crate::role::UntypedRole>,
-        mpsc::UnboundedReceiver<OutgoingMessage>,
+        admission::SimpleReceiver<OutgoingMessage>,
         PendingReplies,
     ) {
-        let (message_tx, message_rx) = mpsc::unbounded();
-        let (task_tx, _task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, message_rx) = admission::channel();
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
@@ -6925,6 +8786,138 @@ mod tests {
         )
     }
 
+    fn budgeted_request_connection(
+        limits: ConnectionLimits,
+    ) -> (
+        ConnectionTo<crate::role::UntypedRole>,
+        admission::Receiver<OutgoingMessage>,
+        PendingReplies,
+        FrameAdmission,
+    ) {
+        let (channel, _) = Channel::duplex_with_limits(limits);
+        let admission = channel.tx.admission();
+        let (message_tx, message_rx) = application_channel(admission.clone());
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
+        let pending = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending.registrar(),
+            ProtocolMode::disabled(),
+        );
+        (connection, message_rx, pending, admission)
+    }
+
+    #[test]
+    fn pending_request_metadata_remains_charged_after_queue_consumption() {
+        let (connection, mut rx, pending, admission) =
+            budgeted_request_connection(ConnectionLimits {
+                max_frame_bytes: 512,
+                max_queued_bytes: 1312,
+                max_queued_frames: 32,
+            });
+        let method = "m".repeat(140);
+        let request = || UntypedMessage::new(&method, serde_json::json!({})).unwrap();
+        let first = connection.send_request_to(crate::role::UntypedRole, request());
+        let first_id = first.id().clone();
+        let queued = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut rx))
+            .unwrap()
+            .unwrap();
+        drop(queued);
+        assert!(admission.0.state.lock().unwrap().used > 0);
+        let second = connection.send_request_to(crate::role::UntypedRole, request());
+        assert!(futures::executor::block_on(second.block_task()).is_err());
+        assert!(pending.remove(&first_id).is_some());
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+        drop(first);
+    }
+
+    #[test]
+    fn rejected_admitted_request_fails_without_leaking_pending_reply() {
+        let (connection, mut rx, pending, admission) =
+            budgeted_request_connection(ConnectionLimits {
+                max_frame_bytes: 512,
+                max_queued_bytes: 2048,
+                max_queued_frames: 1,
+            });
+        admission::ReceiverClose::close(&mut rx);
+        let sent = connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("rejected", serde_json::json!({})).unwrap(),
+        );
+        assert!(!pending.contains(sent.id()));
+        assert!(futures::executor::block_on(sent.block_task()).is_err());
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn cancelling_request_releases_pending_metadata_after_queue_consumption() {
+        let (connection, mut rx, pending, admission) =
+            budgeted_request_connection(ConnectionLimits {
+                max_frame_bytes: 512,
+                max_queued_bytes: 1312,
+                max_queued_frames: 8,
+            });
+        let sent = connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new(&"m".repeat(140), serde_json::json!({})).unwrap(),
+        );
+        let id = sent.id().clone();
+        drop(futures::FutureExt::now_or_never(futures::StreamExt::next(&mut rx)).unwrap());
+        assert!(pending.contains(&id));
+        drop(sent);
+        assert!(!pending.contains(&id));
+        // Drop the cancellation notification too; no payload remains admitted.
+        drop(futures::FutureExt::now_or_never(futures::StreamExt::next(&mut rx)).unwrap());
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn incoming_eof_releases_many_pending_method_charges_after_error_consumption() {
+        let (channel, _) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 512,
+            max_queued_bytes: 2100,
+            max_queued_frames: 32,
+        });
+        let admission = channel.tx.admission();
+        let pending = PendingReplies::with_capacity(32);
+        let mut receivers = Vec::new();
+        for i in 0..7 {
+            let method = "m".repeat(120);
+            let id = RequestId::Str(format!("{i:036}"));
+            let charge = admission
+                .try_reserve_bytes(method.len() + 36 + 64, true)
+                .unwrap();
+            let (sender, receiver) = oneshot::channel();
+            assert!(pending.registrar().subscribe(
+                id,
+                PendingReply {
+                    method,
+                    metadata_bytes: Some(charge),
+                    role_id: crate::role::UntypedRole.role_id(),
+                    sender,
+                    cancellation_disarm: SentRequestCancellationDisarm::new(),
+                    ordering: ResponseOrdering::default(),
+                    response_route_hook: None,
+                },
+                &IncomingClosed::new(),
+            ));
+            receivers.push(receiver);
+        }
+        assert!(admission.try_reserve_bytes(220, true).is_none());
+        assert_eq!(pending.close_incoming(), 7);
+        assert!(
+            admission.0.state.lock().unwrap().used > 0,
+            "failed results still own their method text"
+        );
+        drop(receivers);
+        assert_eq!(admission.0.state.lock().unwrap().used, 0);
+    }
+
     #[cfg(feature = "unstable_protocol_v2")]
     fn route_test_response(
         request_id: RequestId,
@@ -6935,7 +8928,7 @@ mod tests {
             .remove(&request_id)
             .expect("the request should have a pending reply");
         let (dispatch, _) =
-            incoming_actor::dispatch_from_response(request_id, pending_reply, result);
+            incoming_actor::dispatch_from_response(request_id, pending_reply, result, None);
         let Dispatch::Response(result, router) = dispatch else {
             panic!("expected a response dispatch");
         };
@@ -7068,12 +9061,21 @@ mod tests {
             async move { ready_rx.await.map_err(crate::Error::into_internal_error) },
         );
 
-        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let (
+            Channel {
+                tx: transport_tx, ..
+            },
+            Channel {
+                rx: mut transport_rx,
+                ..
+            },
+        ) = Channel::duplex();
         let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
             message_rx,
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::disabled()),
+            IncomingClosed::new(),
         ));
 
         assert!(
@@ -7098,11 +9100,41 @@ mod tests {
             .expect("the ready request should be published")
             .expect("the transport queue should remain open");
         assert!(matches!(
-            frame,
+            frame.frame(),
             TransportFrame::Single(RawJsonRpcMessage::Request(_))
         ));
 
         drop(sent);
+    }
+
+    #[test]
+    fn pending_outgoing_readiness_is_cancelled_on_shutdown() {
+        let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
+        let sent = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("waiting", serde_json::json!({})).unwrap(),
+            future::pending::<Result<(), crate::Error>>(),
+        );
+        let (
+            Channel {
+                tx,
+                rx: mut transport_rx,
+            },
+            _peer,
+        ) = Channel::duplex();
+        let shutdown = IncomingClosed::new();
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies,
+            tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+            shutdown.clone(),
+        ));
+        assert!(actor.as_mut().now_or_never().is_none());
+        shutdown.begin_close();
+        assert!(actor.as_mut().now_or_never().is_none());
+        assert!(transport_rx.next().now_or_never().is_none());
+        assert!(futures::executor::block_on(sent.block_task()).is_err());
     }
 
     #[test]
@@ -7121,6 +9153,7 @@ mod tests {
             request_id,
             pending_reply,
             Err(crate::Error::invalid_params()),
+            None,
         );
         let Dispatch::Response(result, router) = dispatch else {
             panic!("expected a response dispatch");
@@ -7180,12 +9213,21 @@ mod tests {
             },
         );
 
-        let (transport_tx, mut transport_rx) = mpsc::unbounded();
+        let (
+            Channel {
+                tx: transport_tx, ..
+            },
+            Channel {
+                rx: mut transport_rx,
+                ..
+            },
+        ) = Channel::duplex();
         let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
             message_rx,
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::disabled()),
+            IncomingClosed::new(),
         ));
 
         assert!(
@@ -7205,9 +9247,9 @@ mod tests {
 
     #[test]
     fn ordered_request_is_marked_before_entering_outgoing_queue() {
-        let (message_tx, mut message_rx) = mpsc::unbounded();
-        let (task_tx, mut task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, _dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, mut message_rx) = admission::channel();
+        let (task_tx, mut task_rx) = admission::channel();
+        let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
@@ -7250,6 +9292,7 @@ mod tests {
             request_id,
             pending_reply,
             Ok(serde_json::json!({"ok": true})),
+            None,
         );
         let Dispatch::Response(result, router) = dispatch else {
             panic!("expected a response dispatch");
@@ -7282,7 +9325,7 @@ mod tests {
     }
 
     fn next_dynamic_handler_message<Counterpart: Role>(
-        receiver: &mut mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
+        receiver: &mut (impl futures::Stream<Item = DynamicHandlerMessage<Counterpart>> + Unpin),
     ) -> Option<DynamicHandlerMessage<Counterpart>> {
         futures::FutureExt::now_or_never(futures::StreamExt::next(receiver))
             .expect("dynamic-handler receiver should be ready")
@@ -7291,9 +9334,9 @@ mod tests {
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn v2_dynamic_handler_guard_registers_and_removes_handler() {
-        let (message_tx, _message_rx) = mpsc::unbounded();
-        let (task_tx, _task_rx) = mpsc::unbounded();
-        let (dynamic_handler_tx, mut dynamic_handler_rx) = mpsc::unbounded();
+        let (message_tx, _message_rx) = admission::channel();
+        let (task_tx, _task_rx) = admission::channel();
+        let (dynamic_handler_tx, mut dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();

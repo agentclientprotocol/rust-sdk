@@ -1,12 +1,15 @@
 // Types re-exported from crate root
 use futures::StreamExt as _;
-use futures::channel::mpsc;
+use futures::future;
+use std::task::Poll;
 
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
-use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage, TransportFrame};
+use crate::jsonrpc::{
+    FramePermit, OutgoingMessage, PendingReplies, RawJsonRpcMessage, TransportFrame, UntypedMessage,
+};
 use crate::schema::v1::RequestId;
 
-pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
+pub type OutgoingMessageTx = super::admission::Sender<OutgoingMessage>;
 
 pub(crate) fn send_raw_message(
     tx: &OutgoingMessageTx,
@@ -17,6 +20,45 @@ pub(crate) fn send_raw_message(
         .map_err(crate::util::internal_error)
 }
 
+async fn publish(
+    tx: &super::FrameSender,
+    frame: TransportFrame,
+    permit: Option<FramePermit>,
+) -> Result<(), crate::Error> {
+    match permit {
+        Some(permit) => tx.send_admitted(frame, permit).await,
+        None => tx.send_frame(frame).await,
+    }
+    .map_err(crate::Error::into_internal_error)
+}
+
+async fn publish_notification(
+    tx: &super::FrameSender,
+    protocol_compat: &ProtocolCompat,
+    pending_replies: &PendingReplies,
+    untyped: UntypedMessage,
+    permit: Option<FramePermit>,
+) -> Result<(), crate::Error> {
+    if let Some(id) = super::outgoing_cancellation_id(&untyped)
+        && pending_replies.cancel_unpublished(&id)
+    {
+        return Ok(());
+    }
+    let messages = protocol_compat.outgoing_notification(untyped)?;
+    // ProtocolCompat currently emits exactly one notification. A future
+    // expansion needs separately admitted charges for each additional output.
+    if messages.len() > 1 {
+        return Err(crate::util::internal_error(
+            "notification expansion exceeds application admission",
+        ));
+    }
+    if let Some(untyped) = messages.into_iter().next() {
+        let message = untyped.into_raw_jsonrpc_message(None)?;
+        publish(tx, TransportFrame::Single(message), permit).await?;
+    }
+    Ok(())
+}
+
 /// Outgoing protocol actor: Converts application-level OutgoingMessage to protocol-level RawJsonRpcMessage.
 ///
 /// This actor handles JSON-RPC protocol semantics:
@@ -25,15 +67,20 @@ pub(crate) fn send_raw_message(
 ///
 /// This is the protocol layer - it has no knowledge of how messages are transported.
 pub(super) async fn outgoing_protocol_actor(
-    mut outgoing_rx: mpsc::UnboundedReceiver<OutgoingMessage>,
+    mut outgoing_rx: impl Unpin + super::admission::ReceiverClose<Item = OutgoingMessage>,
     pending_replies: PendingReplies,
-    transport_tx: mpsc::UnboundedSender<TransportFrame>,
+    transport_tx: super::FrameSender,
     protocol_compat: ProtocolCompat,
+    shutdown: super::IncomingClosed,
 ) -> Result<(), crate::Error> {
     let mut drain_waiters = Vec::new();
 
     while let Some(message) = outgoing_rx.next().await {
         tracing::debug!(?message, "outgoing_protocol_actor");
+        let (message, permit) = match message {
+            OutgoingMessage::Admitted { message, permit } => (*message, Some(permit)),
+            message => (message, None),
+        };
 
         // Create the message to be sent over the transport
         let (json_rpc_message, destination) = match message {
@@ -45,18 +92,14 @@ pub(super) async fn outgoing_protocol_actor(
                 continue;
             }
             OutgoingMessage::BatchDispatchComplete { completion } => {
-                if let Some(frame) = completion.complete() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                if let Some((frame, permit)) = completion.complete_admitted(permit) {
+                    publish(&transport_tx, frame, permit).await?;
                 }
                 continue;
             }
             OutgoingMessage::BatchHandlerAttemptComplete { destination } => {
-                if let Some(frame) = destination.finish_handler_attempt() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                if let Some((frame, permit)) = destination.finish_handler_attempt_admitted(permit) {
+                    publish(&transport_tx, frame, permit).await?;
                 }
                 continue;
             }
@@ -78,10 +121,8 @@ pub(super) async fn outgoing_protocol_actor(
                     ))),
                 );
                 let fallback = RawJsonRpcMessage::response(id, fallback);
-                if let Some(frame) = destination.abandon(fallback) {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
+                if let Some((frame, permit)) = destination.abandon_admitted(fallback, permit) {
+                    publish(&transport_tx, frame, permit).await?;
                 }
                 continue;
             }
@@ -99,19 +140,70 @@ pub(super) async fn outgoing_protocol_actor(
                     continue;
                 }
 
-                if let Some(readiness) = readiness
-                    && let Err(error) = readiness.await
-                {
-                    tracing::warn!(
-                        ?id,
-                        %method,
-                        ?error,
-                        "Outgoing request readiness failed"
-                    );
-                    if let Some(pending_reply) = pending_replies.remove(&id) {
-                        pending_reply.fail(error);
+                if let Some(readiness) = readiness {
+                    enum Gate {
+                        Ready(Result<(), crate::Error>),
+                        Shutdown,
+                        Urgent(OutgoingMessage),
                     }
-                    continue;
+                    let mut readiness = Box::pin(readiness);
+                    let mut closing = Box::pin(shutdown.shutdown_requested());
+                    let mut skip_request = false;
+                    loop {
+                        let gate = future::poll_fn(|cx| {
+                            if let Poll::Ready(result) = readiness.as_mut().poll(cx) {
+                                return Poll::Ready(Gate::Ready(result));
+                            }
+                            if closing.as_mut().poll(cx).is_ready() {
+                                return Poll::Ready(Gate::Shutdown);
+                            }
+                            match outgoing_rx.poll_urgent(cx) {
+                                Poll::Ready(Some(message)) => Poll::Ready(Gate::Urgent(message)),
+                                _ => Poll::Pending,
+                            }
+                        })
+                        .await;
+                        match gate {
+                            Gate::Ready(Ok(())) => break,
+                            Gate::Ready(Err(error)) => {
+                                tracing::warn!(?id, %method, ?error, "Outgoing request readiness failed");
+                                if let Some(pending_reply) = pending_replies.remove(&id) {
+                                    pending_reply.fail(error);
+                                }
+                                skip_request = true;
+                                break;
+                            }
+                            Gate::Shutdown => {
+                                if let Some(pending_reply) = pending_replies.remove(&id) {
+                                    pending_reply.fail(crate::util::internal_error("connection shut down while waiting for outgoing request readiness"));
+                                }
+                                skip_request = true;
+                                break;
+                            }
+                            Gate::Urgent(OutgoingMessage::Admitted { message, permit }) => {
+                                if let OutgoingMessage::Notification { untyped } = *message {
+                                    publish_notification(
+                                        &transport_tx,
+                                        &protocol_compat,
+                                        &pending_replies,
+                                        untyped,
+                                        Some(permit),
+                                    )
+                                    .await?;
+                                }
+                                if !pending_replies.contains(&id) {
+                                    skip_request = true;
+                                    break;
+                                }
+                            }
+                            Gate::Urgent(_) => unreachable!(
+                                "urgent admission only accepts cancellation notifications"
+                            ),
+                        }
+                    }
+                    if skip_request {
+                        continue;
+                    }
                 }
 
                 if !pending_replies.contains(&id) {
@@ -133,11 +225,13 @@ pub(super) async fn outgoing_protocol_actor(
                     }
                 };
 
-                if !pending_replies.contains(&id) {
+                if !pending_replies.mark_published(&id) {
                     continue;
                 }
 
-                if let Err(error) = transport_tx.unbounded_send(TransportFrame::Single(request)) {
+                if let Err(error) =
+                    publish(&transport_tx, TransportFrame::Single(request), permit).await
+                {
                     let error = crate::Error::into_internal_error(error);
                     if let Some(pending_reply) = pending_replies.remove(&id) {
                         pending_reply.fail(error.clone());
@@ -147,32 +241,14 @@ pub(super) async fn outgoing_protocol_actor(
                 continue;
             }
             OutgoingMessage::Notification { untyped } => {
-                let messages = match protocol_compat.outgoing_notification(untyped) {
-                    Ok(messages) => messages,
-                    Err(error) => {
-                        tracing::warn!(
-                            ?error,
-                            "Dropping outgoing notification after preparation failed"
-                        );
-                        continue;
-                    }
-                };
-
-                for untyped in messages {
-                    let message = match untyped.into_raw_jsonrpc_message(None) {
-                        Ok(message) => message,
-                        Err(error) => {
-                            tracing::warn!(
-                                ?error,
-                                "Dropping outgoing notification after serialization failed"
-                            );
-                            continue;
-                        }
-                    };
-                    transport_tx
-                        .unbounded_send(TransportFrame::Single(message))
-                        .map_err(crate::Error::into_internal_error)?;
-                }
+                publish_notification(
+                    &transport_tx,
+                    &protocol_compat,
+                    &pending_replies,
+                    untyped,
+                    permit,
+                )
+                .await?;
                 continue;
             }
             OutgoingMessage::Response {
@@ -198,12 +274,13 @@ pub(super) async fn outgoing_protocol_actor(
                     destination,
                 )
             }
+            OutgoingMessage::Admitted { .. } => {
+                unreachable!("application admission is unwrapped above")
+            }
         };
 
-        if let Some(frame) = destination.complete(json_rpc_message) {
-            transport_tx
-                .unbounded_send(frame)
-                .map_err(crate::Error::into_internal_error)?;
+        if let Some((frame, permit)) = destination.complete_admitted(json_rpc_message, permit) {
+            publish(&transport_tx, frame, permit).await?;
         }
     }
 

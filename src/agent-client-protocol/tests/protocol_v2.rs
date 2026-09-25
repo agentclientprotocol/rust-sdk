@@ -409,15 +409,16 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
 
         channel
             .tx
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
                 "initialize".into(),
                 initialize_params_with_extensions(ProtocolVersion::V2)?,
                 v1::RequestId::Number(1),
             )?))
+            .await
             .map_err(Error::into_internal_error)?;
 
         while let Some(message) = channel.rx.next().await {
-            let TransportFrame::Single(message) = message else {
+            let TransportFrame::Single(message) = message.into_frame() else {
                 continue;
             };
             let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
@@ -488,15 +489,16 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
 
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             Value::Object(params),
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(response) = message else {
@@ -967,9 +969,8 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
 
     #[cfg(feature = "unstable_mcp_over_acp")]
     {
-        fn message_response() -> Result<v2::MessageMcpResponse, Error> {
-            serde_json::from_value(serde_json::json!({ "tools": [] }))
-                .map_err(Error::into_internal_error)
+        fn message_response() -> v2::MessageMcpResponse {
+            v2::MessageMcpResponse::success(serde_json::json!({ "tools": [] }))
         }
 
         assert_v2_client_notification_mapping(
@@ -988,7 +989,7 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
             MessageMcpResponse,
             "mcp/message",
             v2::MessageMcpRequest::new("server-1", "request-1", "tools/list"),
-            message_response()?
+            message_response()
         );
     }
 
@@ -1047,7 +1048,9 @@ fn mcp_over_acp_v1_variants_are_jsonrpc_mapped() -> Result<(), Error> {
     assert_response_mapping!(
         v1::ClientResponse,
         "mcp/message",
-        serde_json::json!({ "tools": [] }),
+        json_value(v1::MessageMcpResponse::success(
+            serde_json::json!({ "tools": [] })
+        ))?,
         v1::ClientResponse::MessageMcpResponse(_)
     );
 
@@ -1953,15 +1956,16 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
 
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             json_value(v1_initialize_request(ProtocolVersion::V1))?,
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(v1::Response::Error { error, .. }) = message else {
@@ -2699,15 +2703,16 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         );
     channel
         .tx
-        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+        .send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             initialize,
             v1::RequestId::Number(1),
         )?))
+        .await
         .map_err(Error::into_internal_error)?;
 
     while let Some(message) = channel.rx.next().await {
-        let TransportFrame::Single(message) = message else {
+        let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
         let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {

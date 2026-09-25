@@ -78,18 +78,20 @@ async fn request(
     let task = tokio::spawn(future);
     let request_id = v1::RequestId::Number(1);
 
-    tx.unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+    tx.send_frame(TransportFrame::Single(RawJsonRpcMessage::request(
         method.into(),
         params,
         request_id.clone(),
     )?))
+    .await
     .map_err(Error::into_internal_error)?;
 
     let result = loop {
         let frame = rx.next().await.ok_or_else(|| {
             Error::internal_error().data("proxy router closed before initialize response")
         })?;
-        let TransportFrame::Single(RawJsonRpcMessage::Response(response)) = frame else {
+        let TransportFrame::Single(RawJsonRpcMessage::Response(response)) = frame.into_frame()
+        else {
             continue;
         };
         match response {

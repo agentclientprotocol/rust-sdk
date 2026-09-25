@@ -7,7 +7,7 @@ pub(crate) mod http;
 mod protocol;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -16,7 +16,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    Proxy, UntypedMessage, util::MatchDispatchFrom,
+    Proxy, UntypedMessage, schema::v1::MessageMcpResponse, util::MatchDispatchFrom,
 };
 use futures::{
     SinkExt, StreamExt,
@@ -26,14 +26,15 @@ use serde_json::Value;
 use tokio::{net::TcpListener, sync::mpsc as tokio_mpsc};
 use tracing::{debug, warn};
 
-use self::protocol::{DownstreamMcpMode, NativeMcpNotification, NativeServer, PolyfillProtocol};
+use self::protocol::{DownstreamMcpMode, NativeMcpNotification, PolyfillProtocol};
 
 // Conservative per-bridge limits. Notifications are bounded per HTTP POST by
 // both message count and serialized bytes; terminal responses bypass the queue.
 const MAX_ACTIVE_REQUESTS: usize = 64;
-const MAX_LISTENERS: usize = 32;
 const MAX_QUEUED_NOTIFICATIONS: usize = 16;
 const MAX_QUEUED_BYTES: usize = 256 * 1024;
+const MAX_TERMINAL_BYTES: usize = 1024 * 1024;
+const LOCAL_LIMIT_ERROR: i64 = -33000;
 
 struct QueuedNotification {
     value: Value,
@@ -152,7 +153,7 @@ impl ConnectTo<Conductor> for McpOverAcpProxy {
             bridge_rx,
             protocol: None,
             downstream_mode: DownstreamMcpMode::Unknown,
-            listeners: HashMap::new(),
+            listener: None,
             active: HashMap::new(),
         };
         let handler = PolyfillHandler {
@@ -325,26 +326,6 @@ async fn transform_session_servers(
     Ok(())
 }
 
-struct BridgeListener {
-    tcp_port: u16,
-    // Runtime-only; never trace the listener or the rewritten declaration.
-    token: String,
-}
-
-impl BridgeListener {
-    fn declaration(
-        &self,
-        protocol: PolyfillProtocol,
-        server: NativeServer,
-    ) -> Result<Value, agent_client_protocol::Error> {
-        server.http_declaration(
-            protocol,
-            format!("http://127.0.0.1:{}", self.tcp_port),
-            &self.token,
-        )
-    }
-}
-
 struct ActiveRequest {
     server_id: String,
     http_id: Value,
@@ -359,7 +340,7 @@ struct BridgeRunner {
     bridge_rx: mpsc::Receiver<BridgeMessage>,
     protocol: Option<PolyfillProtocol>,
     downstream_mode: DownstreamMcpMode,
-    listeners: HashMap<String, BridgeListener>,
+    listener: Option<(u16, Arc<http::BridgeState>)>,
     active: HashMap<String, ActiveRequest>,
 }
 
@@ -368,7 +349,7 @@ impl std::fmt::Debug for BridgeRunner {
         f.debug_struct("BridgeRunner")
             .field("protocol", &self.protocol)
             .field("downstream_mode", &self.downstream_mode)
-            .field("listeners", &self.listeners.len())
+            .field("listener", &self.listener.is_some())
             .field("active", &self.active.len())
             .finish_non_exhaustive()
     }
@@ -410,23 +391,15 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     else {
                         drop(terminal_tx.send(http::rpc_error(
                             http_id,
-                            -32603,
+                            -33002,
                             "MCP adapter unavailable",
                         )));
                         continue;
                     };
-                    if !self.listeners.contains_key(&server_id) {
-                        drop(terminal_tx.send(http::rpc_error(
-                            http_id,
-                            -32602,
-                            "Unknown MCP server",
-                        )));
-                        continue;
-                    }
                     if !self.can_admit_request() {
                         drop(terminal_tx.send(http::rpc_error(
                             http_id,
-                            -32000,
+                            LOCAL_LIMIT_ERROR,
                             "Too many active MCP requests",
                         )));
                         continue;
@@ -493,7 +466,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                             let _ = active.cancel_tx.send(());
                             drop(active.terminal_tx.send(http::rpc_error(
                                 active.http_id,
-                                -32000,
+                                LOCAL_LIMIT_ERROR,
                                 "MCP notification queue overflow",
                             )));
                         }
@@ -504,14 +477,26 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                         continue;
                     };
                     if let Some(result) = result {
+                        let http_id = active.http_id.clone();
                         let value = match result {
-                            Ok(mut result) => {
-                                if active.method == "tools/list" {
-                                    filter_annotated_tools(&mut result);
-                                }
-                                http::rpc_result(active.http_id, &request_id, result)
-                            }
-                            Err(error) => http::rpc_acp_error(active.http_id, error),
+                            Ok(carrier) => project_mcp_carrier(
+                                active.http_id,
+                                &request_id,
+                                &active.method,
+                                carrier,
+                            ),
+                            Err(error) => http::rpc_binding_error(active.http_id, error),
+                        };
+                        let value = if serde_json::to_vec(&value)
+                            .is_ok_and(|bytes| bytes.len() <= MAX_TERMINAL_BYTES)
+                        {
+                            value
+                        } else {
+                            http::rpc_error(
+                                http_id,
+                                LOCAL_LIMIT_ERROR,
+                                "MCP terminal response too large",
+                            )
                         };
                         drop(active.terminal_tx.send(value));
                     }
@@ -519,6 +504,26 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
             }
         }
         Ok(())
+    }
+}
+
+/// ACP success carries exactly one MCP outcome. An outer ACP failure is a
+/// binding/runtime failure, not an MCP error carried in a successful response.
+fn project_mcp_carrier(http_id: Value, request_id: &str, method: &str, carrier: Value) -> Value {
+    // Both ACP revisions share this type. Keep envelope validation in the schema,
+    // rather than maintaining a second parser that can drift from its null rules.
+    match serde_json::from_value::<MessageMcpResponse>(carrier) {
+        Ok(MessageMcpResponse::Result { mut result, .. }) => {
+            if method == "tools/list" {
+                strip_header_annotations(&mut result);
+            }
+            http::rpc_result(http_id, request_id, result)
+        }
+        Ok(MessageMcpResponse::Error { error, .. }) => http::rpc_peer_error(
+            http_id,
+            serde_json::to_value(error).expect("MCP errors contain only JSON values"),
+        ),
+        _ => http::rpc_error(http_id, -33002, "Invalid MCP-over-ACP response carrier"),
     }
 }
 
@@ -544,11 +549,7 @@ impl BridgeRunner {
             match self.downstream_mode {
                 DownstreamMcpMode::Native => transformed.push(server),
                 DownstreamMcpMode::HttpAdapter => {
-                    if !self.listeners.contains_key(&native.server_id) {
-                        if self.listeners.len() >= MAX_LISTENERS {
-                            return Err(agent_client_protocol::Error::invalid_params()
-                                .data("too many MCP HTTP listeners"));
-                        }
+                    if self.listener.is_none() {
                         let listener = TcpListener::bind("127.0.0.1:0")
                             .await
                             .map_err(agent_client_protocol::Error::into_internal_error)?;
@@ -556,28 +557,13 @@ impl BridgeRunner {
                             .local_addr()
                             .map_err(agent_client_protocol::Error::into_internal_error)?
                             .port();
-                        let token = uuid::Uuid::new_v4().simple().to_string()
-                            + &uuid::Uuid::new_v4().simple().to_string();
-                        connection.spawn(http::run_http_listener(
-                            listener,
-                            native.server_id.clone(),
-                            token.clone(),
-                            self.bridge_tx.clone(),
-                        ))?;
-                        self.listeners.insert(
-                            native.server_id.clone(),
-                            BridgeListener {
-                                tcp_port: port,
-                                token,
-                            },
-                        );
+                        let state = http::BridgeState::new(self.bridge_tx.clone());
+                        connection.spawn(http::run_http_listener(listener, state.clone()))?;
+                        self.listener = Some((port, state));
                     }
-                    transformed.push(
-                        self.listeners
-                            .get(&native.server_id)
-                            .expect("listener created")
-                            .declaration(protocol, native)?,
-                    );
+                    let (port, state) = self.listener.as_ref().expect("listener created");
+                    let (url, token) = state.declaration_url(*port, &native.server_id);
+                    transformed.push(native.http_declaration(protocol, url, &token)?);
                 }
                 DownstreamMcpMode::Unknown | DownstreamMcpMode::Unavailable => {
                     return Err(agent_client_protocol::Error::invalid_params().data(
@@ -590,9 +576,6 @@ impl BridgeRunner {
     }
 }
 
-/// For each tools/call POST, inspect the current tool schema in that request's
-/// scope. This adds an ACP tools/list lookup, but requires no client-side
-/// discovery handshake and cannot silently omit an annotated parameter header.
 async fn forward_http_request(
     connection: ConnectionTo<Conductor>,
     protocol: PolyfillProtocol,
@@ -601,65 +584,6 @@ async fn forward_http_request(
     method: String,
     params: Option<serde_json::Map<String, Value>>,
 ) -> Result<Value, agent_client_protocol::Error> {
-    if method == "tools/call" {
-        let name = params
-            .as_ref()
-            .and_then(|p| p.get("name"))
-            .and_then(Value::as_str)
-            .ok_or_else(agent_client_protocol::Error::invalid_params)?;
-        let meta = params.as_ref().and_then(|p| p.get("_meta")).cloned();
-        let mut cursor: Option<String> = None;
-        let mut seen = HashSet::new();
-        loop {
-            let mut list_params = serde_json::Map::new();
-            if let Some(meta) = &meta {
-                list_params.insert("_meta".into(), meta.clone());
-            }
-            if let Some(cursor) = &cursor {
-                list_params.insert("cursor".into(), Value::String(cursor.clone()));
-            }
-            let lookup = protocol.message_request(
-                server_id.clone(),
-                uuid::Uuid::new_v4().to_string(),
-                "tools/list".into(),
-                Some(list_params),
-                None,
-            )?;
-            let listing = connection
-                .send_request_to(Client, lookup)
-                .block_task()
-                .await?;
-            let tools = listing
-                .get("tools")
-                .and_then(Value::as_array)
-                .ok_or_else(|| {
-                    agent_client_protocol::Error::invalid_params()
-                        .data("tools/list result must contain a tools array")
-                })?;
-            if let Some(tool) = tools
-                .iter()
-                .find(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
-            {
-                if tool
-                    .get("inputSchema")
-                    .is_none_or(|schema| !schema.is_object() || contains_header_annotation(schema))
-                {
-                    return Err(agent_client_protocol::Error::invalid_params()
-                        .data("tool uses x-mcp-header or has no verifiable input schema"));
-                }
-                break;
-            }
-            let Some(next) = listing.get("nextCursor").and_then(Value::as_str) else {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("tool was not found in tools/list"));
-            };
-            if !seen.insert(next.to_owned()) || seen.len() > 128 {
-                return Err(agent_client_protocol::Error::invalid_params()
-                    .data("tools/list pagination did not terminate"));
-            }
-            cursor = Some(next.to_owned());
-        }
-    }
     let request = protocol.message_request(server_id, request_id, method, params, None)?;
     connection
         .send_request_to(Client, request)
@@ -667,41 +591,94 @@ async fn forward_http_request(
         .await
 }
 
-fn contains_header_annotation(value: &Value) -> bool {
-    match value {
-        Value::Object(object) => {
-            object.contains_key("x-mcp-header") || object.values().any(contains_header_annotation)
-        }
-        Value::Array(values) => values.iter().any(contains_header_annotation),
-        _ => false,
-    }
-}
-
-fn filter_annotated_tools(result: &mut Value) {
+fn strip_header_annotations(result: &mut Value) {
     let Some(tools) = result.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
     };
-    tools.retain(|tool| {
-        let Some(name) = tool.get("name").and_then(Value::as_str) else {
-            return false;
-        };
-        if tool
-            .get("inputSchema")
-            .is_none_or(|schema| !schema.is_object() || contains_header_annotation(schema))
-        {
-            warn!(
-                tool = name,
-                "excluding tool with unsupported x-mcp-header annotation"
-            );
-            return false;
+    for tool in tools {
+        if let Some(schema) = tool.get_mut("inputSchema") {
+            strip_schema_annotation(schema);
         }
-        true
-    });
+    }
+}
+
+fn strip_schema_annotation(schema: &mut Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    object.remove("x-mcp-header");
+    for key in [
+        "properties",
+        "patternProperties",
+        "$defs",
+        "definitions",
+        "dependentSchemas",
+    ] {
+        if let Some(children) = object.get_mut(key).and_then(Value::as_object_mut) {
+            for child in children.values_mut() {
+                strip_schema_annotation(child);
+            }
+        }
+    }
+    for key in [
+        "items",
+        "additionalItems",
+        "additionalProperties",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+        "contains",
+        "contentSchema",
+        "not",
+        "if",
+        "then",
+        "else",
+        "propertyNames",
+    ] {
+        if let Some(child) = object.get_mut(key) {
+            strip_schema_annotation(child);
+        }
+    }
+    for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(children) = object.get_mut(key).and_then(Value::as_array_mut) {
+            for child in children {
+                strip_schema_annotation(child);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod http_limits_tests {
     use super::*;
+
+    #[test]
+    fn annotation_removal_only_traverses_schema_locations() {
+        let mut listing = serde_json::json!({"tools":[{
+            "name":"with-header",
+            "inputSchema":{
+                "type":"object",
+                "properties":{
+                    "x-mcp-header":{"type":"string","default":"retain"},
+                    "nested":{"type":"object","x-mcp-header":"Nested","properties":{
+                        "value":{"type":"string","x-mcp-header":"Value",
+                            "examples":[{"x-mcp-header":"user data"}]}
+                    }}
+                },
+                "$defs":{"inner":{"type":"string","x-mcp-header":"Inner"}},
+                "default":{"x-mcp-header":"not a schema"}
+            }
+        }]});
+        strip_header_annotations(&mut listing);
+        let schema = &listing["tools"][0]["inputSchema"];
+        assert_eq!(schema["properties"]["x-mcp-header"]["default"], "retain");
+        assert_eq!(
+            schema["properties"]["nested"]["properties"]["value"]["examples"][0]["x-mcp-header"],
+            "user data"
+        );
+        assert_eq!(schema["default"]["x-mcp-header"], "not a schema");
+        assert!(schema["properties"]["nested"].get("x-mcp-header").is_none());
+        assert!(schema["$defs"]["inner"].get("x-mcp-header").is_none());
+    }
 
     #[test]
     fn slow_reader_overflows_by_count_without_blocking_other_requests() {
@@ -755,14 +732,14 @@ mod http_limits_tests {
     }
 
     #[test]
-    fn admission_reopens_when_an_active_request_finishes() {
+    fn backend_capacity_reopens_when_an_active_request_finishes() {
         let (bridge_tx, bridge_rx) = mpsc::channel(1);
         let mut runner = BridgeRunner {
             bridge_tx,
             bridge_rx,
             protocol: None,
             downstream_mode: DownstreamMcpMode::Unknown,
-            listeners: HashMap::new(),
+            listener: None,
             active: HashMap::new(),
         };
         let (tx, _rx) = tokio_mpsc::channel(MAX_QUEUED_NOTIFICATIONS);
@@ -796,15 +773,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn annotated_tools_are_not_advertised_or_callable() {
+    fn mcp_carrier_preserves_peer_error_and_rejects_ambiguous_outcomes() {
+        let error = serde_json::json!({
+            "code":-32000,"message":"peer-defined error",
+            "data":{"nested":[1,2]},"extension":"preserved"
+        });
+        let project = |carrier| {
+            project_mcp_carrier(
+                serde_json::json!("external"),
+                "internal",
+                "tools/call",
+                carrier,
+            )
+        };
+        assert_eq!(project(serde_json::json!({"error":error}))["error"], error);
+        assert_eq!(
+            project(serde_json::json!({"result":null})),
+            serde_json::json!({"jsonrpc":"2.0","id":"external","result":null})
+        );
+        for invalid in [
+            serde_json::json!({"result":null,"error":error}),
+            serde_json::json!({"tools":[]}),
+            serde_json::json!({"error":null}),
+        ] {
+            let response = project(invalid);
+            assert_eq!(response["id"], "external");
+            assert_eq!(response["error"]["code"], -33002);
+        }
+    }
+
+    #[test]
+    fn annotated_tools_are_reexported_without_transport_annotations() {
         let mut result = serde_json::json!({"tools":[
             {"name":"plain","inputSchema":{"type":"object","properties":{}}},
             {"name":"annotated","inputSchema":{"properties":{"nested":{"properties":{
                 "region":{"type":"string","x-mcp-header":"Region"}
             }}}}}
         ]});
-        filter_annotated_tools(&mut result);
-        assert_eq!(result["tools"].as_array().unwrap().len(), 1);
+        strip_header_annotations(&mut result);
+        assert_eq!(result["tools"].as_array().unwrap().len(), 2);
         assert_eq!(result["tools"][0]["name"], "plain");
+        assert_eq!(result["tools"][1]["name"], "annotated");
+        assert_eq!(
+            result["tools"][1]["inputSchema"]["properties"]["nested"]["properties"]["region"],
+            serde_json::json!({"type":"string"})
+        );
     }
 }

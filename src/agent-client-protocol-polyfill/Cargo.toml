@@ -21,7 +21,9 @@ async-stream.workspace = true
 axum.workspace = true
 base64.workspace = true
 futures.workspace = true
+hmac = "0.12"
 serde_json.workspace = true
+sha2 = "0.10"
 tokio = { workspace = true, features = ["net"] }
 tracing.workspace = true
 uuid.workspace = true

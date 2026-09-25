@@ -1,4 +1,8 @@
 use crate::{ConnectionTo, role::Role};
+#[cfg(feature = "unstable_mcp_over_acp")]
+use futures::channel::oneshot;
+#[cfg(feature = "unstable_mcp_over_acp")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::schema::v1::{McpRequestId, McpServerAcpId};
@@ -58,9 +62,28 @@ impl McpConnectionContext {
 pub struct McpConnectionTo<Counterpart: Role> {
     pub(super) context: McpConnectionContext,
     pub(super) connection: ConnectionTo<Counterpart>,
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(super) cleanup: Option<Arc<Mutex<Vec<oneshot::Receiver<()>>>>>,
 }
 
 impl<Counterpart: Role> McpConnectionTo<Counterpart> {
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) fn register_cleanup(&self, done: oneshot::Receiver<()>) {
+        if let Some(cleanup) = &self.cleanup {
+            cleanup.lock().expect("MCP cleanup poisoned").push(done);
+        }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) async fn wait_cleanup(&self) {
+        if let Some(cleanup) = &self.cleanup {
+            let pending = std::mem::take(&mut *cleanup.lock().expect("MCP cleanup poisoned"));
+            for done in pending {
+                let _ = done.await;
+            }
+        }
+    }
+
     /// Describes whether this is a standalone or ACP-attached MCP connection.
     #[must_use]
     pub fn context(&self) -> &McpConnectionContext {

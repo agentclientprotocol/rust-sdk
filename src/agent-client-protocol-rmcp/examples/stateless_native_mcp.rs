@@ -116,7 +116,13 @@ async fn main() -> Result<(), Error> {
                 .block_task()
                 .await?;
             let response = done_rx.await.map_err(Error::into_internal_error)??;
-            println!("{}", response.0.get());
+            match response {
+                v2::MessageMcpResponse::Result { result, .. } => println!("{result}"),
+                v2::MessageMcpResponse::Error { error, .. } => {
+                    eprintln!("MCP error {}: {}", error.code, error.message);
+                }
+                _ => return Err(Error::internal_error().data("unknown MCP carrier")),
+            }
             Ok(())
         })
         .await
