@@ -141,7 +141,7 @@ dependencies = [
 [[package]]
 name = "agent-client-protocol-schema"
 version = "1.9.1"
-source = "git+https://github.com/agentclientprotocol/agent-client-protocol?rev=9d8b499a332ffa0655007d4be7dd949e05180de3#9d8b499a332ffa0655007d4be7dd949e05180de3"
+source = "git+https://github.com/agentclientprotocol/agent-client-protocol?rev=e5c36d2671fd355f983533bc83b5feb7981d25a6#e5c36d2671fd355f983533bc83b5feb7981d25a6"
 dependencies = [
  "anyhow",
  "derive_more",

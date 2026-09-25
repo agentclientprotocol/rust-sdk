@@ -2,7 +2,7 @@ use agent_client_protocol::{
     Error, JsonRpcMessage, JsonRpcResponse, UntypedMessage,
     schema::{
         InitializeProxyRequest, METHOD_INITIALIZE_PROXY, ProtocolVersion,
-        v1::{LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest},
+        v1::{self, LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest},
     },
 };
 use serde_json::{Map, Value};
@@ -19,7 +19,37 @@ pub(crate) enum PolyfillProtocol {
     V2,
 }
 
+pub(super) enum NativeMcpOutcome {
+    Result(Value),
+    Error(Value),
+}
+
 impl PolyfillProtocol {
+    /// Validate against the negotiated ACP version before projecting onto HTTP.
+    pub(super) fn message_response(self, value: Value) -> Result<NativeMcpOutcome, Error> {
+        match self {
+            Self::V1 => match v1::MessageMcpResponse::from_value("mcp/message", value)? {
+                v1::MessageMcpResponse::Result { result, .. } => {
+                    Ok(NativeMcpOutcome::Result(result))
+                }
+                v1::MessageMcpResponse::Error { error, .. } => {
+                    Ok(NativeMcpOutcome::Error(serde_json::to_value(error)?))
+                }
+                _ => Err(Error::invalid_request().data("unsupported MCP outcome")),
+            },
+            #[cfg(feature = "unstable_protocol_v2")]
+            Self::V2 => match v2::MessageMcpResponse::from_value("mcp/message", value)? {
+                v2::MessageMcpResponse::Result { result, .. } => {
+                    Ok(NativeMcpOutcome::Result(result))
+                }
+                v2::MessageMcpResponse::Error { error, .. } => {
+                    Ok(NativeMcpOutcome::Error(serde_json::to_value(error)?))
+                }
+                _ => Err(Error::invalid_request().data("unsupported MCP outcome")),
+            },
+        }
+    }
+
     pub(crate) fn from_initialize_request(request: &UntypedMessage) -> Result<Self, Error> {
         if request.method() != METHOD_INITIALIZE_PROXY {
             return Err(Error::invalid_request().data("expected initialize proxy request"));

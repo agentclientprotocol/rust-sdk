@@ -53,9 +53,9 @@ Do not run ACP authentication handling on an inner MCP error code. A tool
 execution failure with `isError` remains an MCP result. MRTR's `input_required`
 also remains a result; retry with fresh IDs/metadata and unchanged opaque state.
 
-Both ACP versions export the same response/error carrier types. Downstream
-code that implements traits for these types must not provide separate v1 and
-v2 implementations.
+ACP v1 and v2 define independent response/error carrier types. They currently
+use the same JSON representation, but may evolve separately. Use the types
+for the negotiated ACP version and keep trait implementations version-specific.
 
 ## Separate services from operations
 

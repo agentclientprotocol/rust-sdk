@@ -36,7 +36,7 @@ yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
 # Draft cross-repository validation; replace with the released schema before publishing.
-agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol", rev = "9d8b499a332ffa0655007d4be7dd949e05180de3", default-features = false, features = ["tracing"] }
+agent-client-protocol-schema = { git = "https://github.com/agentclientprotocol/agent-client-protocol", rev = "e5c36d2671fd355f983533bc83b5feb7981d25a6", default-features = false, features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }

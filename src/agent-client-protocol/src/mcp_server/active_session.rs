@@ -15,7 +15,8 @@ use std::{
 
 use crate::{
     Agent, Channel, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcNotification, JsonRpcRequest, RawJsonRpcMessage, Responder, Role, TransportFrame,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder, Role,
+    TransportFrame,
     mcp_server::{
         MCP_BACKEND_FAILURE, MCP_RESOURCE_EXHAUSTED, McpConnectionContext, McpConnectionTo,
         McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpServerConnect,
@@ -40,9 +41,11 @@ pub(super) struct V1McpProtocol;
 pub(super) struct V2McpProtocol;
 
 pub(super) trait McpProtocol: Send + 'static {
-    type MessageRequest: JsonRpcRequest<Response = MessageMcpResponse>;
+    type MessageRequest: JsonRpcRequest<Response = Self::MessageResponse>;
+    type MessageResponse: JsonRpcResponse + serde::Serialize;
     type MessageNotification: JsonRpcNotification;
 
+    fn response(outcome: McpOutcome) -> Self::MessageResponse;
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId;
     fn request_id(request: &Self::MessageRequest) -> McpRequestId;
     fn into_request(request: Self::MessageRequest) -> (String, Option<Map<String, Value>>);
@@ -56,7 +59,15 @@ pub(super) trait McpProtocol: Send + 'static {
 
 impl McpProtocol for V1McpProtocol {
     type MessageRequest = MessageMcpRequest;
+    type MessageResponse = MessageMcpResponse;
     type MessageNotification = MessageMcpNotification;
+
+    fn response(outcome: McpOutcome) -> Self::MessageResponse {
+        match outcome {
+            McpOutcome::Result(value) => MessageMcpResponse::success(value),
+            McpOutcome::Error(error) => MessageMcpResponse::error(error),
+        }
+    }
 
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId {
         request.server_id.clone()
@@ -85,11 +96,10 @@ fn into_mcp_error(error: crate::Error) -> McpError {
     mcp
 }
 
-fn outcome_response(outcome: McpOutcome) -> Result<MessageMcpResponse, crate::Error> {
-    let response = match outcome {
-        McpOutcome::Result(value) => MessageMcpResponse::success(value),
-        McpOutcome::Error(error) => MessageMcpResponse::error(error),
-    };
+fn outcome_response<Protocol: McpProtocol>(
+    outcome: McpOutcome,
+) -> Result<Protocol::MessageResponse, crate::Error> {
+    let response = Protocol::response(outcome);
     check_payload_size(&response, MAX_PAYLOAD_BYTES)?;
     Ok(response)
 }
@@ -104,8 +114,8 @@ fn project_outcome(outcome: McpOutcome, is_discovery: bool) -> Result<McpOutcome
     }
 }
 
-fn send_outcome(
-    responder: Responder<MessageMcpResponse>,
+fn send_outcome<Protocol: McpProtocol>(
+    responder: Responder<Protocol::MessageResponse>,
     result: Result<McpOutcome, crate::Error>,
     is_discovery: bool,
 ) -> Result<(), crate::Error> {
@@ -115,7 +125,7 @@ fn send_outcome(
             // remain named outer ACP errors, regardless of backend type.
             let outcome = project_outcome(outcome, is_discovery)
                 .unwrap_or_else(|error| McpOutcome::Error(into_mcp_error(error)));
-            match outcome_response(outcome) {
+            match outcome_response::<Protocol>(outcome) {
                 Ok(response) => responder.respond(response),
                 Err(error) => responder.respond_with_error(error),
             }
@@ -127,7 +137,22 @@ fn send_outcome(
 #[cfg(feature = "unstable_protocol_v2")]
 impl McpProtocol for V2McpProtocol {
     type MessageRequest = crate::schema::v2::MessageMcpRequest;
+    type MessageResponse = crate::schema::v2::MessageMcpResponse;
     type MessageNotification = crate::schema::v2::MessageMcpNotification;
+
+    fn response(outcome: McpOutcome) -> Self::MessageResponse {
+        match outcome {
+            McpOutcome::Result(value) => Self::MessageResponse::success(value),
+            McpOutcome::Error(error) => {
+                // The service outcome uses the v1 error representation. Adapt it
+                // explicitly here instead of coupling the versioned wire types.
+                let mut wire_error = crate::schema::v2::McpError::new(error.code, error.message);
+                wire_error.data = error.data;
+                wire_error.extra = error.extra;
+                Self::MessageResponse::error(wire_error)
+            }
+        }
+    }
 
     fn server_id(request: &Self::MessageRequest) -> McpServerAcpId {
         McpServerAcpId::new(request.server_id.0.clone())
@@ -242,10 +267,15 @@ where
     fn handle_request(
         &mut self,
         request: Protocol::MessageRequest,
-        responder: Responder<MessageMcpResponse>,
+        responder: Responder<Protocol::MessageResponse>,
         connection: &ConnectionTo<Counterpart>,
-    ) -> Result<Handled<(Protocol::MessageRequest, Responder<MessageMcpResponse>)>, crate::Error>
-    {
+    ) -> Result<
+        Handled<(
+            Protocol::MessageRequest,
+            Responder<Protocol::MessageResponse>,
+        )>,
+        crate::Error,
+    > {
         let server_id = Protocol::server_id(&request);
         if server_id != self.server_id {
             return Ok(Handled::No {
@@ -261,7 +291,9 @@ where
             return Ok(Handled::Yes);
         }
         if let Err(error) = validate_modern_request(&method, params.as_ref()) {
-            responder.respond(outcome_response(McpOutcome::Error(into_mcp_error(error)))?)?;
+            responder.respond(outcome_response::<Protocol>(McpOutcome::Error(
+                into_mcp_error(error),
+            ))?)?;
             return Ok(Handled::Yes);
         }
         let (guard, stop_rx) = match admit_request(&self.active, request_id.clone()) {
@@ -376,7 +408,7 @@ where
                 cleanup_connection.wait_cleanup().await;
                 // Operation futures have been dropped and cannot send late output.
                 drop(guard);
-                let response = send_outcome(responder, result, is_discovery);
+                let response = send_outcome::<Protocol>(responder, result, is_discovery);
                 if let Err(error) = response {
                     tracing::debug!(?error, "cannot send MCP response");
                 }
@@ -533,7 +565,7 @@ where
             drop(backend_done_rx.await);
             cleanup_connection.wait_cleanup().await;
             drop(guard);
-            let response = send_outcome(responder, result, is_discovery);
+            let response = send_outcome::<Protocol>(responder, result, is_discovery);
             if let Err(error) = response {
                 tracing::debug!(?error, "cannot send request-scoped MCP response");
             }
@@ -629,9 +661,9 @@ fn validate_modern_request(
 #[cfg(test)]
 mod tests {
     use super::{
-        ActiveRequests, MAX_ACTIVE_REQUESTS, MAX_PAYLOAD_BYTES, McpOutcome, admit_request,
-        check_payload_size, constrain_discovery_versions, into_mcp_error, outcome_response,
-        validate_modern_request,
+        ActiveRequests, MAX_ACTIVE_REQUESTS, MAX_PAYLOAD_BYTES, McpOutcome, V1McpProtocol,
+        admit_request, check_payload_size, constrain_discovery_versions, into_mcp_error,
+        outcome_response, validate_modern_request,
     };
     use crate::{
         mcp_server::MCP_RESOURCE_EXHAUSTED,
@@ -647,14 +679,49 @@ mod tests {
                 McpError::new(-32000, "peer error").data(json!("x".repeat(MAX_PAYLOAD_BYTES))),
             ),
         ] {
-            let error = outcome_response(outcome).expect_err("oversized carrier must be rejected");
+            let error = outcome_response::<V1McpProtocol>(outcome)
+                .expect_err("oversized carrier must be rejected");
             assert_eq!(i32::from(error.code), MCP_RESOURCE_EXHAUSTED);
         }
-        let result = outcome_response(McpOutcome::Result(serde_json::Value::Null)).unwrap();
+        let result =
+            outcome_response::<V1McpProtocol>(McpOutcome::Result(serde_json::Value::Null)).unwrap();
         assert_eq!(
             serde_json::to_value(result).unwrap(),
             json!({"result":null})
         );
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn versioned_outcomes_preserve_results_and_error_fields() {
+        for value in [
+            serde_json::Value::Null,
+            json!({"resultType":"complete","_meta":{"custom":true}}),
+        ] {
+            let v1 = outcome_response::<V1McpProtocol>(McpOutcome::Result(value.clone())).unwrap();
+            let v2 = outcome_response::<super::V2McpProtocol>(McpOutcome::Result(value)).unwrap();
+            assert_eq!(
+                serde_json::to_value(v1).unwrap(),
+                serde_json::to_value(v2).unwrap()
+            );
+        }
+        for data in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(json!({"details":[1,2]})),
+        ] {
+            let mut error = McpError::new(-32000, "opaque peer error");
+            if let Some(data) = data {
+                error = error.data(data);
+            }
+            error
+                .extra
+                .insert("extension".into(), json!({"preserve":true}));
+            let expected = json!({"error": error});
+            let v2: crate::schema::v2::MessageMcpResponse =
+                outcome_response::<super::V2McpProtocol>(McpOutcome::Error(error)).unwrap();
+            assert_eq!(serde_json::to_value(v2).unwrap(), expected);
+        }
     }
 
     #[test]
@@ -753,12 +820,14 @@ mod tests {
             .as_object(),
         )
         .expect_err("unsupported inner version");
-        let response = outcome_response(McpOutcome::Error(into_mcp_error(unsupported))).unwrap();
+        let response =
+            outcome_response::<V1McpProtocol>(McpOutcome::Error(into_mcp_error(unsupported)))
+                .unwrap();
         assert_eq!(
             serde_json::to_value(response).unwrap()["error"]["code"],
             -32022
         );
-        let response = outcome_response(McpOutcome::Error(
+        let response = outcome_response::<V1McpProtocol>(McpOutcome::Error(
             McpError::new(-32000, "opaque MCP error").data(serde_json::Value::Null),
         ))
         .unwrap();

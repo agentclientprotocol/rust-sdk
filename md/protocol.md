@@ -125,7 +125,7 @@ The successful outer ACP response contains exactly one MCP outcome:
 ```
 
 An MCP protocol error uses `{"error": {"code": ..., "message": ..., "data": ...}}`
-inside the successful outer `result`, not an ACP error response. The shared
+inside the successful outer `result`, not an ACP error response. Each version's
 `MessageMcpResponse::{Result, Error}` type preserves this distinction. Inner
 results are opaque JSON (including null); inner error data distinguishes null
 from omission. MCP error codes never acquire ACP meanings.

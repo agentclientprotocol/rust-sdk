@@ -16,7 +16,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    Proxy, UntypedMessage, schema::v1::MessageMcpResponse, util::MatchDispatchFrom,
+    Proxy, UntypedMessage, util::MatchDispatchFrom,
 };
 use futures::{
     SinkExt, StreamExt,
@@ -26,7 +26,9 @@ use serde_json::Value;
 use tokio::{net::TcpListener, sync::mpsc as tokio_mpsc};
 use tracing::{debug, warn};
 
-use self::protocol::{DownstreamMcpMode, NativeMcpNotification, PolyfillProtocol};
+use self::protocol::{
+    DownstreamMcpMode, NativeMcpNotification, NativeMcpOutcome, PolyfillProtocol,
+};
 
 // Conservative per-bridge limits. Notifications are bounded per HTTP POST by
 // both message count and serialized bytes; terminal responses bypass the queue.
@@ -327,6 +329,7 @@ async fn transform_session_servers(
 }
 
 struct ActiveRequest {
+    protocol: PolyfillProtocol,
     server_id: String,
     http_id: Value,
     method: String,
@@ -408,6 +411,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                     self.active.insert(
                         request_id.clone(),
                         ActiveRequest {
+                            protocol,
                             server_id: server_id.clone(),
                             http_id: http_id.clone(),
                             method: method.clone(),
@@ -480,6 +484,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                         let http_id = active.http_id.clone();
                         let value = match result {
                             Ok(carrier) => project_mcp_carrier(
+                                active.protocol,
                                 active.http_id,
                                 &request_id,
                                 &active.method,
@@ -509,20 +514,21 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
 
 /// ACP success carries exactly one MCP outcome. An outer ACP failure is a
 /// binding/runtime failure, not an MCP error carried in a successful response.
-fn project_mcp_carrier(http_id: Value, request_id: &str, method: &str, carrier: Value) -> Value {
-    // Both ACP revisions share this type. Keep envelope validation in the schema,
-    // rather than maintaining a second parser that can drift from its null rules.
-    match serde_json::from_value::<MessageMcpResponse>(carrier) {
-        Ok(MessageMcpResponse::Result { mut result, .. }) => {
+fn project_mcp_carrier(
+    protocol: PolyfillProtocol,
+    http_id: Value,
+    request_id: &str,
+    method: &str,
+    carrier: Value,
+) -> Value {
+    match protocol.message_response(carrier) {
+        Ok(NativeMcpOutcome::Result(mut result)) => {
             if method == "tools/list" {
                 strip_header_annotations(&mut result);
             }
             http::rpc_result(http_id, request_id, result)
         }
-        Ok(MessageMcpResponse::Error { error, .. }) => http::rpc_peer_error(
-            http_id,
-            serde_json::to_value(error).expect("MCP errors contain only JSON values"),
-        ),
+        Ok(NativeMcpOutcome::Error(error)) => http::rpc_peer_error(http_id, error),
         _ => http::rpc_error(http_id, -33002, "Invalid MCP-over-ACP response carrier"),
     }
 }
@@ -753,6 +759,7 @@ mod http_limits_tests {
             runner.active.insert(
                 index.to_string(),
                 ActiveRequest {
+                    protocol: PolyfillProtocol::V1,
                     server_id: String::new(),
                     http_id: Value::Null,
                     method: String::new(),
@@ -780,6 +787,7 @@ mod tests {
         });
         let project = |carrier| {
             project_mcp_carrier(
+                PolyfillProtocol::V1,
                 serde_json::json!("external"),
                 "internal",
                 "tools/call",

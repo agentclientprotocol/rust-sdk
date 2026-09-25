@@ -264,27 +264,7 @@ impl_v2_jsonrpc_request!(
 );
 impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt");
 #[cfg(feature = "unstable_mcp_over_acp")]
-impl JsonRpcMessage for v2::MessageMcpRequest {
-    fn matches_method(method: &str) -> bool {
-        method == "mcp/message"
-    }
-    fn method(&self) -> &'static str {
-        "mcp/message"
-    }
-    fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
-        UntypedMessage::new("mcp/message", self)
-    }
-    fn parse_message(method: &str, params: &impl serde::Serialize) -> Result<Self, crate::Error> {
-        if method != "mcp/message" {
-            return Err(crate::Error::method_not_found());
-        }
-        crate::util::json_cast_params(params)
-    }
-}
-#[cfg(feature = "unstable_mcp_over_acp")]
-impl JsonRpcRequest for v2::MessageMcpRequest {
-    type Response = v2::MessageMcpResponse;
-}
+impl_v2_jsonrpc_request!(v2::MessageMcpRequest, v2::MessageMcpResponse, "mcp/message");
 
 impl_v2_jsonrpc_notification!(v2::CancelRequestNotification, "$/cancel_request");
 impl_v2_jsonrpc_notification!(v2::CancelSessionNotification, "session/cancel");
