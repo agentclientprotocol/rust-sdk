@@ -169,12 +169,13 @@ mean no parameters. A valid modern request still needs its required
 
 Use [`$/cancel_request`](./request-cancellation.md) with the outer ACP request
 ID. Normal proxy forwarding maps this cancellation hop by hop. It never
-rewrites the logical MCP ID. Advertising this binding requires cancellation
-handling even where the underlying ACP revision makes general cancellation optional.
+rewrites the logical MCP ID. Cancellation is best effort; advertising this
+transport does not guarantee that every operation can be cancelled or impose
+an additional cancellation support requirement.
 
 Each operation owns its backend work. A result, error, cancellation, or
 registration removal ends that operation; sibling requests and subscriptions stay
-independent. Cancellation revokes output immediately, but the operation keeps its
+independent. When the SDK honors cancellation, it revokes output but keeps the
 admission slot and logical ID until owned cleanup finishes. There is no MCP
 connection ID to release. `server/discover` is an ordinary optional request,
 not a prerequisite for tool calls.
