@@ -114,7 +114,13 @@ agent-client-protocol-http = { version = "...", features = ["client", "server"] 
 `$/cancel_request` is connection-scoped. The HTTP transport does not apply
 `Acp-Session-Id` to cancellation notifications, and routes outgoing
 cancellation notifications over the connection stream rather than a session
-stream.
+stream. Cancellation is advisory: a `202 Accepted` for the cancellation POST
+does not complete the original request. Pending response routing and its
+bounded metadata charge stay in place until a terminal response, POST failure,
+or connection teardown. The original request can still succeed after
+cancellation, including a `session/new` or `session/fork` that opens a new
+session stream. If the peer never sends a response, that request continues to
+occupy pending-request capacity until the connection closes.
 
 WebSocket connections can carry cancellation at any point after the socket is
 open. With HTTP + SSE, cancellation can be sent after `initialize` completes and

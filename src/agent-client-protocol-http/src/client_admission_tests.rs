@@ -134,7 +134,6 @@ async fn post_and_stream_counts_are_bounded_independently_of_frame_bytes() {
         check_post_capacity(&posts, 3, false).unwrap();
         posts.ordered.push(PendingPost {
             pending_requests: Vec::new(),
-            cancelled_requests: Vec::new(),
             response: Box::pin(futures::future::pending()),
         });
     }
@@ -142,7 +141,6 @@ async fn post_and_stream_counts_are_bounded_independently_of_frame_bytes() {
     check_post_capacity(&posts, 3, true).unwrap();
     posts.responses.push(PendingPost {
         pending_requests: Vec::new(),
-        cancelled_requests: Vec::new(),
         response: Box::pin(futures::future::pending()),
     });
     assert_eq!(posts.len(), 3);
@@ -168,7 +166,6 @@ async fn cancelled_post_releases_its_body_budget() {
     posts.ordered.push_budgeted(
         PendingPost {
             pending_requests: Vec::new(),
-            cancelled_requests: Vec::new(),
             response: Box::pin(futures::future::pending()),
         },
         permit,
@@ -212,7 +209,7 @@ async fn delivering_sse_preserves_admission_through_output_channel() {
 }
 
 #[tokio::test]
-async fn pending_requests_hold_their_source_charge_until_response_or_cancel() {
+async fn pending_requests_hold_their_source_charge_until_terminal_response() {
     let request = RawJsonRpcMessage::request(
         "test/request".to_string(),
         serde_json::json!({}),
@@ -267,11 +264,18 @@ async fn pending_requests_hold_their_source_charge_until_response_or_cancel() {
         &mut state,
         CompletedPost {
             pending_requests: post.pending_requests,
-            cancelled_requests: post.cancelled_requests,
             result: Ok(()),
         },
     )
     .unwrap();
+    assert!(state.check_pending_request_capacity(1).is_err());
+    assert!(admission.try_admit(frame.clone()).is_err());
+    assert_eq!(
+        state
+            .take_pending_request_method(&RequestId::Number(1))
+            .as_deref(),
+        Some("test/request")
+    );
     assert!(state.check_pending_request_capacity(1).is_ok());
     assert!(admission.try_admit(frame).is_ok());
 }

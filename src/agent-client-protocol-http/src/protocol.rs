@@ -1,4 +1,4 @@
-use agent_client_protocol::{RawJsonRpcMessage, RawJsonRpcParams, schema::v1::RequestId};
+use agent_client_protocol::{RawJsonRpcMessage, RawJsonRpcParams};
 
 pub(crate) const HEADER_CONNECTION_ID: &str = "acp-connection-id";
 pub(crate) const HEADER_SESSION_ID: &str = "acp-session-id";
@@ -42,25 +42,12 @@ pub(crate) fn method_for_message(msg: &RawJsonRpcMessage) -> Option<&str> {
     }
 }
 
-pub(crate) fn cancelled_request_id(msg: &RawJsonRpcMessage) -> Option<RequestId> {
-    let RawJsonRpcMessage::Notification(notification) = msg else {
-        return None;
-    };
-    if notification.method.as_ref() != "$/cancel_request" {
-        return None;
-    }
-    let Some(RawJsonRpcParams::Object(params)) = notification.params.as_ref() else {
-        return None;
-    };
-    serde_json::from_value(params.get("requestId")?.clone()).ok()
-}
-
 pub(crate) fn is_connection_scoped_protocol_message(msg: &RawJsonRpcMessage) -> bool {
     method_for_message(msg).is_some_and(|method| method.starts_with("$/"))
         || is_cancel_request_message(msg)
 }
 
-fn is_cancel_request_message(msg: &RawJsonRpcMessage) -> bool {
+pub(crate) fn is_cancel_request_message(msg: &RawJsonRpcMessage) -> bool {
     let RawJsonRpcMessage::Notification(notification) = msg else {
         return false;
     };

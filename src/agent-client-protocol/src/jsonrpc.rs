@@ -7446,6 +7446,14 @@ pub struct FrameReceiver {
     _slots: async_channel::Sender<()>,
 }
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl FrameReceiver {
+    /// Reject new output while retaining already-accepted frames for draining.
+    pub(crate) fn close(&self) {
+        self.rx.close();
+    }
+}
+
 /// A slot is reserved before a frame enters the queue and returned at dequeue.
 /// Its drop also returns reservations abandoned by a cancelled send or sink.
 #[derive(Debug)]
@@ -8035,6 +8043,36 @@ mod tests {
         left.tx
             .try_send(frame)
             .expect("dropping the last permit releases capacity");
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn receiver_close_drains_accepted_output_and_wakes_blocked_senders() {
+        let (source, mut destination) = Channel::duplex_with_limits(ConnectionLimits {
+            max_queued_frames: 1,
+            ..ConnectionLimits::default()
+        });
+        let frame = capacity_frame();
+        let escaped = source.tx.clone();
+        source.tx.try_send(frame.clone()).unwrap();
+        let mut blocked = Box::pin(escaped.send_frame(frame.clone()));
+        assert!(blocked.as_mut().now_or_never().is_none());
+
+        destination.rx.close();
+        assert!(
+            blocked.now_or_never().unwrap().is_err(),
+            "receiver closure must wake a blocked producer"
+        );
+        assert!(escaped.try_send(frame.clone()).is_err());
+        let accepted = destination.rx.next().now_or_never().unwrap().unwrap();
+        assert_eq!(
+            accepted.frame().to_json().unwrap(),
+            frame.to_json().unwrap()
+        );
+        assert!(
+            destination.rx.next().now_or_never().unwrap().is_none(),
+            "draining must not wait for the escaped sender to be dropped"
+        );
     }
 
     fn capacity_frame() -> TransportFrame {

@@ -189,15 +189,6 @@ impl Connection {
         }
     }
 
-    pub(crate) async fn cancel_pending_routes(&self, ids: &[RequestId]) {
-        if let OutboundTransport::Http(http) = &self.outbound_transport {
-            let mut pending = http.pending_routes.lock().await;
-            for id in ids {
-                take_pending_route(&mut pending, id);
-            }
-        }
-    }
-
     #[cfg(test)]
     pub(crate) async fn ensure_session(&self, session_id: &str) {
         self.outbound_transport.ensure_session(session_id).await;

@@ -145,7 +145,6 @@ pub(crate) async fn handle_post(
 
     let mut session_routes = Vec::new();
     let mut pending_routes = Vec::new();
-    let mut cancellations = Vec::new();
     match &mut frame {
         TransportFrame::Single(message) => {
             let route = match prepare_message_route(message, session_id.as_deref()) {
@@ -153,7 +152,6 @@ pub(crate) async fn handle_post(
                 Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
             };
             collect_route(message, route, &mut session_routes, &mut pending_routes);
-            cancellations.extend(crate::protocol::cancelled_request_id(message));
             trace!(connection_id = %connection_id, ?message, "POST → agent");
         }
         TransportFrame::Batch(batch) => {
@@ -166,7 +164,6 @@ pub(crate) async fn handle_post(
                     Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
                 };
                 collect_route(message, route, &mut session_routes, &mut pending_routes);
-                cancellations.extend(crate::protocol::cancelled_request_id(message));
             }
             trace!(connection_id = %connection_id, ?frame, "POST batch → agent");
         }
@@ -195,7 +192,6 @@ pub(crate) async fn handle_post(
     }
     drop(permit);
     inbound_slot.send(admitted);
-    connection.cancel_pending_routes(&cancellations).await;
     StatusCode::ACCEPTED.into_response()
 }
 

@@ -20,7 +20,7 @@ use thiserror::Error;
 use tracing::{debug, error, trace, warn};
 
 use crate::protocol::{
-    HEADER_CONNECTION_ID, HEADER_SESSION_ID, cancelled_request_id, is_initialize_request,
+    HEADER_CONNECTION_ID, HEADER_SESSION_ID, is_cancel_request_message, is_initialize_request,
     is_response_only_shape, method_for_message, method_requires_session_header,
     session_id_from_message,
 };
@@ -450,7 +450,6 @@ fn handle_completed_post(
 ) -> Result<(), AcpError> {
     let CompletedPost {
         pending_requests,
-        cancelled_requests,
         result,
     } = completed;
     if let Err(error) = result {
@@ -458,9 +457,6 @@ fn handle_completed_post(
         error!("POST failed: {error}");
         Err(AcpError::internal_error().data(format!("POST: {error}")))
     } else {
-        for id in cancelled_requests {
-            state.cancel_pending_request(&id);
-        }
         Ok(())
     }
 }
@@ -514,11 +510,22 @@ fn is_response_only_frame(frame: &TransportFrame) -> bool {
 }
 
 fn is_cancellation_frame(frame: &TransportFrame) -> bool {
-    matches!(
-        frame,
-        TransportFrame::Single(RawJsonRpcMessage::Notification(message))
-            if message.method.as_ref() == "$/cancel_request"
-    )
+    match frame {
+        TransportFrame::Single(message) => is_cancel_request_message(message),
+        TransportFrame::Batch(batch) => {
+            let mut has_cancellation = false;
+            let only_control = batch.entries().all(|entry| match entry {
+                TransportBatchEntry::Message(RawJsonRpcMessage::Response(_)) => true,
+                TransportBatchEntry::Message(message) if is_cancel_request_message(message) => {
+                    has_cancellation = true;
+                    true
+                }
+                TransportBatchEntry::Malformed { .. } | TransportBatchEntry::Message(_) => false,
+            });
+            only_control && has_cancellation
+        }
+        TransportFrame::Malformed { .. } => false,
+    }
 }
 
 enum HttpLoopEvent {
@@ -864,7 +871,6 @@ struct ClientState {
 
 struct PendingPost {
     pending_requests: Vec<(RequestId, String)>,
-    cancelled_requests: Vec<RequestId>,
     response: BoxFuture<'static, Result<(), String>>,
 }
 
@@ -872,13 +878,11 @@ impl PendingPost {
     fn into_completion(self, permit: Option<FramePermit>) -> BoxFuture<'static, CompletedPost> {
         let Self {
             pending_requests,
-            cancelled_requests,
             response,
         } = self;
         async move {
             let completed = CompletedPost {
                 pending_requests,
-                cancelled_requests,
                 result: response.await,
             };
             drop(permit);
@@ -891,7 +895,6 @@ impl PendingPost {
 #[derive(Debug)]
 struct CompletedPost {
     pending_requests: Vec<(RequestId, String)>,
-    cancelled_requests: Vec<RequestId>,
     result: Result<(), String>,
 }
 
@@ -1036,7 +1039,6 @@ impl ClientState {
         let pending_requests = pending_request_for_message(&msg)
             .into_iter()
             .collect::<Vec<_>>();
-        let cancelled_requests = cancelled_request_id(&msg).into_iter().collect();
         self.check_pending_request_capacity(pending_requests.len())?;
         self.track_pending_requests(&pending_requests);
 
@@ -1051,7 +1053,6 @@ impl ClientState {
         };
         Ok(PendingPost {
             pending_requests,
-            cancelled_requests,
             response: response.boxed(),
         })
     }
@@ -1088,7 +1089,6 @@ impl ClientState {
         Ok((
             PendingPost {
                 pending_requests: bookkeeping.pending_requests,
-                cancelled_requests: bookkeeping.cancelled_requests,
                 response: response.boxed(),
             },
             session_ids,
@@ -1158,20 +1158,6 @@ impl ClientState {
             self.pending_request_leases.remove(id);
         }
         method
-    }
-
-    fn cancel_pending_request(&mut self, id: &RequestId) {
-        let Some(methods) = self.pending_requests.get_mut(id) else {
-            return;
-        };
-        methods.pop_front();
-        if let Some(leases) = self.pending_request_leases.get_mut(id) {
-            leases.pop_front();
-        }
-        if methods.is_empty() {
-            self.pending_requests.remove(id);
-            self.pending_request_leases.remove(id);
-        }
     }
 
     fn register_session_streams(
@@ -1249,7 +1235,6 @@ impl ClientState {
 struct FrameBookkeeping {
     session_ids: Vec<String>,
     pending_requests: Vec<(RequestId, String)>,
-    cancelled_requests: Vec<RequestId>,
 }
 
 impl FrameBookkeeping {
@@ -1278,8 +1263,6 @@ impl FrameBookkeeping {
         if let Some(pending_request) = pending_request_for_message(message) {
             self.pending_requests.push(pending_request);
         }
-        self.cancelled_requests
-            .extend(cancelled_request_id(message));
         Ok(())
     }
 }
@@ -1717,6 +1700,57 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cancel_ack_keeps_session_opening_context_until_terminal_response() {
+        for method in ["session/new", "session/fork"] {
+            let mut state = initialized_client_state();
+            let id = RequestId::Number(7);
+            state.track_pending_requests(&[(id.clone(), method.into())]);
+            handle_completed_post(
+                &mut state,
+                CompletedPost {
+                    pending_requests: Vec::new(),
+                    result: Ok(()),
+                },
+            )
+            .unwrap();
+            assert_eq!(state.pending_requests.get(&id).unwrap().len(), 1);
+            let response = single_frame(RawJsonRpcMessage::response(
+                id.clone(),
+                Ok(json!({"sessionId": "new-session"})),
+            ));
+            assert_eq!(
+                state.sessions_to_open_for_responses(&response),
+                ["new-session"]
+            );
+            assert!(state.pending_requests.is_empty());
+            assert!(state.sessions_to_open_for_responses(&response).is_empty());
+        }
+    }
+
+    #[test]
+    fn only_pure_cancellation_batches_bypass_ordered_posts() {
+        let cancel = || {
+            RawJsonRpcMessage::notification(
+                "_proxy/successor".into(),
+                json!({"method": "$/cancel_request", "params": {"requestId": 7}}),
+            )
+            .unwrap()
+        };
+        assert!(is_cancellation_frame(&single_frame(cancel())));
+        let batch = |other| {
+            TransportFrame::Batch(TransportBatch::from_messages([cancel(), other]).unwrap())
+        };
+        assert!(is_cancellation_frame(&batch(cancel())));
+        assert!(is_cancellation_frame(&batch(RawJsonRpcMessage::response(
+            RequestId::Number(7),
+            Ok(json!({}))
+        ))));
+        assert!(!is_cancellation_frame(&batch(
+            RawJsonRpcMessage::notification("custom/data".into(), json!({})).unwrap()
+        )));
+    }
+
     impl WsSink for RecordingWsSink {
         fn send(
             &mut self,
@@ -2028,6 +2062,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wrapped_cancellation_post_bypasses_blocked_ordered_post_without_session_header() {
+        let slow_started = Arc::new(Notify::new());
+        let release_slow = Arc::new(Notify::new());
+        let (cancel_tx, mut cancel_rx) = tokio::sync::mpsc::unbounded_channel();
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let slow_started = slow_started.clone();
+                let release_slow = release_slow.clone();
+                move |headers: HeaderMap, body: String| {
+                    let slow_started = slow_started.clone();
+                    let release_slow = release_slow.clone();
+                    let cancel_tx = cancel_tx.clone();
+                    async move {
+                        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        match value["method"].as_str() {
+                            Some("initialize") => initialize_response().await.into_response(),
+                            Some("session/load") => {
+                                slow_started.notify_one();
+                                release_slow.notified().await;
+                                StatusCode::ACCEPTED.into_response()
+                            }
+                            Some("_proxy/successor") => {
+                                cancel_tx.send((headers, value)).unwrap();
+                                StatusCode::ACCEPTED.into_response()
+                            }
+                            other => panic!("unexpected POST: {other:?}"),
+                        }
+                    }
+                }
+            })
+            .get(pending_sse)
+            .delete(|| async { StatusCode::ACCEPTED }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut caller, transport) = Channel::duplex();
+        let transport = tokio::spawn(run(
+            HttpClient::new(format!("http://{addr}")).unwrap(),
+            transport,
+        ));
+        caller
+            .tx
+            .try_send(single_frame(
+                RawJsonRpcMessage::request("initialize".into(), json!({}), RequestId::Number(1))
+                    .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), caller.rx.next())
+            .await
+            .unwrap()
+            .unwrap();
+        caller
+            .tx
+            .try_send(single_frame(
+                RawJsonRpcMessage::request(
+                    "session/load".into(),
+                    json!({"sessionId": "source"}),
+                    RequestId::Number(2),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        timeout(Duration::from_secs(1), slow_started.notified())
+            .await
+            .unwrap();
+        caller
+            .tx
+            .try_send(single_frame(
+                RawJsonRpcMessage::notification(
+                    "_proxy/successor".into(),
+                    json!({
+                        "method": "$/cancel_request",
+                        "params": {"requestId": 2, "sessionId": "source"}
+                    }),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let (headers, cancellation) = timeout(Duration::from_secs(1), cancel_rx.recv())
+            .await
+            .expect("cancellation must bypass an in-flight session POST")
+            .unwrap();
+        assert!(headers.get(HEADER_SESSION_ID).is_none());
+        assert_eq!(cancellation["params"]["method"], "$/cancel_request");
+        release_slow.notify_one();
+        transport.abort();
+        drop(caller);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn http_preserves_batch_frames_across_post_and_sse() {
         let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
         let post_count = Arc::new(AtomicUsize::new(0));
@@ -2300,6 +2427,37 @@ mod tests {
             .unwrap();
         assert!(posted.is_array(), "outgoing batch must remain an array");
 
+        caller
+            .tx
+            .try_send(single_frame(
+                RawJsonRpcMessage::notification("$/cancel_request".into(), json!({"requestId": 2}))
+                    .unwrap(),
+            ))
+            .unwrap();
+        let cancellation = timeout(Duration::from_secs(1), post_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancellation["method"], "$/cancel_request");
+        assert_eq!(cancellation["params"]["requestId"], 2);
+        // Control POSTs are serialized with each other. Observing a second
+        // (unknown-ID, harmless) cancellation proves the client processed the
+        // first POST's 202 before the original successful response is emitted.
+        caller
+            .tx
+            .try_send(single_frame(
+                RawJsonRpcMessage::notification(
+                    "$/cancel_request".into(),
+                    json!({"requestId": 999}),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        let barrier = timeout(Duration::from_secs(1), post_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(barrier["params"]["requestId"], 999);
         emit_response.notify_one();
         let response = timeout(Duration::from_secs(1), caller.rx.next())
             .await
@@ -2897,7 +3055,6 @@ mod tests {
         let mut posts = PostQueues::default();
         posts.ordered.push(PendingPost {
             pending_requests: vec![pending_request],
-            cancelled_requests: Vec::new(),
             response: async { Err("earlier post failed".to_string()) }.boxed(),
         });
 
@@ -2991,7 +3148,6 @@ mod tests {
         let mut posts = PostQueues::default();
         posts.ordered.push(PendingPost {
             pending_requests: Vec::new(),
-            cancelled_requests: Vec::new(),
             response: async move {
                 complete_earlier_post.notified().await;
                 Ok(())

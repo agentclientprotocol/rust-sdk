@@ -425,30 +425,17 @@ where
             connection: connection.clone(),
             cleanup: Some(Arc::default()),
         };
-        let backend = self.mcp_connect.connect(cleanup_connection.clone());
+        let connector = self.mcp_connect.clone();
         let connection_for_task = connection.clone();
         let cancellation = responder.cancellation();
-        let (mut client, server) = Channel::duplex();
-        // Keep the operation admitted until its backend has actually stopped.
-        let (backend_stop_tx, backend_stop_rx) = oneshot::channel::<()>();
-        let (backend_done_tx, mut backend_done_rx) = oneshot::channel();
-        let spawn_result = connection.spawn_protected(async move {
-            // Own (not merely borrow) the future so cancellation drops its
-            // backend before the completion acknowledgement is published.
-            let run = Box::pin(backend.connect_to(server));
-            let outcome = match future::select(run, backend_stop_rx).await {
-                Either::Left((result, _)) => result,
-                Either::Right((_, _)) => Ok(()),
-            };
-            drop(backend_done_tx.send(outcome));
-            Ok(())
-        });
-        if let Err(error) = spawn_result {
-            drop(guard);
-            responder.respond_with_error(error)?;
-            return Ok(Handled::Yes);
-        }
-        let spawn_result = connection.spawn_protected(async move {
+        // Admission is atomic: this one protected task owns construction,
+        // execution, forwarding, and cleanup. A rejected spawn cannot start
+        // a backend or leave half of the operation running.
+        connection.spawn_protected(async move {
+            let backend = connector.connect(cleanup_connection.clone());
+            let (mut client, server) = Channel::duplex();
+            let mut backend = Some(Box::pin(backend.connect_to(server)));
+            let mut backend_error = None;
             let inner_id = RequestId::Str(request_id.0.to_string());
             let is_discovery = method == "server/discover";
             let process = async {
@@ -462,7 +449,31 @@ where
                     .send_frame(TransportFrame::Single(raw))
                     .await
                     .map_err(crate::Error::into_internal_error)?;
-                while let Some(budgeted) = client.rx.next().await {
+                loop {
+                    let message = match backend.as_mut() {
+                        Some(run) => match future::select(client.rx.next(), run).await {
+                            Either::Left((message, _)) => message,
+                            Either::Right((result, receive)) => {
+                                drop(receive);
+                                backend.take();
+                                backend_error = result.err();
+                                // Drain accepted output after backend exit,
+                                // without waiting for an escaped sender to
+                                // close or accepting any later output.
+                                client.rx.close();
+                                continue;
+                            }
+                        },
+                        None => client.rx.next().await,
+                    };
+                    let Some(budgeted) = message else {
+                        return Err(backend_error.take().unwrap_or_else(|| {
+                            crate::Error::new(
+                                MCP_BACKEND_FAILURE,
+                                "MCP backend closed without a response",
+                            )
+                        }));
+                    };
                     let (frame, _permit) = budgeted.into_parts();
                     let TransportFrame::Single(message) = frame else {
                         return Err(crate::Error::new(
@@ -524,10 +535,6 @@ where
                         }
                     }
                 }
-                Err(crate::Error::new(
-                    MCP_BACKEND_FAILURE,
-                    "MCP backend closed without a response",
-                ))
             };
             let result = cancellation
                 .run_until_cancelled(async {
@@ -541,28 +548,16 @@ where
                         .await;
                     };
                     futures::pin_mut!(stop);
-                    let work = async {
-                        match future::select(process, stop).await {
-                            Either::Left((result, _)) => result,
-                            Either::Right(((), _)) => Err(crate::Error::request_cancelled()),
-                        }
-                    };
-                    futures::pin_mut!(work);
-                    match future::select(work, &mut backend_done_rx).await {
+                    match future::select(process, stop).await {
                         Either::Left((result, _)) => result,
-                        Either::Right((Ok(Err(error)), _)) => Err(error),
-                        // The backend can finish immediately after queueing its
-                        // reply. Drain the channel before calling that an EOF.
-                        Either::Right((Ok(Ok(())) | Err(_), work)) => work.await,
+                        Either::Right(((), _)) => Err(crate::Error::request_cancelled()),
                     }
                 })
                 .await;
-            // Revoking the channel stops any late output. A cancellation is only
-            // caller-visible now; cleanup and ID release happen after backend exit.
-            drop(backend_stop_tx);
-            // The receiver can have already completed in the race above. Polling
-            // it again then returns immediately; otherwise this joins cleanup.
-            drop(backend_done_rx.await);
+            // Drop the owned driver and revoke its channels before joining
+            // scoped tool cleanup, releasing the logical ID, or replying.
+            drop(backend);
+            drop(client);
             cleanup_connection.wait_cleanup().await;
             drop(guard);
             let response = send_outcome::<Protocol>(responder, result, is_discovery);
@@ -570,9 +565,7 @@ where
                 tracing::debug!(?error, "cannot send request-scoped MCP response");
             }
             Ok(())
-        });
-        // A failed spawn drops its responder and backend stop sender with the task.
-        spawn_result?;
+        })?;
         Ok(Handled::Yes)
     }
 }

@@ -27,6 +27,13 @@ Use `McpServer::new_service` for a native service, or
 transport. The connector-based factory remains an explicit adapter for backends
 that require per-operation construction; stateless MCP does not require it.
 
+A connector operation is admitted as one protected task before its factory is
+called. That owner drives both the backend and response forwarding, then drops
+the backend and joins scoped cleanup before releasing the logical ID or replying.
+If the backend exits, already-accepted output is drained without waiting for
+escaped sender handles; a valid queued terminal outcome is preserved, and later
+notifications are not forwarded.
+
 The rmcp integration's builder and `from_rmcp` use the reusable service path
 for ACP attachments. Each operation uses rmcp's direct, one-request transport
 without `initialize`. Its wrapper supervises rmcp handler futures through
