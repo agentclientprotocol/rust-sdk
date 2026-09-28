@@ -33,6 +33,8 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 /// - Replaces session IDs with "session:0", etc.
 /// - Replaces loopback HTTP endpoints with "http:endpoint:0", etc.
 /// - Replaces MCP server and connection IDs with stable sequential IDs
+/// - Replaces the crate version rmcp reports in MCP `clientInfo`/`serverInfo`
+///   with "<rmcp version>", so rmcp upgrades don't churn the snapshot
 struct EventNormalizer {
     id_map: HashMap<String, String>,
     next_id: usize,
@@ -126,7 +128,22 @@ impl EventNormalizer {
             .clone()
     }
 
-    /// Recursively normalize session IDs, MCP endpoints, and MCP IDs in JSON values.
+    /// Replace the version in rmcp's own implementation info.
+    ///
+    /// rmcp fills `clientInfo`/`serverInfo` from its `CARGO_PKG_VERSION`, so the
+    /// value tracks `Cargo.lock` rather than anything this test exercises.
+    fn normalize_rmcp_version(mut info: serde_json::Value) -> serde_json::Value {
+        if let Some(map) = info.as_object_mut()
+            && map.get("name").and_then(serde_json::Value::as_str) == Some("rmcp")
+            && let Some(version) = map.get_mut("version")
+        {
+            *version = serde_json::Value::String("<rmcp version>".to_string());
+        }
+        info
+    }
+
+    /// Recursively normalize session IDs, MCP endpoints, MCP IDs, and rmcp
+    /// versions in JSON values.
     fn normalize_json(&mut self, value: serde_json::Value) -> serde_json::Value {
         match value {
             serde_json::Value::Object(map) => {
@@ -163,6 +180,8 @@ impl EventNormalizer {
                             } else {
                                 self.normalize_json(v)
                             }
+                        } else if k == "clientInfo" || k == "serverInfo" {
+                            Self::normalize_rmcp_version(self.normalize_json(v))
                         } else {
                             self.normalize_json(v)
                         };
@@ -666,11 +685,11 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     method: "initialize",
                     session: None,
                     params: Object {
-                        "protocolVersion": String("2025-11-25"),
+                        "protocolVersion": String("2026-07-28"),
                         "capabilities": Object {},
                         "clientInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("3.4.0"),
+                            "version": String("<rmcp version>"),
                         },
                     },
                 },
@@ -689,7 +708,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         },
                         "serverInfo": Object {
                             "name": String("rmcp"),
-                            "version": String("3.4.0"),
+                            "version": String("<rmcp version>"),
                         },
                         "instructions": String("A simple test MCP server with an echo tool"),
                     },
