@@ -15,8 +15,8 @@ use std::{
 
 use crate::{
     Agent, Channel, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder, Role,
-    TransportFrame,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcError, RawJsonRpcMessage,
+    RawJsonRpcResponse, Responder, Role, TransportFrame,
     mcp_server::{
         MCP_BACKEND_FAILURE, MCP_RESOURCE_EXHAUSTED, McpConnectionContext, McpConnectionTo,
         McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpServerConnect,
@@ -88,11 +88,11 @@ impl McpProtocol for V1McpProtocol {
     }
 }
 
-fn into_mcp_error(error: crate::Error) -> McpError {
-    let mut mcp = McpError::new(error.code.into(), error.message);
-    if let Some(data) = error.data {
-        mcp = mcp.data(data);
-    }
+fn into_mcp_error(error: impl Into<RawJsonRpcError>) -> McpError {
+    let error = error.into();
+    let mut mcp = McpError::new(error.code, error.message);
+    mcp.data = error.data;
+    mcp.extra = error.extra;
     mcp
 }
 
@@ -482,11 +482,11 @@ where
                         RawJsonRpcMessage::Response(response) => {
                             // Returning ends notification forwarding before the terminal reply.
                             return match response {
-                                crate::schema::v1::Response::Result { result, .. } => {
+                                RawJsonRpcResponse::Result { result, .. } => {
                                     Ok(McpOutcome::Result(result))
                                 }
-                                crate::schema::v1::Response::Error { error, .. } => {
-                                    Ok(McpOutcome::Error(into_mcp_error(error)))
+                                RawJsonRpcResponse::Error { error, .. } => {
+                                    Ok(McpOutcome::Error(into_mcp_error(*error)))
                                 }
                             };
                         }

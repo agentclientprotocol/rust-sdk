@@ -1,8 +1,8 @@
 use std::pin::pin;
 
 // Types re-exported from crate root
+use crate::RawJsonRpcResponse as Response;
 use crate::jsonrpc::{RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame};
-use crate::schema::v1::Response;
 use futures::StreamExt as _;
 use serde::Deserialize as _;
 

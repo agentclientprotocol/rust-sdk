@@ -154,26 +154,55 @@ async fn route_and_session_metadata_admission_is_atomic_and_releases_permits() {
 }
 
 #[tokio::test]
-async fn rolling_back_rejected_transport_send_removes_only_new_metadata() {
+async fn concurrent_post_reservations_preserve_adopted_session() {
     let frame = TransportFrame::Single(
         RawJsonRpcMessage::request("test/request".into(), json!({}), RequestId::Number(1)).unwrap(),
     );
     let (_caller, transport) = Channel::duplex();
-    let (_, permit) = transport
-        .tx
-        .admission()
-        .try_admit(frame)
-        .unwrap()
-        .into_parts();
-    let http = HttpOutbound::new();
-    let routes = [(RequestId::Number(1), ResponseRoute::Session("one".into()))];
-    let new_sessions = http
-        .register_post_routes(&["one".into()], &routes, &permit)
+    let (inbound_tx, mut inbound_rx) = mpsc::channel(2);
+    let connection = Connection {
+        inbound_tx,
+        inbound_admission: transport.tx.admission(),
+        outbound_rx: Mutex::new(None),
+        agent_handle: Mutex::new(None),
+        router_handle: Mutex::new(None),
+        closed_tx: watch::channel(false).0,
+        outbound_transport: OutboundTransport::http(),
+    };
+    let a = connection.reserve_inbound().unwrap();
+    let b = connection.reserve_inbound().unwrap();
+    assert!(connection.reserve_inbound().is_err());
+
+    // A publishes S first; B adopts S and enqueues while A is paused.
+    // Neither commit may subsequently fail queue admission or erase S.
+    let a_frame = connection.admit_frame_to_agent(frame.clone()).unwrap();
+    connection
+        .register_post_routes(&["S".into()], &[], a_frame.permit())
         .await
         .unwrap();
-    http.rollback_post_routes(&new_sessions, &routes).await;
-    assert!(http.pending_routes.lock().await.is_empty());
-    assert!(http.session_streams.read().await.is_empty());
+    let OutboundTransport::Http(http) = &connection.outbound_transport else {
+        unreachable!("HTTP test connection");
+    };
+    let original = http.session_streams.read().await["S"].0.clone();
+    let b_frame = connection.admit_frame_to_agent(frame).unwrap();
+    connection
+        .register_post_routes(&["S".into()], &[], b_frame.permit())
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        &original,
+        &http.session_streams.read().await["S"].0
+    ));
+    b.send(b_frame);
+    a.send(a_frame);
+    assert!(inbound_rx.recv().await.is_some());
+    assert!(inbound_rx.recv().await.is_some());
+    assert!(connection.subscribe_session_stream("S").await.is_some());
+
+    // A cancelled before metadata registration cannot strand a queue slot.
+    let cancelled = connection.reserve_inbound().unwrap();
+    drop(cancelled);
+    assert!(connection.reserve_inbound().is_ok());
 }
 
 #[tokio::test]

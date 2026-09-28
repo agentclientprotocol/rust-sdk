@@ -95,8 +95,14 @@ async fn request(
             continue;
         };
         match response {
-            v1::Response::Result { id, result } if id == request_id => break Ok(result),
-            v1::Response::Error { id, error } if id == request_id => break Err(error),
+            agent_client_protocol::RawJsonRpcResponse::Result { id, result }
+                if id == request_id =>
+            {
+                break Ok(result);
+            }
+            agent_client_protocol::RawJsonRpcResponse::Error { id, error } if id == request_id => {
+                break Err(error.into_acp_error());
+            }
             _ => {}
         }
     };

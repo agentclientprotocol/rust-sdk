@@ -117,6 +117,19 @@ or `try_send(frame)` for explicit fail-fast admission. The old `unbounded_send`
 API is removed; ignoring capacity errors silently loses protocol traffic.
 Finite queue and byte policies are configured through `ConnectionLimits`.
 
+`RawJsonRpcMessage::Response` now carries the SDK's `RawJsonRpcResponse`, not
+`schema::v1::Response<Value>`. Update raw response patterns to import
+`agent_client_protocol::RawJsonRpcResponse`. Its `RawJsonRpcError` has an `i32`
+code, `MaybeUndefined<Value>` data, and an extension map. Forward raw responses
+unchanged to retain explicit null and unknown error fields. The error branch
+stores `Box<RawJsonRpcError>` so extensible errors do not enlarge every frame.
+
+`RawJsonRpcMessage::response(id, Result<Value, Error>)` remains the convenience
+constructor for ACP results. Other protocols should construct
+`RawJsonRpcResponse` directly. Use `into_acp_error()` only when intentionally
+dispatching an ACP error, not when forwarding MCP errors. Typed ACP request
+consumers still receive the existing `Error` type.
+
 ## Release checklist
 
 - Replace the draft Git schema pin with the released matching schema version.

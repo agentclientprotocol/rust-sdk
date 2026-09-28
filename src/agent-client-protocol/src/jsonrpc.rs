@@ -2,7 +2,7 @@
 
 use agent_client_protocol_schema::v1::{
     JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification,
-    Request as RpcRequest, RequestId, Response as RpcResponse, SessionId,
+    Request as RpcRequest, RequestId, SessionId,
 };
 
 // Types re-exported from crate root
@@ -33,6 +33,7 @@ pub(crate) mod handlers;
 mod incoming_actor;
 mod outgoing_actor;
 mod protocol_compat;
+mod raw_error;
 pub(crate) mod run;
 mod task_actor;
 mod transport_actor;
@@ -45,6 +46,7 @@ use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
+pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
 use crate::jsonrpc::task_actor::{Task, TaskTx};
@@ -64,8 +66,8 @@ pub enum RawJsonRpcMessage {
     Request(RpcRequest<RawJsonRpcParams>),
     /// A JSON-RPC notification without a response.
     Notification(RpcNotification<RawJsonRpcParams>),
-    /// A JSON-RPC response to a prior request.
-    Response(RpcResponse<serde_json::Value>),
+    /// A response with an opaque result or transport-neutral error object.
+    Response(RawJsonRpcResponse),
 }
 
 /// A JSON-RPC frame exchanged between protocol components and transports.
@@ -408,19 +410,25 @@ impl RawJsonRpcMessage {
         }))
     }
 
-    /// Build a raw JSON-RPC response message.
+    /// Build a raw response from an ACP result.
+    ///
+    /// For other protocols, construct [`RawJsonRpcResponse`] directly so error
+    /// codes and fields are not first interpreted as ACP errors.
     #[must_use]
     pub fn response(id: RequestId, response: Result<serde_json::Value, crate::Error>) -> Self {
-        Self::Response(RpcResponse::new(id, response))
+        Self::Response(RawJsonRpcResponse::new(
+            id,
+            response.map_err(|error| Box::new(error.into())),
+        ))
     }
 
     /// The response id, if this is a response.
     #[must_use]
     pub fn response_id(&self) -> Option<&RequestId> {
         match self {
-            Self::Response(RpcResponse::Result { id, .. } | RpcResponse::Error { id, .. }) => {
-                Some(id)
-            }
+            Self::Response(
+                RawJsonRpcResponse::Result { id, .. } | RawJsonRpcResponse::Error { id, .. },
+            ) => Some(id),
             Self::Request(_) | Self::Notification(_) => None,
         }
     }
@@ -477,11 +485,10 @@ impl<'de> Deserialize<'de> for RawJsonRpcMessage {
                 Ok(Self::Notification(notification))
             }
         } else if !has_method && has_id && has_result != has_error {
-            let response = serde_json::from_value::<
-                VersionedJsonRpcMessage<RpcResponse<serde_json::Value>>,
-            >(value)
-            .map_err(serde::de::Error::custom)?
-            .into_inner();
+            let response =
+                serde_json::from_value::<VersionedJsonRpcMessage<RawJsonRpcResponse>>(value)
+                    .map_err(serde::de::Error::custom)?
+                    .into_inner();
             Ok(Self::Response(response))
         } else {
             Err(serde::de::Error::custom("invalid JSON-RPC message"))

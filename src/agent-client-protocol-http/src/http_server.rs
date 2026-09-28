@@ -1,8 +1,8 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
 use agent_client_protocol::{
-    RawJsonRpcMessage, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
-    schema::v1::Response as RpcResponse,
+    RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame,
+    schema::v1::RequestId,
 };
 use axum::{
     body::Body,
@@ -179,21 +179,22 @@ pub(crate) async fn handle_post(
         Ok(frame) => frame,
         Err(error) => return (StatusCode::TOO_MANY_REQUESTS, error).into_response(),
     };
+    // Claim the queue slot before publishing session and response-route
+    // metadata. After publication, sending through this permit cannot fail
+    // due to another POST filling the queue.
+    let inbound_slot = match connection.reserve_inbound() {
+        Ok(slot) => slot,
+        Err(error) => return (StatusCode::TOO_MANY_REQUESTS, error).into_response(),
+    };
     let permit = admitted.permit().clone();
-    let new_sessions = match connection
+    if let Err(error) = connection
         .register_post_routes(&session_routes, &pending_routes, &permit)
         .await
     {
-        Ok(new_sessions) => new_sessions,
-        Err(error) => return (StatusCode::TOO_MANY_REQUESTS, error).into_response(),
-    };
-    drop(permit);
-    if connection.send_budgeted_frame_to_agent(admitted).is_err() {
-        connection
-            .rollback_post_routes(&new_sessions, &pending_routes)
-            .await;
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        return (StatusCode::TOO_MANY_REQUESTS, error).into_response();
     }
+    drop(permit);
+    inbound_slot.send(admitted);
     connection.cancel_pending_routes(&cancellations).await;
     StatusCode::ACCEPTED.into_response()
 }
@@ -539,6 +540,54 @@ mod tests {
 
             (transport, future)
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_post_does_not_remove_accepted_session_stream() {
+        let (forwarded, _receiver) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded,
+        })));
+        let (id, connection) = registry.create_connection().await;
+        let post = || {
+            Request::builder()
+                .method("POST")
+                .uri("/acp")
+                .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+                .header(HEADER_CONNECTION_ID, id.as_str())
+                .header(HEADER_SESSION_ID, "S")
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{}}).to_string(),
+                ))
+                .unwrap()
+        };
+        assert_eq!(
+            handle_post(State(registry.clone()), post()).await.status(),
+            StatusCode::ACCEPTED
+        );
+        let mut slots = Vec::new();
+        while let Ok(slot) = connection.reserve_inbound() {
+            slots.push(slot);
+        }
+        assert!(!slots.is_empty());
+        assert_eq!(
+            handle_post(State(registry.clone()), post()).await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+        let get = Request::builder()
+            .uri("/acp")
+            .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+            .header(HEADER_CONNECTION_ID, id.as_str())
+            .header(HEADER_SESSION_ID, "S")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            handle_get(registry.clone(), get).await.status(),
+            StatusCode::OK
+        );
+        drop(slots);
+        registry.remove(&id).await;
+        connection.shutdown().await;
     }
 
     struct RejectingInitializeAgentFactory;

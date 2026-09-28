@@ -67,6 +67,11 @@ can then queue until the GET attaches; an unknown-session GET returns 409 and
 does not allocate a mailbox. A batch registers all its session mailboxes before
 returning 202.
 
+The server reserves inbound queue capacity before publishing that metadata.
+A rejected POST therefore cannot roll back a mailbox another accepted POST
+has adopted. Registration failure or cancellation before publication releases
+the reserved queue slot without leaving partial metadata.
+
 Keep the connection stream and existing session streams running during this
 setup so callback responses and cancellation can still progress. `HttpClient`
 does this automatically. When a `session/new` or `session/fork` response returns
@@ -79,6 +84,11 @@ Consuming an SSE/WebSocket frame releases its payload charge before waiting
 for the next frame. A WebSocket frame rejected by admission terminates that
 connection rather than silently losing input or waiting forever to drain a
 still-live agent.
+
+A fatal outbound routing failure, such as mailbox overflow, closes the whole
+connection and reclaims its agent and metadata even if the agent emits no more
+messages. This is distinct from an ordinary SSE disconnect, which can reconnect
+to the existing mailbox.
 
 ## Features
 

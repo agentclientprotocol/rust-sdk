@@ -148,8 +148,9 @@ pub use jsonrpc::{
     FrameSender, HandleConnectionClose, HandleDispatchFrom, Handled,
     INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage, JsonRpcNotification,
     JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler, RawConnectionContext,
-    RawJsonRpcMessage, RawJsonRpcParams, Responder, ResponseRouter, SentRequest, TransportBatch,
-    TransportBatchEntry, TransportFrame, UntypedMessage, is_incoming_transport_closed,
+    RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams, RawJsonRpcResponse, Responder,
+    ResponseRouter, SentRequest, TransportBatch, TransportBatchEntry, TransportFrame,
+    UntypedMessage, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};

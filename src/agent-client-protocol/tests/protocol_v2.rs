@@ -421,7 +421,11 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
             let TransportFrame::Single(message) = message.into_frame() else {
                 continue;
             };
-            let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
+            let RawJsonRpcMessage::Response(agent_client_protocol::RawJsonRpcResponse::Result {
+                result,
+                ..
+            }) = message
+            else {
                 continue;
             };
             let initialize = v2::InitializeResponse::from_value("initialize", result)?;
@@ -504,13 +508,13 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         let RawJsonRpcMessage::Response(response) = message else {
             continue;
         };
-        let v1::Response::Error { error, .. } = response else {
+        let agent_client_protocol::RawJsonRpcResponse::Error { error, .. } = response else {
             panic!("malformed initialize should fail");
         };
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(error.code, -32602);
         let data = error
             .data
-            .as_ref()
+            .value()
             .and_then(|data| data.as_str())
             .unwrap_or_default();
         assert!(data.contains("protocolVersion"), "{error:?}");
@@ -1968,12 +1972,16 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
         let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
-        let RawJsonRpcMessage::Response(v1::Response::Error { error, .. }) = message else {
+        let RawJsonRpcMessage::Response(agent_client_protocol::RawJsonRpcResponse::Error {
+            error,
+            ..
+        }) = message
+        else {
             continue;
         };
         let data = error
             .data
-            .as_ref()
+            .value()
             .and_then(|data| data.as_str())
             .unwrap_or_default();
         assert!(
@@ -2715,7 +2723,11 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         let TransportFrame::Single(message) = message.into_frame() else {
             continue;
         };
-        let RawJsonRpcMessage::Response(v1::Response::Result { result, .. }) = message else {
+        let RawJsonRpcMessage::Response(agent_client_protocol::RawJsonRpcResponse::Result {
+            result,
+            ..
+        }) = message
+        else {
             continue;
         };
         let initialize = v2::InitializeResponse::from_value("initialize", result)?;

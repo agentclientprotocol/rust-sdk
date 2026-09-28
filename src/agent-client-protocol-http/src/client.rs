@@ -5,9 +5,8 @@ use std::{
 
 use agent_client_protocol::{
     Agent, BudgetedFrame, Channel, Client, ConnectTo, Error as AcpError, FrameAdmission,
-    FramePermit, FrameReceiver, FrameSender, RawJsonRpcMessage, TransportBatchEntry,
-    TransportFrame,
-    schema::v1::{RequestId, Response as RpcResponse},
+    FramePermit, FrameReceiver, FrameSender, RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse,
+    TransportBatchEntry, TransportFrame, schema::v1::RequestId,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{

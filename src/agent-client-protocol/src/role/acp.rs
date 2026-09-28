@@ -17,16 +17,16 @@ use crate::role::{HasPeer, RemoteStyle};
 #[cfg(not(feature = "unstable_protocol_v2"))]
 use crate::schema::InitializeProxyRequest;
 use crate::schema::METHOD_INITIALIZE_PROXY;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::RequestId;
 use crate::schema::v1::{InitializeRequest, SessionId};
 #[cfg(not(feature = "unstable_protocol_v2"))]
 use crate::schema::v1::{NewSessionRequest, NewSessionResponse};
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v1::{RequestId, Response as RpcResponse};
-#[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
+use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams, RawJsonRpcResponse as RpcResponse};
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -1134,7 +1134,7 @@ impl InitializeResponse {
             }),
             RawJsonRpcMessage::Response(RpcResponse::Error { id, error }) => Ok(Self {
                 id,
-                result: Err(error),
+                result: Err(error.into_acp_error()),
             }),
             message => Err(crate::Error::invalid_request().data(format!(
                 "first ACP response must be an initialize response, got {message:?}",

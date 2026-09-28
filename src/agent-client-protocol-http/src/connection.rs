@@ -5,8 +5,8 @@ use std::{
 
 use agent_client_protocol::{
     BudgetedFrame, Channel, ConnectionLimits, FrameAdmission, FramePermit, RawJsonRpcMessage,
-    TransportBatch, TransportBatchEntry, TransportFrame,
-    schema::v1::{RequestId, Response as RpcResponse},
+    RawJsonRpcResponse as RpcResponse, TransportBatch, TransportBatchEntry, TransportFrame,
+    schema::v1::RequestId,
 };
 use futures::{SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
@@ -169,26 +169,23 @@ impl Connection {
             .map_err(|_| "agent channel full or closed")
     }
 
+    pub(crate) fn reserve_inbound(&self) -> Result<mpsc::OwnedPermit<BudgetedFrame>, &'static str> {
+        self.inbound_tx
+            .clone()
+            .try_reserve_owned()
+            .map_err(|_| "agent channel full or closed")
+    }
+
     pub(crate) async fn register_post_routes(
         &self,
         sessions: &[String],
         routes: &[(RequestId, ResponseRoute)],
         permit: &FramePermit,
-    ) -> Result<Vec<String>, &'static str> {
+    ) -> Result<(), &'static str> {
         if let OutboundTransport::Http(http) = &self.outbound_transport {
             http.register_post_routes(sessions, routes, permit).await
         } else {
-            Ok(Vec::new())
-        }
-    }
-
-    pub(crate) async fn rollback_post_routes(
-        &self,
-        sessions: &[String],
-        routes: &[(RequestId, ResponseRoute)],
-    ) {
-        if let OutboundTransport::Http(http) = &self.outbound_transport {
-            http.rollback_post_routes(sessions, routes).await;
+            Ok(())
         }
     }
 
@@ -403,7 +400,7 @@ impl HttpOutbound {
         sessions: &[String],
         routes: &[(RequestId, ResponseRoute)],
         permit: &FramePermit,
-    ) -> Result<Vec<String>, &'static str> {
+    ) -> Result<(), &'static str> {
         // Lock both metadata tables in one order and check the whole batch
         // before inserting anything: rejection must never leave half a batch.
         let mut streams = self.session_streams.write().await;
@@ -431,11 +428,8 @@ impl HttpOutbound {
                     .map_err(|_| "HTTP session metadata capacity exceeded")
             })
             .collect::<Result<Vec<_>, _>>()?;
-        for (id, session_permit) in new_sessions.iter().zip(session_permits) {
-            streams.insert(
-                id.clone(),
-                (Arc::new(OutboundMailbox::new()), Some(session_permit)),
-            );
+        for (id, session_permit) in new_sessions.into_iter().zip(session_permits) {
+            streams.insert(id, (Arc::new(OutboundMailbox::new()), Some(session_permit)));
         }
         for (id, route) in routes {
             if let Some(id) = pending_route_key(id) {
@@ -445,27 +439,7 @@ impl HttpOutbound {
                     .push_back((route.clone(), Some(permit.clone())));
             }
         }
-        Ok(new_sessions)
-    }
-
-    async fn rollback_post_routes(
-        &self,
-        new_sessions: &[String],
-        routes: &[(RequestId, ResponseRoute)],
-    ) {
-        let mut streams = self.session_streams.write().await;
-        let mut pending = self.pending_routes.lock().await;
-        for id in new_sessions {
-            streams.remove(id);
-        }
-        for (id, _) in routes.iter().rev() {
-            if let Some(queue) = pending.get_mut(id) {
-                queue.pop_back();
-                if queue.is_empty() {
-                    pending.remove(id);
-                }
-            }
-        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -738,11 +712,36 @@ impl ConnectionRegistry {
         let (inbound_abort, inbound_abort_registration) = futures::future::AbortHandle::new_pair();
         let inbound = futures::future::Abortable::new(inbound, inbound_abort_registration);
         let inbound_abort_for_outbound = inbound_abort.clone();
+        let mut router_closed = closed_tx.subscribe();
         let outbound = async move {
-            while let Some(msg) = agent_rx.next().await {
-                if outbound_tx.send(msg).await.is_err() {
-                    inbound_abort_for_outbound.abort();
-                    break;
+            loop {
+                tokio::select! {
+                    // A fatal router failure must tear down even an idle agent:
+                    // waiting for another frame here can otherwise retain the
+                    // agent and its registry entry forever.
+                    changed = router_closed.changed() => {
+                        if changed.is_err() || *router_closed.borrow() {
+                            inbound_abort_for_outbound.abort();
+                            break;
+                        }
+                    }
+                    msg = agent_rx.next() => {
+                        let Some(msg) = msg else { break };
+                        let sent = tokio::select! {
+                            sent = outbound_tx.send(msg) => sent.is_ok(),
+                            changed = router_closed.changed() => {
+                                if changed.is_err() || *router_closed.borrow() {
+                                    false
+                                } else {
+                                    continue;
+                                }
+                            }
+                        };
+                        if !sent {
+                            inbound_abort_for_outbound.abort();
+                            break;
+                        }
+                    }
                 }
             }
         };
@@ -1253,12 +1252,10 @@ mod tests {
 
         assert!(matches!(
             frame.frame(),
-            TransportFrame::Single(RawJsonRpcMessage::Response(
-                agent_client_protocol::schema::v1::Response::Result {
-                    id: RequestId::Number(1),
-                    ..
-                }
-            ))
+            TransportFrame::Single(RawJsonRpcMessage::Response(RpcResponse::Result {
+                id: RequestId::Number(1),
+                ..
+            }))
         ));
         timeout(Duration::from_secs(1), async {
             loop {
@@ -1304,6 +1301,87 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "test/final"
         ));
+    }
+
+    #[tokio::test]
+    async fn fatal_router_overflow_tears_down_idle_agent_and_metadata() {
+        struct BurstThenIdle(Arc<std::sync::atomic::AtomicBool>);
+        struct Dropped(Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        impl AgentFactory for BurstThenIdle {
+            fn spawn_agent(
+                &self,
+            ) -> (
+                Channel,
+                BoxFuture<'static, agent_client_protocol::Result<()>>,
+            ) {
+                let (agent, transport) = Channel::duplex();
+                let dropped = Dropped(self.0.clone());
+                let future = Box::pin(async move {
+                    let _dropped = dropped;
+                    for _ in 0..33 {
+                        agent
+                            .tx
+                            .send_frame(TransportFrame::Single(
+                                RawJsonRpcMessage::notification(
+                                    "test/burst".into(),
+                                    serde_json::json!({}),
+                                )
+                                .unwrap(),
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    std::future::pending::<()>().await;
+                    Ok(())
+                });
+                (transport, future)
+            }
+        }
+
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let registry = ConnectionRegistry::new(Arc::new(BurstThenIdle(dropped.clone())));
+        let (id, connection) = registry.create_connection().await;
+        let source = connection
+            .admit_frame_to_agent(TransportFrame::Single(
+                RawJsonRpcMessage::notification("test/source".into(), serde_json::json!({}))
+                    .unwrap(),
+            ))
+            .unwrap();
+        connection
+            .register_post_routes(
+                &["S".into()],
+                &[(RequestId::Number(1), ResponseRoute::Session("S".into()))],
+                source.permit(),
+            )
+            .await
+            .unwrap();
+        let OutboundTransport::Http(http) = &connection.outbound_transport else {
+            unreachable!()
+        };
+        assert_eq!(http.pending_routes.lock().await.len(), 1);
+        drop(source);
+        connection.start_router().await;
+        timeout(Duration::from_secs(1), async {
+            let mut closed = connection.subscribe_closed();
+            while !*closed.borrow() {
+                closed.changed().await.unwrap();
+            }
+            while registry.get(&id).await.is_some()
+                || !dropped.load(std::sync::atomic::Ordering::SeqCst)
+                || !http.pending_routes.lock().await.is_empty()
+                || connection.subscribe_session_stream("S").await.is_some()
+            {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fatal router exit must stop idle agent and remove registry entry");
+        assert!(http.pending_routes.lock().await.is_empty());
     }
 
     #[tokio::test]

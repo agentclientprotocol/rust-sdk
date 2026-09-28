@@ -45,9 +45,16 @@ by the JSON-RPC envelope types from `agent-client-protocol-schema`:
 enum RawJsonRpcMessage {
     Request(Request<RawJsonRpcParams>),
     Notification(Notification<RawJsonRpcParams>),
-    Response(Response<serde_json::Value>),
+    Response(RawJsonRpcResponse),
 }
 ```
+
+`RawJsonRpcResponse` uses the shared JSON-RPC response envelope with an opaque
+JSON result and `RawJsonRpcError`. Raw errors keep numeric codes uninterpreted,
+preserve unknown error fields, and distinguish omitted `data` from explicit
+null. Only the typed ACP dispatcher converts them to ACP `Error`. Raw relays
+and MCP connectors must not make that conversion: it would discard extensions
+and apply the wrong protocol's error-code meaning.
 
 At that boundary:
 

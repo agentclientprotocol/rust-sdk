@@ -43,7 +43,7 @@ async fn initialize_raw_v2_proxy(
         .expect("proxy should accept initialization");
 
     let Some(TransportFrame::Single(RawJsonRpcMessage::Response(
-        agent_client_protocol::schema::v1::Response::Result { id, result },
+        agent_client_protocol::RawJsonRpcResponse::Result { id, result },
     ))) = peer.rx.next().await.map(BudgetedFrame::into_frame)
     else {
         panic!("expected the proxy initialize response");
@@ -465,7 +465,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
             };
             match message {
                 RawJsonRpcMessage::Response(
-                    agent_client_protocol::schema::v1::Response::Result { id, result },
+                    agent_client_protocol::RawJsonRpcResponse::Result { id, result },
                 ) => {
                     assert_eq!(id, upstream_id);
                     let response = v2::NewSessionResponse::from_value("session/new", result)?;
@@ -624,7 +624,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
             };
             match message {
                 RawJsonRpcMessage::Response(
-                    agent_client_protocol::schema::v1::Response::Result { id, result },
+                    agent_client_protocol::RawJsonRpcResponse::Result { id, result },
                 ) => {
                     assert_eq!(id, upstream_id);
                     let response = v2::ForkSessionResponse::from_value("session/fork", result)?;
@@ -786,7 +786,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
         ));
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Response(
-            agent_client_protocol::schema::v1::Response::Result { id, result },
+            agent_client_protocol::RawJsonRpcResponse::Result { id, result },
         ))) = peer.rx.next().await.map(BudgetedFrame::into_frame)
         else {
             panic!("expected the resume response after replay");
