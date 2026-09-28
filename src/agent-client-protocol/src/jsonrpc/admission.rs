@@ -57,12 +57,14 @@ impl<T> Sender<T> {
     }
 
     pub fn unbounded_send(&self, item: T) -> Result<(), SendError<T>> {
-        // Preserve the order of a queued request followed by its cancellation
-        // when the ordinary lane has room. Use the bypass lane if ordinary
-        // capacity is exhausted or its consumer is blocked on readiness.
-        let urgent = self.inner.admission.as_ref().is_some_and(|admission| {
-            (admission.urgent)(&item) && (self.inner.tx.is_empty() || self.inner.tx.is_full())
-        });
+        // A readiness-blocked consumer polls only the urgent lane, regardless
+        // of ordinary queue occupancy. The outgoing actor settles cancellation
+        // locally if its request has not yet been published.
+        let urgent = self
+            .inner
+            .admission
+            .as_ref()
+            .is_some_and(|admission| (admission.urgent)(&item));
         let item = if let Some(admission) = &self.inner.admission {
             let bytes = (admission.measure)(&item).map_err(|error| SendError {
                 item: None,
@@ -110,9 +112,11 @@ impl<T> Sender<T> {
     }
 
     pub async fn send(&self, item: T) -> Result<(), crate::Error> {
-        let urgent = self.inner.admission.as_ref().is_some_and(|admission| {
-            (admission.urgent)(&item) && (self.inner.tx.is_empty() || self.inner.tx.is_full())
-        });
+        let urgent = self
+            .inner
+            .admission
+            .as_ref()
+            .is_some_and(|admission| (admission.urgent)(&item));
         let tx = if urgent {
             self.inner.urgent_tx.as_ref().expect("urgent lane exists")
         } else {

@@ -9,7 +9,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, Error, Responder, V2ConnectionTo,
+    Agent, Channel, Client, Error, Responder, V2ConnectionTo,
     mcp_server::McpServer,
     schema::{ProtocolVersion, v2},
 };
@@ -408,4 +408,109 @@ async fn native_acp_stateless_rmcp_lifecycle() -> Result<(), Error> {
     })
     .await
     .expect("native ACP/rmcp operation or cleanup timed out")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_rmcp_handler_drops_before_clean_acp_eof_completes() -> Result<(), Error> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (handler_started_tx, handler_started_rx) = oneshot::channel();
+        let (handler_dropped_tx, mut handler_dropped_rx) = oneshot::channel();
+        let pending = Arc::new(Mutex::new(HashMap::from([(
+            "eof".to_owned(),
+            (handler_started_tx, handler_dropped_tx),
+        )])));
+        let (peer_stop_tx, peer_stop_rx) = oneshot::channel::<()>();
+        let (peer, client) = Channel::duplex();
+        let agent = Agent
+            .v2()
+            .on_receive_request(
+                async |request: v2::InitializeRequest,
+                       responder: Responder<v2::InitializeResponse>,
+                       _cx: V2ConnectionTo<Client>| {
+                    responder.respond(
+                        v2::InitializeResponse::new(
+                            request.protocol_version,
+                            v2::Implementation::new("rmcp-eof-agent", "1"),
+                        )
+                        .capabilities(
+                            v2::AgentCapabilities::new().session(
+                                v2::SessionCapabilities::new().mcp(
+                                    v2::McpCapabilities::new().acp(v2::McpAcpCapabilities::new()),
+                                ),
+                            ),
+                        ),
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async |request: v2::NewSessionRequest,
+                       responder: Responder<v2::NewSessionResponse>,
+                       cx: V2ConnectionTo<Client>| {
+                    let [v2::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
+                        panic!("expected native rmcp declaration");
+                    };
+                    let server_id = server.server_id.clone();
+                    let call_cx = cx.clone();
+                    cx.spawn(async move {
+                        let mut params = json!({"name": "hang", "arguments": {"probe": "eof"}});
+                        params["_meta"] = meta("eof");
+                        let _result = call_cx
+                            .send_request(
+                                v2::MessageMcpRequest::new(server_id, "rmcp-eof", "tools/call")
+                                    .params(params.as_object().unwrap().clone()),
+                            )
+                            .block_task()
+                            .await;
+                        Ok(())
+                    })?;
+                    responder.respond(v2::NewSessionResponse::new("rmcp-eof-session"))
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+        let peer_task = tokio::spawn(agent.connect_with(peer, async move |_cx| {
+            let _ = peer_stop_rx.await;
+            Ok(())
+        }));
+        let client_task = tokio::spawn(Client.v2().connect_with(client, async move |cx| {
+            cx.send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                v2::Implementation::new("rmcp-eof-client", "1"),
+            ))
+            .block_task()
+            .await?;
+            let pending = pending.clone();
+            let server = McpServer::<Agent>::from_rmcp("rmcp-eof", move || {
+                let (subscription_started, _) = oneshot::channel();
+                let (subscription_stopped, _) = oneshot::channel();
+                Service {
+                    _drop: DropSignal(Arc::new(Mutex::new(None))),
+                    started: Arc::new(Mutex::new(Some(subscription_started))),
+                    stopped: Arc::new(Mutex::new(Some(subscription_stopped))),
+                    pending: pending.clone(),
+                }
+            });
+            cx.build_session(std::env::current_dir().map_err(Error::into_internal_error)?)
+                .with_mcp_server(server)?
+                .start_session()
+                .block_task()
+                .await?;
+            cx.incoming_closed().await;
+            Ok(())
+        }));
+
+        handler_started_rx
+            .await
+            .map_err(Error::into_internal_error)?;
+        let _ = peer_stop_tx.send(());
+        peer_task.await.map_err(Error::into_internal_error)??;
+        client_task.await.map_err(Error::into_internal_error)??;
+        assert!(
+            matches!(handler_dropped_rx.try_recv(), Ok(())),
+            "rmcp handler future must be destroyed before ACP driver completion"
+        );
+        Ok(())
+    })
+    .await
+    .expect("rmcp handler close/join on ACP EOF timed out")
 }

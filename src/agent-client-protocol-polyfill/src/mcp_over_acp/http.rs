@@ -160,6 +160,20 @@ fn valid_origin(headers: &HeaderMap) -> bool {
         && origin == format!("http://{host}")
 }
 
+/// HTTP qvalues are decimal 0..1 with at most three fractional digits, not
+/// floating-point syntax (which also accepts NaN, exponents, and signs).
+fn positive_quality(value: &str) -> Option<bool> {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    if fraction.len() > 3 || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    match whole {
+        "0" => Some(fraction.bytes().any(|byte| byte != b'0')),
+        "1" if fraction.bytes().all(|byte| byte == b'0') => Some(true),
+        _ => None,
+    }
+}
+
 fn accepts_both(headers: &HeaderMap) -> bool {
     let mut json = false;
     let mut sse = false;
@@ -170,15 +184,20 @@ fn accepts_both(headers: &HeaderMap) -> bool {
         for item in value.split(',') {
             let mut parts = item.split(';');
             let media = parts.next().unwrap_or("").trim();
-            let mut quality = 1.0;
+            let mut quality = None;
             for part in parts {
                 if let Some((key, q)) = part.trim().split_once('=')
                     && key.trim().eq_ignore_ascii_case("q")
                 {
-                    quality = q.trim().parse::<f32>().unwrap_or(0.0);
+                    let Some(positive) = positive_quality(q.trim()) else {
+                        return false;
+                    };
+                    if quality.replace(positive).is_some() {
+                        return false;
+                    }
                 }
             }
-            if quality <= 0.0 || quality > 1.0 {
+            if quality == Some(false) {
                 continue;
             }
             json |= media.eq_ignore_ascii_case("application/json");
@@ -754,6 +773,33 @@ mod tests {
             "application/json, text/event-stream;q=0".parse().unwrap(),
         );
         assert!(!accepts_both(&headers));
+    }
+
+    #[test]
+    fn accept_quality_uses_http_decimal_grammar() {
+        for quality in ["1", "1.", "1.000", "0.001", "0.5", "0.999"] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "accept",
+                format!("application/json;q={quality}, text/event-stream")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(accepts_both(&headers), "{quality}");
+        }
+        for quality in [
+            "NaN", "inf", "-1", "+1", "1e0", "0.0001", "1.001", "2", "", ".5", "00.5", "0",
+            "0.000", "1;q=0.9",
+        ] {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "accept",
+                format!("application/json;q={quality}, text/event-stream")
+                    .parse()
+                    .unwrap(),
+            );
+            assert!(!accepts_both(&headers), "{quality}");
+        }
     }
 
     #[test]

@@ -42,6 +42,21 @@ an unknown or already-completed request ID is silently ignored. A
 not a string, number, or null) is logged and ignored without a reply, like any
 other malformed notification.
 
+### Cancelling before publication
+
+`send_request` queues a request; it does not prove that the peer has received it.
+If cancellation reaches the outgoing actor before it publishes that request,
+the SDK settles it locally with `-32800` and sends neither the request nor its
+cancellation notification. This also applies to requests waiting for session
+readiness. Once published, the peer's cooperative cancellation rules apply.
+
+Cancellation uses a separate bounded urgent queue so it can bypass a blocked
+readiness gate regardless of ordinary queue occupancy. It may therefore
+overtake ordinary messages that have not yet reached the transport. Tests or
+applications that need to cancel work already running on a peer must establish
+that the peer has started it, rather than relying on a synchronous `send_request`
+call or a scheduler yield.
+
 ## Interoperability
 
 Protocol-level (`$/`-prefixed) notifications are optional by design. The SDK

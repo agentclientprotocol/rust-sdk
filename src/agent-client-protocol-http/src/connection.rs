@@ -92,6 +92,9 @@ impl OutboundMailbox {
 
 impl OutboundLease {
     pub(crate) async fn recv(&mut self) -> Option<String> {
+        // The previously returned text has been handed to the transport. Do
+        // not retain its byte charge while waiting for the next frame.
+        self.current.take();
         let value = self
             .receiver
             .as_mut()
@@ -103,6 +106,7 @@ impl OutboundLease {
     }
 
     pub(crate) fn try_recv(&mut self) -> Result<String, mpsc::error::TryRecvError> {
+        self.current.take();
         let value = self
             .receiver
             .as_mut()
@@ -141,6 +145,10 @@ impl Connection {
     pub(crate) fn send_frame_to_agent(&self, frame: TransportFrame) -> Result<(), &'static str> {
         let frame = self.admit_frame_to_agent(frame)?;
         self.send_budgeted_frame_to_agent(frame)
+    }
+
+    pub(crate) fn agent_channel_closed(&self) -> bool {
+        self.inbound_tx.is_closed()
     }
 
     pub(crate) fn admit_frame_to_agent(
@@ -412,10 +420,21 @@ impl HttpOutbound {
         if new_sessions.len().saturating_add(routes.len()) > available {
             return Err("HTTP pending route or session capacity exceeded");
         }
-        for id in &new_sessions {
+        // Reserve every new ID before publishing any metadata. Session
+        // mailboxes retain only their key, not the unrelated POST payload;
+        // pending response routes still retain their originating frame.
+        let session_permits = new_sessions
+            .iter()
+            .map(|id| {
+                permit
+                    .try_reserve_metadata(session_metadata_bytes(id))
+                    .map_err(|_| "HTTP session metadata capacity exceeded")
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for (id, session_permit) in new_sessions.iter().zip(session_permits) {
             streams.insert(
                 id.clone(),
-                (Arc::new(OutboundMailbox::new()), Some(permit.clone())),
+                (Arc::new(OutboundMailbox::new()), Some(session_permit)),
             );
         }
         for (id, route) in routes {
@@ -488,8 +507,14 @@ impl HttpOutbound {
         if streams.len().saturating_add(pending_count) >= self.limits.max_queued_frames.max(1) {
             return Err("HTTP session stream capacity exceeded");
         }
+        let session_permit = permit
+            .try_reserve_metadata(session_metadata_bytes(session_id))
+            .map_err(|_| "HTTP session metadata capacity exceeded")?;
         let stream = Arc::new(OutboundMailbox::new());
-        streams.insert(session_id.to_string(), (stream.clone(), Some(permit)));
+        streams.insert(
+            session_id.to_string(),
+            (stream.clone(), Some(session_permit)),
+        );
         Ok(stream)
     }
 
@@ -805,6 +830,14 @@ fn pending_route_key(id: &RequestId) -> Option<RequestId> {
         RequestId::Null => None,
         RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
     }
+}
+
+fn session_metadata_bytes(session_id: &str) -> usize {
+    // The retained key is one JSON string; account for escaping and quotes,
+    // not for the unrelated source request/response payload.
+    serde_json::to_string(session_id)
+        .expect("string serialization cannot fail")
+        .len()
 }
 
 fn response_session_id(msg: &RawJsonRpcMessage) -> Option<&str> {

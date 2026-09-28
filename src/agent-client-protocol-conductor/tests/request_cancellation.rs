@@ -204,12 +204,12 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
         .await
     });
 
-    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+    let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
             .builder()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
-                async |cx| {
+                async move |cx| {
                     let initialize = cx
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
@@ -220,6 +220,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
                         message: "park".into(),
                     });
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     // The cancellation reaches the agent hop by hop, and the
@@ -242,7 +243,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
                         .await?;
                     assert_eq!(barrier.result, "echo: barrier");
 
-                    Ok(client_request_id)
+                    Ok((client_request_id, parked_id))
                 },
             )
             .await
@@ -250,10 +251,10 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
     .await
     .expect("test timed out")
     .expect("client failed");
+    let (client_request_id, parked_id) = client_result;
 
     // The agent saw exactly one `$/cancel_request`, for the request ID on
     // its own connection.
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"
@@ -277,6 +278,9 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
     let (client_cancel_tx, mut client_cancel_rx) = mpsc::unbounded();
     // The JSON-RPC id of the parked request, as seen by the client.
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
+    let (parked_tx, parked_rx) = tokio::sync::oneshot::channel();
+    let parked_tx = Arc::new(Mutex::new(Some(parked_tx)));
+    let parked_rx = Arc::new(Mutex::new(Some(parked_rx)));
 
     let agent = Agent
         .builder()
@@ -287,11 +291,12 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async |request: SimpleRequest,
-                   responder: Responder<SimpleResponse>,
-                   cx: ConnectionTo<Client>| {
+            async move |request: SimpleRequest,
+                        responder: Responder<SimpleResponse>,
+                        cx: ConnectionTo<Client>| {
                 if request.message == "trigger reverse cancel" {
                     let connection = cx.clone();
+                    let parked_rx = parked_rx.lock().unwrap().take().expect("one trigger");
                     cx.spawn(async move {
                         // Send a request to the client, cancel it, and report
                         // how it concluded as the response to the trigger.
@@ -299,6 +304,10 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
                             connection.send_request(SimpleRequest {
                                 message: "park".into(),
                             });
+                        tokio::time::timeout(Duration::from_secs(10), parked_rx)
+                            .await
+                            .expect("timed out waiting for client to park request")
+                            .expect("client closed parked request channel");
                         upstream.cancel()?;
                         let error = upstream
                             .block_task()
@@ -342,6 +351,13 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
                             cx: ConnectionTo<Agent>| {
                     assert_eq!(request.message, "park");
                     parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_tx
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("one parked request")
+                        .send(())
+                        .expect("agent still waiting to cancel");
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -534,7 +550,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         .await
     });
 
-    let client_prompt_id = tokio::time::timeout(Duration::from_secs(30), async move {
+    let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
             .builder()
             .on_receive_request(
@@ -579,7 +595,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
             )
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
-                async |cx| {
+                async move |cx| {
                     let initialize = cx
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
@@ -598,6 +614,8 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
                         vec!["park".into()],
                     ));
                     let client_prompt_id = prompt.id().clone();
+                    let prompt_id = next_with_timeout(&mut prompt_id_rx).await;
+                    let permission_id = next_with_timeout(&mut permission_id_rx).await;
                     prompt.cancel()?;
 
                     let error = prompt
@@ -619,7 +637,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
                         .await?;
                     assert_eq!(barrier.stop_reason, StopReason::EndTurn);
 
-                    Ok(client_prompt_id)
+                    Ok((client_prompt_id, prompt_id, permission_id))
                 },
             )
             .await
@@ -627,10 +645,10 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
     .await
     .expect("test timed out")
     .expect("client failed");
+    let (client_prompt_id, prompt_id, permission_id) = client_result;
 
     // The agent saw exactly one `$/cancel_request` (for the prompt), with the
     // ID of the prompt on the conductor-to-agent connection.
-    let prompt_id = next_with_timeout(&mut prompt_id_rx).await;
     assert_ne!(
         prompt_id, client_prompt_id,
         "each hop must re-issue the request under its own ID"
@@ -641,7 +659,6 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
 
     // The client saw exactly one `$/cancel_request` (for the permission
     // request), with the ID of that request on the client's own connection.
-    let permission_id = next_with_timeout(&mut permission_id_rx).await;
     let observed = next_with_timeout(&mut client_cancel_rx).await;
     assert_eq!(observed, permission_id);
     assert_no_event(&mut client_cancel_rx);
@@ -717,12 +734,12 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
         .await
     });
 
-    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+    let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
             .builder()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
-                async |cx| {
+                async move |cx| {
                     let initialize = cx
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
@@ -732,6 +749,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     let error = request
@@ -750,7 +768,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
                         .await?;
                     assert_eq!(session.session_id, SessionId::new("normal-session"));
 
-                    Ok(client_request_id)
+                    Ok((client_request_id, parked_id))
                 },
             )
             .await
@@ -758,10 +776,10 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
     .await
     .expect("test timed out")
     .expect("client failed");
+    let (client_request_id, parked_id) = client_result;
 
     // The agent saw exactly one `$/cancel_request`, for the `session/new` ID
     // on its own connection.
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"
@@ -845,12 +863,12 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
         .await
     });
 
-    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+    let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
             .builder()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
-                async |cx| {
+                async move |cx| {
                     let initialize = cx
                         .send_request(InitializeRequest::new(ProtocolVersion::V1))
                         .block_task()
@@ -860,6 +878,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     let error = request
@@ -876,7 +895,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
                         .await?;
                     assert_eq!(session.session_id, SessionId::new("normal-session"));
 
-                    Ok(client_request_id)
+                    Ok((client_request_id, parked_id))
                 },
             )
             .await
@@ -884,8 +903,8 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
     .await
     .expect("test timed out")
     .expect("client failed");
+    let (client_request_id, parked_id) = client_result;
 
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"
@@ -1064,6 +1083,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     let error = request
@@ -1081,7 +1101,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                     assert_eq!(session.session_id, SessionId::new("normal-session"));
 
                     let probe_barrier = next_with_timeout(&mut probe_barrier_rx).await;
-                    Ok((client_request_id, probe_barrier))
+                    Ok((client_request_id, parked_id, probe_barrier))
                 },
             )
             .await
@@ -1089,9 +1109,8 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
     .await
     .expect("test timed out")
     .expect("client failed");
-    let (client_request_id, probe_barrier) = client_result;
+    let (client_request_id, parked_id, probe_barrier) = client_result;
 
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"
@@ -1404,15 +1423,16 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
         .await
     });
 
-    let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
+    let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
             .builder()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
-                async |cx| {
+                async move |cx| {
                     let request: SentRequest<InitializeResponse> =
                         cx.send_request(InitializeRequest::new(ProtocolVersion::V1));
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     let error = request
@@ -1429,7 +1449,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
                         .await?;
                     assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
 
-                    Ok(client_request_id)
+                    Ok((client_request_id, parked_id))
                 },
             )
             .await
@@ -1437,10 +1457,10 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     .await
     .expect("test timed out")
     .expect("client failed");
+    let (client_request_id, parked_id) = client_result;
 
     // The agent saw exactly one `$/cancel_request`, for the `initialize` ID
     // on its own connection.
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"

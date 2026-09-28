@@ -162,13 +162,23 @@ where
     {
         trace!(connection_id = %connection_id, session_id = %sid, request_id = ?req.id, "Client → Agent (session)");
     }
-    if connection.send_frame_to_agent(frame).is_err() {
-        error!(connection_id = %connection_id, "Agent channel closed");
-        drain_outbound_until_closed(ws_tx, outbound_rx, closed, connection_id).await;
-        false
-    } else {
-        true
+    let frame = match connection.admit_frame_to_agent(frame) {
+        Ok(frame) => frame,
+        Err(error) => {
+            warn!(connection_id = %connection_id, "Rejecting WebSocket frame: {error}");
+            return false;
+        }
+    };
+    if let Err(error) = connection.send_budgeted_frame_to_agent(frame) {
+        if connection.agent_channel_closed() {
+            error!(connection_id = %connection_id, "Agent channel closed");
+            drain_outbound_until_closed(ws_tx, outbound_rx, closed, connection_id).await;
+        } else {
+            warn!(connection_id = %connection_id, "Rejecting WebSocket frame: {error}");
+        }
+        return false;
     }
+    true
 }
 
 async fn drain_outbound_until_closed<S>(
@@ -294,6 +304,161 @@ mod tests {
 
             (transport, future)
         }
+    }
+
+    struct LimitedAgentFactory {
+        forwarded: mpsc::UnboundedSender<RawJsonRpcMessage>,
+    }
+
+    struct StalledAgentFactory;
+
+    impl AgentFactory for StalledAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (agent, transport) =
+                Channel::duplex_with_limits(agent_client_protocol::ConnectionLimits {
+                    max_frame_bytes: 512,
+                    max_queued_bytes: 2048,
+                    max_queued_frames: 4,
+                });
+            let future = Box::pin(async move {
+                std::future::pending::<()>().await;
+                drop(agent);
+                Ok(())
+            });
+            (transport, future)
+        }
+    }
+
+    impl AgentFactory for LimitedAgentFactory {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let limits = agent_client_protocol::ConnectionLimits {
+                max_frame_bytes: 512,
+                max_queued_bytes: 2048,
+                max_queued_frames: 4,
+            };
+            let (mut agent, transport) = Channel::duplex_with_limits(limits);
+            let forwarded = self.forwarded.clone();
+            let future = Box::pin(async move {
+                while let Some(frame) = agent.rx.next().await {
+                    if let TransportFrame::Single(message) = frame.into_frame() {
+                        forwarded.send(message).ok();
+                    }
+                }
+                Ok(())
+            });
+            (transport, future)
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_websocket_frame_closes_live_agent_connection_and_registry() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(LimitedAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    async move { handle_ws_upgrade(registry, ws) }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut socket, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+        let ordinary = serde_json::json!({
+            "jsonrpc": "2.0", "method": "test/valid", "params": {}
+        });
+        socket
+            .send(ClientWsMessage::Text(ordinary.to_string().into()))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .expect("live agent receives first message");
+        let oversized = serde_json::json!({
+            "jsonrpc": "2.0", "method": "test/oversized",
+            "params": { "payload": "x".repeat(512) }
+        });
+        socket
+            .send(ClientWsMessage::Text(oversized.to_string().into()))
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if registry.len().await == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("rejected frame must release registry entry");
+        assert!(
+            timeout(Duration::from_secs(2), socket.next()).await.is_ok(),
+            "rejected frame must terminate the socket"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn saturated_websocket_frame_closes_stalled_agent_connection() {
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(StalledAgentFactory)));
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let registry = registry.clone();
+                move |ws: WebSocketUpgrade| {
+                    let registry = registry.clone();
+                    async move { handle_ws_upgrade(registry, ws) }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let (mut socket, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
+        let frame = json!({
+            "jsonrpc": "2.0", "method": "test/stalled", "params": {"payload": "x".repeat(400)}
+        })
+        .to_string();
+        for _ in 0..4 {
+            // The agent deliberately does not consume its input.
+            if socket
+                .send(ClientWsMessage::Text(frame.clone().into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        timeout(Duration::from_secs(2), async {
+            loop {
+                if registry.len().await == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("saturated admission must release registry entry");
+        assert!(timeout(Duration::from_secs(2), socket.next()).await.is_ok());
+        server.abort();
     }
 
     struct BatchAgentFactory {

@@ -196,8 +196,189 @@ async fn handle_get(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::{
+        Channel, ConnectTo, RawJsonRpcMessage, TransportBatch, TransportFrame,
+        schema::v1::RequestId,
+    };
     use axum::body::Body;
+    use futures::{StreamExt, future::BoxFuture};
+    use serde_json::json;
+    use tokio::{
+        net::TcpListener,
+        time::{Duration, timeout},
+    };
     use tower::{Layer as _, ServiceExt as _, service_fn};
+
+    struct HistoryAgent;
+
+    impl crate::connection::AgentFactory for HistoryAgent {
+        fn spawn_agent(
+            &self,
+        ) -> (
+            Channel,
+            BoxFuture<'static, agent_client_protocol::Result<()>>,
+        ) {
+            let (mut agent, transport) = Channel::duplex();
+            let run = Box::pin(async move {
+                while let Some(frame) = agent.rx.next().await {
+                    let messages = match frame.into_frame() {
+                        TransportFrame::Single(message) => vec![message],
+                        TransportFrame::Batch(batch) => batch
+                            .entries()
+                            .filter_map(|entry| match entry {
+                                agent_client_protocol::TransportBatchEntry::Message(message) => {
+                                    Some(message.clone())
+                                }
+                                agent_client_protocol::TransportBatchEntry::Malformed {
+                                    ..
+                                } => None,
+                            })
+                            .collect(),
+                        TransportFrame::Malformed { .. } => continue,
+                    };
+                    for message in messages {
+                        let RawJsonRpcMessage::Request(request) = message else {
+                            continue;
+                        };
+                        if request.method.as_ref() != "initialize" {
+                            let Some(agent_client_protocol::RawJsonRpcParams::Object(params)) =
+                                request.params.as_ref()
+                            else {
+                                panic!("session request must have object params");
+                            };
+                            for index in 0..2 {
+                                agent
+                                    .tx
+                                    .send_frame(TransportFrame::Single(
+                                        RawJsonRpcMessage::notification(
+                                            "session/update".into(),
+                                            json!({"sessionId": params["sessionId"], "index": index}),
+                                        )
+                                        .unwrap(),
+                                    ))
+                                    .await
+                                    .unwrap();
+                            }
+                        }
+                        agent
+                            .tx
+                            .send_frame(TransportFrame::Single(RawJsonRpcMessage::response(
+                                request.id,
+                                Ok(json!({})),
+                            )))
+                            .await
+                            .unwrap();
+                    }
+                }
+                Ok(())
+            });
+            (transport, run)
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_session_post_registers_stream_before_history_for_single_and_batch() {
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(HistoryAgent)));
+        let app = AcpHttpServer {
+            registry: registry.clone(),
+            options: ServerOptions::default(),
+        }
+        .into_router();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for (index, method) in ["session/load", "session/resume"].into_iter().enumerate() {
+            let client = crate::client::HttpClient::new(format!("http://{address}")).unwrap();
+            let (mut caller, driver) = client.into_channel_and_future();
+            let driver = tokio::spawn(driver);
+            caller
+                .tx
+                .send_frame(TransportFrame::Single(
+                    RawJsonRpcMessage::request(
+                        "initialize".into(),
+                        json!({}),
+                        RequestId::Number(1),
+                    )
+                    .unwrap(),
+                ))
+                .await
+                .unwrap();
+            let init = timeout(Duration::from_secs(2), caller.rx.next())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(matches!(
+                init.frame(),
+                TransportFrame::Single(RawJsonRpcMessage::Response(_))
+            ));
+            drop(init);
+            let request = RawJsonRpcMessage::request(
+                method.into(),
+                json!({"sessionId": "persisted"}),
+                RequestId::Number(2),
+            )
+            .unwrap();
+            let frame = if index == 0 {
+                TransportFrame::Single(request)
+            } else {
+                let second = RawJsonRpcMessage::request(
+                    method.into(),
+                    json!({"sessionId": "other-persisted"}),
+                    RequestId::Number(3),
+                )
+                .unwrap();
+                TransportFrame::Batch(TransportBatch::from_messages([request, second]).unwrap())
+            };
+            caller.tx.send_frame(frame).await.unwrap();
+            let mut seen = std::collections::BTreeMap::<String, Vec<u64>>::new();
+            let session_count = index + 1;
+            let mut responses = 0;
+            for _ in 0..session_count * 3 {
+                let frame = timeout(Duration::from_secs(3), caller.rx.next())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                match frame.frame() {
+                    TransportFrame::Single(RawJsonRpcMessage::Notification(notification)) => {
+                        let agent_client_protocol::RawJsonRpcParams::Object(params) =
+                            notification.params.as_ref().unwrap()
+                        else {
+                            panic!("history update must have object params");
+                        };
+                        seen.entry(params["sessionId"].as_str().unwrap().to_owned())
+                            .or_default()
+                            .push(params["index"].as_u64().unwrap());
+                    }
+                    TransportFrame::Single(RawJsonRpcMessage::Response(_)) => {
+                        let response: serde_json::Value =
+                            serde_json::from_str(&frame.frame().to_json().unwrap()).unwrap();
+                        let session = match response["id"].as_u64().unwrap() {
+                            2 => "persisted",
+                            3 => "other-persisted",
+                            id => panic!("unexpected response ID: {id}"),
+                        };
+                        assert_eq!(
+                            seen.get(session).map(Vec::as_slice),
+                            Some([0, 1].as_slice()),
+                            "{method} must deliver history before its response"
+                        );
+                        responses += 1;
+                    }
+                    other => panic!("unexpected history frame: {other:?}"),
+                }
+            }
+            assert_eq!(seen.len(), session_count);
+            assert_eq!(responses, session_count);
+            drop(caller);
+            timeout(Duration::from_secs(3), driver)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(registry.len().await, 0);
+        server.abort();
+    }
 
     #[test]
     fn cors_is_disabled_by_default() {

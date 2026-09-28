@@ -7,6 +7,8 @@
 use std::future::Future;
 use std::marker::PhantomData;
 
+use futures::future::{Either, select};
+
 use crate::{
     ConnectionTo,
     jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
@@ -67,8 +69,29 @@ where
         // Box the futures to avoid stack overflow with deeply nested RunIn chains
         let a_fut = Box::pin(self.a.run_with_connection_to(cx.clone()));
         let b_fut = Box::pin(self.b.run_with_connection_to(cx.clone()));
-        let ((), ()) = futures::future::try_join(a_fut, b_fut).await?;
-        Ok(())
+        match select(a_fut, b_fut).await {
+            Either::Left((Ok(()), b)) => b.await,
+            Either::Right((Ok(()), a)) => a.await,
+            Either::Left((Err(error), b)) => {
+                cx.request_shutdown();
+                // A different runner may own cleanup of a scoped MCP tool.
+                // Continue polling it without waiting for an unrelated
+                // never-ending runner after protected operations finish.
+                match select(b, Box::pin(cx.wait_protected_operations())).await {
+                    Either::Left((_, cleanup)) => cleanup.await,
+                    Either::Right(((), _)) => {}
+                }
+                Err(error)
+            }
+            Either::Right((Err(error), a)) => {
+                cx.request_shutdown();
+                match select(a, Box::pin(cx.wait_protected_operations())).await {
+                    Either::Left((_, cleanup)) => cleanup.await,
+                    Either::Right(((), _)) => {}
+                }
+                Err(error)
+            }
+        }
     }
 }
 

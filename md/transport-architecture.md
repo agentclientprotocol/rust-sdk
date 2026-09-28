@@ -29,7 +29,7 @@ The architecture separates two distinct responsibilities:
 
 This separation enables:
 
-- **In-process efficiency**: Components in the same process can skip serialization
+- **In-process efficiency**: Components can pass frames without a serialize/parse round trip
 - **Transport flexibility**: Easy to add new transport types (WebSockets, named pipes, etc.)
 - **Testability**: Mock transports for unit testing
 - **Clarity**: Clear boundaries between protocol and I/O concerns
@@ -55,8 +55,8 @@ At that boundary:
 - **Below**: Transport actors parse and serialize JSON-RPC frames
 - **Boundary**: `TransportFrame` carries one raw message, a structurally
   non-empty batch, or a malformed wire value retained for a relay
-- **In-process API**: `Channel::rx` and `Channel::tx` carry `TransportFrame`
-  directly, so adapters cannot accidentally flatten a batch
+- **In-process API**: `Channel::rx` and `Channel::tx` carry `BudgetedFrame`
+  envelopes containing the complete `TransportFrame` and its byte permit
 - **Failures**: I/O and connection failures are returned by the future driving
   a transport; they are not sent as channel entries
 
@@ -76,8 +76,8 @@ These actors live in the protocol connection core and understand JSON-RPC semant
 #### Outgoing Protocol Actor
 
 ```
-Input:  mpsc::UnboundedReceiver<OutgoingMessage>
-Output: mpsc::UnboundedSender<TransportFrame>
+Input:  Bounded application admission queues
+Output: FrameSender (BudgetedFrame)
 ```
 
 Responsibilities:
@@ -89,7 +89,7 @@ Responsibilities:
 #### Incoming Protocol Actor
 
 ```
-Input:  mpsc::UnboundedReceiver<TransportFrame>
+Input:  FrameReceiver (BudgetedFrame)
 Output: Routes to pending request awaiters or registered handlers
 ```
 
@@ -115,6 +115,18 @@ The shared pending-reply registry manages request/response correlation:
 
 Runs user-spawned concurrent tasks via `cx.spawn()`.
 
+Admission counts queued and running tasks together, using
+`ConnectionLimits::max_queued_frames`. Accepted tasks are polled concurrently;
+there is no second waiting pool behind permanent child connection drivers.
+When all live slots are occupied, spawning or registering an ordered response
+consumer fails immediately instead of accepting work that cannot make progress.
+The connection's own transport driver runs outside this task pool.
+
+Native MCP supervisors also register protected cleanup acknowledgments.
+Connection shutdown signals their cancellation and continues driving them and
+their scoped tool runners until cleanup finishes, including when another task
+or transport fails. Unrelated user tasks are not joined indefinitely.
+
 ### Transport Actors
 
 These actors are driven by physical transport components. They understand
@@ -124,7 +136,7 @@ correlate responses with pending requests:
 #### Transport Outgoing Actor
 
 ```
-Input:  mpsc::UnboundedReceiver<TransportFrame>
+Input:  FrameReceiver (BudgetedFrame)
 Output: Writes to I/O (byte stream, channel, socket, etc.)
 ```
 
@@ -135,13 +147,13 @@ For byte streams:
 
 For in-process channels:
 
-- Directly forward `TransportFrame` to the channel
+- Forward `BudgetedFrame` to preserve both the frame and its admission
 
 #### Transport Incoming Actor
 
 ```
 Input:  Reads from I/O (byte stream, channel, socket, etc.)
-Output: mpsc::UnboundedSender<TransportFrame>
+Output: FrameSender (BudgetedFrame)
 ```
 
 For byte streams:
@@ -156,7 +168,7 @@ For byte streams:
 
 For in-process channels:
 
-- Directly forward `TransportFrame` from the channel
+- Forward `BudgetedFrame` from the channel without releasing admission
 
 The public `Channel` boundary preserves complete frames. The SDK continues to
 initiate requests and notifications as individual JSON-RPC messages; response
@@ -219,7 +231,7 @@ Outgoing Protocol Actor
     | - Subscribe to replies
     | - Convert to RawJsonRpcMessage
     v
-    | TransportFrame (single message or batch response)
+    | BudgetedFrame (single message or batch response, with admission)
     |
 Transport Outgoing Actor
     | - Serialize (byte streams)
@@ -237,7 +249,7 @@ Transport Incoming Actor
     | - Parse (byte streams)
     | - Or forward directly (channels)
     v
-    | TransportFrame (single message or incoming batch)
+    | BudgetedFrame (single message or incoming batch, with admission)
     |
 Incoming Protocol Actor
     | - Route responses → pending request awaiters
@@ -286,6 +298,27 @@ an intermediate copy. A forwarded frame keeps its permit through any adapter
 queue, deferred dispatch, or writer. This accounting is internal and does not
 change the JSON-RPC wire shape.
 
+### Bounded admission
+
+`Channel::duplex_with_limits` accepts `ConnectionLimits`. Defaults are a 16 MiB
+maximum frame, a 64 MiB shared duplex serialized-payload budget, and 32 queued
+frames per direction. Responses and cancellation have reserved byte capacity.
+These are serialized-data and item bounds, not an exact bound on allocator
+overhead or application-owned memory.
+
+Frame-sink clones share item capacity, including slots reserved by
+`Sink::poll_ready`. `try_send` fails immediately at capacity; async sends wait
+outside the dispatcher. Receiver dequeue releases the queue slot, but the
+`BudgetedFrame` keeps its byte charge through deferred processing and writing.
+Forward that envelope intact. Forwarding between independently budgeted
+channels must also satisfy the destination's limits.
+
+When retaining only metadata derived from a frame, use
+`FramePermit::try_reserve_metadata` with its measured serialized size. This
+reserves an independent charge in every source budget; it fails immediately
+rather than waiting on the payload's own reservation. Drop the original permit
+once the payload is consumed, and retain the new one with the metadata.
+
 ## Transport Implementations
 
 ### Byte Stream Transport
@@ -317,13 +350,14 @@ Use cases:
 ### In-Process Channel
 
 For components in the same process, `Channel::duplex()` creates paired
-endpoints and skips serialization entirely. Relays forward each received
-`TransportFrame` without unpacking it; this preserves batch boundaries and the
-original representation of malformed wire input.
+endpoints without encoding and reparsing a wire message between components.
+Relays forward each received `BudgetedFrame` without unpacking it; this preserves
+batch boundaries, admission, and the representation of malformed wire input.
+Admission still measures serialized size to enforce the shared byte budget.
 
 Benefits:
 
-- **Zero serialization overhead**: Messages passed by value
+- **No wire round trip**: Frames are passed by value, with serialized-size accounting
 - **Same-process efficiency**: Ideal for conductor with in-process proxies
 - **Explicit wire state**: No serialize/parse round trip is required, while a
   malformed value received from a physical transport remains an explicit frame

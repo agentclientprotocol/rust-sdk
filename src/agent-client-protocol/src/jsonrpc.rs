@@ -99,8 +99,9 @@ pub struct ConnectionLimits {
     /// messages. One maximum frame's worth is reserved for responses/cancellation.
     pub max_queued_bytes: usize,
     /// Per-queue item limit and runtime admission limit for pending requests,
-    /// running tasks, dynamic handlers, and deferred dispatch. Values below one
-    /// are treated as one. Byte capacity is enforced separately.
+    /// total live tasks (running plus waiting), dynamic handlers, and deferred
+    /// dispatch. Values below one are treated as one. Byte capacity is enforced
+    /// separately.
     pub max_queued_frames: usize,
 }
 
@@ -1979,7 +1980,7 @@ impl<
             OutgoingMessage::is_control,
             OutgoingMessage::is_urgent,
         );
-        let (new_task_tx, new_task_rx) = admission::channel_with_capacity(limits.max_queued_frames);
+        let (new_task_tx, new_task_rx) = task_actor::task_channel(limits.max_queued_frames);
         let (dynamic_handler_tx, dynamic_handler_rx) =
             admission::channel_with_capacity(limits.max_queued_frames);
         let pending_replies = PendingReplies::with_capacity(limits.max_queued_frames);
@@ -2004,11 +2005,11 @@ impl<
             pending_replies.registrar(),
             protocol_mode,
         );
-        let spawn_result = connection.spawn(async move {
+        let transport_driver = async move {
             let result = transport_future.await;
             drop(transport_completion_tx.send(result.clone()));
             result
-        });
+        };
 
         // Destructure the channel endpoints
         let Channel {
@@ -2021,8 +2022,6 @@ impl<
         let future = crate::util::instrument_with_connection_name(name, {
             let connection = connection.clone();
             async move {
-                let () = spawn_result?;
-
                 let background = async {
                     let incoming = incoming_actor::incoming_protocol_actor(
                         me.counterpart(),
@@ -2033,25 +2032,13 @@ impl<
                         incoming_actor::IncomingHandlers::new(handler, on_close),
                         protocol_compat.clone(),
                     );
-                    let other_actors = async {
-                        futures::try_join!(
-                            // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
-                            outgoing_actor::outgoing_protocol_actor(
-                                outgoing_rx,
-                                pending_replies,
-                                transport_outgoing_tx,
-                                protocol_compat,
-                                connection.incoming_closed.clone(),
-                            ),
-                            task_actor::task_actor(
-                                new_task_rx,
-                                &connection,
-                                limits.max_queued_frames
-                            ),
-                            runner.run_with_connection_to(connection.clone()),
-                        )?;
-                        Ok(())
-                    };
+                    let other_actors = outgoing_actor::outgoing_protocol_actor(
+                        outgoing_rx,
+                        pending_replies,
+                        transport_outgoing_tx,
+                        protocol_compat,
+                        connection.incoming_closed.clone(),
+                    );
 
                     // EOF can wake a pending request consumer, which may make
                     // the task actor fail while close callbacks are running.
@@ -2065,7 +2052,7 @@ impl<
                     .await
                 };
 
-                run_until_connection_close(
+                let lifecycle = run_until_connection_close(
                     async {
                         let result = background.await;
                         connection.incoming_closed.request_shutdown();
@@ -2077,6 +2064,33 @@ impl<
                         result
                     },
                     connection.incoming_closed.clone(),
+                );
+                // Only native operation supervisors are joined at shutdown.
+                // Ordinary spawned tasks and user runners remain disposable.
+                crate::util::run_until(
+                    finish_actor_error(
+                        runner.run_with_connection_to(connection.clone()),
+                        &connection,
+                    ),
+                    crate::util::run_until(
+                        finish_actor_error(transport_driver, &connection),
+                        crate::util::run_until(
+                            finish_actor_error(
+                                task_actor::task_actor(
+                                    new_task_rx,
+                                    &connection,
+                                    limits.max_queued_frames,
+                                ),
+                                &connection,
+                            ),
+                            async {
+                                let result = lifecycle.await;
+                                connection.incoming_closed.request_shutdown();
+                                connection.wait_protected_operations().await;
+                                result
+                            },
+                        ),
+                    ),
                 )
                 .await
             }
@@ -2084,6 +2098,23 @@ impl<
 
         (connection, future)
     }
+}
+
+/// An EOF may wake a task that reports an error while on-close callbacks are
+/// still running. Preserve that error without dropping the callback future.
+async fn finish_actor_error<R: Role>(
+    future: impl Future<Output = Result<(), crate::Error>>,
+    connection: &ConnectionTo<R>,
+) -> Result<(), crate::Error> {
+    let result = future.await;
+    if result.is_err() {
+        connection.incoming_closed.request_shutdown();
+        if connection.incoming_closed.is_closing() {
+            connection.incoming_closed.closed().await;
+        }
+        connection.wait_protected_operations().await;
+    }
+    result
 }
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -3831,9 +3862,25 @@ pub struct ConnectionTo<Counterpart: Role> {
     )]
     protocol_mode: ProtocolMode,
     incoming_closed: IncomingClosed,
+    protected_operations: Arc<Mutex<ProtectedOperations>>,
 }
 
 type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
+
+#[derive(Default)]
+struct ProtectedOperations {
+    pending: Vec<oneshot::Receiver<()>>,
+    joining: Option<future::Shared<BoxFuture<'static, ()>>>,
+}
+
+impl Debug for ProtectedOperations {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProtectedOperations")
+            .field("pending", &self.pending.len())
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Clone)]
 struct IncomingClosed {
@@ -4009,7 +4056,65 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             pending_replies,
             protocol_mode,
             incoming_closed: IncomingClosed::new(),
+            protected_operations: Arc::default(),
         }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[track_caller]
+    pub(crate) fn spawn_protected(
+        &self,
+        task: impl IntoFuture<Output = Result<(), crate::Error>, IntoFuture: Send + 'static>,
+    ) -> Result<(), crate::Error> {
+        let (done_tx, done_rx) = oneshot::channel();
+        let task = task.into_future();
+        let mut state = self
+            .protected_operations
+            .lock()
+            .expect("protected operations poisoned");
+        if state.joining.is_some() {
+            return Err(crate::Error::request_cancelled());
+        }
+        // Completed acknowledgments must not accumulate for the connection's
+        // entire lifetime. With completed entries reaped at each admission,
+        // this registry is bounded by the shared live-task limit.
+        state
+            .pending
+            .retain_mut(|done| matches!(done.try_recv(), Ok(None)));
+        self.spawn(async move {
+            let result = task.await;
+            let _ = done_tx.send(());
+            result
+        })?;
+        state.pending.push(done_rx);
+        Ok(())
+    }
+
+    pub(crate) async fn wait_protected_operations(&self) {
+        let joining = {
+            let mut state = self
+                .protected_operations
+                .lock()
+                .expect("protected operations poisoned");
+            if state.joining.is_none() {
+                let operations = std::mem::take(&mut state.pending);
+                state.joining = Some(
+                    async move {
+                        for operation in operations {
+                            let _ = operation.await;
+                        }
+                    }
+                    .boxed()
+                    .shared(),
+                );
+            }
+            state.joining.as_ref().expect("join initialized").clone()
+        };
+        joining.await;
+    }
+
+    pub(crate) fn request_shutdown(&self) {
+        self.incoming_closed.request_shutdown();
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
@@ -7017,6 +7122,44 @@ impl FramePermit {
                 .sum::<usize>()
     }
 
+    /// Reserve separately measured metadata retained after consuming this frame.
+    ///
+    /// This reserves `bytes` in every distinct budget covering the source frame,
+    /// including imported frames. It does not share or release the payload's
+    /// charge. Retain the returned permit with the metadata, then drop the
+    /// source permit once its payload has been consumed.
+    ///
+    /// Metadata uses data capacity, never the response/cancellation reserve.
+    /// Failure is immediate and releases any partial reservations; waiting
+    /// here could deadlock on capacity held by the source frame itself.
+    pub fn try_reserve_metadata(&self, bytes: usize) -> Result<Self, crate::Error> {
+        fn collect_budgets<'a>(permit: &'a FramePermit, budgets: &mut Vec<&'a Arc<FrameBudget>>) {
+            if !budgets
+                .iter()
+                .any(|budget| Arc::ptr_eq(budget, &permit.inner.budget))
+            {
+                budgets.push(&permit.inner.budget);
+            }
+            for additional in &permit.additional {
+                collect_budgets(additional, budgets);
+            }
+        }
+
+        let reserve = |budget: &Arc<FrameBudget>| {
+            budget.try_reserve(bytes, true).ok_or_else(|| {
+                crate::Error::invalid_request().data("retained metadata byte capacity exceeded")
+            })
+        };
+        let mut budgets = Vec::new();
+        collect_budgets(self, &mut budgets);
+        let mut budgets = budgets.into_iter();
+        let mut permit = reserve(budgets.next().expect("source frame has a budget"))?;
+        for budget in budgets {
+            permit.join(reserve(budget)?);
+        }
+        Ok(permit)
+    }
+
     fn join(&mut self, other: FramePermit) {
         self.additional.push(other);
     }
@@ -7291,7 +7434,27 @@ impl BudgetedFrame {
 
 /// Pollable receive half of an in-memory duplex.
 #[derive(Debug)]
-pub struct FrameReceiver(std::pin::Pin<Box<async_channel::Receiver<BudgetedFrame>>>);
+pub struct FrameReceiver {
+    rx: std::pin::Pin<Box<async_channel::Receiver<QueuedFrame>>>,
+    _slots: async_channel::Sender<()>,
+}
+
+/// A slot is reserved before a frame enters the queue and returned at dequeue.
+/// Its drop also returns reservations abandoned by a cancelled send or sink.
+#[derive(Debug)]
+struct FrameSlot(async_channel::Sender<()>);
+
+impl Drop for FrameSlot {
+    fn drop(&mut self) {
+        let _ = self.0.try_send(());
+    }
+}
+
+#[derive(Debug)]
+struct QueuedFrame {
+    frame: BudgetedFrame,
+    slot: FrameSlot,
+}
 
 impl futures::Stream for FrameReceiver {
     type Item = BudgetedFrame;
@@ -7300,16 +7463,24 @@ impl futures::Stream for FrameReceiver {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        self.0.as_mut().poll_next(cx)
+        self.rx.as_mut().poll_next(cx).map(|item| {
+            item.map(|queued| {
+                drop(queued.slot);
+                queued.frame
+            })
+        })
     }
 }
 
 /// Backpressured frame sink. A synchronous send fails when its finite queue is full;
 /// asynchronous producers should use [`SinkExt::send`] instead.
 pub struct FrameSender {
-    tx: async_channel::Sender<BudgetedFrame>,
+    tx: async_channel::Sender<QueuedFrame>,
+    slots: Box<async_channel::Receiver<()>>,
+    slot_return: async_channel::Sender<()>,
     budget: Arc<FrameBudget>,
-    pending: Mutex<Option<BoxFuture<'static, Result<(), crate::Error>>>>,
+    ready: Option<FrameSlot>,
+    waiting: Mutex<Option<BoxFuture<'static, Result<FrameSlot, crate::Error>>>>,
 }
 
 impl std::fmt::Debug for FrameSender {
@@ -7371,8 +7542,11 @@ impl Clone for FrameSender {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
+            slots: Box::new((*self.slots).clone()),
+            slot_return: self.slot_return.clone(),
             budget: self.budget.clone(),
-            pending: Mutex::new(None),
+            ready: None,
+            waiting: Mutex::new(None),
         }
     }
 }
@@ -7401,6 +7575,47 @@ impl FrameSendError {
 }
 
 impl FrameSender {
+    async fn wait_for_slot(
+        tx: async_channel::Sender<QueuedFrame>,
+        slots: async_channel::Receiver<()>,
+        slot_return: async_channel::Sender<()>,
+    ) -> Result<FrameSlot, crate::Error> {
+        if tx.is_closed() {
+            return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
+        }
+        match future::select(Box::pin(slots.recv()), Box::pin(tx.closed())).await {
+            Either::Left((Ok(()), _)) if !tx.is_closed() => Ok(FrameSlot(slot_return)),
+            _ => Err(crate::Error::invalid_request().data("outgoing frame queue closed")),
+        }
+    }
+
+    fn try_slot(&self) -> Result<FrameSlot, crate::Error> {
+        if self.tx.is_closed() {
+            return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
+        }
+        self.slots
+            .try_recv()
+            .map(|()| FrameSlot(self.slot_return.clone()))
+            .map_err(|_| {
+                crate::Error::invalid_request().data("outgoing frame queue full or closed")
+            })
+    }
+
+    async fn reserve_slot(&self) -> Result<FrameSlot, crate::Error> {
+        Self::wait_for_slot(
+            self.tx.clone(),
+            (*self.slots).clone(),
+            self.slot_return.clone(),
+        )
+        .await
+    }
+
+    fn enqueue(&self, frame: BudgetedFrame, slot: FrameSlot) -> Result<(), crate::Error> {
+        self.tx
+            .try_send(QueuedFrame { frame, slot })
+            .map_err(crate::util::internal_error)
+    }
+
     /// Obtain the byte admission handle without retaining this channel sender.
     pub fn admission(&self) -> FrameAdmission {
         FrameAdmission(self.budget.clone())
@@ -7408,11 +7623,22 @@ impl FrameSender {
 
     /// Fail immediately rather than blocking a protocol dispatcher on its own output.
     pub fn try_send(&self, frame: TransportFrame) -> Result<(), FrameSendError> {
+        let Ok(slot) = self.try_slot() else {
+            return Err(FrameSendError {
+                frame: Box::new(frame),
+                reason: "outgoing frame queue full or closed",
+            });
+        };
         let budgeted = self.admission().try_admit(frame)?;
-        self.tx.try_send(budgeted).map_err(|error| FrameSendError {
-            frame: Box::new(error.into_inner().frame),
-            reason: "outgoing frame queue full or closed",
-        })
+        self.tx
+            .try_send(QueuedFrame {
+                frame: budgeted,
+                slot,
+            })
+            .map_err(|error| FrameSendError {
+                frame: Box::new(error.into_inner().frame.frame),
+                reason: "outgoing frame queue full or closed",
+            })
     }
 
     /// Await byte and frame capacity outside ordered dispatch.
@@ -7429,10 +7655,8 @@ impl FrameSender {
                 return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
             }
         };
-        self.tx
-            .send(BudgetedFrame { frame, permit })
-            .await
-            .map_err(crate::util::internal_error)
+        let slot = self.reserve_slot().await?;
+        self.enqueue(BudgetedFrame { frame, permit }, slot)
     }
 
     /// Transfer an application message's charge into its framed representation.
@@ -7445,16 +7669,13 @@ impl FrameSender {
     ) -> Result<(), crate::Error> {
         let bytes = frame.to_json()?.len();
         permit.cover_frame(bytes, !frame.is_control())?;
-        self.tx
-            .send(BudgetedFrame { frame, permit })
-            .await
-            .map_err(crate::util::internal_error)
+        let slot = self.reserve_slot().await?;
+        self.enqueue(BudgetedFrame { frame, permit }, slot)
     }
 
     /// Stop accepting frames on this queue.
     pub fn close_channel(&self) {
         self.tx.close();
-        self.pending.lock().expect("frame sender poisoned").take();
     }
 
     /// Return whether the receiving endpoint has closed.
@@ -7470,7 +7691,41 @@ impl Sink<BudgetedFrame> for FrameSender {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.poll_flush(cx)
+        let this = self.get_mut();
+        if this.tx.is_closed() {
+            this.ready.take();
+            this.waiting
+                .get_mut()
+                .expect("frame sender poisoned")
+                .take();
+            return Poll::Ready(Err(
+                crate::Error::invalid_request().data("outgoing frame queue closed")
+            ));
+        }
+        if this.ready.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+        let waiting = this.waiting.get_mut().expect("frame sender poisoned");
+        if waiting.is_none() {
+            *waiting = Some(Box::pin(Self::wait_for_slot(
+                this.tx.clone(),
+                (*this.slots).clone(),
+                this.slot_return.clone(),
+            )));
+        }
+        match waiting.as_mut().expect("slot waiter").as_mut().poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
+                waiting.take();
+                match result {
+                    Ok(slot) => {
+                        this.ready = Some(slot);
+                        Poll::Ready(Ok(()))
+                    }
+                    Err(error) => Poll::Ready(Err(error)),
+                }
+            }
+        }
     }
 
     fn start_send(
@@ -7478,6 +7733,10 @@ impl Sink<BudgetedFrame> for FrameSender {
         mut item: BudgetedFrame,
     ) -> Result<(), Self::Error> {
         let this = self.get_mut();
+        let slot = this
+            .ready
+            .take()
+            .ok_or_else(|| crate::Error::invalid_request().data("frame sender not ready"))?;
         if this.tx.is_closed() {
             return Err(crate::Error::invalid_request().data("outgoing frame queue closed"));
         }
@@ -7496,37 +7755,19 @@ impl Sink<BudgetedFrame> for FrameSender {
             })?;
             item.permit.join(permit);
         }
-        let mut pending = this.pending.lock().expect("frame sender poisoned");
-        if pending.is_some() {
-            return Err(crate::Error::invalid_request().data("frame sender not ready"));
-        }
-        let tx = this.tx.clone();
-        *pending = Some(Box::pin(async move {
-            tx.send(item).await.map_err(crate::util::internal_error)
-        }));
-        Ok(())
+        this.enqueue(item, slot)
     }
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        let mut pending = this.pending.lock().expect("frame sender poisoned");
-        let Some(send) = pending.as_mut() else {
-            return Poll::Ready(if this.tx.is_closed() {
-                Err(crate::Error::invalid_request().data("outgoing frame queue closed"))
-            } else {
-                Ok(())
-            });
-        };
-        match send.as_mut().poll(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(result) => {
-                pending.take();
-                Poll::Ready(result)
-            }
-        }
+        Poll::Ready(if this.tx.is_closed() {
+            Err(crate::Error::invalid_request().data("outgoing frame queue closed"))
+        } else {
+            Ok(())
+        })
     }
 
     fn poll_close(
@@ -7562,21 +7803,39 @@ impl Channel {
         });
         let (a_tx, b_rx) = async_channel::bounded(limits.max_queued_frames.max(1));
         let (b_tx, a_rx) = async_channel::bounded(limits.max_queued_frames.max(1));
+        let (a_slot_tx, a_slots) = async_channel::bounded(limits.max_queued_frames.max(1));
+        let (b_slot_tx, b_slots) = async_channel::bounded(limits.max_queued_frames.max(1));
+        for _ in 0..limits.max_queued_frames.max(1) {
+            a_slot_tx.try_send(()).expect("initial queue slot");
+            b_slot_tx.try_send(()).expect("initial queue slot");
+        }
         (
             Self {
-                rx: FrameReceiver(Box::pin(a_rx)),
+                rx: FrameReceiver {
+                    rx: Box::pin(a_rx),
+                    _slots: b_slot_tx.clone(),
+                },
                 tx: FrameSender {
                     tx: a_tx,
+                    slots: Box::new(a_slots),
+                    slot_return: a_slot_tx.clone(),
                     budget: budget.clone(),
-                    pending: Mutex::new(None),
+                    ready: None,
+                    waiting: Mutex::new(None),
                 },
             },
             Self {
-                rx: FrameReceiver(Box::pin(b_rx)),
+                rx: FrameReceiver {
+                    rx: Box::pin(b_rx),
+                    _slots: a_slot_tx.clone(),
+                },
                 tx: FrameSender {
                     tx: b_tx,
+                    slots: Box::new(b_slots),
+                    slot_return: b_slot_tx,
                     budget,
-                    pending: Mutex::new(None),
+                    ready: None,
+                    waiting: Mutex::new(None),
                 },
             },
         )
@@ -7963,28 +8222,118 @@ mod tests {
     }
 
     #[test]
-    fn closing_sender_drops_pending_sink_frame_charge() {
+    fn sink_clones_share_slots_and_dequeue_restores_capacity() {
         let frame = capacity_frame();
         let bytes = frame.to_json().unwrap().len();
-        let (mut left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
+        let (left, mut right) = Channel::duplex_with_limits(ConnectionLimits {
             max_frame_bytes: bytes,
-            max_queued_bytes: bytes * 4,
+            max_queued_bytes: bytes * 100,
+            max_queued_frames: 1,
+        });
+        let mut clones = (0..32).map(|_| left.tx.clone()).collect::<Vec<_>>();
+        clones[0]
+            .feed(left.tx.admission().try_admit(frame.clone()).unwrap())
+            .now_or_never()
+            .expect("first feed must complete")
+            .unwrap();
+        for tx in &mut clones[1..] {
+            let admitted = left.tx.admission().try_admit(frame.clone()).unwrap();
+            assert!(tx.feed(admitted).now_or_never().is_none());
+        }
+        assert!(left.tx.try_send(frame.clone()).is_err());
+        drop(right.rx.next().now_or_never().unwrap());
+        clones[31]
+            .feed(left.tx.admission().try_admit(frame).unwrap())
+            .now_or_never()
+            .expect("dequeue restores a slot")
+            .unwrap();
+    }
+
+    #[test]
+    fn dropping_ready_sink_releases_reserved_slot() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, _right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 8,
+            max_queued_frames: 1,
+        });
+        let mut reserved = left.tx.clone();
+        assert!(
+            std::pin::Pin::new(&mut reserved)
+                .poll_ready(&mut Context::from_waker(futures::task::noop_waker_ref()))
+                .is_ready()
+        );
+        assert!(left.tx.try_send(frame.clone()).is_err());
+        drop(reserved);
+        left.tx
+            .try_send(frame)
+            .expect("dropping readiness frees slot");
+    }
+
+    #[tokio::test]
+    async fn closing_receiver_wakes_slot_blocked_sink_and_sender() {
+        let frame = capacity_frame();
+        let bytes = frame.to_json().unwrap().len();
+        let (left, right) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: bytes,
+            max_queued_bytes: bytes * 8,
             max_queued_frames: 1,
         });
         left.tx.try_send(frame.clone()).unwrap();
-        let admitted = left.tx.admission().try_admit(frame).unwrap();
-        std::pin::Pin::new(&mut left.tx)
-            .start_send(admitted)
-            .unwrap();
-        assert!(
-            std::pin::Pin::new(&mut left.tx)
-                .poll_flush(&mut Context::from_waker(futures::task::noop_waker_ref()))
-                .is_pending()
-        );
-        left.tx.close_channel();
-        assert_eq!(left.tx.budget.state.lock().unwrap().used, bytes);
-        drop(right.rx.next().now_or_never().unwrap());
-        assert_eq!(left.tx.budget.state.lock().unwrap().used, 0);
+        let mut waiting_sink = left.tx.clone();
+        let mut waiting_feed =
+            Box::pin(waiting_sink.feed(left.tx.admission().try_admit(frame.clone()).unwrap()));
+        assert!(waiting_feed.as_mut().now_or_never().is_none());
+        let mut waiting_send = Box::pin(left.tx.send_frame(frame));
+        assert!(waiting_send.as_mut().now_or_never().is_none());
+        drop(right);
+        assert!(waiting_feed.await.is_err());
+        assert!(waiting_send.await.is_err());
+    }
+
+    #[test]
+    fn retained_metadata_charges_each_source_budget_without_pinning_payload() {
+        let (source, _source_peer) = Channel::duplex();
+        let (destination, _destination_peer) = Channel::duplex();
+        let mut payload = source.tx.budget.try_reserve(512, true).unwrap();
+        payload.join(payload.clone());
+        payload.join(destination.tx.budget.try_reserve(512, true).unwrap());
+
+        let metadata = payload.try_reserve_metadata(8).unwrap();
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 520);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, 520);
+        drop(payload);
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 8);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, 8);
+
+        let copy = metadata.clone();
+        drop(metadata);
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 8);
+        drop(copy);
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 0);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, 0);
+    }
+
+    #[test]
+    fn retained_metadata_failure_rolls_back_and_cannot_use_control_capacity() {
+        let (source, _source_peer) = Channel::duplex();
+        let (destination, _destination_peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_frame_bytes: 64,
+            max_queued_bytes: 128,
+            max_queued_frames: 4,
+        });
+        let mut payload = source.tx.budget.try_reserve(60, true).unwrap();
+        payload.join(destination.tx.budget.try_reserve(60, true).unwrap());
+        assert!(payload.try_reserve_metadata(8).is_err());
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 60);
+        assert_eq!(destination.tx.budget.state.lock().unwrap().used, 60);
+
+        let metadata = payload.try_reserve_metadata(4).unwrap();
+        assert!(payload.try_reserve_metadata(1).is_err());
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 64);
+        drop(metadata);
+        assert_eq!(source.tx.budget.state.lock().unwrap().used, 60);
     }
 
     fn application_channel(
@@ -8128,7 +8477,7 @@ mod tests {
         });
         let admission = channel.tx.admission();
         let (message_tx, _message_rx) = application_channel(admission.clone());
-        let (task_tx, mut task_rx) = admission::channel();
+        let (task_tx, mut task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let pending = PendingReplies::default();
         let connection = ConnectionTo::new(
@@ -8304,14 +8653,71 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_admission_is_urgent_at_every_queue_occupancy() {
+        use super::admission::ReceiverClose as _;
+
+        for queued in 0..=3 {
+            for asynchronous in [false, true] {
+                for wrapped in [false, true] {
+                    let (channel, _peer) = Channel::duplex_with_limits(ConnectionLimits {
+                        max_queued_frames: 3,
+                        ..ConnectionLimits::default()
+                    });
+                    let (tx, mut rx) = application_channel(channel.tx.admission());
+                    for _ in 0..queued {
+                        tx.unbounded_send(OutgoingMessage::Notification {
+                            untyped: UntypedMessage::new("data", serde_json::json!({})).unwrap(),
+                        })
+                        .unwrap();
+                    }
+                    let params = serde_json::json!({"requestId":"waiting"});
+                    let cancel = if wrapped {
+                        UntypedMessage::new(
+                            "_proxy/successor",
+                            serde_json::json!({"method":"$/cancel_request","params":params}),
+                        )
+                    } else {
+                        UntypedMessage::new("$/cancel_request", params)
+                    }
+                    .unwrap();
+                    let message = OutgoingMessage::Notification { untyped: cancel };
+                    if asynchronous {
+                        tx.send(message)
+                            .now_or_never()
+                            .expect("urgent admission does not wait for ordinary queue space")
+                            .unwrap();
+                    } else {
+                        tx.unbounded_send(message).unwrap();
+                    }
+                    let urgent = future::poll_fn(|cx| rx.poll_urgent(cx))
+                        .now_or_never()
+                        .expect("readiness gate must observe cancellation")
+                        .unwrap();
+                    assert!(urgent.is_urgent());
+                    for _ in 0..queued {
+                        assert!(!rx.next().now_or_never().unwrap().unwrap().is_urgent());
+                    }
+                    assert!(rx.next().now_or_never().is_none());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn cancellation_passes_waiting_request_and_saturated_data_lane() {
+        for capacity in [1, 3, ConnectionLimits::default().max_queued_frames] {
+            check_cancellation_passes_waiting_request(capacity);
+        }
+    }
+
+    fn check_cancellation_passes_waiting_request(capacity: usize) {
         let (transport, mut peer) = Channel::duplex_with_limits(ConnectionLimits {
             max_frame_bytes: 1024,
             max_queued_bytes: 4096,
-            max_queued_frames: 1,
+            max_queued_frames: capacity,
         });
         let (message_tx, message_rx) = application_channel(transport.tx.admission());
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_tx, _dynamic_rx) = admission::channel();
         let pending_replies = PendingReplies::default();
         let connection = ConnectionTo::new(
@@ -8369,13 +8775,19 @@ mod tests {
 
     #[test]
     fn cancellation_of_queued_request_does_not_wait_for_unrelated_readiness() {
+        for capacity in [1, 3, ConnectionLimits::default().max_queued_frames] {
+            check_cancellation_of_queued_request(capacity);
+        }
+    }
+
+    fn check_cancellation_of_queued_request(capacity: usize) {
         let (transport, mut peer) = Channel::duplex_with_limits(ConnectionLimits {
             max_frame_bytes: 1024,
             max_queued_bytes: 8192,
-            max_queued_frames: 1,
+            max_queued_frames: capacity,
         });
         let (message_tx, message_rx) = application_channel(transport.tx.admission());
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_tx, _dynamic_rx) = admission::channel();
         let pending_replies = PendingReplies::default();
         let connection = ConnectionTo::new(
@@ -8430,13 +8842,61 @@ mod tests {
         first.detach();
     }
 
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn protected_operation_tracking_is_bounded_across_sequential_completions() {
+        let (message_tx, _message_rx) = admission::channel();
+        let (task_tx, task_rx) = task_actor::task_channel(2);
+        let (dynamic_tx, _dynamic_rx) = admission::channel();
+        let pending_replies = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending_replies.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let mut driver = Box::pin(task_actor::task_actor(task_rx, &connection, 2));
+        for _ in 0..1000 {
+            connection.spawn_protected(async { Ok(()) }).unwrap();
+            assert_eq!(
+                connection
+                    .protected_operations
+                    .lock()
+                    .unwrap()
+                    .pending
+                    .len(),
+                1,
+                "previous completions must be reaped before another admission"
+            );
+            assert!(driver.as_mut().now_or_never().is_none());
+        }
+        assert!(
+            connection
+                .wait_protected_operations()
+                .now_or_never()
+                .is_some()
+        );
+        assert!(
+            connection
+                .protected_operations
+                .lock()
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+        assert!(connection.spawn_protected(async { Ok(()) }).is_err());
+    }
+
     #[cfg(feature = "unstable_protocol_v2")]
     fn connection_with_task_receiver() -> (
         ConnectionTo<crate::role::UntypedRole>,
         admission::SimpleReceiver<Task>,
     ) {
         let (message_tx, _message_rx) = admission::channel();
-        let (task_tx, task_rx) = admission::channel();
+        let (task_tx, task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
@@ -8561,7 +9021,7 @@ mod tests {
     #[test]
     fn v2_proxy_rejects_explicitly_prewrapped_initialize_request() {
         let (message_tx, message_rx) = admission::channel();
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
@@ -8723,7 +9183,7 @@ mod tests {
         admission::SimpleReceiver<DynamicHandlerMessage<crate::role::UntypedRole>>,
     ) {
         let (message_tx, _message_rx) = admission::channel();
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
@@ -8765,7 +9225,7 @@ mod tests {
         PendingReplies,
     ) {
         let (message_tx, message_rx) = admission::channel();
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
@@ -8797,7 +9257,7 @@ mod tests {
         let (channel, _) = Channel::duplex_with_limits(limits);
         let admission = channel.tx.admission();
         let (message_tx, message_rx) = application_channel(admission.clone());
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let pending = PendingReplies::default();
         let connection = ConnectionTo::new(
@@ -9248,7 +9708,7 @@ mod tests {
     #[test]
     fn ordered_request_is_marked_before_entering_outgoing_queue() {
         let (message_tx, mut message_rx) = admission::channel();
-        let (task_tx, mut task_rx) = admission::channel();
+        let (task_tx, mut task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, _dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
@@ -9335,7 +9795,7 @@ mod tests {
     #[test]
     fn v2_dynamic_handler_guard_registers_and_removes_handler() {
         let (message_tx, _message_rx) = admission::channel();
-        let (task_tx, _task_rx) = admission::channel();
+        let (task_tx, _task_rx) = task_actor::task_channel(admission::QUEUE_CAPACITY);
         let (dynamic_handler_tx, mut dynamic_handler_rx) = admission::channel();
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();

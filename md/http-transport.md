@@ -59,10 +59,26 @@ active session, clients should also open:
 - `Acp-Connection-Id: <connection id>`
 - `Acp-Session-Id: <session id>`
 
-Open a session stream before sending methods such as `session/prompt`,
-`session/load`, `session/resume`, or other session-scoped requests. When a
-`session/new` or `session/fork` response returns a new `sessionId`, open an SSE
-stream for that returned session before expecting updates or responses for it.
+For a session not yet used on this HTTP connection, send its first
+session-scoped POST (for example, `session/load` or `session/resume`) and wait
+for `202 Accepted` before opening its GET. The POST registers the bounded
+session mailbox before it is admitted to the agent. History and other output
+can then queue until the GET attaches; an unknown-session GET returns 409 and
+does not allocate a mailbox. A batch registers all its session mailboxes before
+returning 202.
+
+Keep the connection stream and existing session streams running during this
+setup so callback responses and cancellation can still progress. `HttpClient`
+does this automatically. When a `session/new` or `session/fork` response returns
+a new `sessionId`, its mailbox is already registered and the client can open
+the corresponding GET immediately.
+
+Frame and pending-work limits apply to HTTP and WebSocket traffic. Session
+metadata retains a measured charge for its ID, not the entire opening request.
+Consuming an SSE/WebSocket frame releases its payload charge before waiting
+for the next frame. A WebSocket frame rejected by admission terminates that
+connection rather than silently losing input or waiting forever to drain a
+still-live agent.
 
 ## Features
 

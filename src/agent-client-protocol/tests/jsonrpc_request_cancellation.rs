@@ -2,11 +2,10 @@
 //!
 //! These tests avoid sleeps by relying on two ordering guarantees:
 //!
-//! - Messages are delivered in the order they were sent, and each side's
-//!   dispatch loop processes incoming messages sequentially. A request/response
-//!   round trip therefore acts as a barrier: by the time the response arrives,
-//!   every message sent before the request (including any `$/cancel_request`)
-//!   has been fully processed by the peer.
+//! - Ordinary messages preserve queue order, and incoming dispatch is
+//!   sequential. A round trip after a request proves it reached the peer.
+//!   Cancellation has a separate urgent lane: canceling before publication
+//!   settles locally instead of sending either message to the peer.
 //! - Test handlers report observed cancellations through in-process channels,
 //!   which the test awaits (with a timeout) instead of sleeping.
 
@@ -51,6 +50,22 @@ async fn next_with_timeout<T>(rx: &mut mpsc::UnboundedReceiver<T>) -> T {
         .await
         .expect("timed out waiting for channel event")
         .expect("channel closed before expected event")
+}
+
+/// Remote-cancellation tests must first publish the request through every hop.
+async fn publication_barrier(connection: &ConnectionTo<UntypedRole>) {
+    let response = tokio::time::timeout(
+        tokio::time::Duration::from_secs(10),
+        connection
+            .send_request(SimpleRequest {
+                message: "barrier".into(),
+            })
+            .block_task(),
+    )
+    .await
+    .expect("publication barrier timed out")
+    .expect("publication barrier failed");
+    assert_eq!(response.result, "echo: barrier");
 }
 
 /// Assert that no item is currently buffered on `rx`.
@@ -432,6 +447,7 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
         .run_until(async {
             let (wrapped_cancel_tx, mut wrapped_cancel_rx) = mpsc::unbounded();
             let (plain_cancel_tx, mut plain_cancel_rx) = mpsc::unbounded();
+            let (started_tx, mut started_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -440,9 +456,10 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                 .builder()
                 .on_receive_request_from(
                     WrappedSuccessor,
-                    async |_request: SimpleRequest,
-                           responder: Responder<SimpleResponse>,
-                           cx: ConnectionTo<WrappedCounterpart>| {
+                    async move |_request: SimpleRequest,
+                                responder: Responder<SimpleResponse>,
+                                cx: ConnectionTo<WrappedCounterpart>| {
+                        started_tx.unbounded_send(responder.id().clone()).unwrap();
                         let cancellation = responder.cancellation();
                         cx.spawn(async move {
                             let response = cancellation
@@ -498,6 +515,7 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                         },
                     );
                     let expected_id = request.id().clone();
+                    assert_eq!(next_with_timeout(&mut started_rx).await, expected_id);
                     request.cancel()?;
                     let error = request
                         .block_task()
@@ -573,6 +591,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
     local
         .run_until(async {
             let (cancel_tx, mut cancel_rx) = mpsc::unbounded();
+            let (started_tx, mut started_rx) = mpsc::unbounded();
 
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
@@ -580,9 +599,9 @@ async fn sent_request_can_send_cancellation_for_its_id() {
             let server = UntypedRole
                 .builder()
                 .on_receive_request(
-                    async |request: SimpleRequest,
-                           responder: Responder<SimpleResponse>,
-                           _connection: ConnectionTo<UntypedRole>| {
+                    async move |request: SimpleRequest,
+                                responder: Responder<SimpleResponse>,
+                                _connection: ConnectionTo<UntypedRole>| {
                         if request.message == "barrier" {
                             return responder.respond(SimpleResponse {
                                 result: format!("echo: {}", request.message),
@@ -591,6 +610,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                         // Park other requests (by dropping the responder) so
                         // the cancelled request is never answered and the
                         // client handle stays unconsumed.
+                        started_tx.unbounded_send(responder.id().clone()).unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_request!(),
@@ -619,6 +639,7 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                         message: "slow".into(),
                     });
                     let expected_id = request.id().clone();
+                    assert_eq!(next_with_timeout(&mut started_rx).await, expected_id);
                     request.cancel()?;
                     let received = next_with_timeout(&mut cancel_rx).await;
 
@@ -1367,6 +1388,7 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                         connection.send_request(SimpleRequest {
                             message: "cancel downstream".into(),
                         });
+                    publication_barrier(&connection).await;
                     request.cancel()?;
 
                     // The backend answers the parked request only once the
@@ -1521,6 +1543,7 @@ async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
                             message: "park".into(),
                         });
                     let client_request_id = request.id().clone();
+                    publication_barrier(&connection).await;
                     request.cancel()?;
 
                     let error = request
@@ -1824,6 +1847,7 @@ async fn custom_forwarding_propagates_cancellation_when_opted_in() {
                             message: "park".into(),
                         });
                     let client_request_id = request.id().clone();
+                    publication_barrier(&connection).await;
                     request.cancel()?;
 
                     let error = request
@@ -1905,6 +1929,7 @@ async fn custom_forwarding_absorbs_cancellation_by_default() {
                         connection.send_request(SimpleRequest {
                             message: "park".into(),
                         });
+                    publication_barrier(&connection).await;
                     request.cancel()?;
 
                     // Barrier: the cancellation has now been processed by the

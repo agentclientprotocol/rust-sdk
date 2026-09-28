@@ -215,6 +215,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                         .start_sse(
                             Some(session_id),
                             sse_event_tx.clone(),
+                            false,
                             SseStartContext {
                                 events: &mut sse_event_rx,
                                 outgoing: &mut outgoing,
@@ -265,11 +266,25 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                     // must not be blocked behind the request they answer.
                     Ok((post, session_ids)) => {
                         state.attach_pending_permits(&post.pending_requests, &permit);
+                        if let Err(error) =
+                            check_post_capacity(&posts, max_operations, bypass_ordered)
+                        {
+                            break 'transport Err(error);
+                        }
+                        if bypass_ordered {
+                            posts.responses.push_budgeted(post, permit);
+                        } else {
+                            posts.ordered.push_budgeted(post, permit);
+                        }
+                        // The POST registers bounded session mailboxes. Poll it
+                        // while establishing the GET, rather than waiting for
+                        // a GET that cannot succeed before the POST.
                         for session_id in session_ids {
                             match lifecycle
                                 .start_sse(
                                     Some(session_id),
                                     sse_event_tx.clone(),
+                                    true,
                                     SseStartContext {
                                         events: &mut sse_event_rx,
                                         outgoing: &mut outgoing,
@@ -281,21 +296,16 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                                 .await
                             {
                                 Ok(SseStartOutcome::Established) => {}
+                                Ok(SseStartOutcome::OutgoingClosed)
+                                    if buffered_outgoing.is_empty() && posts.is_empty() =>
+                                {
+                                    break 'transport Ok(());
+                                }
                                 Ok(SseStartOutcome::OutgoingClosed) => {
                                     break 'transport Err(sse_setup_blocked_output_error());
                                 }
                                 Err(error) => break 'transport Err(error),
                             }
-                        }
-                        if let Err(error) =
-                            check_post_capacity(&posts, max_operations, bypass_ordered)
-                        {
-                            break 'transport Err(error);
-                        }
-                        if bypass_ordered {
-                            posts.responses.push_budgeted(post, permit);
-                        } else {
-                            posts.ordered.push_budgeted(post, permit);
                         }
                     }
                     Err(error) => {
@@ -318,6 +328,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
                         .start_sse(
                             None,
                             sse_event_tx.clone(),
+                            false,
                             SseStartContext {
                                 events: &mut sse_event_rx,
                                 outgoing: &mut outgoing,
@@ -347,31 +358,7 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             continue;
         }
 
-        if let Some(session_id) = session_id_from_message(&msg) {
-            for session_id in state.register_session_streams([session_id]) {
-                match lifecycle
-                    .start_sse(
-                        Some(session_id),
-                        sse_event_tx.clone(),
-                        SseStartContext {
-                            events: &mut sse_event_rx,
-                            outgoing: &mut outgoing,
-                            buffered_outgoing: &mut buffered_outgoing,
-                            posts: &mut posts,
-                            state: &mut state,
-                        },
-                    )
-                    .await
-                {
-                    Ok(SseStartOutcome::Established) => {}
-                    Ok(SseStartOutcome::OutgoingClosed) => {
-                        break 'transport Err(sse_setup_blocked_output_error());
-                    }
-                    Err(error) => break 'transport Err(error),
-                }
-            }
-        }
-
+        let session_id = session_id_from_message(&msg);
         if let Err(error) = check_post_capacity(&posts, max_operations, bypass_ordered) {
             break Err(error);
         }
@@ -389,6 +376,37 @@ async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
             Err(e) => {
                 error!("POST failed: {e}");
                 break Err(AcpError::internal_error().data(format!("POST: {e}")));
+            }
+        }
+
+        if let Some(session_id) = session_id {
+            for session_id in state.register_session_streams([session_id]) {
+                match lifecycle
+                    .start_sse(
+                        Some(session_id),
+                        sse_event_tx.clone(),
+                        true,
+                        SseStartContext {
+                            events: &mut sse_event_rx,
+                            outgoing: &mut outgoing,
+                            buffered_outgoing: &mut buffered_outgoing,
+                            posts: &mut posts,
+                            state: &mut state,
+                        },
+                    )
+                    .await
+                {
+                    Ok(SseStartOutcome::Established) => {}
+                    Ok(SseStartOutcome::OutgoingClosed)
+                        if buffered_outgoing.is_empty() && posts.is_empty() =>
+                    {
+                        break 'transport Ok(());
+                    }
+                    Ok(SseStartOutcome::OutgoingClosed) => {
+                        break 'transport Err(sse_setup_blocked_output_error());
+                    }
+                    Err(error) => break 'transport Err(error),
+                }
             }
         }
     };
@@ -645,6 +663,7 @@ impl HttpTransportLifecycle {
         &mut self,
         session_id: Option<String>,
         event_tx: mpsc::Sender<SseMessage>,
+        wait_for_post: bool,
         context: SseStartContext<'_>,
     ) -> Result<SseStartOutcome, AcpError> {
         let SseStartContext {
@@ -655,15 +674,32 @@ impl HttpTransportLifecycle {
             state,
         } = context;
         let mut establishing = FuturesUnordered::new();
-        establishing.push(self.begin_sse(session_id, event_tx.clone())?);
+        let mut session_id = session_id;
+        if !wait_for_post {
+            establishing.push(self.begin_sse(session_id.take(), event_tx.clone())?);
+        }
 
         loop {
-            if establishing.is_empty() {
+            // A session-scoped POST receives 202 only after its route and
+            // mailbox are registered. Keep pumping all existing SSE streams,
+            // callbacks, and POST completions until that admission completes;
+            // then open the session GET without racing a 409.
+            if wait_for_post && posts.is_empty() && session_id.is_some() {
+                establishing.push(self.begin_sse(session_id.take(), event_tx.clone())?);
+            }
+            if establishing.is_empty() && session_id.is_none() {
                 return Ok(SseStartOutcome::Established);
             }
             let outcome = {
                 let failure = self.sse_tasks.next_failure().fuse();
-                let established_next = establishing.next().fuse();
+                let established_next = async {
+                    if establishing.is_empty() {
+                        futures::future::pending().await
+                    } else {
+                        establishing.next().await
+                    }
+                }
+                .fuse();
                 let sse_event_next = events.next().fuse();
                 let outgoing_next = outgoing.next().fuse();
                 let ordered_post_next = posts.ordered.next_completion().fuse();
@@ -691,7 +727,9 @@ impl HttpTransportLifecycle {
                     return Err(sse_failure_error(self.sse_tasks.next_failure().await));
                 }
                 SseStartWait::Established(None) => {
-                    return Ok(SseStartOutcome::Established);
+                    if session_id.is_none() {
+                        return Ok(SseStartOutcome::Established);
+                    }
                 }
                 SseStartWait::Failure(failure) => return Err(sse_failure_error(failure)),
                 SseStartWait::SseEvent(Some(event)) => {
@@ -2133,7 +2171,6 @@ mod tests {
         let post_count = Arc::new(AtomicUsize::new(0));
         let emit_response = Arc::new(Notify::new());
         let connection_stream_established = Arc::new(AtomicBool::new(false));
-        let source_stream_established = Arc::new(AtomicBool::new(false));
         let response_batch = json!([
             {
                 "jsonrpc": "2.0",
@@ -2146,20 +2183,16 @@ mod tests {
             post({
                 let post_count = post_count.clone();
                 let connection_stream_established = connection_stream_established.clone();
-                let source_stream_established = source_stream_established.clone();
                 move |body: String| {
                     let post_count = post_count.clone();
                     let post_tx = post_tx.clone();
                     let connection_stream_established = connection_stream_established.clone();
-                    let source_stream_established = source_stream_established.clone();
                     async move {
                         if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
                             return initialize_response().await.into_response();
                         }
 
-                        if !connection_stream_established.load(Ordering::SeqCst)
-                            || !source_stream_established.load(Ordering::SeqCst)
-                        {
+                        if !connection_stream_established.load(Ordering::SeqCst) {
                             return StatusCode::CONFLICT.into_response();
                         }
                         post_tx
@@ -2173,13 +2206,13 @@ mod tests {
                 let emit_response = emit_response.clone();
                 let response_batch = response_batch.clone();
                 let connection_stream_established = connection_stream_established.clone();
-                let source_stream_established = source_stream_established.clone();
+                let post_count = post_count.clone();
                 move |headers: HeaderMap| {
                     let emit_response = emit_response.clone();
                     let response_batch = response_batch.clone();
                     let get_tx = get_tx.clone();
                     let connection_stream_established = connection_stream_established.clone();
-                    let source_stream_established = source_stream_established.clone();
+                    let post_count = post_count.clone();
                     async move {
                         let session_id = headers
                             .get(HEADER_SESSION_ID)
@@ -2187,13 +2220,15 @@ mod tests {
                             .map(String::from);
                         let is_connection_stream = session_id.is_none();
                         let is_source_stream = session_id.as_deref() == Some("source-session");
+                        if is_source_stream && post_count.load(Ordering::SeqCst) < 2 {
+                            return StatusCode::CONFLICT.into_response();
+                        }
                         if is_connection_stream {
                             sleep(Duration::from_millis(50)).await;
                             connection_stream_established.store(true, Ordering::SeqCst);
                         }
                         if is_source_stream {
                             sleep(Duration::from_millis(50)).await;
-                            source_stream_established.store(true, Ordering::SeqCst);
                         }
                         get_tx.send(session_id).unwrap();
 
@@ -2206,7 +2241,7 @@ mod tests {
                             }
                             futures::future::pending::<()>().await;
                         };
-                        Sse::new(stream)
+                        Sse::new(stream).into_response()
                     }
                 }
             })
@@ -2879,6 +2914,7 @@ mod tests {
             lifecycle.start_sse(
                 Some("later-session".to_string()),
                 event_tx,
+                true,
                 SseStartContext {
                     events: &mut event_rx,
                     outgoing: &mut outgoing,
@@ -2901,6 +2937,15 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_sse_establishment_keeps_callback_responses_moving() {
+        check_callback_response_progress(false).await;
+    }
+
+    #[tokio::test]
+    async fn cold_session_post_admission_keeps_callback_responses_moving() {
+        check_callback_response_progress(true).await;
+    }
+
+    async fn check_callback_response_progress(wait_for_post: bool) {
         let release_get = Arc::new(Notify::new());
         let complete_earlier_post = Arc::new(Notify::new());
         let app = Router::new().route(
@@ -3004,6 +3049,7 @@ mod tests {
                 lifecycle.start_sse(
                     Some("later-session".to_string()),
                     event_tx,
+                    wait_for_post,
                     SseStartContext {
                         events: &mut event_rx,
                         outgoing: &mut outgoing,

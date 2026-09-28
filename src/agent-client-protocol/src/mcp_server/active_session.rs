@@ -378,7 +378,7 @@ where
             );
             let is_discovery = method == "server/discover";
             let shutdown_connection = connection.clone();
-            connection.spawn(async move {
+            connection.spawn_protected(async move {
                 let request = McpRequest { method, params };
                 let cleanup_connection = context.connection().clone();
                 let operation = service.execute(request, context);
@@ -432,7 +432,7 @@ where
         // Keep the operation admitted until its backend has actually stopped.
         let (backend_stop_tx, backend_stop_rx) = oneshot::channel::<()>();
         let (backend_done_tx, mut backend_done_rx) = oneshot::channel();
-        let spawn_result = connection.spawn(async move {
+        let spawn_result = connection.spawn_protected(async move {
             // Own (not merely borrow) the future so cancellation drops its
             // backend before the completion acknowledgement is published.
             let run = Box::pin(backend.connect_to(server));
@@ -448,7 +448,7 @@ where
             responder.respond_with_error(error)?;
             return Ok(Handled::Yes);
         }
-        let spawn_result = connection.spawn(async move {
+        let spawn_result = connection.spawn_protected(async move {
             let inner_id = RequestId::Str(request_id.0.to_string());
             let is_discovery = method == "server/discover";
             let process = async {

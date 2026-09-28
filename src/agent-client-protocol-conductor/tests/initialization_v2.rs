@@ -1007,7 +1007,7 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
-    let client_request_id = tokio::time::timeout(
+    let (client_request_id, parked_id) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         Client
             .v2()
@@ -1027,6 +1027,10 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
 
                 let pending = cx.send_request(v2::NewSessionRequest::new("/park-session"));
                 let client_request_id = pending.id().clone();
+                let parked_id = parked_id_rx
+                    .next()
+                    .await
+                    .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
                 pending.cancel()?;
                 let error = pending
                     .block_task()
@@ -1039,16 +1043,12 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
                     .block_task()
                     .await?;
                 assert_eq!(response.session_id, v2::SessionId::new("normal-session"));
-                Ok(client_request_id)
+                Ok((client_request_id, parked_id))
             }),
     )
     .await
     .expect("v2 proxy cancellation test timed out")?;
 
-    let parked_id = tokio::time::timeout(std::time::Duration::from_secs(2), parked_id_rx.next())
-        .await
-        .expect("agent should observe the forwarded request")
-        .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
     assert_ne!(
         parked_id, client_request_id,
         "each proxy hop must allocate its own request ID"
@@ -1120,7 +1120,7 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
-    let client_request_id = tokio::time::timeout(
+    let (client_request_id, parked_id) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         Client
             .v2()
@@ -1143,6 +1143,10 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
                     "/park-session",
                 ));
                 let client_request_id = pending.id().clone();
+                let parked_id = parked_id_rx
+                    .next()
+                    .await
+                    .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
                 pending.cancel()?;
                 let error = pending
                     .block_task()
@@ -1158,16 +1162,12 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
                     .block_task()
                     .await?;
                 assert_eq!(response, v2::ResumeSessionResponse::new());
-                Ok(client_request_id)
+                Ok((client_request_id, parked_id))
             }),
     )
     .await
     .expect("v2 resume proxy cancellation test timed out")?;
 
-    let parked_id = tokio::time::timeout(std::time::Duration::from_secs(2), parked_id_rx.next())
-        .await
-        .expect("agent should observe the forwarded resume request")
-        .ok_or_else(|| Error::internal_error().data("parked request channel closed"))?;
     assert_ne!(
         parked_id, client_request_id,
         "each proxy hop must allocate its own request ID"

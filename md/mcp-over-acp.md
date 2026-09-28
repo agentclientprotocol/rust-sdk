@@ -34,7 +34,10 @@ cancellation and cleanup instead of merely dropping detached task handles.
 
 Custom `McpService` implementations must observe `operation_cancellation()` and
 return only after their owned cleanup finishes. The binding waits for this
-completion; it cannot forcibly terminate detached application work.
+completion, including on ACP EOF, a runtime error, or a `connect_with`
+foreground return, before dropping operation supervisors or scoped tool
+runners. It does not join arbitrary user-spawned tasks or forcibly terminate
+detached application work.
 
 The scoped `tool_fn` helpers continue to provide `McpConnectionTo` for host ACP
 access. For decisions using the full MCP metadata/capabilities, implement
@@ -101,9 +104,13 @@ ownership. Adapters must keep the frame's permit through staging, deferred
 dispatch, and writes; extracting a payload must not silently release its charge
 while retaining the data. Async producers await capacity; synchronous dispatch
 must fail explicitly instead of blocking the dispatcher needed to free capacity.
+`max_queued_frames` bounds all live SDK tasks (running plus waiting), not just
+waiting task slots. A persistent child connection may occupy one slot; when no
+live slot remains, an ordered response callback is rejected immediately rather
+than accepted behind a child that cannot finish.
 
 The same item-limit policy currently governs frame queues, pending requests,
-running tasks, dynamic handlers, and deferred dispatch; the default is 32.
+live tasks, dynamic handlers, and deferred dispatch; the default is 32.
 The shared payload budget defaults to 64 MiB with a 16 MiB frame maximum and
 reserved response/cancellation capacity. These are serialized-payload charges,
 not an exact bound on total process memory or allocations inside user code.

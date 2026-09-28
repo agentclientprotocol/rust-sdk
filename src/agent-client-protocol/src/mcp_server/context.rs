@@ -67,7 +67,7 @@ pub struct McpConnectionTo<Counterpart: Role> {
 }
 
 impl<Counterpart: Role> McpConnectionTo<Counterpart> {
-    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[cfg(all(feature = "unstable_mcp_over_acp", feature = "schemars"))]
     pub(crate) fn register_cleanup(&self, done: oneshot::Receiver<()>) {
         if let Some(cleanup) = &self.cleanup {
             cleanup.lock().expect("MCP cleanup poisoned").push(done);
