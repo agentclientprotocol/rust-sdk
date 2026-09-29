@@ -100,9 +100,12 @@ impl HttpClientLimits {
 /// [`HttpClient::with_limits`]; legacy channel extraction fails closed.
 ///
 /// There are no background SSE tasks, observer mailboxes, or hidden unbounded
-/// bridges. The transport future directly polls all streams and POSTs. Dropping
-/// it releases local resources; it does not wait for an HTTP DELETE or promise
-/// peer cleanup. No uncertain or accepted POST is ever retried.
+/// bridges. The transport future directly polls all streams and POSTs. On exit,
+/// it awaits one best-effort HTTP DELETE, bounded to five seconds, for an admitted
+/// connection ID. Dropping it releases local streams and POSTs and, if teardown
+/// has not started, schedules that DELETE when a Tokio runtime is available.
+/// Cancellation can interrupt DELETE and never guarantees peer cleanup. No
+/// uncertain or accepted POST is ever retried.
 pub struct BoundedHttpClient {
     client: HttpClient,
     limits: HttpClientLimits,
@@ -135,7 +138,8 @@ impl BoundedHttpClient {
     }
 
     /// Extract the charged channel without a legacy adapter. Poll the returned
-    /// future to drive HTTP; dropping it cancels all local HTTP work.
+    /// future to drive HTTP; dropping it cancels streams and POSTs. Connection
+    /// cleanup is best effort, as described on [`BoundedHttpClient`].
     #[must_use]
     pub fn into_bounded_channel_and_future(
         self,
@@ -578,6 +582,182 @@ mod tests {
         (format!("http://{address}/acp"), count, server)
     }
 
+    // Loopback HTTP boundary; DELETE headers are withheld until explicitly released.
+    async fn teardown_fixture(
+        initialize_body: &'static str,
+    ) -> (
+        String,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Semaphore>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use axum::{Router, body::Body, response::Response, routing::post};
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let delete_started = started.clone();
+        let delete_release = release.clone();
+        let app = Router::new().route(
+            "/acp",
+            post(move || async move {
+                Response::builder()
+                    .header(HEADER_CONNECTION_ID, "teardown-test")
+                    .body(Body::from(initialize_body))
+                    .unwrap()
+            })
+            .get(|| async {
+                Response::builder()
+                    .header("Content-Type", "text/event-stream")
+                    .body(Body::from_stream(futures::stream::pending::<
+                        Result<String, std::convert::Infallible>,
+                    >()))
+                    .unwrap()
+            })
+            .delete(move |headers: axum::http::HeaderMap| {
+                let started = delete_started.clone();
+                let release = delete_release.clone();
+                async move {
+                    assert_eq!(headers.get(HEADER_CONNECTION_ID).unwrap(), "teardown-test");
+                    started.notify_one();
+                    release.acquire().await.unwrap().forget();
+                    // Headers complete DELETE; an infinite body must not delay it.
+                    Response::builder()
+                        .body(Body::from_stream(futures::stream::pending::<
+                            Result<String, std::convert::Infallible>,
+                        >()))
+                        .unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{address}/acp"), started, release, server)
+    }
+
+    const INITIALIZED: &str = r#"{"jsonrpc":"2.0","id":0,"result":{}}"#;
+
+    #[tokio::test]
+    async fn graceful_eof_waits_for_delete_headers_not_body() {
+        let (url, started, release, server) = teardown_fixture(INITIALIZED).await;
+        let (mut channel, transport) = HttpClient::with_endpoint(url)
+            .unwrap()
+            .with_limits(HttpClientLimits::default())
+            .unwrap()
+            .into_bounded_channel_and_future();
+        channel.tx.try_send(initialize()).unwrap();
+        let driver = tokio::spawn(transport);
+        assert!(channel.rx.next().await.is_some());
+        channel.tx.close_channel();
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        assert!(!driver.is_finished(), "EOF must await DELETE headers");
+        release.add_permits(1);
+        tokio::time::timeout(std::time::Duration::from_secs(3), driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_initialize_closes_admission_and_awaits_delete() {
+        let (url, started, release, server) = teardown_fixture("not JSON").await;
+        let (channel, transport) = HttpClient::with_endpoint(url)
+            .unwrap()
+            .with_limits(HttpClientLimits::default())
+            .unwrap()
+            .into_bounded_channel_and_future();
+        channel.tx.try_send(initialize()).unwrap();
+        let driver = tokio::spawn(transport);
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        assert!(channel.tx.try_send(initialize()).is_err());
+        assert!(!driver.is_finished());
+        release.add_permits(1);
+        let error = tokio::time::timeout(std::time::Duration::from_secs(3), driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        assert!(error.to_string().contains("initialize response"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cancellation_closes_locally_without_waiting_for_remote_delete() {
+        let (url, started, release, server) = teardown_fixture(INITIALIZED).await;
+        let (mut channel, transport) = HttpClient::with_endpoint(url)
+            .unwrap()
+            .with_limits(HttpClientLimits::default())
+            .unwrap()
+            .into_bounded_channel_and_future();
+        channel.tx.try_send(initialize()).unwrap();
+        let driver = tokio::spawn(transport);
+        assert!(channel.rx.next().await.is_some());
+        driver.abort();
+        assert!(driver.await.unwrap_err().is_cancelled());
+        assert!(channel.tx.try_send(initialize()).is_err());
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        // Local cancellation completed while the server still withholds DELETE
+        // completion. Best-effort dispatch is not a remote-deletion guarantee.
+        assert_eq!(release.available_permits(), 0);
+        release.add_permits(1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_graceful_delete_preserves_admitted_response() {
+        let (url, started, _release, server) = teardown_fixture(INITIALIZED).await;
+        let (mut channel, transport) = HttpClient::with_endpoint(url)
+            .unwrap()
+            .with_limits(HttpClientLimits::default())
+            .unwrap()
+            .into_bounded_channel_and_future();
+        channel.tx.try_send(initialize()).unwrap();
+        channel.tx.close_channel();
+        let driver = tokio::spawn(transport);
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        driver.abort();
+        assert!(driver.await.unwrap_err().is_cancelled());
+        let response = channel
+            .rx
+            .next()
+            .await
+            .expect("admitted response survives graceful cleanup cancellation");
+        assert_eq!(response.decode().to_json().unwrap(), INITIALIZED);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_without_response_headers_has_finite_deadline() {
+        let (url, started, _release, server) = teardown_fixture(INITIALIZED).await;
+        let (mut channel, transport) = HttpClient::with_endpoint(url)
+            .unwrap()
+            .with_limits(HttpClientLimits::default())
+            .unwrap()
+            .into_bounded_channel_and_future();
+        channel.tx.try_send(initialize()).unwrap();
+        let driver = tokio::spawn(transport);
+        assert!(channel.rx.next().await.is_some());
+        channel.tx.close_channel();
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), driver)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        server.abort();
+    }
+
     #[tokio::test]
     async fn non_replayable_posts_ignore_redirect_and_retry_policies() {
         use axum::{Router, body::Body, response::Response, routing::post};
@@ -1002,6 +1182,60 @@ fn launch(
     );
 }
 
+// Single-owner teardown: no registry or task per POST. The connection metadata
+// remains charged even if cancellation transfers cleanup to a background task.
+struct ConnectionCleanup {
+    client: HttpClient,
+    connection: Option<(String, Arc<Lease>)>,
+}
+
+impl ConnectionCleanup {
+    async fn close(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            Self::send_close(
+                self.client.http.clone(),
+                self.client.endpoint.clone(),
+                connection,
+            )
+            .await;
+        }
+    }
+
+    async fn send_close(
+        http: reqwest::Client,
+        endpoint: url::Url,
+        (connection, lease): (String, Arc<Lease>),
+    ) {
+        // Do not consume the response body: it may be arbitrarily large or never
+        // end. The request deadline also bounds a peer that never sends headers.
+        if let Err(error) = http
+            .delete(endpoint)
+            .header(HEADER_CONNECTION_ID, connection)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            debug!("bounded HTTP DELETE failed (ignored): {error}");
+        }
+        drop(lease);
+    }
+}
+
+impl Drop for ConnectionCleanup {
+    fn drop(&mut self) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            drop(runtime.spawn(Self::send_close(
+                self.client.http.clone(),
+                self.client.endpoint.clone(),
+                connection,
+            )));
+        }
+    }
+}
+
 async fn run_bounded(
     client: HttpClient,
     limits: HttpClientLimits,
@@ -1022,20 +1256,34 @@ async fn run_bounded(
         sender: channel.tx.clone(),
         armed: true,
     };
+    let mut cleanup = ConnectionCleanup {
+        client,
+        connection: None,
+    };
     let failed = terminal.sender.failure();
-    let running = run_bounded_inner(client, limits, channel).boxed();
-    match futures::future::select(failed, running).await {
-        futures::future::Either::Left((error, _)) => Err(error),
-        futures::future::Either::Right((result, _)) => {
-            // Preserve already-admitted inbound responses on graceful EOF.
-            terminal.armed = result.is_err();
+    let running = run_bounded_inner(&mut cleanup, limits, channel).boxed();
+    let result = match futures::future::select(failed, running).await {
+        futures::future::Either::Left((error, running)) => {
+            drop(running);
+            Err(error)
+        }
+        futures::future::Either::Right((result, failed)) => {
+            drop(failed);
             result
         }
+    };
+    // Preserve already-admitted inbound responses on graceful EOF, including
+    // cancellation during teardown. Errors close local admission before DELETE.
+    terminal.armed = result.is_err();
+    if result.is_err() {
+        drop(terminal.sender.fail("bounded HTTP transport ended"));
     }
+    cleanup.close().await;
+    result
 }
 
 async fn run_bounded_inner(
-    client: HttpClient,
+    cleanup: &mut ConnectionCleanup,
     limits: HttpClientLimits,
     channel: BoundedChannel,
 ) -> Result<(), AcpError> {
@@ -1044,6 +1292,7 @@ async fn run_bounded_inner(
         Sse(Box<Result<SseEvent, AcpError>>),
         Post(Result<bool, AcpError>),
     }
+    let client = &cleanup.client;
     let BoundedChannel {
         tx: incoming,
         rx: mut outgoing,
@@ -1082,24 +1331,17 @@ async fn run_bounded_inner(
         return Err(failure("initialize redirect is not supported"));
     }
     let status = response.status();
-    let _connection_metadata = response
-        .headers()
-        .get(HEADER_CONNECTION_ID)
-        .map(|header| budget.reserve(header.as_bytes().len()))
-        .transpose()?;
-    let connection = response
-        .headers()
-        .get(HEADER_CONNECTION_ID)
-        .map(|header| {
-            if header.as_bytes().len() > limits.channel.max_frame_bytes {
-                return Err(failure("connection header exceeds frame limit"));
-            }
-            header
-                .to_str()
-                .map(String::from)
-                .map_err(|_| failure("invalid connection header"))
-        })
-        .transpose()?;
+    if let Some(header) = response.headers().get(HEADER_CONNECTION_ID) {
+        if header.as_bytes().len() > limits.channel.max_frame_bytes {
+            return Err(failure("connection header exceeds frame limit"));
+        }
+        let connection = header
+            .to_str()
+            .map_err(|_| failure("invalid connection header"))?;
+        let lease = budget.reserve(header.as_bytes().len())?;
+        // Capture before any body await so failed initialization is cleaned up.
+        cleanup.connection = Some((connection.to_owned(), lease));
+    }
     let body = capped_body(response, limits.max_response_bytes).await?;
     if !status.is_success() {
         return Err(failure(format!("initialize HTTP {status}")));
@@ -1122,9 +1364,12 @@ async fn run_bounded_inner(
     if rejected {
         return Ok(());
     }
-    let connection = connection.ok_or_else(|| failure("missing connection ID"))?;
+    let (connection, _) = cleanup
+        .connection
+        .as_ref()
+        .ok_or_else(|| failure("missing connection ID"))?;
     let mut streams = Streams::new();
-    streams.open(&client, &connection, None, &limits, &budget)?;
+    streams.open(client, connection, None, &limits, &budget)?;
     let mut pending = VecDeque::<Pending>::new();
     let mut ordered = Lane::default();
     let mut responses = Lane::default();
@@ -1135,8 +1380,8 @@ async fn run_bounded_inner(
             &mut ordered,
             false,
             &streams,
-            &client,
-            &connection,
+            client,
+            connection,
             limits.max_response_bytes,
             &mut posts,
         );
@@ -1144,8 +1389,8 @@ async fn run_bounded_inner(
             &mut responses,
             true,
             &streams,
-            &client,
-            &connection,
+            client,
+            connection,
             limits.max_response_bytes,
             &mut posts,
         );
@@ -1238,13 +1483,7 @@ async fn run_bounded_inner(
                     }
                 }
                 for session in &bookkeeping.session_ids {
-                    streams.open(
-                        &client,
-                        &connection,
-                        Some(session.clone()),
-                        &limits,
-                        &budget,
-                    )?;
+                    streams.open(client, connection, Some(session.clone()), &limits, &budget)?;
                 }
                 lane.queue.push_back(Post {
                     frame: charged,
@@ -1288,8 +1527,8 @@ async fn run_bounded_inner(
                                     result.get("sessionId").and_then(|v| v.as_str())
                             {
                                 streams.open(
-                                    &client,
-                                    &connection,
+                                    client,
+                                    connection,
                                     Some(session.to_owned()),
                                     &limits,
                                     &budget,
