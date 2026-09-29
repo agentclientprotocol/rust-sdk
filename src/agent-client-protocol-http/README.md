@@ -25,6 +25,14 @@ Use `AcpHttpServer::new_bounded(factory, ServerLimits::default())?` and
 bounded transport path. Existing constructors and `ServerOptions` literals keep
 their compatibility behavior; legacy transports remain unbounded.
 
+The bounded server also offers `.with_graceful_delete(Duration)` before
+`into_router()`. It seals POST admission without consuming body/frame capacity,
+then waits for actual component completion and clean output EOF. DELETE returns
+202 only for clean completion; timeout/failure returns 503. Timeout or canceled
+DELETE waiters do not abort accepted work or reopen admission. Concurrent DELETE
+waiters join the same drain; after completion removes the connection, later
+DELETE returns 404. Without this option, DELETE remains abortive.
+
 The bounded path integrates directly with the core `BoundedChannel` and
 producer admission. Finite defaults constrain serialized bytes, frame counts,
 pending work, POSTs, sessions, and streams. Exhaustion fails explicitly rather
