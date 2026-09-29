@@ -6,12 +6,13 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 const WAIT: Duration = Duration::from_secs(5);
-const NOTICE: &str = r#"{"jsonrpc":"2.0","method":"notice"}"#;
+const NOTICE: &str = r#"{"jsonrpc":"2.0","method":"notice","params":null}"#;
 
 #[derive(Clone, Copy)]
 enum Boundary {
     Normal,
     EarlyOutboundEof,
+    EmitOutput,
     CoreFailure,
 }
 
@@ -46,6 +47,7 @@ impl ConnectTo<Client> for BlockedAdapter {
         match self.boundary {
             Boundary::Normal => {}
             Boundary::EarlyOutboundEof => channel.tx.close_channel(),
+            Boundary::EmitOutput => channel.tx.try_send_serialized(NOTICE)?,
             Boundary::CoreFailure => {
                 // Fail the actual shared core terminal, but return adapter success:
                 // clean EOF and Ok(()) must not hide this independent failure.
@@ -436,4 +438,71 @@ async fn outbound_eof_does_not_substitute_for_adapter_completion() {
     );
     assert_closing_before_body_poll(h.state.clone(), &h.id).await;
     h.finish.send(true).unwrap();
+}
+
+#[tokio::test]
+async fn already_reading_post_crossing_delete_seal_does_not_enqueue_or_abort_drain() {
+    let h = setup(ServerLimits::default(), WAIT).await;
+    enqueue(&h, NOTICE).await;
+    let (polled, first_poll) = oneshot::channel();
+    let (release, released) = oneshot::channel();
+    let body = Body::from_stream(futures::stream::once(async move {
+        polled.send(()).unwrap();
+        released.await.unwrap();
+        Ok::<_, Infallible>(axum::body::Bytes::from_static(
+            br#"{"jsonrpc":"2.0","method":"late","params":null}"#,
+        ))
+    }));
+    let post = tokio::spawn(handle_post(State(h.state.clone()), post(body, Some(&h.id))));
+    checked(first_poll).await.unwrap();
+    let mut delete = Box::pin(handle_delete(State(h.state.clone()), delete_request(&h.id)));
+    assert!(futures::poll!(&mut delete).is_pending());
+    // The body was admitted before DELETE, but is not a core-accepted frame.
+    // Finishing its read after the seal must neither enqueue it nor fail the core.
+    release.send(()).unwrap();
+    assert_eq!(checked(post).await.unwrap().status(), StatusCode::GONE);
+    assert!(futures::poll!(&mut delete).is_pending());
+    h.read.send(()).unwrap();
+    assert_eq!(
+        checked(h.drained).await.unwrap(),
+        vec![NOTICE.as_bytes().to_vec()]
+    );
+    assert!(futures::poll!(&mut delete).is_pending());
+    h.finish.send(true).unwrap();
+    assert_eq!(checked(delete).await.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn existing_sse_body_retains_queued_output_after_clean_delete() {
+    let h = setup_many(ServerLimits::default(), WAIT, &[Boundary::EmitOutput])
+        .await
+        .pop()
+        .unwrap();
+    let response = checked(handle_get(
+        State(h.state.clone()),
+        Request::builder()
+            .method("GET")
+            .header(HEADER_CONNECTION_ID, &h.id)
+            .header(header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .unwrap(),
+    ))
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    // Subscribe through the real handler, but do not consume any SSE bytes yet.
+    let body = response.into_body();
+    enqueue(&h, NOTICE).await;
+    let mut delete = Box::pin(handle_delete(State(h.state.clone()), delete_request(&h.id)));
+    assert!(futures::poll!(&mut delete).is_pending());
+    h.read.send(()).unwrap();
+    assert_eq!(
+        checked(h.drained).await.unwrap(),
+        vec![NOTICE.as_bytes().to_vec()]
+    );
+    h.finish.send(true).unwrap();
+    assert_eq!(checked(delete).await.status(), StatusCode::ACCEPTED);
+    // Completion must preserve already-routed output for existing subscribers,
+    // then terminate their streams after the final queued event.
+    let bytes = checked(axum::body::to_bytes(body, 4096)).await.unwrap();
+    assert_eq!(bytes.as_ref(), format!("data: {NOTICE}\n\n").as_bytes());
 }
