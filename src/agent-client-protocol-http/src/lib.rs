@@ -14,6 +14,9 @@ mod server;
 mod websocket_server;
 
 #[cfg(feature = "client")]
-pub use client::{HttpClient, HttpClientError};
+pub use client::{BoundedHttpClient, HttpClient, HttpClientError, HttpClientLimits};
 #[cfg(feature = "server")]
-pub use server::{AcpHttpServer, CorsOptions, ServerOptions};
+pub use server::{
+    AcpHttpServer, BoundedAcpHttpServer, CorsOptions, ServerLimits, ServerLimitsError,
+    ServerOptions,
+};

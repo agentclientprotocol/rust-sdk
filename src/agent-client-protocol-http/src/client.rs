@@ -32,6 +32,10 @@ pub enum HttpClientError {
     Reqwest(#[from] reqwest::Error),
 }
 
+#[path = "client_limits.rs"]
+mod limits;
+pub use limits::{BoundedHttpClient, HttpClientLimits};
+
 pub struct HttpClient {
     endpoint: url::Url,
     http: reqwest::Client,
@@ -93,6 +97,14 @@ impl HttpClient {
     ) -> Result<Self, HttpClientError> {
         let endpoint = url::Url::parse(endpoint.as_ref())?;
         Ok(Self { endpoint, http })
+    }
+
+    /// Opt into fail-fast, bounded HTTP transport and core channel admission.
+    ///
+    /// Unlike the legacy constructors, this rejects WebSocket endpoints. No POST
+    /// retries or SSE replay are performed. See [`HttpClientLimits`] for scope.
+    pub fn with_limits(self, limits: HttpClientLimits) -> Result<BoundedHttpClient, AcpError> {
+        BoundedHttpClient::new(self, limits)
     }
 
     fn is_websocket(&self) -> bool {

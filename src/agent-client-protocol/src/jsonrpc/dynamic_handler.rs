@@ -37,6 +37,7 @@ impl<Counterpart: Role, H: HandleDispatchFrom<Counterpart>> DynHandleDispatchFro
 
 /// Messages used to add/remove dynamic handlers
 pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
+    Admitted(Box<Self>, crate::bounded::Charge),
     AddDynamicHandler(Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>),
     RemoveDynamicHandler(Uuid),
     /// Marks the end of the registrations queued by an ordered response callback.
@@ -50,6 +51,7 @@ pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
 impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Admitted(message, _) => message.fmt(f),
             Self::AddDynamicHandler(arg0, arg1) => f
                 .debug_tuple("AddDynamicHandler")
                 .field(arg0)
@@ -62,5 +64,41 @@ impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
             #[cfg(feature = "unstable_protocol_v2")]
             Self::AcknowledgedBarrier(_) => f.write_str("AcknowledgedBarrier"),
         }
+    }
+}
+
+impl<R: Role> DynamicHandlerMessage<R> {
+    pub(super) fn unpack(self) -> (Self, Option<crate::bounded::Charge>) {
+        match self {
+            Self::Admitted(message, charge) => (*message, Some(charge)),
+            message => (message, None),
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub(super) struct DynamicHandlerTx<R: Role> {
+    tx: futures::channel::mpsc::UnboundedSender<DynamicHandlerMessage<R>>,
+    pub(super) budget: Option<crate::bounded::Budget>,
+}
+impl<R: Role> From<futures::channel::mpsc::UnboundedSender<DynamicHandlerMessage<R>>>
+    for DynamicHandlerTx<R>
+{
+    fn from(tx: futures::channel::mpsc::UnboundedSender<DynamicHandlerMessage<R>>) -> Self {
+        Self { tx, budget: None }
+    }
+}
+impl<R: Role> DynamicHandlerTx<R> {
+    pub(super) fn unbounded_send(
+        &self,
+        message: DynamicHandlerMessage<R>,
+    ) -> Result<(), crate::Error> {
+        let message = if let Some(budget) = &self.budget {
+            DynamicHandlerMessage::Admitted(Box::new(message), budget.reserve()?)
+        } else {
+            message
+        };
+        self.tx
+            .unbounded_send(message)
+            .map_err(crate::util::internal_error)
     }
 }

@@ -362,14 +362,12 @@ impl Serialize for RawJsonRpcMessage {
         S: serde::Serializer,
     {
         match self {
-            Self::Request(request) => {
-                VersionedJsonRpcMessage::wrap(request.clone()).serialize(serializer)
-            }
+            Self::Request(request) => VersionedJsonRpcMessage::wrap(request).serialize(serializer),
             Self::Notification(notification) => {
-                VersionedJsonRpcMessage::wrap(notification.clone()).serialize(serializer)
+                VersionedJsonRpcMessage::wrap(notification).serialize(serializer)
             }
             Self::Response(response) => {
-                VersionedJsonRpcMessage::wrap(response.clone()).serialize(serializer)
+                VersionedJsonRpcMessage::wrap(response).serialize(serializer)
             }
         }
     }
@@ -1906,7 +1904,14 @@ impl<
         // Convert transport into server - this returns a channel for us to use
         // and a future that runs the transport.
         let transport_component = crate::DynConnectTo::new(transport);
-        let (transport_channel, transport_future) = transport_component.into_channel_and_future();
+        let (transport_channel, transport_future) = transport_component.into_transport_and_future();
+        let (transport_incoming_rx, transport_outgoing_tx, budget) = transport_channel.split();
+        pending_replies
+            .inner
+            .lock()
+            .expect("pending replies mutex poisoned")
+            .budget
+            .clone_from(&budget);
         let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
         let transport_completion = transport_completion_rx
             .map(|result| {
@@ -1919,7 +1924,7 @@ impl<
             .boxed()
             .shared();
 
-        let connection = ConnectionTo::new(
+        let mut connection = ConnectionTo::new(
             me.counterpart(),
             outgoing_tx,
             new_task_tx,
@@ -1928,23 +1933,23 @@ impl<
             pending_replies.registrar(),
             protocol_mode,
         );
+        connection.message_tx.set_budget(budget.clone());
+        connection.task_tx.budget.clone_from(&budget);
+        connection.dynamic_handler_tx.budget.clone_from(&budget);
+        let admission_failure = budget.as_ref().map(crate::bounded::Budget::failure);
         let spawn_result = connection.spawn(async move {
             let result = transport_future.await;
             drop(transport_completion_tx.send(result.clone()));
             result
         });
 
-        // Destructure the channel endpoints
-        let Channel {
-            rx: transport_incoming_rx,
-            tx: transport_outgoing_tx,
-        } = transport_channel;
-
         let protocol_compat = ProtocolCompat::new(protocol_mode);
+        let bounded_lifetime = budget.map(crate::bounded::DriverLifetime::new);
 
         let future = crate::util::instrument_with_connection_name(name, {
             let connection = connection.clone();
             async move {
+                let mut bounded_lifetime = bounded_lifetime;
                 let () = spawn_result?;
 
                 let background = async {
@@ -1984,12 +1989,25 @@ impl<
                     .await
                 };
 
-                run_until_connection_close(
+                let driver = run_until_connection_close(
                     background,
                     main_fn(connection.clone()),
                     connection.incoming_closed.clone(),
-                )
-                .await
+                );
+                let result = if let Some(failure) = admission_failure {
+                    match future::select(failure, Box::pin(driver)).await {
+                        Either::Left((error, _)) => Err(error),
+                        Either::Right((result, _)) => result,
+                    }
+                } else {
+                    driver.await
+                };
+                if result.is_ok()
+                    && let Some(lifetime) = &mut bounded_lifetime
+                {
+                    lifetime.finish_gracefully();
+                }
+                result
             }
         });
 
@@ -2097,6 +2115,8 @@ pub(crate) struct ResponsePayload {
     /// blocking consumers, and responses routed later do not hold the dispatch
     /// loop.
     pub(crate) ack_tx: Option<oneshot::Sender<()>>,
+    /// Admission retained through the response oneshot and callback consumption.
+    charges: Vec<crate::bounded::Charge>,
 }
 
 type ResponseRouteHook =
@@ -2141,6 +2161,7 @@ impl std::fmt::Debug for ResponsePayload {
         f.debug_struct("ResponsePayload")
             .field("result", &self.result)
             .field("ack_tx", &self.ack_tx.as_ref().map(|_| "..."))
+            .field("charges", &self.charges)
             .finish()
     }
 }
@@ -2177,6 +2198,7 @@ impl PendingReply {
             .send(ResponsePayload {
                 result: Err(error),
                 ack_tx: None,
+                charges: vec![],
             })
             .is_err()
         {
@@ -2194,6 +2216,7 @@ impl PendingReply {
 struct PendingRepliesInner {
     incoming_closed: bool,
     replies: HashMap<RequestId, PendingReply>,
+    budget: Option<crate::bounded::Budget>,
 }
 
 #[derive(Clone, Default)]
@@ -2274,6 +2297,15 @@ impl PendingRepliesRegistrar {
             let mut inner = inner.lock().expect("pending replies mutex poisoned");
             if inner.incoming_closed {
                 Err(reply)
+            } else if let Some(budget) = &inner.budget
+                && (budget.check().is_err()
+                    || (!inner.replies.contains_key(&id)
+                        && inner.replies.len() >= budget.limits().max_pending_requests))
+            {
+                let error = budget.fail("bounded pending request admission exhausted");
+                drop(inner);
+                reply.fail(error);
+                return false;
             } else {
                 Ok(inner.replies.insert(id, reply))
             }
@@ -2804,6 +2836,7 @@ fn response_receipt_teardown_error() -> crate::Error {
 struct CompletedResponseFrame {
     frame: TransportFrame,
     receipts: Vec<ResponseReceiptSender>,
+    charges: Vec<crate::bounded::Charge>,
 }
 
 /// Messages send to be serialized over the transport.
@@ -2823,6 +2856,23 @@ impl std::fmt::Debug for ResponseDestination {
 }
 
 impl ResponseDestination {
+    fn retain_incoming(&self, charges: &[crate::bounded::Charge]) {
+        match self {
+            Self::Individual(slot) => slot
+                .state
+                .incoming_charges
+                .lock()
+                .expect("response charge mutex poisoned")
+                .extend_from_slice(charges),
+            Self::Batch(slot) => slot
+                .state
+                .lock()
+                .expect("batch response accumulator mutex poisoned")
+                .charges
+                .extend_from_slice(charges),
+        }
+    }
+
     fn individual() -> Self {
         Self::Individual(IndividualResponseSlot::default())
     }
@@ -2836,6 +2886,7 @@ impl ResponseDestination {
             receipts: (0..slot_count).map(|_| None).collect(),
             dispatch_complete: false,
             emitted: false,
+            charges: vec![],
         }));
 
         (
@@ -2898,7 +2949,13 @@ impl ResponseDestination {
 
 #[derive(Clone, Debug, Default)]
 struct IndividualResponseSlot {
-    completed: Arc<AtomicBool>,
+    state: Arc<IndividualResponseState>,
+}
+
+#[derive(Debug, Default)]
+struct IndividualResponseState {
+    completed: AtomicBool,
+    incoming_charges: Mutex<Vec<crate::bounded::Charge>>,
 }
 
 impl IndividualResponseSlot {
@@ -2907,7 +2964,7 @@ impl IndividualResponseSlot {
         response: RawJsonRpcMessage,
         receipt: Option<ResponseReceiptSender>,
     ) -> Option<CompletedResponseFrame> {
-        if self.completed.swap(true, Ordering::AcqRel) {
+        if self.state.completed.swap(true, Ordering::AcqRel) {
             tracing::warn!("Ignoring duplicate completion of JSON-RPC request");
             return None;
         }
@@ -2915,12 +2972,23 @@ impl IndividualResponseSlot {
         Some(CompletedResponseFrame {
             frame: TransportFrame::Single(response),
             receipts: receipt.into_iter().collect(),
+            charges: std::mem::take(
+                &mut *self
+                    .state
+                    .incoming_charges
+                    .lock()
+                    .expect("response charge mutex poisoned"),
+            ),
         })
     }
 }
 
 fn batch_response_frame(
-    (responses, receipts): (Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>),
+    (responses, receipts, charges): (
+        Vec<RawJsonRpcMessage>,
+        Vec<ResponseReceiptSender>,
+        Vec<crate::bounded::Charge>,
+    ),
 ) -> CompletedResponseFrame {
     CompletedResponseFrame {
         frame: TransportFrame::Batch(
@@ -2928,6 +2996,7 @@ fn batch_response_frame(
                 .expect("a completed JSON-RPC response batch is non-empty"),
         ),
         receipts,
+        charges,
     }
 }
 
@@ -2974,7 +3043,11 @@ fn promote_abandoned_response(state: &mut BatchResponseState, index: usize) {
 
 fn take_completed_batch(
     state: &mut BatchResponseState,
-) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
+) -> Option<(
+    Vec<RawJsonRpcMessage>,
+    Vec<ResponseReceiptSender>,
+    Vec<crate::bounded::Charge>,
+)> {
     if !state.dispatch_complete || state.remaining != 0 || state.emitted {
         return None;
     }
@@ -2990,7 +3063,7 @@ fn take_completed_batch(
         })
         .collect();
     let receipts = state.receipts.iter_mut().filter_map(Option::take).collect();
-    Some((responses, receipts))
+    Some((responses, receipts, std::mem::take(&mut state.charges)))
 }
 
 #[derive(Clone)]
@@ -3019,7 +3092,11 @@ impl BatchResponseSlot {
 
     fn finish_handler_attempt(
         self,
-    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
+    ) -> Option<(
+        Vec<RawJsonRpcMessage>,
+        Vec<ResponseReceiptSender>,
+        Vec<crate::bounded::Charge>,
+    )> {
         let mut state = self
             .state
             .lock()
@@ -3037,7 +3114,11 @@ impl BatchResponseSlot {
         self,
         response: RawJsonRpcMessage,
         receipt: Option<ResponseReceiptSender>,
-    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
+    ) -> Option<(
+        Vec<RawJsonRpcMessage>,
+        Vec<ResponseReceiptSender>,
+        Vec<crate::bounded::Charge>,
+    )> {
         let mut state = self
             .state
             .lock()
@@ -3071,7 +3152,11 @@ impl BatchResponseSlot {
     fn abandon(
         self,
         fallback: RawJsonRpcMessage,
-    ) -> Option<(Vec<RawJsonRpcMessage>, Vec<ResponseReceiptSender>)> {
+    ) -> Option<(
+        Vec<RawJsonRpcMessage>,
+        Vec<ResponseReceiptSender>,
+        Vec<crate::bounded::Charge>,
+    )> {
         let mut state = self
             .state
             .lock()
@@ -3105,6 +3190,7 @@ struct BatchResponseState {
     receipts: Vec<Option<ResponseReceiptSender>>,
     dispatch_complete: bool,
     emitted: bool,
+    charges: Vec<crate::bounded::Charge>,
 }
 
 #[derive(Clone, Debug)]
@@ -3136,18 +3222,29 @@ impl Drop for ResponderHandlerAttempt {
 struct ResponseReplyTarget {
     id: RequestId,
     method: String,
-    sender: Arc<Mutex<Option<oneshot::Sender<ResponsePayload>>>>,
+    state: Arc<Mutex<ResponseReplyState>>,
     ordering: ResponseOrdering,
     dispatch: ResponseDispatch,
 }
 
+struct ResponseReplyState {
+    sender: Option<oneshot::Sender<ResponsePayload>>,
+    charges: Vec<crate::bounded::Charge>,
+}
+
 impl ResponseReplyTarget {
-    fn route(self, result: Result<serde_json::Value, crate::Error>) {
-        let sender = self
-            .sender
+    fn retain_incoming(&self, charges: &[crate::bounded::Charge]) {
+        self.state
             .lock()
             .expect("response reply mutex poisoned")
-            .take();
+            .charges
+            .extend_from_slice(charges);
+    }
+    fn route(self, result: Result<serde_json::Value, crate::Error>) {
+        let (sender, charges) = {
+            let mut state = self.state.lock().expect("response reply mutex poisoned");
+            (state.sender.take(), std::mem::take(&mut state.charges))
+        };
         let Some(sender) = sender else {
             tracing::debug!(
                 method = %self.method,
@@ -3158,7 +3255,14 @@ impl ResponseReplyTarget {
         };
 
         let ack_tx = self.dispatch.acknowledgment(&self.ordering);
-        if sender.send(ResponsePayload { result, ack_tx }).is_err() {
+        if sender
+            .send(ResponsePayload {
+                result,
+                ack_tx,
+                charges,
+            })
+            .is_err()
+        {
             tracing::debug!(
                 method = %self.method,
                 id = ?self.id,
@@ -3225,6 +3329,10 @@ impl HandlerErrorTarget {
 
 #[derive(Debug)]
 enum OutgoingMessage {
+    Admitted {
+        message: Box<OutgoingMessage>,
+        charge: crate::bounded::Charge,
+    },
     /// Close the outgoing application queue and acknowledge after every
     /// already-accepted message has entered the raw transport queue.
     CloseAfterDraining { done: oneshot::Sender<()> },
@@ -3291,6 +3399,50 @@ enum OutgoingMessage {
         error: crate::Error,
         destination: ResponseDestination,
     },
+}
+
+impl OutgoingMessage {
+    fn normalize(&mut self, budget: &crate::bounded::Budget) -> Result<(), crate::Error> {
+        fn normalized<T: serde::de::DeserializeOwned>(
+            v: &impl Serialize,
+            limit: usize,
+        ) -> Result<T, crate::Error> {
+            let bytes = crate::bounded::serialize(v, limit)?;
+            Ok(serde_json::from_slice(&bytes)?)
+        }
+        let limit = budget.limits().max_frame_bytes;
+        match self {
+            Self::Request {
+                id,
+                method,
+                untyped,
+                ..
+            } => {
+                let values = normalized(&(&*id, &*method, &*untyped), limit)?;
+                (*id, *method, *untyped) = values;
+            }
+            Self::Notification { untyped } => *untyped = normalized(untyped, limit)?,
+            Self::Response {
+                id,
+                method,
+                response,
+                ..
+            } => {
+                let values = normalized(&(&*id, &*method, &*response), limit)?;
+                (*id, *method, *response) = values;
+            }
+            Self::AbandonedBatchResponse { id, method, .. } => {
+                let values = normalized(&(&*id, &*method), limit)?;
+                (*id, *method) = values;
+            }
+            Self::UncorrelatedErrorResponse { error, .. } => *error = normalized(error, limit)?,
+            Self::CloseAfterDraining { .. }
+            | Self::BatchDispatchComplete { .. }
+            | Self::BatchHandlerAttemptComplete { .. } => {}
+            Self::Admitted { .. } => unreachable!("nested admission"),
+        }
+        Ok(())
+    }
 }
 
 /// Return type from JrHandler; indicates whether the request was handled or not.
@@ -3577,7 +3729,7 @@ pub struct ConnectionTo<Counterpart: Role> {
     counterpart: Counterpart,
     message_tx: OutgoingMessageTx,
     task_tx: TaskTx,
-    dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
+    dynamic_handler_tx: dynamic_handler::DynamicHandlerTx<Counterpart>,
     transport_completion: SharedTransportCompletion,
     pending_replies: PendingRepliesRegistrar,
     #[cfg_attr(
@@ -3738,9 +3890,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ) -> Self {
         Self {
             counterpart,
-            message_tx,
-            task_tx,
-            dynamic_handler_tx,
+            message_tx: message_tx.into(),
+            task_tx: task_tx.into(),
+            dynamic_handler_tx: dynamic_handler_tx.into(),
             transport_completion,
             pending_replies,
             protocol_mode,
@@ -4212,13 +4364,17 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         }
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
-        let cancellation =
+        let mut cancellation =
             SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
+        if self.message_tx.budget().is_some() {
+            cancellation.pending = Some(self.pending_replies.clone());
+        }
         if self.is_incoming_closing() {
             cancellation.disarm();
             drop(response_tx.send(ResponsePayload {
                 result: Err(incoming_transport_closed_error(&method)),
                 ack_tx: None,
+                charges: vec![],
             }));
             return SentRequest::new(
                 id,
@@ -4231,8 +4387,12 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             .map(move |json| <Req::Response>::from_value(&method, json));
         }
 
-        match request.to_untyped_message() {
-            Ok(untyped) => {
+        match self.message_tx.reserve().and_then(|charge| {
+            request
+                .to_untyped_message()
+                .map(|untyped| (untyped, charge))
+        }) {
+            Ok((untyped, charge)) => {
                 // Register before enqueueing so incoming EOF can fail every
                 // observable request before close callbacks begin. The
                 // outgoing actor checks that the registration still exists
@@ -4258,12 +4418,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                         readiness,
                     };
 
-                    if let Err(error) = self.message_tx.unbounded_send(message) {
+                    if let Err(error) = self.message_tx.send_with_charge(message, charge) {
                         cancellation.disarm();
 
-                        let OutgoingMessage::Request { id, method, .. } = error.into_inner() else {
-                            unreachable!();
-                        };
+                        drop(error);
 
                         if let Some(pending_reply) = self.pending_replies.remove(&id) {
                             if self.is_incoming_closing() {
@@ -4287,6 +4445,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                             "failed to create untyped request for `{method}`: {err}"
                         ))),
                         ack_tx: None,
+                        charges: vec![],
                     })
                     .unwrap();
             }
@@ -4351,16 +4510,17 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             original_method = notification.method(),
             "send_notification_to"
         );
+        let charge = self.message_tx.reserve()?;
         let transformed = remote_style.transform_outgoing_message(notification)?;
         tracing::debug!(
             transformed_method = %transformed.method,
             "send_notification_to transformed"
         );
-        send_raw_message(
-            &self.message_tx,
+        self.message_tx.send_with_charge(
             OutgoingMessage::Notification {
                 untyped: transformed,
             },
+            charge,
         )
     }
 
@@ -4413,6 +4573,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         &self,
         handler: impl HandleDispatchFrom<Counterpart> + 'static,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
+        let lifetime_charge = self
+            .message_tx
+            .budget()
+            .map(crate::bounded::Budget::task)
+            .transpose()?;
         let uuid = Uuid::new_v4();
         let active = Arc::new(AtomicBool::new(true));
         self.dynamic_handler_tx
@@ -4421,6 +4586,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                 Box::new(GuardedDynamicHandler {
                     active: active.clone(),
                     handler,
+                    _charge: lifetime_charge,
                 }),
             ))
             .map_err(crate::util::internal_error)?;
@@ -4464,6 +4630,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 struct GuardedDynamicHandler<Handler> {
     active: Arc<AtomicBool>,
     handler: Handler,
+    _charge: Option<crate::bounded::Charge>,
 }
 
 impl<Counterpart, Handler> HandleDispatchFrom<Counterpart> for GuardedDynamicHandler<Handler>
@@ -4602,6 +4769,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
         dyn FnOnce(
                 Result<T, crate::Error>,
                 Option<ResponseReceiptSender>,
+                Option<crate::bounded::Charge>,
             ) -> Result<(), crate::Error>
             + Send,
     >,
@@ -4686,9 +4854,8 @@ impl Responder<serde_json::Value> {
             cancellation,
             destination,
             send_fn: Box::new(
-                move |response: Result<serde_json::Value, crate::Error>, receipt| {
-                    send_raw_message(
-                        &message_tx,
+                move |response: Result<serde_json::Value, crate::Error>, receipt, charge| {
+                    message_tx.send_with_charge(
                         OutgoingMessage::Response {
                             id: id_clone,
                             method: method_clone,
@@ -4696,6 +4863,7 @@ impl Responder<serde_json::Value> {
                             destination: send_destination,
                             receipt,
                         },
+                        charge,
                     )
                 },
             ),
@@ -4774,9 +4942,9 @@ impl<T: JsonRpcResponse> Responder<T> {
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
-            send_fn: Box::new(move |input: Result<U, crate::Error>, receipt| {
+            send_fn: Box::new(move |input: Result<U, crate::Error>, receipt, charge| {
                 let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value, receipt)
+                (self.send_fn)(t_value, receipt, charge)
             }),
             drop_guard: self.drop_guard,
         }
@@ -4788,8 +4956,9 @@ impl<T: JsonRpcResponse> Responder<T> {
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
+        let charge = self.drop_guard.message_tx.reserve()?;
         self.drop_guard.disarm();
-        (self.send_fn)(response, None)
+        (self.send_fn)(response, None, charge)
     }
 
     /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`)
@@ -4817,9 +4986,10 @@ impl<T: JsonRpcResponse> Responder<T> {
         response: Result<T, crate::Error>,
     ) -> Result<ResponseReceipt, crate::Error> {
         tracing::debug!(id = ?self.id, "tracked respond called");
+        let charge = self.drop_guard.message_tx.reserve()?;
         let (sender, receipt) = ResponseReceiptSender::channel();
         self.drop_guard.disarm();
-        (self.send_fn)(response, Some(sender))?;
+        (self.send_fn)(response, Some(sender), charge)?;
         Ok(receipt)
     }
 
@@ -4921,7 +5091,10 @@ impl ResponseRouter<serde_json::Value> {
         let reply_target = ResponseReplyTarget {
             id: id.clone(),
             method: method.clone(),
-            sender: Arc::new(Mutex::new(Some(sender))),
+            state: Arc::new(Mutex::new(ResponseReplyState {
+                sender: Some(sender),
+                charges: vec![],
+            })),
             ordering,
             dispatch,
         };
@@ -5661,6 +5834,7 @@ struct SentRequestCancellation {
     remote_style: crate::role::RemoteStyle,
     request_id: RequestId,
     disarm: SentRequestCancellationDisarm,
+    pending: Option<PendingRepliesRegistrar>,
 }
 
 impl SentRequestCancellation {
@@ -5674,6 +5848,7 @@ impl SentRequestCancellation {
             remote_style,
             request_id,
             disarm: SentRequestCancellationDisarm::new(),
+            pending: None,
         }
     }
 
@@ -5692,11 +5867,13 @@ impl SentRequestCancellation {
 
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
+        let charge = self.message_tx.reserve()?;
         let untyped = self.remote_style.transform_outgoing_message(
             crate::schema::v1::CancelRequestNotification::new(self.request_id.clone()),
         )?;
 
-        send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
+        self.message_tx
+            .send_with_charge(OutgoingMessage::Notification { untyped }, charge)
     }
 }
 
@@ -5704,6 +5881,9 @@ impl Drop for SentRequestCancellation {
     fn drop(&mut self) {
         if let Err(error) = self.send() {
             tracing::debug!(?error, "failed to auto-cancel dropped request");
+        }
+        if let Some(pending) = &self.pending {
+            drop(pending.remove(&self.request_id));
         }
     }
 }
@@ -5784,7 +5964,7 @@ impl SentRequest<serde_json::Value> {
     fn new(
         id: RequestId,
         method: String,
-        task_tx: mpsc::UnboundedSender<Task>,
+        task_tx: impl Into<TaskTx>,
         response_rx: oneshot::Receiver<ResponsePayload>,
         cancellation: SentRequestCancellation,
         response_ordering: ResponseOrdering,
@@ -5793,7 +5973,7 @@ impl SentRequest<serde_json::Value> {
             id,
             method,
             response_rx,
-            task_tx,
+            task_tx: task_tx.into(),
             to_result: Box::new(Ok),
             cancellation,
             response_ordering,
@@ -6038,7 +6218,11 @@ impl<T> SentRequest<T> {
             .await;
 
             match response {
-                Ok(ResponsePayload { result, ack_tx }) => {
+                Ok(ResponsePayload {
+                    result,
+                    ack_tx,
+                    charges: _charges,
+                }) => {
                     // Convert the result using to_result for Ok values
                     let typed_result = match result {
                         Ok(json_value) => to_result(json_value),
@@ -6142,6 +6326,7 @@ impl<T> SentRequest<T> {
             Ok(ResponsePayload {
                 result: Ok(json_value),
                 ack_tx,
+                charges: _charges,
             }) => {
                 // Blocking consumers ack before converting or returning the
                 // value, so dispatch can continue while the caller processes it.
@@ -6156,6 +6341,7 @@ impl<T> SentRequest<T> {
             Ok(ResponsePayload {
                 result: Err(err),
                 ack_tx,
+                charges: _charges,
             }) => {
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
@@ -6703,6 +6889,244 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bounded_test_connection(
+        limits: crate::ChannelLimits,
+    ) -> (
+        ConnectionTo<crate::UntypedRole>,
+        impl Future<Output = Result<(), crate::Error>>,
+        crate::BoundedChannel,
+    ) {
+        let (channel, peer) = crate::BoundedChannel::duplex(limits).unwrap();
+        let (cx, future) = crate::UntypedRole
+            .builder()
+            .into_connection_and_future(channel, async |_| future::pending().await);
+        (cx, future, peer)
+    }
+
+    fn small_bounded_limits() -> crate::ChannelLimits {
+        crate::ChannelLimits {
+            max_frame_bytes: 1024,
+            max_buffered_bytes: 4096,
+            max_buffered_frames: 4,
+            max_pending_requests: 2,
+            max_tasks: 3,
+        }
+    }
+
+    #[test]
+    fn bounded_successful_driver_preserves_admitted_frames_for_transport_drain() {
+        let (channel, mut peer) = crate::BoundedChannel::duplex(small_bounded_limits()).unwrap();
+        let shutdown = channel.tx.clone();
+        let (cx, driver) = crate::UntypedRole
+            .builder()
+            .into_connection_and_future(channel, async |_| Ok(()));
+        cx.send_notification(UntypedMessage::new("notice", serde_json::json!({})).unwrap())
+            .unwrap();
+        futures::executor::block_on(driver).unwrap();
+        shutdown.close_channel();
+        assert!(
+            cx.send_notification(UntypedMessage::new("late", serde_json::json!({})).unwrap())
+                .is_err()
+        );
+        assert!(shutdown.failure().now_or_never().is_none());
+        let frame = peer.rx.next().now_or_never().unwrap().unwrap();
+        assert!(matches!(frame.decode(), TransportFrame::Single(_)));
+        assert!(peer.rx.next().now_or_never().unwrap().is_none());
+        drop(frame);
+        assert_eq!(shutdown.budget.snapshot(), (0, 0, 0));
+    }
+
+    #[test]
+    fn bounded_accepted_invalid_notification_fails_driver_and_signals_terminal() {
+        let (cx, driver, peer) = bounded_test_connection(small_bounded_limits());
+        cx.send_notification(UntypedMessage {
+            method: "invalid".into(),
+            params: serde_json::json!(42),
+        })
+        .unwrap();
+        assert!(futures::executor::block_on(driver).is_err());
+        assert!(peer.tx.failure().now_or_never().is_some());
+        assert_eq!(cx.message_tx.budget().unwrap().snapshot(), (0, 0, 0));
+    }
+
+    #[test]
+    fn legacy_invalid_notification_still_does_not_terminate_driver() {
+        let (channel, _peer) = Channel::duplex();
+        let (cx, driver) = crate::UntypedRole
+            .builder()
+            .into_connection_and_future(channel, async |_| {
+                future::pending::<Result<(), crate::Error>>().await
+            });
+        cx.send_notification(UntypedMessage {
+            method: "invalid".into(),
+            params: serde_json::json!(42),
+        })
+        .unwrap();
+        let mut driver = Box::pin(driver);
+        assert!(driver.as_mut().now_or_never().is_none());
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn bounded_accepted_notification_before_initialize_fails_terminally() {
+        let (channel, peer) = crate::BoundedChannel::duplex(small_bounded_limits()).unwrap();
+        let (cx, driver) = Client.v2().into_connection_and_future(channel, async |_| {
+            future::pending::<Result<(), crate::Error>>().await
+        });
+        cx.send_notification(UntypedMessage::new("session/update", serde_json::json!({})).unwrap())
+            .unwrap();
+        assert!(futures::executor::block_on(driver).is_err());
+        assert!(peer.tx.failure().now_or_never().is_some());
+    }
+
+    #[test]
+    fn outgoing_sender_stays_pointer_sized() {
+        assert_eq!(
+            std::mem::size_of::<OutgoingMessageTx>(),
+            std::mem::size_of::<usize>()
+        );
+    }
+
+    #[test]
+    fn bounded_protocol_producers_admit_before_driver_poll() {
+        let (cx, driver, _peer) = bounded_test_connection(small_bounded_limits());
+        let budget = cx.message_tx.budget().cloned().unwrap();
+        for _ in 0..4 {
+            cx.send_notification(UntypedMessage::new("notice", serde_json::json!({})).unwrap())
+                .unwrap();
+        }
+        assert_eq!(budget.snapshot(), (4, 4096, 1));
+        assert!(
+            cx.send_notification(UntypedMessage::new("notice", serde_json::json!({})).unwrap())
+                .is_err()
+        );
+        assert!(futures::executor::block_on(driver).is_err());
+        assert_eq!(budget.snapshot(), (0, 0, 0));
+        assert!(
+            cx.send_notification(UntypedMessage::new("notice", serde_json::json!({})).unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn bounded_unpolled_driver_drop_releases_tasks_frames_and_pending() {
+        let (cx, driver, _peer) = bounded_test_connection(small_bounded_limits());
+        let budget = cx.message_tx.budget().cloned().unwrap();
+        let request =
+            cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        cx.spawn(async { future::pending().await }).unwrap();
+        assert_eq!(budget.snapshot(), (1, 1024, 2));
+        drop(driver);
+        assert_eq!(budget.snapshot(), (0, 0, 0));
+        assert!(futures::executor::block_on(request.block_task()).is_err());
+        assert!(cx.spawn(async { Ok(()) }).is_err());
+    }
+
+    #[test]
+    fn bounded_pending_and_task_limits_fail_fast() {
+        let (cx, driver, _peer) = bounded_test_connection(small_bounded_limits());
+        let first = cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        let second =
+            cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        let third = cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        assert!(futures::executor::block_on(third.block_task()).is_err());
+        drop((first, second, driver));
+        let (cx, driver, _peer) = bounded_test_connection(small_bounded_limits());
+        cx.spawn(async { future::pending().await }).unwrap();
+        cx.spawn(async { future::pending().await }).unwrap();
+        assert!(cx.spawn(async { future::pending().await }).is_err());
+        drop(driver);
+        assert_eq!(cx.message_tx.budget().unwrap().snapshot(), (0, 0, 0));
+    }
+
+    #[test]
+    fn bounded_unconsumed_response_retains_incoming_admission() {
+        let (cx, driver, mut peer) = bounded_test_connection(small_bounded_limits());
+        let request =
+            cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        let id = request.id.clone();
+        let mut driver = Box::pin(driver);
+        assert!(driver.as_mut().now_or_never().is_none());
+        drop(peer.rx.next().now_or_never().unwrap().unwrap());
+        peer.tx
+            .try_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                id,
+                Ok(serde_json::json!({"answer": 42})),
+            )))
+            .unwrap();
+        assert!(driver.as_mut().now_or_never().is_none());
+        assert_eq!(peer.tx.budget.snapshot(), (1, 1024, 0));
+        assert!(
+            cx.pending_replies
+                .inner
+                .upgrade()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .replies
+                .is_empty()
+        );
+        let response = futures::executor::block_on(request.block_task()).unwrap();
+        assert_eq!(response, serde_json::json!({"answer": 42}));
+        assert_eq!(peer.tx.budget.snapshot(), (0, 0, 0));
+        drop(driver);
+    }
+
+    #[test]
+    fn bounded_batch_producer_charges_survive_accumulation_and_handoff() {
+        let (channel, mut peer) = crate::BoundedChannel::duplex(small_bounded_limits()).unwrap();
+        let budget = channel.tx.budget.clone();
+        let (tx, rx) = mpsc::unbounded();
+        let mut tx = OutgoingMessageTx::from(tx);
+        tx.set_budget(Some(budget.clone()));
+        let (mut destinations, completion) = ResponseDestination::batch(2);
+        let mut actor = Box::pin(outgoing_actor::outgoing_protocol_actor(
+            rx,
+            PendingReplies::default(),
+            crate::bounded::TransportSender::Bounded(channel.tx),
+            ProtocolCompat::new(ProtocolMode::disabled()),
+        ));
+        tx.unbounded_send(OutgoingMessage::Response {
+            id: RequestId::Str("first".into()),
+            method: "request".into(),
+            response: Ok(serde_json::json!({"first": true})),
+            destination: destinations.next().unwrap(),
+            receipt: None,
+        })
+        .unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        assert_eq!(budget.snapshot(), (1, 1024, 0));
+        tx.unbounded_send(OutgoingMessage::Response {
+            id: RequestId::Str("second".into()),
+            method: "request".into(),
+            response: Ok(serde_json::json!({"second": true})),
+            destination: destinations.next().unwrap(),
+            receipt: None,
+        })
+        .unwrap();
+        tx.unbounded_send(OutgoingMessage::BatchDispatchComplete { completion })
+            .unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let frame = peer.rx.next().now_or_never().unwrap().unwrap();
+        assert!(matches!(frame.decode(), TransportFrame::Batch(_)));
+        assert_eq!(budget.snapshot(), (2, 2048, 0));
+        drop(frame);
+        assert_eq!(budget.snapshot(), (0, 0, 0));
+        drop((actor, tx, destinations));
+    }
+
+    #[test]
+    fn bounded_sent_request_drop_removes_pending_registration() {
+        let (cx, driver, _peer) = bounded_test_connection(small_bounded_limits());
+        let request =
+            cx.send_request(UntypedMessage::new("request", serde_json::json!({})).unwrap());
+        let registry = cx.pending_replies.inner.upgrade().unwrap();
+        assert_eq!(registry.lock().unwrap().replies.len(), 1);
+        drop(request);
+        assert!(registry.lock().unwrap().replies.is_empty());
+        drop(driver);
+    }
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn connection_with_task_receiver() -> (

@@ -59,7 +59,7 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
+    transport_rx: impl futures::Stream<Item = impl Into<crate::bounded::IncomingFrame>> + Unpin,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
     handlers: IncomingHandlers<
@@ -77,7 +77,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     // transport EOF as an explicit event so the other, connection-internal
     // streams cannot hide it.
     let transport_with_close = futures::StreamExt::chain(
-        transport_rx.map(IncomingProtocolMsg::Transport),
+        transport_rx.map(|frame| IncomingProtocolMsg::Transport(frame.into())),
         stream::iter([IncomingProtocolMsg::TransportClosed]),
     );
     let mut my_rx =
@@ -86,6 +86,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
         FxHashMap::default();
     let mut pending_messages: Vec<Dispatch> = vec![];
+    let mut pending_frame_charges = vec![];
 
     let request_cancellations = super::RequestCancellationRegistry::new();
     let mut on_close = Some(on_close);
@@ -100,6 +101,10 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             };
             message
         };
+        let (message_result, _control_charge) = message_result.unpack();
+        if pending_messages.is_empty() {
+            pending_frame_charges.clear();
+        }
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {
@@ -127,8 +132,15 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 .await?;
             }
 
-            IncomingProtocolMsg::Transport(frame) => {
-                let (entries, batch_completion) = frame_entries(frame);
+            IncomingProtocolMsg::Transport(incoming) => {
+                let charges = incoming.charges;
+                let (entries, batch_completion) = frame_entries(incoming.frame);
+                let pending_before = pending_messages.len();
+                for (_, destination) in &entries {
+                    if let Some(destination) = destination {
+                        destination.retain_incoming(&charges);
+                    }
+                }
                 for (message, destination) in entries {
                     match message {
                         Ok(RawJsonRpcMessage::Request(request)) => {
@@ -217,6 +229,9 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     .incoming_response(&pending_reply.method, result);
                                 let (dispatch, response_dispatch) =
                                     dispatch_from_response(id, pending_reply, result);
+                                if let Dispatch::Response(_, router) = &dispatch {
+                                    router.reply_target.retain_incoming(&charges);
+                                }
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -245,6 +260,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                                 "dynamic-handler stream closed before its barrier",
                                             ));
                                         };
+                                        let (message, _control_charge) = message.unpack();
                                         match message {
                                             IncomingProtocolMsg::DynamicHandler(
                                                 DynamicHandlerMessage::Barrier,
@@ -287,6 +303,9 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                         }
                     }
                 }
+                if pending_messages.len() > pending_before {
+                    pending_frame_charges.extend(charges);
+                }
                 if let Some(completion) = batch_completion {
                     send_raw_message(
                         &connection.message_tx,
@@ -305,7 +324,9 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
     dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
     pending_messages: &mut Vec<Dispatch>,
 ) -> Result<(), crate::Error> {
+    let (message, _charge) = message.unpack();
     match message {
+        DynamicHandlerMessage::Admitted(..) => unreachable!("nested admission"),
         DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
             // Before adding the new handler, give it a chance to process
             // any pending messages.
@@ -357,9 +378,21 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
 
 #[derive(Debug)]
 enum IncomingProtocolMsg<Counterpart: Role> {
-    Transport(TransportFrame),
+    Transport(crate::bounded::IncomingFrame),
     TransportClosed,
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
+}
+
+impl<R: Role> IncomingProtocolMsg<R> {
+    fn unpack(self) -> (Self, Option<crate::bounded::Charge>) {
+        match self {
+            Self::DynamicHandler(message) => {
+                let (message, charge) = message.unpack();
+                (Self::DynamicHandler(message), charge)
+            }
+            message => (message, None),
+        }
+    }
 }
 
 fn frame_entries(

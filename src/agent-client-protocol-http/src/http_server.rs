@@ -183,7 +183,9 @@ pub(crate) async fn handle_post(
     StatusCode::ACCEPTED.into_response()
 }
 
-fn initial_initialize_request(frame: &TransportFrame) -> Option<(&RequestId, Option<usize>)> {
+pub(crate) fn initial_initialize_request(
+    frame: &TransportFrame,
+) -> Option<(&RequestId, Option<usize>)> {
     fn initialize_id(message: &RawJsonRpcMessage) -> Option<&RequestId> {
         if !is_initialize_request(message) {
             return None;
@@ -213,7 +215,10 @@ fn initial_initialize_request(frame: &TransportFrame) -> Option<(&RequestId, Opt
     }
 }
 
-fn initialize_response_failed(frame: &TransportFrame, initialize_id: &RequestId) -> Option<bool> {
+pub(crate) fn initialize_response_failed(
+    frame: &TransportFrame,
+    initialize_id: &RequestId,
+) -> Option<bool> {
     fn response_failed(message: &RawJsonRpcMessage, initialize_id: &RequestId) -> Option<bool> {
         match message {
             RawJsonRpcMessage::Response(RpcResponse::Result { id, .. }) if id == initialize_id => {
@@ -238,7 +243,7 @@ fn initialize_response_failed(frame: &TransportFrame, initialize_id: &RequestId)
     }
 }
 
-fn prepare_message_route(
+pub(crate) fn prepare_message_route(
     message: &mut RawJsonRpcMessage,
     session_id: Option<&str>,
 ) -> Result<Option<ResponseRoute>, &'static str> {
@@ -260,7 +265,7 @@ fn prepare_message_route(
     })
 }
 
-fn collect_route(
+pub(crate) fn collect_route(
     message: &RawJsonRpcMessage,
     route: Option<ResponseRoute>,
     session_routes: &mut Vec<String>,
