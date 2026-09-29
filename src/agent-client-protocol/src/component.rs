@@ -129,6 +129,29 @@ pub trait ConnectTo<R: Role>: Send + 'static {
         client: impl ConnectTo<R::Counterpart>,
     ) -> impl Future<Output = Result<()>> + Send;
 
+    /// Extract the transport without erasing opt-in bounded admission.
+    fn into_transport_and_future(self) -> (crate::TransportChannel, BoxFuture<'static, Result<()>>)
+    where
+        Self: Sized,
+    {
+        let (channel, future) = self.into_channel_and_future();
+        (crate::TransportChannel::Legacy(channel), future)
+    }
+
+    /// Connect using an opt-in bounded endpoint, without a legacy adapter pump.
+    /// Components that consume only legacy channels fail closed when extracting
+    /// the supplied bounded endpoint.
+    fn into_bounded_channel_and_future(
+        self,
+        limits: crate::ChannelLimits,
+    ) -> Result<(crate::BoundedChannel, BoxFuture<'static, Result<()>>)>
+    where
+        Self: Sized,
+    {
+        let (channel, peer) = crate::BoundedChannel::duplex(limits)?;
+        Ok((channel, Box::pin(self.connect_to(peer))))
+    }
+
     /// Convert this component into a channel endpoint and connection future.
     ///
     /// The returned [`Channel`] is the canonical frame-aware boundary. It carries
@@ -171,6 +194,14 @@ trait ErasedConnectTo<R: Role>: Send {
         client: Box<dyn ErasedConnectTo<R::Counterpart>>,
     ) -> BoxFuture<'static, Result<()>>;
 
+    fn into_transport_and_future_erased(
+        self: Box<Self>,
+    ) -> (crate::TransportChannel, BoxFuture<'static, Result<()>>);
+    fn into_bounded_channel_and_future_erased(
+        self: Box<Self>,
+        limits: crate::ChannelLimits,
+    ) -> Result<(crate::BoundedChannel, BoxFuture<'static, Result<()>>)>;
+
     fn into_channel_and_future_erased(self: Box<Self>)
     -> (Channel, BoxFuture<'static, Result<()>>);
 }
@@ -193,6 +224,18 @@ impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
                 })
                 .await
         })
+    }
+
+    fn into_transport_and_future_erased(
+        self: Box<Self>,
+    ) -> (crate::TransportChannel, BoxFuture<'static, Result<()>>) {
+        (*self).into_transport_and_future()
+    }
+    fn into_bounded_channel_and_future_erased(
+        self: Box<Self>,
+        limits: crate::ChannelLimits,
+    ) -> Result<(crate::BoundedChannel, BoxFuture<'static, Result<()>>)> {
+        (*self).into_bounded_channel_and_future(limits)
     }
 
     fn into_channel_and_future_erased(
@@ -249,6 +292,18 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
         self.inner
             .connect_to_erased(Box::new(client) as Box<dyn ErasedConnectTo<R::Counterpart>>)
             .await
+    }
+
+    fn into_transport_and_future(
+        self,
+    ) -> (crate::TransportChannel, BoxFuture<'static, Result<()>>) {
+        self.inner.into_transport_and_future_erased()
+    }
+    fn into_bounded_channel_and_future(
+        self,
+        limits: crate::ChannelLimits,
+    ) -> Result<(crate::BoundedChannel, BoxFuture<'static, Result<()>>)> {
+        self.inner.into_bounded_channel_and_future_erased(limits)
     }
 
     fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {

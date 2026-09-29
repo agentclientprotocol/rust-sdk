@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in bounded HTTP/SSE client and server integrated with core bounded
+  producer admission. Configurable byte/frame, pending-work, POST, connection,
+  session, and stream limits fail explicitly on exhaustion while preserving
+  existing constructors and ACP wire shapes. Bounded transports do not provide
+  SSE replay or automatic POST retries.
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
 
 ### Breaking changes

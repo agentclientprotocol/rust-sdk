@@ -112,3 +112,19 @@ See the [crate documentation](https://docs.rs/agent-client-protocol) for:
 This project does not require a Contributor License Agreement (CLA). Instead, contributions are accepted under the following terms:
 
 > By contributing to this project, you agree that your contributions will be licensed under the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0). You affirm that you have the legal right to submit your work, that you are not including code you do not have rights to, and that you understand contributions are made without requiring a Contributor License Agreement (CLA).
+
+## Opt-in bounded transports
+
+`BoundedChannel::duplex(ChannelLimits)` provides fail-fast, charged frame
+admission without changing the compatibility-only unbounded `Channel` API.
+Connect a protocol `Builder` directly to a bounded endpoint, or implement
+`ConnectTo::into_transport_and_future` with `TransportChannel::Bounded`.
+For component factories, `into_bounded_channel_and_future(limits)` supplies a
+bounded endpoint directly; `DynConnectTo` preserves both interfaces.
+
+Outgoing protocol producers, pending requests, tasks, and dynamic handlers use
+finite admission. `ChargedFrame` retains its reservation after dequeue; a
+transport must keep it until body handoff/drop, which is **not** a peer ACK.
+Limits measure reserved encoded bytes and work counts, not exact heap usage or
+application conversion-hook allocations. See the book's Transport Architecture
+chapter for defaults, ownership, terminal overload, and compatibility scope.

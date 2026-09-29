@@ -135,3 +135,99 @@ and it will open a single bidirectional connection instead of using POST + SSE:
 let transport = HttpClient::new("ws://127.0.0.1:8080")?;
 my_client().connect_to(transport).await?;
 ```
+
+## Opt-in Bounded HTTP/SSE
+
+Existing constructors preserve the compatibility-only unbounded transport.
+Select finite admission explicitly on each endpoint:
+
+```rust
+use agent_client_protocol_http::{AcpHttpServer, HttpClient, HttpClientLimits, ServerLimits};
+
+let app = AcpHttpServer::new_bounded(|| my_agent(), ServerLimits::default())?
+    .into_router();
+let transport = HttpClient::new("http://127.0.0.1:8080/acp")?
+    .with_limits(HttpClientLimits::default())?;
+my_client().connect_to(transport).await?;
+```
+
+These return `BoundedAcpHttpServer` and `BoundedHttpClient`. The server retains
+`with_options(ServerOptions)` and `into_router()`. No fields were added to
+`ServerOptions`. Both endpoints use the core bounded connection interface
+directly, without forwarding through the legacy unbounded `Channel`.
+Custom components must implement bounded extraction; unsupported legacy-only
+components fail closed instead of silently losing the admission guarantee.
+Raw adapters can use `BoundedHttpClient::into_bounded_channel_and_future()`;
+they must poll the returned driver and retain each `ChargedFrame` until their
+own consumption boundary. See [bounded core transports](./transport-architecture.md)
+for producer admission and charged frame ownership.
+
+### Finite Defaults
+
+Zero limits are invalid. The limits structures are public and can be configured
+before construction. Budgets are independent and conservative: fitting one
+limit does not guarantee admission through every other limit.
+
+| Budget | Server default | Client default |
+| --- | --- | --- |
+| Core maximum serialized frame | 256 KiB | 1 MiB |
+| Core reserved bytes / frames, each direction | 16 MiB / 256 | 16 MiB / 256 |
+| Core pending requests / tasks | 256 / 256 | 256 / 256 |
+| Active logical connections | 64 | One per transport |
+| Concurrent POSTs / aggregate request-body reservation | 32 / 8 MiB | Separate request and response lanes |
+| HTTP maximum request frame / batch entries | 256 KiB / 128 | Core frame limit |
+| HTTP egress bytes / frames | 4 MiB / 64 per connection | 64 MiB / 128 HTTP reservations |
+| Pending routed RPC entries | 256 per connection | 128 |
+| Registered sessions / active SSE streams | 64 / 65 per connection | 8 streams, including connection stream |
+| Queued plus active POSTs | Global concurrent POST admission | 32 request and 32 response-only |
+| Response body / SSE line / event / chunk | Outbound frame and egress limits | 1 MiB each |
+
+Client reservations cover POST bodies, pending metadata, bounded response
+workspaces, and SSE parser workspaces; each reservation also consumes a frame
+slot. Server POST bodies reserve the maximum frame size before polling the body.
+Server connection admission precedes factory invocation. Duplicate request IDs
+consume separate pending entries; a successful POST does not imply RPC completion.
+Response-only callback POSTs have an independent bounded client lane. Mixed
+batches remain in request order. Registered server session mailboxes last until
+connection termination and count against the configured session limit.
+
+### Ownership and Exhaustion
+
+Core producer admission happens before queueing. Charges survive intermediate
+dequeue, routing, and body construction; the server releases yielded body
+charges on the subsequent poll or body drop. Client bodies retain charges
+through HTTP handoff. This bounds SDK-owned queued data and work, not an
+application's cumulative output. A healthy consumer can process more than any
+single budget over the connection's lifetime.
+
+Exhaustion is explicit and fail-fast, not an unbounded queue of waiting sends.
+The server rejects pre-acceptance overload with an HTTP error; terminal errors
+revoke producers and release pending routes, mailboxes, and local tasks.
+POST/body admission exhaustion for an addressed connection terminates that
+connection so callbacks cannot remain indefinitely blocked behind saturated
+request bodies. Cancellation/drop releases local reservations; client teardown
+does not guarantee a remote DELETE completed.
+
+Encoded-byte budgets are **not hard peak-heap limits**. Parsed JSON and bounded
+serialization scratch add overhead; application conversion hooks can allocate
+intermediate values before capped normalization. Allocator capacity, arbitrary
+application task captures, and HTTP/TLS/socket buffers are outside encoded-byte
+accounting. Core reservations and HTTP reservations are additional budgets, not
+one shared process-memory counter.
+
+### Delivery and Recovery Boundaries
+
+A body poll transfers bytes to the HTTP stack. It is **not** proof of socket
+flush, peer parsing, or ACP application consumption. An event already yielded
+when SSE disconnects can be lost. No cursor/replay or exactly-once delivery is
+provided, and no `Last-Event-ID` recovery is performed.
+
+The bounded client does not automatically retry accepted or uncertain POSTs;
+streaming request bodies are non-replayable, including with custom reqwest
+redirect/retry policies. A lost response can leave acceptance unknown. Existing
+JSON-RPC IDs remain correlation IDs, not idempotency keys.
+
+The bounded path supports HTTP/SSE only. The bounded client rejects `ws`/`wss`
+URLs, and bounded server WebSocket upgrades return HTTP 501. Legacy WebSocket
+support is unchanged. ACP JSON-RPC messages and HTTP connection/session headers
+are unchanged; bounded endpoints do not require a private protocol extension.

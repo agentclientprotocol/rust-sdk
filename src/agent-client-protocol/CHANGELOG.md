@@ -4,6 +4,10 @@
 
 ### Added
 
+- Add opt-in `BoundedChannel`, charged serialized frames, `ChannelLimits`, and
+  bounded `ConnectTo` extraction with producer-side protocol, pending-request,
+  task, and dynamic-handler admission. Legacy `Channel` fields remain unchanged.
+
 - *(unstable-v2)* Expose pending session injection through the
   `unstable_session_inject` feature, including typed JSON-RPC dispatch and
   `V2Session` helpers to inject, replace, and revoke typed content.

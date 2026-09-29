@@ -67,6 +67,96 @@ boundary, although serializing a relayed batch may normalize whitespace. The
 protocol actor, not the parser, decides whether malformed input requires a
 response.
 
+## Opt-in bounded core transport
+
+`Channel` and its public unbounded sender/receiver fields remain unchanged for
+compatibility. They do **not** provide admission or memory bounds. New transports
+can instead use `BoundedChannel`, selected through
+`ConnectTo::into_transport_and_future` and `TransportChannel::Bounded`.
+`DynConnectTo` preserves this selection. A transport that accepts a component
+factory can call `into_bounded_channel_and_future(limits)` to give its `Builder`
+a bounded endpoint directly, without an unbounded adapter pump. Attempting to
+extract a bounded endpoint through the legacy `into_channel_and_future` method
+returns a disconnected channel and a failing driver future; it never inserts a
+legacy bridge.
+
+```rust
+use agent_client_protocol::{BoundedChannel, ChannelLimits};
+
+let limits = ChannelLimits::default();
+let (protocol_endpoint, transport_endpoint) = BoundedChannel::duplex(limits)?;
+// Connect the Builder to protocol_endpoint. The transport uses
+// transport_endpoint.tx.try_send_serialized(...) and receives ChargedFrame
+// values from transport_endpoint.rx.
+# Ok::<(), agent_client_protocol::Error>(())
+```
+
+The default limits per direction are:
+
+| Limit | Default |
+| --- | ---: |
+| Maximum encoded frame | 1 MiB |
+| Reserved encoded bytes | 16 MiB |
+| Preparing, queued, and handed-off frames/control items | 256 |
+| Pending outgoing requests | 256 |
+| Queued/running tasks and registered dynamic handlers | 256 |
+
+Zero limits are invalid; the byte budget must fit one maximum-sized frame.
+Admission reserves the **maximum frame size**, not the eventual encoded length,
+so the default byte limit permits at most 16 simultaneous frame reservations.
+This conservative reservation allows synchronous producer admission before a
+message's size is known. The transport driver itself occupies one task slot.
+
+Bounded protocol connections use fail-fast admission before outgoing message
+conversion/enqueue and before task/dynamic-handler enqueue. Pending requests
+are registered under a capped registry lock. Overload is terminal: it wakes the
+driver, rejects escaped producer handles, and drops queued/running work. There
+is no queue of producer futures awaiting a permit. An accepted bounded
+notification that later fails protocol preparation or raw-message conversion
+fails the connection; it is not silently discarded. The legacy unbounded path
+retains its prior log-and-continue behavior. Internal control messages
+also require admission; overload during destructor-originated batch completion
+terminates the connection rather than silently stranding the batch.
+
+`BoundedSender::close_channel()` gracefully closes one direction for every
+sender clone. It rejects later sends without signaling terminal failure, keeps
+already-enqueued transport frames available for drain, and delivers EOF after
+the queue drains. The opposite direction remains open. Successful protocol
+driver completion likewise preserves admitted transport frames; cancellation,
+overload, and driver errors still make the connection terminal.
+
+A `ChargedFrame` owns serialized JSON and its RAII reservation. Dequeueing does
+not release that reservation. `try_forward(frame)` transfers ownership; a
+cross-budget handoff reserves destination capacity before releasing source
+capacity. The protocol actor retains producer charges through conversion and
+batch accumulation. Incoming dispatch, deferred messages, and response slots
+retain their incoming charges while the core owns their data. A batch is still
+one wire frame and must fit the configured maximum including array punctuation.
+HTTP adapters must keep the charged frame alive through their declared body
+handoff/drop point. **Body consumption is not a peer acknowledgment**: it does
+not establish socket flush, peer parsing, ACP dispatch, replay, or exactly-once
+delivery.
+
+These are encoded-data and work-count bounds, not a claim about exact process
+heap usage. The bounded frame queue stores compact serialized bytes. Logical
+outgoing values are normalized with capped serialization and decoding before
+queueing, so caller-provided spare `String`/`Vec` capacity is not retained.
+Decoded JSON, batch entries, request metadata, and temporary serialization have
+additional structural overhead proportional to admitted data; pending request
+metadata also has its separately capped entry count. Application-owned values,
+future captures, retained copies, and intermediate allocations in
+`JsonRpcMessage`/`JsonRpcResponse` conversion are outside this byte budget.
+This includes **standard SDK conversion implementations** that clone an untyped
+value or construct a raw `serde_json::Value`, not only user-provided hooks.
+A conversion holds admission before it runs, but these existing traits can
+produce a raw value before the core checks its encoded size. Admission bounds
+the number of concurrent conversions; it does not bound a conversion's peak
+allocation. The later wire serializer and retained normalized queue values are
+capped. Applications needing a hard peak/process-heap limit must also bound
+their conversion inputs and implementations.
+Transport-specific HTTP body, session, stream, and POST concurrency budgets
+remain the responsibility of the HTTP transport, not these core limits.
+
 ## Actor Architecture
 
 ### Protocol Actors

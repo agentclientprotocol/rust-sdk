@@ -243,3 +243,8 @@ macro_rules! on_receive_dispatch {
         |f: &mut _, dispatch, cx| Box::pin(f(dispatch, cx))
     };
 }
+
+mod bounded;
+pub use bounded::{
+    BoundedChannel, BoundedReceiver, BoundedSender, ChannelLimits, ChargedFrame, TransportChannel,
+};

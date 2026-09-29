@@ -6,7 +6,16 @@ use crate::ConnectionTo;
 use crate::role::Role;
 use crate::util::process_stream_concurrently;
 
-pub type TaskTx = mpsc::UnboundedSender<Task>;
+#[derive(Clone, Debug)]
+pub struct TaskTx {
+    tx: mpsc::UnboundedSender<Task>,
+    pub(super) budget: Option<crate::bounded::Budget>,
+}
+impl From<mpsc::UnboundedSender<Task>> for TaskTx {
+    fn from(tx: mpsc::UnboundedSender<Task>) -> Self {
+        Self { tx, budget: None }
+    }
+}
 
 #[must_use]
 pub(crate) struct Task {
@@ -39,8 +48,17 @@ impl Task {
         }
     }
 
-    pub fn spawn(self, task_tx: &TaskTx) -> Result<(), crate::Error> {
+    pub fn spawn(mut self, task_tx: &TaskTx) -> Result<(), crate::Error> {
+        if let Some(budget) = &task_tx.budget {
+            let charge = budget.task()?;
+            self.future = async move {
+                let _charge = charge;
+                self.future.await
+            }
+            .boxed();
+        }
         task_tx
+            .tx
             .unbounded_send(self)
             .map_err(crate::util::internal_error)?;
         Ok(())
