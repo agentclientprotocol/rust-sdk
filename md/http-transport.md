@@ -208,6 +208,23 @@ connection so callbacks cannot remain indefinitely blocked behind saturated
 request bodies. Cancellation/drop releases local reservations; client teardown
 does not guarantee a remote DELETE completed.
 
+By default DELETE aborts the server connection. To drain accepted work instead,
+call `.with_graceful_delete(std::time::Duration::from_secs(30))` on the bounded
+server before `into_router()`. DELETE atomically seals inbound HTTP admission
+without reserving a POST body or core frame. Later POSTs return 410 before body
+admission; already-reading POSTs recheck the seal before enqueue. The existing
+connection task continues to process accepted frames even if the DELETE waiter
+is canceled. A 202 response requires successful component-future completion
+and clean output EOF, not merely an empty queue or a terminal-failure EOF.
+This does not acknowledge consumption by the remote HTTP peer.
+
+Each DELETE waits at most the configured duration. A 503 reports a deadline or
+failure; a deadline leaves the connection closing and accepted work running,
+never reopens admission, and retains its capacity slot until work finishes.
+Repeated DELETE joins the same drain while the connection exists; after actual
+completion removes it, subsequent DELETE returns 404. Existing subscribed SSE
+streams can consume queued output through EOF after clean completion.
+
 Encoded-byte budgets are **not hard peak-heap limits**. Parsed JSON and bounded
 serialization scratch add overhead; application conversion hooks can allocate
 intermediate values before capped normalization. Allocator capacity, arbitrary

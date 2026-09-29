@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, VecDeque},
     convert::Infallible,
     sync::{Arc, Mutex, Weak},
+    time::Duration,
 };
 
 use agent_client_protocol::{
@@ -17,7 +18,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
-use futures::{StreamExt, future::BoxFuture};
+use futures::{FutureExt, StreamExt, future::BoxFuture};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, oneshot};
 
 use super::ServerOptions;
@@ -172,6 +173,7 @@ impl BoundedAcpHttpServer {
                 posts: Arc::new(Semaphore::new(limits.max_in_flight_posts)),
                 bodies: Arc::new(Semaphore::new(limits.max_body_bytes)),
                 limits,
+                graceful_delete: None,
             }),
             options: ServerOptions::default(),
         })
@@ -180,6 +182,24 @@ impl BoundedAcpHttpServer {
     #[must_use]
     pub fn with_options(mut self, options: ServerOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Opt into graceful DELETE with a bounded wait per HTTP request.
+    ///
+    /// DELETE seals inbound admission without allocating a body or core frame. It
+    /// returns 202 only after the component future succeeds and its output reaches
+    /// clean EOF. This is not acknowledgment that an HTTP peer consumed the output.
+    /// A deadline or terminal failure returns 503. A deadline never reopens admission
+    /// or aborts accepted work; canceling the DELETE request only drops its waiter.
+    /// Concurrent/repeated DELETE requests join the connection-owned drain while it
+    /// exists. Once completion removes the connection, subsequent requests return 404.
+    /// POST requests racing with the seal are rejected with 410 before enqueue.
+    /// Without this option, DELETE retains its legacy abortive behavior.
+    #[must_use]
+    pub fn with_graceful_delete(mut self, timeout: Duration) -> Self {
+        // The server has not exposed the registry before into_router consumes it.
+        Arc::get_mut(&mut self.state).unwrap().graceful_delete = Some(timeout);
         self
     }
 
@@ -200,6 +220,7 @@ impl BoundedAcpHttpServer {
 }
 
 struct Registry {
+    graceful_delete: Option<Duration>,
     factory: Arc<Factory>,
     limits: ServerLimits,
     connections: Mutex<HashMap<String, Arc<Connection>>>,
@@ -232,6 +253,8 @@ struct Connection {
 struct ConnectionState {
     tx: Option<BoundedSender>,
     closed: bool,
+    draining: bool,
+    drain_result: Option<bool>,
     task: Option<tokio::task::AbortHandle>,
     pending: VecDeque<(RequestId, ResponseRoute)>,
     streams: HashMap<Option<String>, Mailbox>,
@@ -252,25 +275,97 @@ struct Envelope {
 
 impl Connection {
     fn close(&self) {
-        {
+        self.close_if_open(false);
+    }
+
+    // A POST that raced with DELETE must not turn a harmless admission rejection
+    // into terminal core failure. All destructors and wakeups run after unlocking.
+    fn close_if_open(&self, only_open: bool) -> bool {
+        let retired = {
             let mut state = self.inner.lock().unwrap();
+            if only_open && (state.draining || state.closed) {
+                return false;
+            }
             state.closed = true;
-            if let Some(tx) = state.tx.take() {
-                tx.fail("HTTP connection terminated");
-            }
-            state.pending.clear();
-            state.streams.clear();
-            if let Some(task) = state.task.take() {
-                task.abort();
-            }
+            state.drain_result.get_or_insert(false);
+            (
+                state.tx.take(),
+                state.task.take(),
+                std::mem::take(&mut state.pending),
+                std::mem::take(&mut state.streams),
+            )
+        };
+        if let Some(tx) = &retired.0 {
+            tx.fail("HTTP connection terminated");
         }
+        if let Some(task) = &retired.1 {
+            task.abort();
+        }
+        drop(retired);
         self.wake.notify_waiters();
+        true
+    }
+
+    fn remove(&self) {
+        if let Some(registry) = self.registry.upgrade() {
+            let removed = registry.connections.lock().unwrap().remove(&self.id);
+            drop(removed);
+        }
     }
 
     fn terminate(&self) {
         self.close();
-        if let Some(registry) = self.registry.upgrade() {
-            registry.connections.lock().unwrap().remove(&self.id);
+        self.remove();
+    }
+
+    fn terminate_if_open(&self) {
+        if self.close_if_open(true) {
+            self.remove();
+        }
+    }
+
+    fn begin_drain(&self) {
+        let tx = {
+            let mut state = self.inner.lock().unwrap();
+            if state.closed || state.draining {
+                return;
+            }
+            // This is the HTTP acceptance linearization point, shared with enqueue.
+            state.draining = true;
+            state.tx.take()
+        };
+        // No await separates seal publication and the core close. Cancellation cannot
+        // strand this operation; close preserves all already accepted frame charges.
+        if let Some(tx) = tx {
+            tx.close_channel();
+        }
+    }
+
+    fn finish_drain(&self) -> bool {
+        let finished = {
+            let mut state = self.inner.lock().unwrap();
+            if state.closed || !state.draining {
+                return false;
+            }
+            state.closed = true;
+            state.drain_result = Some(true);
+            state.task.take()
+        };
+        drop(finished);
+        self.wake.notify_waiters();
+        self.remove();
+        true
+    }
+
+    async fn drain_result(&self) -> bool {
+        loop {
+            let notified = self.wake.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(result) = self.inner.lock().unwrap().drain_result {
+                return result;
+            }
+            notified.await;
         }
     }
 
@@ -486,6 +581,21 @@ async fn post_inner(
     }
     let connection_id = header_value(request.headers(), HEADER_CONNECTION_ID)?;
     let session_id = header_value(request.headers(), HEADER_SESSION_ID)?;
+    // Reject closing connections before reserving global POST/body capacity. A
+    // second check at enqueue handles bodies already being read when DELETE seals.
+    let existing = if let Some(id) = &connection_id {
+        let connection = registry.connections.lock().unwrap().get(id).cloned();
+        if let Some(connection) = &connection {
+            let state = connection.inner.lock().unwrap();
+            if state.draining || state.closed {
+                return Err(StatusCode::GONE);
+            }
+        }
+        connection
+    } else {
+        None
+    };
+
     // Body shape is unknown until read: rather than let slow request bodies starve
     // callback responses indefinitely, saturation terminates the addressed connection.
     // The rejected POST itself has not been accepted and is never resubmitted here.
@@ -493,7 +603,7 @@ async fn post_inner(
         if let Some(id) = &connection_id {
             let connection = registry.connections.lock().unwrap().get(id).cloned();
             if let Some(connection) = connection {
-                connection.terminate();
+                connection.terminate_if_open();
             }
         }
         StatusCode::TOO_MANY_REQUESTS
@@ -576,18 +686,15 @@ async fn post_inner(
     let encoded = encode_frame(&frame, registry.limits.max_frame_bytes)?;
     drop(frame);
     let mut initialization = None;
-    let connection = if let Some(connection_id) = connection_id {
-        registry
-            .connections
-            .lock()
-            .unwrap()
-            .get(&connection_id)
-            .cloned()
-            .ok_or(StatusCode::NOT_FOUND)?
+    let connection = if connection_id.is_some() {
+        existing.ok_or(StatusCode::NOT_FOUND)?
     } else {
         let (BoundedChannel { tx, mut rx }, agent) =
             (registry.factory)(registry.limits.channel_limits)
                 .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let terminal_owner = tx.clone();
+        let failure = tx.failure();
+        let graceful = registry.graceful_delete.is_some();
         let mut streams = HashMap::new();
         streams.insert(None, Mailbox::default());
         let connection = Arc::new(Connection {
@@ -597,6 +704,8 @@ async fn post_inner(
             inner: Mutex::new(ConnectionState {
                 tx: Some(tx),
                 closed: false,
+                draining: false,
+                drain_result: None,
                 task: None,
                 pending: VecDeque::new(),
                 streams,
@@ -622,51 +731,80 @@ async fn post_inner(
         let task_connection = connection.clone();
         // Capture cleanup before spawning: dropping even a never-polled task cleans up.
         let task = tokio::spawn(async move {
-            let _cleanup = cleanup;
+            let mut cleanup = cleanup;
+            // Keep the terminal signal owner alive: dropping every channel endpoint
+            // cancels its signal, which is not evidence of a core failure.
+            let _terminal_owner = terminal_owner;
+            let completion_connection = task_connection.clone();
             let router = async move {
                 let mut init_tx = Some(init_tx);
                 while let Some(charged) = rx.next().await {
                     if charged.as_bytes().len() > task_connection.limits.max_frame_bytes {
-                        break;
+                        return Err(());
                     }
                     let frame = charged.decode();
                     if !check_batch(&frame, task_connection.limits.max_batch_entries) {
-                        break;
+                        return Err(());
                     }
                     let Ok(envelope) = task_connection.envelope(charged) else {
-                        break;
+                        return Err(());
                     };
                     if let Some(failed) = initialize_response_failed(&frame, &init_id)
                         && let Some(sender) = init_tx.take()
                     {
                         task_connection.complete_initial_routes(&frame);
                         if sender.send((envelope, failed)).is_err() {
-                            break;
+                            return Err(());
                         }
                         continue;
                     }
                     if task_connection.route(envelope, &frame).is_err() {
-                        break;
+                        return Err(());
                     }
                 }
+                Ok::<(), ()>(())
             };
-            // A bare channel's driver is immediately successful. Success must not
-            // discard frames still owned by the channel or an escaped producer.
-            let agent = async move {
-                if agent.await.is_ok() {
-                    futures::future::pending::<()>().await;
+            if graceful {
+                // EOF alone is insufficient: core failure also produces EOF. Poll
+                // failure first and again after both real futures have completed.
+                let done = async {
+                    futures::try_join!(router, async { agent.await.map_err(|_| ()) }).map(|_| ())
+                };
+                tokio::pin!(failure);
+                let result = tokio::select! {
+                    biased;
+                    _ = &mut failure => Err(()),
+                    result = done => result,
+                };
+                if result.is_ok()
+                    && failure.now_or_never().is_none()
+                    && completion_connection.finish_drain()
+                {
+                    cleanup.armed = false;
                 }
-            };
-            futures::pin_mut!(agent, router);
-            let _ = futures::future::select(router, agent).await;
+            } else {
+                // A bare channel's driver is immediately successful. Legacy mode
+                // keeps routing until EOF instead of dropping escaped producers.
+                let agent = async move {
+                    if agent.await.is_ok() {
+                        futures::future::pending::<()>().await;
+                    }
+                };
+                futures::pin_mut!(agent, router);
+                let _ = futures::future::select(router, agent).await;
+            }
         });
-        {
+        let abort = {
             let mut state = connection.inner.lock().unwrap();
             if state.closed {
-                task.abort();
+                true
             } else {
                 state.task = Some(task.abort_handle());
+                false
             }
+        };
+        if abort {
+            task.abort();
         }
         connection
     };
@@ -678,7 +816,7 @@ async fn post_inner(
         // One lock makes route reservation, duplicate-ID ordering and enqueue transactional.
         // There is no await/cancellation point between bookkeeping and core acceptance.
         let mut state = connection.inner.lock().unwrap();
-        if state.closed {
+        if state.closed || state.draining {
             return Err(StatusCode::GONE);
         }
         if state
@@ -868,13 +1006,25 @@ async fn handle_delete(State(registry): State<Arc<Registry>>, request: Request<B
     let Ok(Some(id)) = header_value(request.headers(), HEADER_CONNECTION_ID) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let connection = registry.connections.lock().unwrap().remove(&id);
+    let connection = registry.connections.lock().unwrap().get(&id).cloned();
     let Some(connection) = connection else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    connection.close();
+    if let Some(deadline) = registry.graceful_delete {
+        connection.begin_drain();
+        return match tokio::time::timeout(deadline, connection.drain_result()).await {
+            Ok(true) => StatusCode::ACCEPTED,
+            Ok(false) | Err(_) => StatusCode::SERVICE_UNAVAILABLE,
+        }
+        .into_response();
+    }
+    connection.terminate();
     StatusCode::ACCEPTED.into_response()
 }
+
+#[cfg(test)]
+#[path = "graceful_delete_tests.rs"]
+mod graceful_delete_tests;
 
 #[cfg(test)]
 mod tests {
