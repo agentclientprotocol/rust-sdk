@@ -731,7 +731,7 @@ mod tests {
             .next()
             .await
             .expect("admitted response survives graceful cleanup cancellation");
-        assert_eq!(response.decode(), TransportFrame::parse_json(INITIALIZED));
+        assert_eq!(response.decode().to_json().unwrap(), INITIALIZED);
         server.abort();
     }
 
