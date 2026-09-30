@@ -149,11 +149,16 @@ where
     Counterpart: Role + HasPeer<Peer>,
     Peer: Role,
 {
+    let dispatch_kind = match &dispatch {
+        Dispatch::Notification(_) => "notification",
+        Dispatch::Request(_, _) => "request",
+        Dispatch::Response(_, _) => "response",
+    };
     tracing::trace!(
         method = %dispatch.method(),
         ?counterpart,
         ?peer,
-        ?dispatch,
+        dispatch_kind,
         "handle_incoming_dispatch: enter"
     );
 

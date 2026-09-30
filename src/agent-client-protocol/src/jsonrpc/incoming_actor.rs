@@ -100,7 +100,16 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             };
             message
         };
-        tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
+        let event = match &message_result {
+            IncomingProtocolMsg::Transport(TransportFrame::Single(_)) => "transport_single",
+            IncomingProtocolMsg::Transport(TransportFrame::Batch(_)) => "transport_batch",
+            IncomingProtocolMsg::Transport(TransportFrame::Malformed { .. }) => {
+                "transport_malformed"
+            }
+            IncomingProtocolMsg::TransportClosed => "transport_closed",
+            IncomingProtocolMsg::DynamicHandler(_) => "dynamic_handler",
+        };
+        tracing::trace!(event, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {
                 connection.begin_incoming_close();
@@ -132,7 +141,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                 for (message, destination) in entries {
                     match message {
                         Ok(RawJsonRpcMessage::Request(request)) => {
-                            tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
+                            tracing::trace!(method = %request.method, "Handling request");
                             let request_method = request.method.to_string();
                             let request_id = request.id.clone();
                             let destination = destination
@@ -211,7 +220,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 Response::Error { id, error } => (id, Err(error)),
                             };
 
-                            tracing::trace!(?id, "Handling response");
+                            tracing::trace!("Handling response");
                             if let Some(pending_reply) = pending_replies.remove(&id) {
                                 let result = protocol_compat
                                     .incoming_response(&pending_reply.method, result);
@@ -267,14 +276,13 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 }
                             } else {
                                 tracing::warn!(
-                                    ?id,
                                     "incoming_actor: received response for unknown id, no subscriber found"
                                 );
                             }
                         }
                         Err(error) => {
                             tracing::warn!(
-                                ?error,
+                                error_code = ?&error.code,
                                 "Invalid transport input, sending error response"
                             );
                             let destination = destination.expect(
@@ -332,7 +340,7 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
                         new_pending_messages.push(m);
                     }
                     Err(err) => {
-                        tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
+                        tracing::warn!(error_code = ?&err.code, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
                         handle_handler_error(connection, reply_target, method, err)?;
                     }
                 }
@@ -481,7 +489,15 @@ pub(super) fn dispatch_from_response(
 }
 
 #[tracing::instrument(
-    skip(connection, dispatch, dynamic_handlers, handler, pending_messages),
+    skip(
+        counterpart,
+        connection,
+        dispatch,
+        dynamic_handlers,
+        handler,
+        pending_messages,
+        request_cancellations
+    ),
     fields(method = dispatch.method()),
     level = "trace",
 )]
@@ -494,11 +510,15 @@ async fn dispatch_dispatch<Counterpart: Role>(
     pending_messages: &mut Vec<Dispatch>,
     request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<(), crate::Error> {
-    tracing::trace!(?dispatch, "dispatch_dispatch");
+    let dispatch_kind = match &dispatch {
+        Dispatch::Notification(_) => "notification",
+        Dispatch::Request(_, _) => "request",
+        Dispatch::Response(_, _) => "response",
+    };
+    tracing::trace!(dispatch_kind, "dispatch_dispatch");
 
     let mut retry_any = false;
 
-    let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
     let error_target = dispatch.handler_error_target();
     let _handler_attempt = error_target
@@ -511,12 +531,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
         }
         Ok(false) => {}
         Err(err) => {
-            tracing::warn!(
-                ?method,
-                ?id,
-                ?err,
-                "Request cancellation notification errored"
-            );
+            tracing::warn!(?method, error_code = ?&err.code, "Request cancellation notification errored");
             return handle_handler_error(connection, error_target, method, err);
         }
     }
@@ -528,18 +543,18 @@ async fn dispatch_dispatch<Counterpart: Role>(
         .await
     {
         Ok(Handled::Yes) => {
-            tracing::trace!(?method, ?id, handler = ?handler.describe_chain(), "Handler accepted message");
+            tracing::trace!(?method, handler = ?handler.describe_chain(), "Handler accepted message");
             return Ok(());
         }
 
         Ok(Handled::No { message: m, retry }) => {
-            tracing::trace!(?method, ?id, handler = ?handler.describe_chain(), "Handler declined message");
+            tracing::trace!(?method, handler = ?handler.describe_chain(), "Handler declined message");
             dispatch = m;
             retry_any |= retry;
         }
 
         Err(err) => {
-            tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored");
+            tracing::warn!(?method, error_code = ?&err.code, handler = ?handler.describe_chain(), "Handler errored");
             return handle_handler_error(connection, error_target, method, err);
         }
     }
@@ -552,18 +567,18 @@ async fn dispatch_dispatch<Counterpart: Role>(
             .await
         {
             Ok(Handled::Yes) => {
-                tracing::trace!(?method, ?id, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler accepted message");
+                tracing::trace!(?method, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler accepted message");
                 return Ok(());
             }
 
             Ok(Handled::No { message: m, retry }) => {
-                tracing::trace!(?method, ?id, handler = ?dynamic_handler.dyn_describe_chain(),  "Dynamic handler declined message");
+                tracing::trace!(?method, handler = ?dynamic_handler.dyn_describe_chain(),  "Dynamic handler declined message");
                 retry_any |= retry;
                 dispatch = m;
             }
 
             Err(err) => {
-                tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
+                tracing::warn!(?method, error_code = ?&err.code, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
                 return handle_handler_error(connection, error_target, method, err);
             }
         }
@@ -587,8 +602,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
         Err(err) => {
             tracing::warn!(
                 ?method,
-                ?id,
-                ?err,
+                error_code = ?&err.code,
                 handler = "default",
                 "Default handler errored"
             );
@@ -655,7 +669,7 @@ fn handle_handler_error<Counterpart: Role>(
         None => {
             tracing::warn!(
                 %method,
-                ?error,
+                error_code = ?&error.code,
                 "Ignoring message-processing error because there is no request to answer"
             );
             Ok(())

@@ -2836,9 +2836,10 @@ async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() 
                 .block_task()
                 .await
                 .expect_err("missing sessionId must be rejected");
-            assert!(
-                error.to_string().contains("sessionId"),
-                "unexpected malformed session response error: {error:?}"
+            assert_eq!(error.code, agent_client_protocol::ErrorCode::ParseError);
+            assert_eq!(
+                error.data,
+                Some(serde_json::json!({"phase": "deserialization"}))
             );
 
             let valid = UntypedMessage::new(
