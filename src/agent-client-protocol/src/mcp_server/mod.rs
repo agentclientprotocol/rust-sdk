@@ -21,14 +21,15 @@
 //! The `agent-client-protocol-rmcp` crate provides the builder APIs for MCP
 //! tools backed by the `rmcp` crate and enables this feature.
 //!
-//! Custom servers using [`McpServerConnect`](crate::mcp_server::McpServerConnect),
-//! [`McpServer`](crate::mcp_server::McpServer), and the connection types remain
-//! available without `schemars`, including ACP attachment when
+//! Custom servers using [`crate::mcp_server::McpServerConnect`],
+//! [`crate::mcp_server::McpServer`], and the connection types remain available
+//! without `schemars`, including ACP attachment when
 //! `unstable_mcp_over_acp` is enabled.
 //!
 //! ## Custom MCP Server Implementations
 //!
-//! You can implement [`McpServerConnect`](`crate::mcp_server::McpServerConnect`) to create custom MCP servers:
+//! You can implement [`crate::mcp_server::McpServerConnect`] to create custom MCP
+//! servers:
 //!
 //! ```rust,ignore
 //! use agent_client_protocol::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
