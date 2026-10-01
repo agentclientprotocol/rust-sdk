@@ -5,9 +5,7 @@ provide MCP tools to an agent over the existing ACP connection, without a
 conductor, HTTP listener, subprocess, or MCP initialization handshake.
 
 Enable `unstable_mcp_over_acp` on the core SDK. Draft ACP v2 additionally
-requires `unstable_protocol_v2`. The shared-schema revision is currently pinned
-to a Git commit for cross-repository validation; replace that pin with the
-released schema before publishing the SDK.
+requires `unstable_protocol_v2`. The SDK uses the released shared schema 1.10.1.
 
 ## Providing tools
 
@@ -33,6 +31,14 @@ the backend and joins scoped cleanup before releasing the logical ID or replying
 If the backend exits, already-accepted output is drained without waiting for
 escaped sender handles; a valid queued terminal outcome is preserved, and later
 notifications are not forwarded.
+
+After scoped cleanup, the supervisor awaits bounded terminal-response admission
+before releasing the logical ID. Backpressure cannot silently discard an outcome;
+connection shutdown interrupts this wait.
+
+Batched replies reserve bytes without waiting, because incomplete response batches
+can hold the very budget needed to complete them. They still await queue slots;
+byte exhaustion explicitly fails a live connection rather than stranding its requests.
 
 The rmcp integration's builder and `from_rmcp` use the reusable service path
 for ACP attachments. Each operation uses rmcp's direct, one-request transport

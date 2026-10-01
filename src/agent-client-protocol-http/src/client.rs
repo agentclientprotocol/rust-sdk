@@ -1282,6 +1282,62 @@ fn is_session_opening_method(method: &str) -> bool {
     matches!(method, "session/new" | "session/fork")
 }
 
+// SSE framing, metadata, and comments are not JSON payload. Allow finite
+// envelope overhead while bounding EventStream's pre-decode accumulation.
+const SSE_ENVELOPE_ALLOWANCE_BYTES: usize = 16 * 1024;
+
+struct SseEventLimit {
+    max_event_bytes: usize,
+    event_bytes: usize,
+    line_has_data: bool,
+    pending_cr: bool,
+}
+
+impl SseEventLimit {
+    fn new(max_frame_bytes: usize) -> Self {
+        Self {
+            max_event_bytes: max_frame_bytes.saturating_add(SSE_ENVELOPE_ALLOWANCE_BYTES),
+            event_bytes: 0,
+            line_has_data: false,
+            pending_cr: false,
+        }
+    }
+
+    fn end_line(&mut self) {
+        if !self.line_has_data {
+            self.event_bytes = 0;
+        }
+        self.line_has_data = false;
+    }
+
+    fn check_chunk(&mut self, chunk: &[u8]) -> Result<(), std::io::Error> {
+        for &byte in chunk {
+            // Like EventStream, defer a CR until the next byte distinguishes
+            // CRLF from CR. Count both bytes of CRLF in the same event and
+            // never mistake its LF for a second (blank) line, even across chunks.
+            if self.pending_cr {
+                self.pending_cr = false;
+                if byte != b'\n' {
+                    self.end_line();
+                }
+            }
+            if self.event_bytes >= self.max_event_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "SSE event exceeds maximum envelope size",
+                ));
+            }
+            self.event_bytes += 1;
+            match byte {
+                b'\r' => self.pending_cr = true,
+                b'\n' => self.end_line(),
+                _ => self.line_has_data = true,
+            }
+        }
+        Ok(())
+    }
+}
+
 async fn read_sse(
     connection: HttpConnection,
     session_id: Option<String>,
@@ -1307,36 +1363,22 @@ async fn read_sse(
     trace!(session_id = ?session_id, "SSE stream open");
     let _ = established_tx.send(());
 
-    // Cap each event before EventStream buffers its data fields or JSON parsing
-    // materializes the payload. A blank line terminates one SSE event.
+    // Bound raw events before EventStream buffers fields; enforce the separate
+    // decoded JSON payload limit before parsing or admission.
     let max_frame_bytes = admission.limits().max_frame_bytes;
-    let mut event_bytes = 0usize;
-    let mut line_has_data = false;
+    let mut event_limit = SseEventLimit::new(max_frame_bytes);
     let mut events =
         eventsource_stream::EventStream::new(response.bytes_stream().map(move |chunk| {
             let chunk = chunk.map_err(std::io::Error::other)?;
-            for &byte in &chunk {
-                event_bytes += 1;
-                if event_bytes > max_frame_bytes {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        "SSE event exceeds maximum JSON-RPC frame size",
-                    ));
-                }
-                if byte == b'\n' {
-                    if !line_has_data {
-                        event_bytes = 0;
-                    }
-                    line_has_data = false;
-                } else if byte != b'\r' {
-                    line_has_data = true;
-                }
-            }
-            Ok(chunk)
+            event_limit.check_chunk(&chunk)?;
+            Ok::<_, std::io::Error>(chunk)
         }));
     while let Some(event) = events.next().await {
         let event = event.map_err(|e| e.to_string())?;
         let payload = event.data;
+        if payload.len() > max_frame_bytes {
+            return Err("SSE data exceeds maximum JSON-RPC frame size".to_string());
+        }
         if payload.is_empty() {
             continue;
         }
@@ -1441,7 +1483,10 @@ where
                         continue;
                     }
                     let frame = TransportFrame::parse_json(text.as_str());
-                    if incoming.send_frame(frame).await.is_err() {
+                    if let Err(error) = incoming.send_frame(frame).await {
+                        if !incoming.is_closed() {
+                            return Err(error);
+                        }
                         debug!(
                             "upstream channel closed; discarding WS input while draining output"
                         );
@@ -3723,6 +3768,39 @@ mod tests {
         assert_eq!(entries[1]["method"], "custom/second");
         assert!(matches!(frames.get(1), Some(WsMessage::Close(None))));
         assert_eq!(frames.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn websocket_admission_error_with_open_receiver_fails_driver() {
+        let valid = RawJsonRpcMessage::response(RequestId::Number(1), Ok(json!({})));
+        let valid = serde_json::to_string(&valid).unwrap();
+        let oversized =
+            RawJsonRpcMessage::response(RequestId::Number(1), Ok(json!({"data": "x".repeat(512)})));
+        let oversized = serde_json::to_string(&oversized).unwrap();
+        let (mut caller, transport) =
+            Channel::duplex_with_limits(agent_client_protocol::ConnectionLimits {
+                max_frame_bytes: valid.len(),
+                max_queued_bytes: 4096,
+                max_queued_frames: 4,
+            });
+        let (ws_output_tx, _ws_output) = mpsc::unbounded();
+        // Both the caller and socket stay open. Treating the first frame's
+        // admission error as receiver closure would discard the valid response
+        // and leave the driver (and a pending request) alive forever.
+        let ws_rx = futures::stream::iter([
+            Ok::<_, std::io::Error>(WsMessage::Text(oversized.into())),
+            Ok(WsMessage::Text(valid.into())),
+        ])
+        .chain(futures::stream::pending());
+        let error = timeout(
+            Duration::from_secs(1),
+            drive_ws(RecordingWsSink(ws_output_tx), ws_rx, transport),
+        )
+        .await
+        .expect("WebSocket admission failure was silently discarded")
+        .unwrap_err();
+        assert_eq!(error.code, AcpError::invalid_request().code);
+        assert!(caller.rx.next().await.is_none());
     }
 
     #[tokio::test]

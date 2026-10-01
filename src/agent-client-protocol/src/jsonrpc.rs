@@ -4900,10 +4900,13 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.dynamic_handler_tx
             .unbounded_send(DynamicHandlerMessage::AddDynamicHandler(
                 uuid,
-                Box::new(GuardedDynamicHandler {
+                DynamicHandlerRegistration {
                     active: active.clone(),
-                    handler,
-                }),
+                    handler: Box::new(GuardedDynamicHandler {
+                        active: active.clone(),
+                        handler,
+                    }),
+                },
             ))
             .map_err(crate::util::internal_error)?;
 
@@ -4934,11 +4937,36 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     fn remove_dynamic_handler(&self, uuid: Uuid) {
-        // Ignore errors
+        // This is a wakeup, not the source of truth: the actor prunes revoked
+        // registrations on every event. A full queue already guarantees a
+        // wakeup; a closed queue will drop its registrations on actor exit.
         drop(
             self.dynamic_handler_tx
                 .unbounded_send(DynamicHandlerMessage::RemoveDynamicHandler(uuid)),
         );
+    }
+}
+
+pub(crate) struct DynamicHandlerRegistration<Counterpart: Role> {
+    active: Arc<AtomicBool>,
+    handler: Box<dyn dynamic_handler::DynHandleDispatchFrom<Counterpart>>,
+}
+
+impl<Counterpart: Role> DynamicHandlerRegistration<Counterpart> {
+    fn is_active(&self) -> bool {
+        self.active.load(Ordering::Acquire)
+    }
+
+    fn dyn_handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        cx: ConnectionTo<Counterpart>,
+    ) -> BoxFuture<'_, Result<Handled<Dispatch>, crate::Error>> {
+        self.handler.dyn_handle_dispatch_from(message, cx)
+    }
+
+    fn dyn_describe_chain(&self) -> String {
+        self.handler.dyn_describe_chain()
     }
 }
 
@@ -5075,11 +5103,8 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// Whether this response is emitted on its own or collected into a batch.
     destination: ResponseDestination,
 
-    /// Function to send the response to its destination.
-    ///
-    /// For incoming requests: serializes to JSON and sends over the wire.
-    /// For incoming responses: sends to the waiting oneshot channel.
-    send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+    /// Convert the typed response to an outgoing message before admission.
+    prepare_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> OutgoingMessage + Send>,
 
     /// Completes an abandoned batch slot unless an explicit response disarms it.
     drop_guard: ResponderDropGuard,
@@ -5160,16 +5185,13 @@ impl Responder<serde_json::Value> {
             id,
             cancellation,
             destination,
-            send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
-                send_raw_message(
-                    &message_tx,
-                    OutgoingMessage::Response {
-                        id: id_clone,
-                        method: method_clone,
-                        response,
-                        destination: send_destination,
-                    },
-                )
+            prepare_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
+                OutgoingMessage::Response {
+                    id: id_clone,
+                    method: method_clone,
+                    response,
+                    destination: send_destination,
+                }
             }),
             drop_guard,
         }
@@ -5227,7 +5249,7 @@ impl<T: JsonRpcResponse> Responder<T> {
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
-            send_fn: self.send_fn,
+            prepare_fn: self.prepare_fn,
             drop_guard: self.drop_guard,
         }
     }
@@ -5246,9 +5268,9 @@ impl<T: JsonRpcResponse> Responder<T> {
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
-            send_fn: Box::new(move |input: Result<U, crate::Error>| {
+            prepare_fn: Box::new(move |input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value)
+                (self.prepare_fn)(t_value)
             }),
             drop_guard: self.drop_guard,
         }
@@ -5261,7 +5283,29 @@ impl<T: JsonRpcResponse> Responder<T> {
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
         self.drop_guard.disarm();
-        (self.send_fn)(response)
+        send_raw_message(&self.drop_guard.message_tx, (self.prepare_fn)(response))
+    }
+
+    /// Await bounded response admission from a supervised task, never from an
+    /// incoming dispatch callback (which may prevent the queue from draining).
+    /// Batch replies await queue slots but not bytes: incomplete batches retain
+    /// sibling permits and cannot drain to satisfy a pending byte reservation.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) async fn respond_with_result_async(
+        mut self,
+        response: Result<T, crate::Error>,
+    ) -> Result<(), crate::Error> {
+        self.drop_guard.disarm();
+        let message = (self.prepare_fn)(response);
+        match self.destination {
+            ResponseDestination::Batch(_) => {
+                self.drop_guard
+                    .message_tx
+                    .send_with_immediate_byte_admission(message)
+                    .await
+            }
+            ResponseDestination::Individual(_) => self.drop_guard.message_tx.send(message).await,
+        }
     }
 
     /// Respond to the JSON-RPC request with a value.
@@ -5295,7 +5339,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 /// incoming requests (where you send a response over the wire), `ResponseRouter` handles
 /// incoming responses (where you route the response to a local task waiting for it).
 ///
-/// Both are fundamentally "sinks" that push the message through a `send_fn`, but they
+/// Both transform typed values before delivering them to their destination, but
 /// represent different points in the message lifecycle and carry different metadata.
 ///
 /// # Drop Behavior
@@ -9873,6 +9917,262 @@ mod tests {
             }
             other => panic!("expected v2 handler removal, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn saturated_dynamic_handler_removal_prunes_without_transport_activity() {
+        struct StopSender(oneshot::Sender<()>);
+        impl HandleDispatchFrom<crate::role::UntypedRole> for StopSender {
+            fn describe_chain(&self) -> impl Debug {
+                "StopSender"
+            }
+
+            fn handle_dispatch_from(
+                &mut self,
+                message: Dispatch,
+                _cx: ConnectionTo<crate::role::UntypedRole>,
+            ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> {
+                let _ = &self.0;
+                future::ready(Ok(Handled::No {
+                    message,
+                    retry: false,
+                }))
+            }
+        }
+
+        let (transport, _peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_queued_frames: 2,
+            ..ConnectionLimits::default()
+        });
+        let (message_tx, _message_rx) = application_channel(transport.tx.admission());
+        let (task_tx, _task_rx) = task_actor::task_channel(2);
+        let (dynamic_handler_tx, dynamic_handler_rx) = admission::channel_with_capacity(2);
+        let pending = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            crate::role::UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let mut actor = Box::pin(incoming_actor::incoming_protocol_actor(
+            crate::role::UntypedRole,
+            &connection,
+            transport.rx,
+            dynamic_handler_rx,
+            pending,
+            incoming_actor::IncomingHandlers::new(NullHandler, NullClose),
+            ProtocolCompat::new(ProtocolMode::disabled()),
+        ));
+        let (stop_tx, stop_rx) = oneshot::channel::<()>();
+        let guard = connection.add_dynamic_handler(StopSender(stop_tx)).unwrap();
+        let _retained = connection.add_dynamic_handler(NullHandler).unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let mut stop_rx = Box::pin(stop_rx);
+        assert!(stop_rx.as_mut().now_or_never().is_none());
+
+        // Pause the actor explicitly between polls. Both control slots are
+        // occupied, so guard drop cannot enqueue its removal wakeup.
+        connection
+            .dynamic_handler_tx
+            .unbounded_send(DynamicHandlerMessage::Barrier)
+            .unwrap();
+        let mut barrier = Box::pin(connection.dynamic_handler_barrier());
+        drop(guard);
+        assert!(stop_rx.as_mut().now_or_never().is_none());
+        assert!(actor.as_mut().now_or_never().is_none());
+        barrier.as_mut().now_or_never().unwrap().unwrap();
+        assert!(stop_rx.as_mut().now_or_never().unwrap().is_err());
+
+        // The installed-handler limit was full. The revoked slot must now be
+        // reusable, and a revoked queued Add must not consume another slot.
+        let stale = connection.add_dynamic_handler(NullHandler).unwrap();
+        let _replacement = connection.add_dynamic_handler(NullHandler).unwrap();
+        drop(stale); // Again, the control queue is full.
+        assert!(actor.as_mut().now_or_never().is_none());
+        let barrier = connection.dynamic_handler_barrier();
+        assert!(actor.as_mut().now_or_never().is_none());
+        barrier.now_or_never().unwrap().unwrap();
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn saturated_provider_removal_cancels_native_work_and_revokes_notifications() {
+        check_native_provider_removal(NativeTerminalQueue::Available);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn native_terminal_admission_failure_reaches_supervisor() {
+        check_native_provider_removal(NativeTerminalQueue::Closed);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn native_terminal_admission_wait_does_not_block_shutdown_join() {
+        check_native_provider_removal(NativeTerminalQueue::FullAtShutdown);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    enum NativeTerminalQueue {
+        Available,
+        Closed,
+        FullAtShutdown,
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    fn check_native_provider_removal(terminal_queue: NativeTerminalQueue) {
+        use crate::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpServer, McpService};
+        use crate::schema::v1::{McpServer as WireServer, MessageMcpRequest, NewSessionRequest};
+
+        struct WaitingService(Mutex<Option<oneshot::Sender<McpRequestContext<Agent>>>>);
+        impl McpService<Agent> for WaitingService {
+            fn execute(
+                &self,
+                _request: McpRequest,
+                context: McpRequestContext<Agent>,
+            ) -> BoxFuture<'static, Result<McpOutcome, crate::Error>> {
+                let started = self.0.lock().unwrap().take().unwrap();
+                async move {
+                    started.send(context.clone()).unwrap();
+                    context.operation_cancellation().cancelled().await;
+                    Err(crate::Error::request_cancelled())
+                }
+                .boxed()
+            }
+        }
+
+        let (transport, peer) = Channel::duplex_with_limits(ConnectionLimits {
+            max_queued_frames: 2,
+            ..ConnectionLimits::default()
+        });
+        let (message_tx, mut message_rx) = application_channel(transport.tx.admission());
+        let (task_tx, mut task_rx) = task_actor::task_channel(2);
+        let (dynamic_handler_tx, dynamic_handler_rx) = admission::channel_with_capacity(2);
+        let pending = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            Agent,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let mut actor = Box::pin(incoming_actor::incoming_protocol_actor(
+            Agent,
+            &connection,
+            transport.rx,
+            dynamic_handler_rx,
+            pending,
+            incoming_actor::IncomingHandlers::new(NullHandler, NullClose),
+            ProtocolCompat::new(ProtocolMode::disabled()),
+        ));
+        let (started_tx, started_rx) = oneshot::channel();
+        let (handler, _runner) = McpServer::new_service(
+            WaitingService(Mutex::new(Some(started_tx))),
+            "removal-probe",
+            NullRun,
+        )
+        .into_handler_and_runner();
+        let mut setup = NewSessionRequest::new(std::env::current_dir().unwrap());
+        let provider = handler
+            .into_dynamic_handler(&mut setup, &connection)
+            .unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let WireServer::Acp(server) = &setup.mcp_servers[0] else {
+            panic!("expected native provider")
+        };
+        let request = MessageMcpRequest::new(server.server_id.clone(), "live-id", "tools/call")
+            .params(
+                serde_json::json!({"_meta":{
+                    "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities":{}
+                }})
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+        peer.tx
+            .try_send(TransportFrame::Single(
+                RawJsonRpcMessage::request(
+                    "mcp/message".into(),
+                    serde_json::to_value(request).unwrap(),
+                    RequestId::Str("outer-id".into()),
+                )
+                .unwrap(),
+            ))
+            .unwrap();
+        assert!(actor.as_mut().now_or_never().is_none());
+        let task = task_rx.next().now_or_never().unwrap().unwrap();
+        let mut operation = Box::pin(task.run_for_test());
+        assert!(operation.as_mut().now_or_never().is_none());
+        let context = started_rx.now_or_never().unwrap().unwrap();
+
+        connection
+            .dynamic_handler_tx
+            .unbounded_send(DynamicHandlerMessage::Barrier)
+            .unwrap();
+        let barrier = connection.dynamic_handler_barrier();
+        drop(provider); // Removal cannot enter the full two-slot queue.
+        assert!(actor.as_mut().now_or_never().is_none());
+        barrier.now_or_never().unwrap().unwrap();
+        match terminal_queue {
+            NativeTerminalQueue::Available => {
+                operation.as_mut().now_or_never().unwrap().unwrap();
+                let OutgoingMessage::Admitted { message, .. } =
+                    message_rx.next().now_or_never().unwrap().unwrap()
+                else {
+                    panic!("expected admitted terminal response")
+                };
+                assert!(matches!(
+                    *message,
+                    OutgoingMessage::Response {
+                        response: Err(_),
+                        ..
+                    }
+                ));
+                assert!(message_rx.next().now_or_never().is_none());
+            }
+            NativeTerminalQueue::Closed => {
+                admission::ReceiverClose::close(&mut message_rx);
+                let error = operation.as_mut().now_or_never().unwrap().unwrap_err();
+                assert!(error.to_string().contains("closed"), "{error}");
+            }
+            NativeTerminalQueue::FullAtShutdown => {
+                for _ in 0..2 {
+                    connection
+                        .send_notification(
+                            UntypedMessage::new("output/filler", serde_json::json!({})).unwrap(),
+                        )
+                        .unwrap();
+                }
+                assert!(
+                    operation.as_mut().now_or_never().is_none(),
+                    "terminal response must await bounded admission"
+                );
+                connection.request_shutdown();
+                operation.as_mut().now_or_never().unwrap().unwrap();
+                for _ in 0..2 {
+                    let OutgoingMessage::Admitted { message, .. } =
+                        message_rx.next().now_or_never().unwrap().unwrap()
+                    else {
+                        panic!("expected admitted filler notification")
+                    };
+                    assert!(matches!(*message, OutgoingMessage::Notification { .. }));
+                }
+                assert!(message_rx.next().now_or_never().is_none());
+            }
+        }
+        assert!(context.operation_cancellation().is_cancelled());
+        let error = context
+            .send_notification("notifications/progress", None)
+            .now_or_never()
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.code, crate::Error::request_cancelled().code);
     }
 
     #[test]

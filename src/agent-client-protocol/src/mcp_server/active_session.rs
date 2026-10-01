@@ -114,23 +114,32 @@ fn project_outcome(outcome: McpOutcome, is_discovery: bool) -> Result<McpOutcome
     }
 }
 
-fn send_outcome<Protocol: McpProtocol>(
+async fn send_outcome<Protocol: McpProtocol>(
     responder: Responder<Protocol::MessageResponse>,
     result: Result<McpOutcome, crate::Error>,
     is_discovery: bool,
+    shutdown: impl Future<Output = ()>,
 ) -> Result<(), crate::Error> {
-    match result {
+    let response = match result {
         Ok(outcome) => {
             // Projection failures are MCP outcomes; binding and size failures
             // remain named outer ACP errors, regardless of backend type.
             let outcome = project_outcome(outcome, is_discovery)
                 .unwrap_or_else(|error| McpOutcome::Error(into_mcp_error(error)));
-            match outcome_response::<Protocol>(outcome) {
-                Ok(response) => responder.respond(response),
-                Err(error) => responder.respond_with_error(error),
-            }
+            outcome_response::<Protocol>(outcome)
         }
-        Err(error) => responder.respond_with_error(error),
+        Err(error) => Err(error),
+    };
+    // Notification bursts may fill the bounded application queue in one poll.
+    // A protected supervisor can await admission without blocking either actor.
+    // Once the connection is shutting down, cleanup is still mandatory but a
+    // terminal reply is not: admission must not delay the protected task join
+    // or turn intentional shutdown into an application error.
+    let send = responder.respond_with_result_async(response);
+    futures::pin_mut!(send, shutdown);
+    match future::select(shutdown, send).await {
+        Either::Left(((), _)) => Ok(()),
+        Either::Right((result, _)) => result,
     }
 }
 
@@ -407,12 +416,16 @@ where
                 *alive.lock().await = false;
                 cleanup_connection.wait_cleanup().await;
                 // Operation futures have been dropped and cannot send late output.
+                // Keep the logical ID owned until terminal response admission.
+                let response = send_outcome::<Protocol>(
+                    responder,
+                    result,
+                    is_discovery,
+                    shutdown_connection.shutdown_requested(),
+                )
+                .await;
                 drop(guard);
-                let response = send_outcome::<Protocol>(responder, result, is_discovery);
-                if let Err(error) = response {
-                    tracing::debug!(?error, "cannot send MCP response");
-                }
-                Ok(())
+                response
             })?;
             return Ok(Handled::Yes);
         }
@@ -559,12 +572,15 @@ where
             drop(backend);
             drop(client);
             cleanup_connection.wait_cleanup().await;
+            let response = send_outcome::<Protocol>(
+                responder,
+                result,
+                is_discovery,
+                connection_for_task.shutdown_requested(),
+            )
+            .await;
             drop(guard);
-            let response = send_outcome::<Protocol>(responder, result, is_discovery);
-            if let Err(error) = response {
-                tracing::debug!(?error, "cannot send request-scoped MCP response");
-            }
-            Ok(())
+            response
         })?;
         Ok(Handled::Yes)
     }

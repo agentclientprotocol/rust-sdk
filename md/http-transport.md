@@ -85,6 +85,10 @@ for the next frame. A WebSocket frame rejected by admission terminates that
 connection rather than silently losing input or waiting forever to drain a
 still-live agent.
 
+HTTP clients cap decoded SSE data at `max_frame_bytes` and each complete raw
+event at that limit plus a 16 KiB envelope allowance. CR, LF, and CRLF line
+endings are supported even when split across transport chunks.
+
 A fatal outbound routing failure, such as mailbox overflow, closes the whole
 connection and reclaims its agent and metadata even if the agent emits no more
 messages. This is distinct from an ordinary SSE disconnect, which can reconnect
