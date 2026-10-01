@@ -130,6 +130,12 @@ inside the successful outer `result`, not an ACP error response. Each version's
 results are opaque JSON (including null); inner error data distinguishes null
 from omission. MCP error codes never acquire ACP meanings.
 
+Senders must include exactly one of `result` or `error`. Receivers ignore unknown
+outer carrier fields and prefer `result` if both keys are present, matching the
+existing JSON-RPC response envelope. A result requires a present `result` key,
+even when its value is null; an error requires valid `code` and `message` fields.
+Unknown fields inside an MCP error are preserved.
+
 Outer ACP errors describe binding failures: invalid envelope/duplicate ID
 (`-32602`), cancellation (`-32800`), resource exhaustion (`-33000`), unavailable
 registration (`-33001`), or backend/transport failure (`-33002`).

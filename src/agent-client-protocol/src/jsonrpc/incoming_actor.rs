@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::Dispatch;
 use crate::UntypedMessage;
 use crate::jsonrpc::ConnectionTo;
+use crate::jsonrpc::DynamicHandlerRegistration;
 use crate::jsonrpc::HandleConnectionClose;
 use crate::jsonrpc::HandleDispatchFrom;
 use crate::jsonrpc::HandlerErrorTarget;
@@ -24,7 +25,6 @@ use crate::jsonrpc::ResponseDestination;
 use crate::jsonrpc::ResponseDispatch;
 use crate::jsonrpc::ResponseRouter;
 use crate::jsonrpc::TransportBatchEntry;
-use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
@@ -83,7 +83,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let mut my_rx =
         transport_with_close.merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler));
 
-    let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
+    let mut dynamic_handlers: FxHashMap<Uuid, DynamicHandlerRegistration<Counterpart>> =
         FxHashMap::default();
     let mut pending_messages: Vec<DeferredDispatch> = vec![];
 
@@ -93,9 +93,11 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let mut queued_transport_messages = VecDeque::new();
     loop {
         let message_result = if let Some(message) = queued_transport_messages.pop_front() {
+            dynamic_handlers.retain(|_, registration| registration.is_active());
             message
         } else {
-            let Some(message) = my_rx.next().await else {
+            let Some(message) = receive_protocol_message(&mut my_rx, &mut dynamic_handlers).await
+            else {
                 break;
             };
             message
@@ -248,7 +250,12 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                         .map_err(crate::util::internal_error)?;
 
                                     loop {
-                                        let Some(message) = my_rx.next().await else {
+                                        let Some(message) = receive_protocol_message(
+                                            &mut my_rx,
+                                            &mut dynamic_handlers,
+                                        )
+                                        .await
+                                        else {
                                             return Err(crate::util::internal_error(
                                                 "dynamic-handler stream closed before its barrier",
                                             ));
@@ -314,14 +321,32 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     Ok(())
 }
 
+async fn receive_protocol_message<Counterpart: Role>(
+    incoming: &mut (impl futures::Stream<Item = IncomingProtocolMsg<Counterpart>> + Unpin),
+    dynamic_handlers: &mut FxHashMap<Uuid, DynamicHandlerRegistration<Counterpart>>,
+) -> Option<IncomingProtocolMsg<Counterpart>> {
+    // Every receive, including ordered-response barrier drains, honors guard
+    // revocation before parking and after waking. A full removal queue guarantees
+    // a pending event, but a barrier drain may consume the last such event.
+    dynamic_handlers.retain(|_, registration| registration.is_active());
+    let message = incoming.next().await?;
+    dynamic_handlers.retain(|_, registration| registration.is_active());
+    Some(message)
+}
+
 async fn handle_dynamic_handler_message<Counterpart: Role>(
     message: DynamicHandlerMessage<Counterpart>,
     connection: &ConnectionTo<Counterpart>,
-    dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
+    dynamic_handlers: &mut FxHashMap<Uuid, DynamicHandlerRegistration<Counterpart>>,
     pending_messages: &mut Vec<DeferredDispatch>,
 ) -> Result<(), crate::Error> {
     match message {
         DynamicHandlerMessage::AddDynamicHandler(uuid, mut handler) => {
+            // A guard may be dropped before its queued Add is received. Such
+            // registrations must neither retry deferred work nor consume slots.
+            if !handler.is_active() {
+                return Ok(());
+            }
             // Before adding the new handler, give it a chance to process
             // any pending messages.
             let mut new_pending_messages = vec![];
@@ -363,6 +388,10 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             *pending_messages = new_pending_messages;
 
             // Add handler so it will be used for future incoming messages.
+            dynamic_handlers.retain(|_, registration| registration.is_active());
+            if !handler.is_active() {
+                return Ok(());
+            }
             if !dynamic_handlers.contains_key(&uuid)
                 && dynamic_handlers.len() >= connection.message_tx.queue_capacity()
             {
@@ -533,7 +562,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
     mut dispatch: Dispatch,
-    dynamic_handlers: &mut FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>>,
+    dynamic_handlers: &mut FxHashMap<Uuid, DynamicHandlerRegistration<Counterpart>>,
     handler: &mut impl HandleDispatchFrom<Counterpart>,
     pending_messages: &mut Vec<DeferredDispatch>,
     request_cancellations: &super::RequestCancellationRegistry,
@@ -720,5 +749,162 @@ fn handle_handler_error<Counterpart: Role>(
             );
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use futures::{FutureExt, channel::oneshot, future};
+
+    use super::*;
+    use crate::jsonrpc::{DynamicHandlerGuard, ProtocolMode, admission, task_actor};
+    use crate::role::UntypedRole;
+
+    struct StopSender(oneshot::Sender<()>);
+
+    impl HandleDispatchFrom<UntypedRole> for StopSender {
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "StopSender"
+        }
+
+        fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            _cx: ConnectionTo<UntypedRole>,
+        ) -> impl std::future::Future<Output = Result<Handled<Dispatch>, crate::Error>> {
+            let _ = &self.0;
+            future::ready(Ok(Handled::No {
+                message,
+                retry: false,
+            }))
+        }
+    }
+
+    struct InstalledHandler {
+        connection: ConnectionTo<UntypedRole>,
+        receiver: admission::SimpleReceiver<DynamicHandlerMessage<UntypedRole>>,
+        handlers: FxHashMap<Uuid, DynamicHandlerRegistration<UntypedRole>>,
+        guard: DynamicHandlerGuard<UntypedRole>,
+        stopped: oneshot::Receiver<()>,
+    }
+
+    fn installed_handler() -> InstalledHandler {
+        let (message_tx, _message_rx) = admission::channel_with_capacity(2);
+        let (task_tx, _task_rx) = task_actor::task_channel(2);
+        let (dynamic_handler_tx, mut receiver) = admission::channel_with_capacity(2);
+        let pending = PendingReplies::default();
+        let connection = ConnectionTo::new(
+            UntypedRole,
+            message_tx,
+            task_tx,
+            dynamic_handler_tx,
+            future::ready(Ok::<(), crate::Error>(())).boxed().shared(),
+            pending.registrar(),
+            ProtocolMode::disabled(),
+        );
+        let (stop_tx, stopped) = oneshot::channel();
+        let guard = connection.add_dynamic_handler(StopSender(stop_tx)).unwrap();
+        let DynamicHandlerMessage::AddDynamicHandler(uuid, registration) =
+            receiver.next().now_or_never().unwrap().unwrap()
+        else {
+            panic!("expected the handler registration");
+        };
+        InstalledHandler {
+            connection,
+            receiver,
+            handlers: FxHashMap::from_iter([(uuid, registration)]),
+            guard,
+            stopped,
+        }
+    }
+
+    #[test]
+    fn barrier_receives_prune_revoked_handlers_from_a_full_control_queue() {
+        let InstalledHandler {
+            connection,
+            receiver,
+            mut handlers,
+            guard,
+            mut stopped,
+        } = installed_handler();
+        let (ack_tx, ack_rx) = oneshot::channel();
+        connection
+            .dynamic_handler_tx
+            .unbounded_send(DynamicHandlerMessage::AcknowledgedBarrier(ack_tx))
+            .unwrap();
+        connection
+            .dynamic_handler_tx
+            .unbounded_send(DynamicHandlerMessage::Barrier)
+            .unwrap();
+        // Both markers precede the attempted removal. They will be consumed
+        // entirely by the ordered-response barrier drain, leaving no outer event.
+        drop(guard);
+        assert!(stopped.try_recv().unwrap().is_none());
+        let mut incoming = receiver.map(IncomingProtocolMsg::DynamicHandler);
+        futures::executor::block_on(async {
+            let mut pending = Vec::new();
+            loop {
+                match receive_protocol_message(&mut incoming, &mut handlers)
+                    .await
+                    .unwrap()
+                {
+                    IncomingProtocolMsg::DynamicHandler(DynamicHandlerMessage::Barrier) => break,
+                    IncomingProtocolMsg::DynamicHandler(message) => {
+                        handle_dynamic_handler_message(
+                            message,
+                            &connection,
+                            &mut handlers,
+                            &mut pending,
+                        )
+                        .await
+                        .unwrap();
+                    }
+                    _ => panic!("expected a barrier control message"),
+                }
+            }
+            ack_rx.await.unwrap();
+            assert!(handlers.is_empty());
+            assert!(stopped.await.is_err());
+            // The connection stays open with no more activity to trigger a sweep.
+            assert!(
+                receive_protocol_message(&mut incoming, &mut handlers)
+                    .now_or_never()
+                    .is_none()
+            );
+        });
+    }
+
+    #[test]
+    fn idle_receive_prunes_revocation_after_the_barrier_events_are_consumed() {
+        let InstalledHandler {
+            connection,
+            mut receiver,
+            mut handlers,
+            guard,
+            mut stopped,
+        } = installed_handler();
+        for _ in 0..2 {
+            connection
+                .dynamic_handler_tx
+                .unbounded_send(DynamicHandlerMessage::Barrier)
+                .unwrap();
+        }
+        drop(guard);
+        // Recreate an inner drain that consumed both markers without sweeping.
+        for _ in 0..2 {
+            assert!(matches!(
+                receiver.next().now_or_never().unwrap(),
+                Some(DynamicHandlerMessage::Barrier)
+            ));
+        }
+        assert!(stopped.try_recv().unwrap().is_none());
+        let mut incoming = receiver.map(IncomingProtocolMsg::DynamicHandler);
+        assert!(
+            receive_protocol_message(&mut incoming, &mut handlers)
+                .now_or_never()
+                .is_none()
+        );
+        assert!(handlers.is_empty());
+        assert!(stopped.try_recv().is_err());
     }
 }

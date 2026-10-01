@@ -780,33 +780,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mcp_carrier_preserves_peer_error_and_rejects_ambiguous_outcomes() {
-        let error = serde_json::json!({
-            "code":-32000,"message":"peer-defined error",
-            "data":{"nested":[1,2]},"extension":"preserved"
-        });
-        let project = |carrier| {
-            project_mcp_carrier(
-                PolyfillProtocol::V1,
-                serde_json::json!("external"),
-                "internal",
-                "tools/call",
-                carrier,
-            )
-        };
-        assert_eq!(project(serde_json::json!({"error":error}))["error"], error);
-        assert_eq!(
-            project(serde_json::json!({"result":null})),
-            serde_json::json!({"jsonrpc":"2.0","id":"external","result":null})
-        );
-        for invalid in [
-            serde_json::json!({"result":null,"error":error}),
-            serde_json::json!({"tools":[]}),
-            serde_json::json!({"error":null}),
+    fn mcp_carrier_follows_released_receiver_semantics() {
+        for protocol in [
+            PolyfillProtocol::V1,
+            #[cfg(feature = "unstable_protocol_v2")]
+            PolyfillProtocol::V2,
         ] {
-            let response = project(invalid);
-            assert_eq!(response["id"], "external");
-            assert_eq!(response["error"]["code"], -33002);
+            let error = serde_json::json!({
+                "code":-32000,"message":"peer-defined error",
+                "data":null,"extension":"preserved"
+            });
+            let project = |carrier| {
+                project_mcp_carrier(
+                    protocol,
+                    serde_json::json!("external"),
+                    "internal",
+                    "tools/call",
+                    carrier,
+                )
+            };
+            for data in [serde_json::json!({"nested":[1,2]}), Value::Null] {
+                let mut peer_error = error.clone();
+                peer_error["data"] = data;
+                assert_eq!(
+                    project(serde_json::json!({
+                        "error":peer_error,"futureCarrier":true
+                    }))["error"],
+                    peer_error
+                );
+            }
+            // Receivers prefer a present result, even if the error is invalid,
+            // and ignore unknown outer fields and malformed carrier metadata.
+            for carrier in [
+                serde_json::json!({"result":null}),
+                serde_json::json!({"result":null,"futureCarrier":{"nested":true}}),
+                serde_json::json!({"result":null,"error":error}),
+                serde_json::json!({"result":null,"error":null,"_meta":123}),
+            ] {
+                assert_eq!(
+                    project(carrier),
+                    serde_json::json!({"jsonrpc":"2.0","id":"external","result":null})
+                );
+            }
+            for invalid in [
+                serde_json::json!({}),
+                serde_json::json!({"tools":[]}),
+                serde_json::json!({"error":null}),
+                serde_json::json!({"error":{"code":"wrong","message":"bad"}}),
+            ] {
+                let response = project(invalid);
+                assert_eq!(response["id"], "external");
+                assert_eq!(response["error"]["code"], -33002);
+            }
         }
     }
 

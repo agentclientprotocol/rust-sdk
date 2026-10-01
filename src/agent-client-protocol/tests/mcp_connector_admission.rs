@@ -12,7 +12,10 @@ use std::{
 use agent_client_protocol::{
     Agent, ByteStreams, Channel, Client, ConnectTo, ConnectionLimits, ConnectionTo, DynConnectTo,
     Error, FrameSender, RawJsonRpcMessage, Responder, RunWithConnectionTo, TransportFrame,
-    mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
+    mcp_server::{
+        McpConnectionTo, McpOutcome, McpRequest, McpRequestContext, McpServer, McpServerConnect,
+        McpService,
+    },
     role,
     schema::v1,
 };
@@ -25,6 +28,7 @@ use tokio::{
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+const PROVIDER_CAPACITY: usize = 8;
 
 #[derive(Default)]
 struct Probes {
@@ -40,6 +44,8 @@ enum BackendBehavior {
     WireReply,
     ReplyThenError,
     ExitWithoutReply,
+    ConnectorBurst,
+    ServiceBurst,
 }
 
 struct Connector(Arc<Probes>, BackendBehavior);
@@ -85,6 +91,25 @@ impl ConnectTo<role::mcp::Client> for Backend {
                     .unwrap()
                     .push(channel.tx.clone());
                 if matches!(self.1, BackendBehavior::ExitWithoutReply) {
+                    return Ok(());
+                }
+                if matches!(self.1, BackendBehavior::ConnectorBurst) {
+                    for _ in 0..PROVIDER_CAPACITY {
+                        channel
+                            .tx
+                            .try_send(TransportFrame::Single(RawJsonRpcMessage::notification(
+                                "notifications/progress".into(),
+                                json!({"progressToken":1, "progress":1, "marker":"burst"}),
+                            )?))
+                            .map_err(Error::into_internal_error)?;
+                    }
+                    channel
+                        .tx
+                        .try_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                            request.id,
+                            Ok(json!({"admitted":true})),
+                        )))
+                        .map_err(Error::into_internal_error)?;
                     return Ok(());
                 }
                 for message in [
@@ -141,6 +166,35 @@ impl ConnectTo<role::mcp::Client> for Backend {
     }
 }
 
+struct BurstService;
+
+impl McpService<Agent> for BurstService {
+    fn execute(
+        &self,
+        _request: McpRequest,
+        context: McpRequestContext<Agent>,
+    ) -> futures::future::BoxFuture<'static, Result<McpOutcome, Error>> {
+        Box::pin(async move {
+            // Every notification admits immediately in the same operation poll.
+            // The terminal reply must await a slot instead of trying and losing it.
+            for _ in 0..PROVIDER_CAPACITY {
+                context
+                    .send_notification(
+                        "notifications/progress",
+                        Some(
+                            json!({"progressToken":1, "progress":1, "marker":"burst"})
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                    )
+                    .await?;
+            }
+            Ok(McpOutcome::Result(json!({"admitted":true})))
+        })
+    }
+}
+
 struct NullRun;
 
 impl RunWithConnectionTo<Agent> for NullRun {
@@ -183,7 +237,7 @@ async fn scenario(
     tokio::time::timeout(TIMEOUT, async move {
         let probes = Arc::new(Probes::default());
         let (provider_channel, agent_channel) = Channel::duplex_with_limits(ConnectionLimits {
-            max_queued_frames: 8,
+            max_queued_frames: PROVIDER_CAPACITY,
             ..ConnectionLimits::default()
         });
         let (start_tx, start_rx) = oneshot::channel::<()>();
@@ -245,13 +299,18 @@ async fn scenario(
             agent_client_protocol::on_receive_notification!(),
         );
         let connector = Connector(probes.clone(), behavior);
+        let server = if matches!(behavior, BackendBehavior::ServiceBurst) {
+            McpServer::<Agent, _>::new_service(BurstService, "burst-service", NullRun)
+        } else {
+            McpServer::<Agent, _>::new(connector, NullRun)
+        };
         let test = Client
             .builder()
             .connect_with(provider_channel, async move |connection| {
                 let filler_connection = connection.clone();
                 connection
                     .build_session_cwd()?
-                    .with_mcp_server(McpServer::<Agent, _>::new(connector, NullRun))?
+                    .with_mcp_server(server)?
                     .block_task()
                     .run_until(async |_session| {
                         for _ in 0..fillers {
@@ -333,4 +392,34 @@ async fn connector_exit_without_response_does_not_wait_for_escaped_sender() {
     let escaped = probes.escaped_senders.lock().unwrap();
     assert_eq!(escaped.len(), 1);
     assert!(escaped[0].is_closed());
+}
+
+async fn notification_burst_preserves_terminal_response(behavior: BackendBehavior) {
+    let (responses, probes) = scenario(7, 2, behavior).await;
+    for (response, _) in responses {
+        let v1::MessageMcpResponse::Result { result, .. } = response.unwrap() else {
+            panic!("terminal reply must survive a full notification queue");
+        };
+        assert_eq!(result, json!({"admitted":true}));
+    }
+    assert_eq!(
+        *probes.notifications.lock().unwrap(),
+        vec!["burst"; 2 * PROVIDER_CAPACITY]
+    );
+    let backends = if matches!(behavior, BackendBehavior::ConnectorBurst) {
+        2
+    } else {
+        0
+    };
+    assert_eq!(probes.backend_dropped.load(Ordering::SeqCst), backends);
+}
+
+#[tokio::test]
+async fn connector_notification_burst_awaits_terminal_response_admission() {
+    notification_burst_preserves_terminal_response(BackendBehavior::ConnectorBurst).await;
+}
+
+#[tokio::test]
+async fn service_notification_burst_awaits_terminal_response_admission() {
+    notification_burst_preserves_terminal_response(BackendBehavior::ServiceBurst).await;
 }

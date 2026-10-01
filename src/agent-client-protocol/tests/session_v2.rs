@@ -80,6 +80,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
     )]);
     let expected_new_response = v2::NewSessionResponse::new(session_id.clone())
         .config_options(vec![config_option])
+        .available_commands(vec![v2::AvailableCommand::new("test", "Run tests")])
         .meta(meta);
     let agent_new_response = expected_new_response.clone();
 
@@ -231,6 +232,7 @@ async fn v2_fork_builder_uses_the_forked_response_id_and_preserves_the_response(
     )]);
     let expected_response = v2::ForkSessionResponse::new(forked_session_id.clone())
         .config_options(vec![config_option])
+        .available_commands(vec![v2::AvailableCommand::new("test", "Run tests")])
         .meta(response_meta);
     let agent_response = expected_response.clone();
     let agent_source_session_id = source_session_id.clone();
@@ -827,7 +829,9 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
 async fn v2_resume_replay_is_handled_before_the_response() {
     let session_id = v2::SessionId::new("resumed-session");
     let config_option = v2::SessionConfigOption::boolean("thinking", "Thinking", false);
-    let expected_response = v2::ResumeSessionResponse::new().config_options(vec![config_option]);
+    let expected_response = v2::ResumeSessionResponse::new()
+        .config_options(vec![config_option])
+        .available_commands(vec![v2::AvailableCommand::new("test", "Run tests")]);
     let agent_response = expected_response.clone();
     let agent_session_id = session_id.clone();
 

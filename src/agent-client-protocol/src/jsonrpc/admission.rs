@@ -112,6 +112,18 @@ impl<T> Sender<T> {
     }
 
     pub async fn send(&self, item: T) -> Result<(), crate::Error> {
+        self.send_inner(item, true).await
+    }
+
+    /// Await a queue slot, but reject byte pressure immediately. Partial batch
+    /// replies retain their bytes until every sibling arrives, so waiting for
+    /// those bytes could prevent the only frames that can release them.
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub async fn send_with_immediate_byte_admission(&self, item: T) -> Result<(), crate::Error> {
+        self.send_inner(item, false).await
+    }
+
+    async fn send_inner(&self, item: T, wait_for_bytes: bool) -> Result<(), crate::Error> {
         let urgent = self
             .inner
             .admission
@@ -124,10 +136,9 @@ impl<T> Sender<T> {
         };
         let item = if let Some(admission) = &self.inner.admission {
             let bytes = (admission.measure)(&item)?;
-            let reserve = admission
-                .budget
-                .reserve_bytes(bytes, !(admission.control)(&item));
-            let permit =
+            let data = !(admission.control)(&item);
+            let permit = if wait_for_bytes {
+                let reserve = admission.budget.reserve_bytes(bytes, data);
                 match futures::future::select(Box::pin(reserve), Box::pin(tx.closed())).await {
                     futures::future::Either::Left((permit, _)) => permit?,
                     futures::future::Either::Right(_) => {
@@ -135,7 +146,15 @@ impl<T> Sender<T> {
                             "outgoing application queue closed",
                         ));
                     }
-                };
+                }
+            } else {
+                admission
+                    .budget
+                    .try_reserve_bytes(bytes, data)
+                    .ok_or_else(|| {
+                        crate::util::internal_error("outgoing application byte capacity exceeded")
+                    })?
+            };
             (admission.attach)(item, permit)
         } else {
             item

@@ -36,7 +36,7 @@ impl<Counterpart: Role, H: HandleDispatchFrom<Counterpart>> DynHandleDispatchFro
 
 /// Messages used to add/remove dynamic handlers
 pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
-    AddDynamicHandler(Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>),
+    AddDynamicHandler(Uuid, super::DynamicHandlerRegistration<Counterpart>),
     RemoveDynamicHandler(Uuid),
     /// Marks the end of updates queued during ordered response processing.
     Barrier,

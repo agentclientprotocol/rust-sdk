@@ -132,7 +132,8 @@ consumers still receive the existing `Error` type.
 
 ## Release checklist
 
-- Replace the draft Git schema pin with the released matching schema version.
+- Use a matching released schema rather than a draft Git revision. The workspace
+  currently pins schema 1.10.1.
 - Coordinate major releases for crates whose public transport or rmcp-facing
   API changed; do not infer compatibility solely from unchanged Cargo numbers.
 - Exercise v1 and v2 carrier/error behavior, cancellation and EOF, MRTR,
