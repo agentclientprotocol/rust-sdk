@@ -12,10 +12,11 @@ use std::time::Instant;
 use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
     MessageMcpNotification, MessageMcpRequest, Notification as RpcNotification,
-    Request as RpcRequest, RequestId, Response as RpcResponse,
+    Request as RpcRequest, RequestId,
 };
 use agent_client_protocol::{
-    DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams, Role, UntypedMessage,
+    DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams,
+    RawJsonRpcResponse as RpcResponse, Role, UntypedMessage,
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};

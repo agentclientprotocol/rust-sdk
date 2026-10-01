@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve raw JSON-RPC error codes, omitted/null data, and error extension
+  fields in the MCP HTTP bridge instead of interpreting them as ACP errors.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.1.0...agent-client-protocol-polyfill-v2.2.0) - 2026-09-18
 
 ### Other

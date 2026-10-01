@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Retain raw JSON-RPC error codes, omitted/null data, and error extension
+  fields in traced response payloads. Trace method and parameter normalization
+  is unchanged.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.1.0...agent-client-protocol-conductor-v2.2.0) - 2026-09-18
 
 ### Other

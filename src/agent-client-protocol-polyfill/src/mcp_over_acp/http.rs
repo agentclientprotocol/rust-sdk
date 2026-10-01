@@ -1,12 +1,10 @@
 //! HTTP-based MCP bridge transport.
 
 use agent_client_protocol::{
-    BoxFuture, Channel, ConnectTo, RawJsonRpcMessage, RawJsonRpcParams, TransportBatchEntry,
-    TransportFrame,
+    BoxFuture, Channel, ConnectTo, RawJsonRpcMessage, RawJsonRpcParams,
+    RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame,
     role::mcp,
-    schema::v1::{
-        Notification as RpcNotification, Request as RpcRequest, RequestId, Response as RpcResponse,
-    },
+    schema::v1::{Notification as RpcNotification, Request as RpcRequest, RequestId},
 };
 use axum::{
     Router,
@@ -164,7 +162,7 @@ enum HttpMessage {
     /// A JSON-RPC response from the client.
     Response {
         http_request_id: uuid::Uuid,
-        response: RpcResponse<serde_json::Value>,
+        response: RpcResponse,
     },
     /// A batch retained as one transport frame.
     Frame {
@@ -811,7 +809,7 @@ mod tests {
                     id: RequestId::Null,
                     error,
                     ..
-                }) if error.code == agent_client_protocol::ErrorCode::ParseError
+                }) if error.code == i32::from(agent_client_protocol::ErrorCode::ParseError)
             ));
         });
     }

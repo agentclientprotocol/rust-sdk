@@ -976,7 +976,7 @@ mod tests {
         assert!(matches!(
             frame,
             TransportFrame::Single(RawJsonRpcMessage::Response(
-                agent_client_protocol::schema::v1::Response::Result {
+                agent_client_protocol::RawJsonRpcResponse::Result {
                     id: RequestId::Number(1),
                     ..
                 }

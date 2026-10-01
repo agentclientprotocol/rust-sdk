@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** `RawJsonRpcMessage::Response` carries `RawJsonRpcResponse` with
+  a boxed `RawJsonRpcError`, preserving numeric codes, omitted/null data, and
+  error extension fields without ACP interpretation. Raw adapters must use the
+  new response type. Typed ACP consumers still receive `Error`; conversion to
+  ACP is explicit through `RawJsonRpcError::into_acp_error`.
+
 ### Added
 
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to

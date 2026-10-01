@@ -13,10 +13,10 @@ use std::{
 
 use agent_client_protocol::{
     ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, Handled, JsonRpcMessage,
-    JsonRpcRequest, Lines, RawJsonRpcMessage, TransportFrame, UntypedMessage,
-    is_incoming_transport_closed,
+    JsonRpcRequest, Lines, RawJsonRpcMessage, RawJsonRpcResponse as Response, TransportFrame,
+    UntypedMessage, is_incoming_transport_closed,
     role::{Role, UntypedRole},
-    schema::v1::{RequestId, Response},
+    schema::v1::RequestId,
 };
 use agent_client_protocol_test::{MyRequest, MyResponse};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, future::join, stream};

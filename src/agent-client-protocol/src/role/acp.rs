@@ -17,16 +17,19 @@ use crate::role::{HasPeer, RemoteStyle};
 #[cfg(not(feature = "unstable_protocol_v2"))]
 use crate::schema::InitializeProxyRequest;
 use crate::schema::METHOD_INITIALIZE_PROXY;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::RequestId;
 use crate::schema::v1::{InitializeRequest, SessionId};
 #[cfg(not(feature = "unstable_protocol_v2"))]
 use crate::schema::v1::{NewSessionRequest, NewSessionResponse};
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v1::{RequestId, Response as RpcResponse};
-#[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::{Channel, RawJsonRpcMessage, RawJsonRpcParams};
+use crate::{
+    Channel, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
+    RawJsonRpcResponse as RpcResponse,
+};
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -1120,7 +1123,7 @@ async fn pipe_protocol_peers_until_done(
 #[derive(Debug)]
 struct InitializeResponse {
     id: RequestId,
-    result: Result<serde_json::Value, crate::Error>,
+    result: Result<serde_json::Value, Box<RawJsonRpcError>>,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -1142,15 +1145,49 @@ impl InitializeResponse {
     }
 
     fn into_message(self) -> RawJsonRpcMessage {
-        RawJsonRpcMessage::response(self.id, self.result)
+        RawJsonRpcMessage::Response(RpcResponse::new(self.id, self.result))
     }
 
     fn with_id(self, id: RequestId) -> RawJsonRpcMessage {
-        RawJsonRpcMessage::response(id, self.result)
+        RawJsonRpcMessage::Response(RpcResponse::new(id, self.result))
     }
 
     fn protocol_version(&self) -> Option<ProtocolVersion> {
         serde_json::from_value(self.result.as_ref().ok()?.get("protocolVersion")?.clone()).ok()
+    }
+}
+
+#[cfg(all(test, feature = "unstable_protocol_v2"))]
+mod raw_initialize_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn initialize_error_forwarding_preserves_raw_fields() {
+        for data in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(json!({"detail":"kept"})),
+        ] {
+            let mut error = json!({
+                "code":-32000, "message":"peer", "extension":{"retry":true}
+            });
+            if let Some(data) = data {
+                error["data"] = data;
+            }
+            let wire = json!({"jsonrpc":"2.0", "id":"original", "error":error});
+            let response =
+                InitializeResponse::from_message(serde_json::from_value(wire.clone()).unwrap())
+                    .unwrap();
+            assert_eq!(serde_json::to_value(response.into_message()).unwrap(), wire);
+            let response =
+                InitializeResponse::from_message(serde_json::from_value(wire).unwrap()).unwrap();
+            let forwarded = response.with_id(RequestId::Str("replacement".into()));
+            assert_eq!(
+                serde_json::to_value(forwarded).unwrap(),
+                json!({"jsonrpc":"2.0", "id":"replacement", "error":error})
+            );
+        }
     }
 }
 
