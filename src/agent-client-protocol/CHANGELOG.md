@@ -9,15 +9,30 @@
   error extension fields without ACP interpretation. Raw adapters must use the
   new response type. Typed ACP consumers still receive `Error`; conversion to
   ACP is explicit through `RawJsonRpcError::into_acp_error`.
+- **Breaking:** `ConnectTo::into_channel_and_future` now returns
+  `(Channel, ConnectionDriver)` instead of a boxed future. Custom overrides
+  must distinguish owned connection work from passive endpoints; wrappers
+  should preserve the returned driver rather than erase its lifecycle metadata.
+  See the [connection-driver migration guide](../../md/migration-connection-drivers.md).
 
 ### Added
 
+- Add `ConnectionDriver::new`, `passive`, and `is_passive`. Drivers remain
+  awaitable; passive readiness does not signal transport EOF.
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to
   the schema crate and gates the typed MCP tool helpers. Set
   `default-features = false` to use the core SDK without `schemars`; custom MCP
   servers and independently enabled unstable protocol features remain available.
   Existing users of `default-features = false` who need the previous JSON Schema
   or typed MCP tool APIs should add `features = ["schemars"]`.
+
+### Fixed
+
+- Preserve both directions of passive channel bridges after a write
+  half-close, allowing a final reverse-direction response.
+- Drain accepted output when an owned component finishes, including through
+  line and byte-stream adapters, without requiring unrelated remote input to
+  close. Ready component and I/O failures remain authoritative during drain.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
 

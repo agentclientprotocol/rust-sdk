@@ -480,10 +480,10 @@ mod tests {
     use std::sync::Arc;
 
     use agent_client_protocol::{
-        Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
-        schema::v1::RequestId,
+        Channel, ConnectionDriver, RawJsonRpcMessage, TransportBatch, TransportBatchEntry,
+        TransportFrame, schema::v1::RequestId,
     };
-    use futures::{StreamExt, future::BoxFuture};
+    use futures::StreamExt;
     use serde_json::json;
     use tokio::{
         sync::mpsc,
@@ -500,15 +500,10 @@ mod tests {
     }
 
     impl AgentFactory for CapturingAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Channel {
                     rx: mut incoming,
                     tx: _,
@@ -531,14 +526,9 @@ mod tests {
     struct RejectingInitializeAgentFactory;
 
     impl AgentFactory for RejectingInitializeAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (mut agent, transport) = Channel::duplex();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 match agent.rx.next().await {
                     Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) => {
                         agent
@@ -585,14 +575,9 @@ mod tests {
     struct PendingInitializeAgentFactory;
 
     impl AgentFactory for PendingInitializeAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Channel {
                     rx: mut incoming,
                     tx: _outgoing,
@@ -610,15 +595,10 @@ mod tests {
     }
 
     impl AgentFactory for BatchAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (mut agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
                     panic!("expected one batch frame");
                 };
@@ -678,14 +658,9 @@ mod tests {
     struct SideTrafficBeforeInitializeResponseAgentFactory;
 
     impl AgentFactory for SideTrafficBeforeInitializeResponseAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (mut agent, transport) = Channel::duplex();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
                     panic!("expected one initial batch frame");
                 };

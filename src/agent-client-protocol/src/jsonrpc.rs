@@ -6266,52 +6266,39 @@ where
         Self { outgoing, incoming }
     }
 
-    fn into_channel_transport(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
+    fn into_channel_transport(self) -> (Channel, crate::ConnectionDriver) {
         let Self { outgoing, incoming } = self;
         let (channel_for_caller, channel_for_lines) = Channel::duplex();
-
-        let server_future = Box::pin(async move {
-            let Channel { rx, tx } = channel_for_lines;
-            let outgoing_future = transport_actor::transport_outgoing_lines_actor(rx, outgoing);
-            let incoming_future = transport_actor::transport_incoming_lines_actor(incoming, tx);
-            futures::try_join!(outgoing_future, incoming_future)?;
-            Ok(())
+        let Channel { mut rx, tx } = channel_for_lines;
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let finish = async move {
+            // Losing a finish handle is not a shutdown request.
+            if finish_rx.await.is_err() {
+                future::pending::<()>().await;
+            }
+        }
+        .boxed()
+        .shared();
+        let outgoing_frames = futures::stream::poll_fn({
+            let mut finish = finish.clone();
+            let mut finishing = false;
+            move |cx| {
+                if !finishing && std::pin::Pin::new(&mut finish).poll(cx).is_ready() {
+                    rx.close();
+                    finishing = true;
+                }
+                rx.poll_next_unpin(cx)
+            }
         });
-
-        (channel_for_caller, server_future)
-    }
-}
-
-impl<OutgoingSink, IncomingStream, R: Role> ConnectTo<R> for Lines<OutgoingSink, IncomingStream>
-where
-    OutgoingSink: futures::Sink<String, Error = std::io::Error> + Send + 'static,
-    IncomingStream: futures::Stream<Item = std::io::Result<String>> + Send + 'static,
-{
-    async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
-        let Self { outgoing, incoming } = self;
-        let (Channel { rx, tx }, client_channel) = Channel::duplex();
-        let close_client_output = client_channel.tx.clone();
-        let client_future = Box::pin(async move {
-            let result = client.connect_to(client_channel).await;
-            close_client_output.close_channel();
-            result
-        });
-
-        // Once the client completes successfully, its incoming channel is
-        // gone. Keep consuming successful messages from the physical read
-        // half without forwarding them so a full-duplex peer cannot block our
-        // outgoing sink while it is being drained. Transport errors must still
-        // fail the connection.
         let discard_incoming = Arc::new(AtomicBool::new(false));
         let incoming = incoming.filter_map({
             let discard_incoming = discard_incoming.clone();
             move |item| {
-                let discard_incoming = discard_incoming.load(Ordering::Acquire);
-                future::ready((!discard_incoming || item.is_err()).then_some(item))
+                let discard = discard_incoming.load(Ordering::Acquire);
+                future::ready((!discard || item.is_err()).then_some(item))
             }
         });
-
-        let outgoing = transport_actor::transport_outgoing_lines_actor(rx, outgoing)
+        let outgoing = transport_actor::transport_outgoing_lines_actor(outgoing_frames, outgoing)
             .boxed()
             .shared();
         let serve_self = Box::pin({
@@ -6324,30 +6311,52 @@ where
                 Ok(())
             }
         });
+        let server_future = crate::ConnectionDriver::with_finish(
+            async move {
+                match future::select(finish, serve_self).await {
+                    Either::Left(((), serve_self)) => {
+                        discard_incoming.store(true, Ordering::Release);
+                        // Keep reading while flushing, but do not require remote
+                        // read EOF. Poll incoming errors before clean sink drain.
+                        match future::select(serve_self, outgoing).await {
+                            Either::Left((result, _)) | Either::Right((result, _)) => result,
+                        }
+                    }
+                    Either::Right((result, _)) => result,
+                }
+            },
+            finish_tx,
+        );
+
+        (channel_for_caller, server_future)
+    }
+}
+
+impl<OutgoingSink, IncomingStream, R: Role> ConnectTo<R> for Lines<OutgoingSink, IncomingStream>
+where
+    OutgoingSink: futures::Sink<String, Error = std::io::Error> + Send + 'static,
+    IncomingStream: futures::Stream<Item = std::io::Result<String>> + Send + 'static,
+{
+    async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
+        let (channel, mut serve_self) = self.into_channel_transport();
+        let finish = serve_self
+            .take_finish()
+            .expect("built-in Lines transport supports explicit finishing");
+        let client_future = Box::pin(ConnectTo::<R>::connect_to(channel, client));
 
         match futures::future::select(client_future, serve_self).await {
             Either::Left((result, serve_self)) => {
                 result?;
-                discard_incoming.store(true, Ordering::Release);
-
-                // Drive the read half while waiting for the write half, but do
-                // not require the peer's independent incoming stream to reach
-                // EOF. If incoming processing finishes successfully first,
-                // the shared outgoing future still owns and drains the sink.
-                // A successful `serve_self` result includes its shared
-                // outgoing clone, while any error must remain authoritative
-                // instead of being hidden behind the other handle. Poll it
-                // first so a ready read error wins over clean outgoing
-                // completion.
-                match future::select(serve_self, outgoing).await {
-                    Either::Left((result, _)) | Either::Right((result, _)) => result,
-                }
+                // The local bridge has transferred all accepted client output.
+                // Finish the physical sink without waiting for remote read EOF.
+                let _ = finish.send(());
+                serve_self.await
             }
             Either::Right((result, _)) => result,
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
         self.into_channel_transport()
     }
 }
@@ -6448,7 +6457,7 @@ where
         ConnectTo::<R>::connect_to(self.into_lines(), client).await
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
         ConnectTo::<R>::into_channel_and_future(self.into_lines())
     }
 }
@@ -6509,6 +6518,55 @@ impl Channel {
         Ok(())
     }
 
+    /// Copy output concurrently with its owning driver, then drain accepted frames.
+    /// Passive endpoints instead retain the channel's independent half-close lifetime.
+    pub(crate) async fn copy_with_driver(
+        mut self,
+        mut driver: crate::ConnectionDriver,
+    ) -> Result<(), crate::Error> {
+        if driver.is_passive() {
+            return self.copy().await;
+        }
+
+        let mut done = false;
+        loop {
+            let frame = if done {
+                self.rx.next().await
+            } else {
+                // Driver errors remain authoritative even when output EOF is ready.
+                let event = future::poll_fn(|cx| {
+                    if let std::task::Poll::Ready(result) = std::pin::Pin::new(&mut driver).poll(cx)
+                    {
+                        return std::task::Poll::Ready(Either::Left(result));
+                    }
+                    self.rx.poll_next_unpin(cx).map(Either::Right)
+                })
+                .await;
+                match event {
+                    Either::Left(result) => {
+                        result?;
+                        done = true;
+                        self.rx.close();
+                        continue;
+                    }
+                    Either::Right(frame) => frame,
+                }
+            };
+            let Some(frame) = frame else {
+                break;
+            };
+            self.tx
+                .unbounded_send(frame)
+                .map_err(crate::util::internal_error)?;
+        }
+        // Propagate this half-close before waiting for a still-running driver.
+        drop(self);
+        if !done {
+            driver.await?;
+        }
+        Ok(())
+    }
+
     /// Bridge two endpoints while inspecting every valid message.
     ///
     /// Observers are invoked in source order, including for each valid member of
@@ -6561,30 +6619,90 @@ impl<R: Role> ConnectTo<R> for Channel {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (client_channel, client_future) = client.into_channel_and_future();
 
-        let ((), (), ()) = futures::try_join!(
+        let passive = client_future.is_passive();
+        let outgoing = Box::pin(
             Channel {
                 rx: client_channel.rx,
                 tx: self.tx,
             }
-            .copy(),
+            .copy_with_driver(client_future),
+        );
+        let incoming = Box::pin(
             Channel {
                 rx: self.rx,
                 tx: client_channel.tx,
             }
             .copy(),
-            client_future,
-        )?;
-        Ok(())
+        );
+        if passive {
+            futures::try_join!(outgoing, incoming)?;
+            return Ok(());
+        }
+
+        match future::select(outgoing, incoming).await {
+            Either::Left((result, _)) => result,
+            Either::Right((result, outgoing)) => {
+                result?;
+                outgoing.await
+            }
+        }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), crate::Error>>) {
-        (self, Box::pin(future::ready(Ok(()))))
+    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
+        (self, crate::ConnectionDriver::passive())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dropping_unused_finish_signal_preserves_physical_half_closes() {
+        let outgoing = futures::sink::unfold((), |(), _line: String| {
+            future::ready(Ok::<_, std::io::Error>(()))
+        });
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (Channel { mut rx, tx }, mut driver) =
+            Lines::new(outgoing, incoming_rx).into_channel_transport();
+
+        drop(
+            driver
+                .take_finish()
+                .expect("built-in Lines driver is finishable"),
+        );
+        drop(tx);
+        assert!((&mut driver).now_or_never().is_none());
+        incoming_tx
+            .unbounded_send(Ok(
+                r#"{"jsonrpc":"2.0","method":"test/after-output-eof"}"#.into()
+            ))
+            .unwrap();
+        assert!((&mut driver).now_or_never().is_none());
+        assert!(rx.next().now_or_never().unwrap().is_some());
+
+        drop(incoming_tx);
+        futures::executor::block_on(driver).unwrap();
+        assert!(rx.next().now_or_never().unwrap().is_none());
+    }
+
+    #[test]
+    fn explicit_physical_finish_does_not_hide_a_ready_read_error() {
+        let outgoing = futures::sink::unfold((), |(), _line: String| {
+            future::ready(Ok::<_, std::io::Error>(()))
+        });
+        let incoming = futures::stream::iter([Err(std::io::Error::other("finish read failed"))]);
+        let (_channel, mut driver) = Lines::new(outgoing, incoming).into_channel_transport();
+        driver.take_finish().unwrap().send(()).unwrap();
+
+        let error = futures::executor::block_on(driver).unwrap_err();
+        assert_eq!(
+            error
+                .data
+                .and_then(|value| value.as_str().map(str::to_owned)),
+            Some("finish read failed".into())
+        );
+    }
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn connection_with_task_receiver() -> (

@@ -202,7 +202,7 @@ fn malformed_line_value(raw: String) -> Result<String, crate::Error> {
 }
 
 pub(super) async fn transport_outgoing_lines_actor(
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
+    transport_rx: impl futures::Stream<Item = TransportFrame>,
     outgoing_lines: impl futures::Sink<String, Error = std::io::Error>,
 ) -> Result<(), crate::Error> {
     transport_outgoing_frames_actor(transport_rx, outgoing_lines).await

@@ -162,7 +162,7 @@ pub use role::{
     acp::{Agent, Client, Conductor, Proxy},
 };
 
-pub use component::{ConnectTo, DynConnectTo};
+pub use component::{ConnectTo, ConnectionDriver, DynConnectTo};
 
 /// Implementation details used by the derive macros.
 #[doc(hidden)]

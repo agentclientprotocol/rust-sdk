@@ -1,13 +1,14 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex as StdMutex, Weak},
+    task::Poll,
 };
 
 use agent_client_protocol::{
     Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
     schema::v1::RequestId,
 };
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
 
@@ -189,7 +190,7 @@ impl Connection {
 
     pub(crate) async fn shutdown(&self) {
         // Explicit peer teardown is abortive. Natural agent completion instead
-        // awaits the router in `close_connection_task` before closing streams.
+        // awaits its router before unregistering and closing streams.
         self.close_streams();
         if let Some(h) = self.agent_handle.lock().await.take() {
             h.abort();
@@ -423,12 +424,7 @@ pub(crate) struct ConnectionRegistry {
 }
 
 pub(crate) trait AgentFactory: Send + Sync + 'static {
-    fn spawn_agent(
-        &self,
-    ) -> (
-        Channel,
-        futures::future::BoxFuture<'static, agent_client_protocol::Result<()>>,
-    );
+    fn spawn_agent(&self) -> (Channel, agent_client_protocol::ConnectionDriver);
 }
 
 impl<F, C> AgentFactory for F
@@ -436,12 +432,7 @@ where
     F: Fn() -> C + Send + Sync + 'static,
     C: agent_client_protocol::ConnectTo<agent_client_protocol::Client>,
 {
-    fn spawn_agent(
-        &self,
-    ) -> (
-        Channel,
-        futures::future::BoxFuture<'static, agent_client_protocol::Result<()>>,
-    ) {
+    fn spawn_agent(&self) -> (Channel, agent_client_protocol::ConnectionDriver) {
         self().into_channel_and_future()
     }
 }
@@ -502,8 +493,24 @@ impl ConnectionRegistry {
         let (inbound_abort, inbound_abort_registration) = futures::future::AbortHandle::new_pair();
         let inbound = futures::future::Abortable::new(inbound, inbound_abort_registration);
         let inbound_abort_for_outbound = inbound_abort.clone();
+        let (finish_outbound_tx, finish_outbound_rx) = futures::channel::oneshot::channel::<()>();
         let outbound = async move {
-            while let Some(msg) = agent_rx.next().await {
+            let mut finish_outbound_rx = Some(finish_outbound_rx);
+            while let Some(msg) = futures::future::poll_fn(|cx| {
+                if let Some(finish) = &mut finish_outbound_rx
+                    && let Poll::Ready(result) = finish.poll_unpin(cx)
+                {
+                    finish_outbound_rx = None;
+                    if result.is_ok() {
+                        // Active completion rejects escaped producers while
+                        // leaving already accepted frames available to drain.
+                        agent_rx.close();
+                    }
+                }
+                agent_rx.poll_next_unpin(cx)
+            })
+            .await
+            {
                 if outbound_tx.send(msg).is_err() {
                     inbound_abort_for_outbound.abort();
                     break;
@@ -534,6 +541,11 @@ impl ConnectionRegistry {
         let agent_handle = tokio::spawn(async move {
             let conn_id_for_agent = conn_id_for_task.clone();
             let agent = async move {
+                if agent_future.is_passive() {
+                    // A passive endpoint is driven only by the channel pumps;
+                    // its immediately ready no-op driver is not connection EOF.
+                    std::future::pending::<()>().await;
+                }
                 if let Err(e) = agent_future.await {
                     error!(connection_id = %conn_id_for_agent, "ACP agent task error: {e}");
                 }
@@ -543,13 +555,17 @@ impl ConnectionRegistry {
             match futures::future::select(agent, pump).await {
                 futures::future::Either::Left(((), pump)) => {
                     inbound_abort.abort();
+                    let _sent = finish_outbound_tx.send(());
                     pump.await;
                 }
                 futures::future::Either::Right(((), _agent)) => {}
             }
             debug!(connection_id = %conn_id_for_task, "ACP connection task ended");
+            let connection_to_close = drain_connection_router(connection_for_task).await;
             connections.write().await.remove(&conn_id_for_task);
-            close_connection_task(connection_for_task).await;
+            if let Some(connection) = connection_to_close {
+                connection.close_streams();
+            }
         });
 
         *connection.agent_handle.lock().await = Some(agent_handle);
@@ -571,17 +587,15 @@ impl ConnectionRegistry {
     }
 }
 
-async fn close_connection_task(connection: Weak<Connection>) {
-    let Some(connection) = connection.upgrade() else {
-        return;
-    };
+async fn drain_connection_router(connection: Weak<Connection>) -> Option<Arc<Connection>> {
+    let connection = connection.upgrade()?;
     let router_handle = connection.router_handle.lock().await.take();
     if let Some(h) = router_handle
         && let Err(error) = h.await
     {
         error!("outbound router task failed while draining: {error}");
     }
-    connection.close_streams();
+    Some(connection)
 }
 
 fn pending_route_key(id: &RequestId) -> Option<RequestId> {
@@ -608,8 +622,7 @@ fn take_pending_route(
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol::TransportBatch;
-    use futures::future::BoxFuture;
+    use agent_client_protocol::{ConnectionDriver, TransportBatch};
     use tokio::{
         sync::Notify,
         time::{Duration, sleep, timeout},
@@ -741,15 +754,10 @@ mod tests {
     }
 
     impl AgentFactory for ExitingAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
             let exit = self.exit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 exit.notified().await;
                 drop(agent);
                 Ok(())
@@ -762,14 +770,9 @@ mod tests {
     struct RespondThenExitAgentFactory;
 
     impl AgentFactory for RespondThenExitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 agent
                     .tx
                     .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
@@ -789,15 +792,10 @@ mod tests {
     }
 
     impl AgentFactory for MalformedThenWaitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 emit.notified().await;
                 agent
                     .tx
@@ -820,16 +818,11 @@ mod tests {
     }
 
     impl AgentFactory for SendThenWaitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
             let message = self.message.clone();
             let exit = self.exit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 agent
                     .tx
                     .unbounded_send(TransportFrame::Single(message))
@@ -847,15 +840,10 @@ mod tests {
     }
 
     impl AgentFactory for BatchThenWaitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
             let exit = self.exit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let batch = TransportBatch::from_messages([
                     RawJsonRpcMessage::notification(
                         "test/first".to_string(),
@@ -883,18 +871,16 @@ mod tests {
 
     struct FinalFrameThenExitAgentFactory {
         emit: Arc<Notify>,
+        escaped_output:
+            Arc<StdMutex<Option<futures::channel::mpsc::UnboundedSender<TransportFrame>>>>,
     }
 
     impl AgentFactory for FinalFrameThenExitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
             let (agent, transport) = Channel::duplex();
+            *self.escaped_output.lock().unwrap() = Some(agent.tx.clone());
             let emit = self.emit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 emit.notified().await;
                 agent
                     .tx
@@ -911,6 +897,36 @@ mod tests {
 
             (transport, future)
         }
+    }
+
+    #[tokio::test]
+    async fn passive_agent_driver_does_not_close_http_channel_pumps() {
+        let (endpoint, mut remote) = Channel::duplex();
+        let endpoint = std::sync::Mutex::new(Some(endpoint));
+        let registry = ConnectionRegistry::new(Arc::new(move || {
+            endpoint.lock().unwrap().take().expect("one connection")
+        }));
+        let (connection_id, connection) = registry.create_connection().await;
+        let frame = TransportFrame::Single(
+            RawJsonRpcMessage::notification("test/passive".into(), serde_json::json!({})).unwrap(),
+        );
+        connection.inbound_tx.send(frame.clone()).unwrap();
+        assert!(
+            timeout(Duration::from_secs(1), remote.rx.next())
+                .await
+                .expect("passive readiness must not abort inbound forwarding")
+                .is_some()
+        );
+        remote.tx.unbounded_send(frame).unwrap();
+        assert!(
+            timeout(Duration::from_secs(1), connection.recv_initial())
+                .await
+                .expect("passive endpoint must keep its reverse direction alive")
+                .is_some()
+        );
+        assert!(registry.get(&connection_id).await.is_some());
+        connection.shutdown().await;
+        registry.remove(&connection_id).await;
     }
 
     #[tokio::test]
@@ -998,12 +1014,15 @@ mod tests {
     #[tokio::test]
     async fn agent_exit_flushes_final_frame_before_closing_streams() {
         let emit = Arc::new(Notify::new());
+        let escaped_output = Arc::new(StdMutex::new(None));
         let registry = ConnectionRegistry::new(Arc::new(FinalFrameThenExitAgentFactory {
             emit: emit.clone(),
+            escaped_output: escaped_output.clone(),
         }));
         let (connection_id, connection) = registry.create_connection().await;
         let mut outbound = connection.subscribe_connection_stream().unwrap();
         connection.start_router().await;
+        let escaped_output = escaped_output.lock().unwrap().take().unwrap();
 
         emit.notify_one();
         timeout(Duration::from_secs(1), async {
@@ -1020,6 +1039,78 @@ mod tests {
             .await
             .unwrap()
             .expect("final frame should remain queued after stream closure");
+        let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+        assert!(matches!(
+            message,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/final"
+        ));
+        assert!(
+            escaped_output
+                .unbounded_send(TransportFrame::Single(
+                    RawJsonRpcMessage::notification("test/late".into(), serde_json::json!({}))
+                        .unwrap(),
+                ))
+                .is_err(),
+            "active completion must reject escaped senders without dropping them"
+        );
+        // Stream termination is signalled by closed_tx; the connection keeps
+        // its mailbox sender alive so later subscribers can drain queued data.
+        assert_eq!(outbound.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+    }
+
+    #[tokio::test]
+    async fn active_agent_remains_registered_until_outbound_router_drains() {
+        let emit = Arc::new(Notify::new());
+        let registry = ConnectionRegistry::new(Arc::new(FinalFrameThenExitAgentFactory {
+            emit: emit.clone(),
+            escaped_output: Arc::new(StdMutex::new(None)),
+        }));
+        let (connection_id, connection) = registry.create_connection().await;
+        let mut outbound = connection.subscribe_connection_stream().unwrap();
+        let mut frames = connection.outbound_rx.lock().await.take().unwrap();
+        let (routing_started_tx, routing_started_rx) = tokio::sync::oneshot::channel();
+        let (release_router_tx, release_router_rx) = tokio::sync::oneshot::channel();
+        let routing_connection = connection.clone();
+        *connection.router_handle.lock().await = Some(tokio::spawn(async move {
+            let frame = frames.recv().await.expect("accepted final frame");
+            let _sent = routing_started_tx.send(());
+            // A dropped release sender also unblocks failed-test cleanup.
+            let _released = release_router_rx.await;
+            routing_connection.route_outbound(frame).await.unwrap();
+            while let Some(frame) = frames.recv().await {
+                routing_connection.route_outbound(frame).await.unwrap();
+            }
+        }));
+
+        emit.notify_one();
+        timeout(Duration::from_secs(1), async {
+            routing_started_rx.await.unwrap();
+            // Taking the join handle establishes that natural shutdown has
+            // reached router drain, not merely that the router is scheduled.
+            while connection.router_handle.lock().await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("natural shutdown should await the gated router");
+        assert!(
+            registry.get(&connection_id).await.is_some(),
+            "the connection must remain discoverable until accepted output is routed"
+        );
+        let mut closed = connection.subscribe_closed();
+        assert!(!*closed.borrow());
+
+        release_router_tx.send(()).unwrap();
+        timeout(Duration::from_secs(1), async {
+            while !*closed.borrow() {
+                closed.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("closure should follow router drain and registry removal");
+        assert!(registry.get(&connection_id).await.is_none());
+        let text = outbound.try_recv().expect("the final frame must be routed");
         let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
         assert!(matches!(
             message,

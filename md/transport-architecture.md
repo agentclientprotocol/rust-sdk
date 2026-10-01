@@ -45,7 +45,7 @@ by the JSON-RPC envelope types from `agent-client-protocol-schema`:
 enum RawJsonRpcMessage {
     Request(Request<RawJsonRpcParams>),
     Notification(Notification<RawJsonRpcParams>),
-    Response(Response<serde_json::Value>),
+    Response(RawJsonRpcResponse),
 }
 ```
 
@@ -262,16 +262,42 @@ Ordering](./conductor.md#routing-and-ordering).
 is the common component and transport abstraction. `connect_to` joins a
 component to its counterpart and drives the connection until completion.
 `into_channel_and_future` exposes the canonical low-level boundary as a
-`Channel` plus the future that drives the component:
+`Channel` plus an explicit connection driver:
 
 ```rust,ignore
-fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>);
+fn into_channel_and_future(self) -> (Channel, ConnectionDriver);
 ```
 
-The returned future owns transport failures and lifecycle completion. The
-channel carries only `TransportFrame` wire events. Most components implement
-only `connect_to`; direct transports override `into_channel_and_future` to avoid
-an intermediate copy.
+The channel carries only `TransportFrame` wire events. The awaitable
+`ConnectionDriver` distinguishes owned work from a passive endpoint:
+
+| Driver | Meaning of successful completion |
+| --- | --- |
+| `ConnectionDriver::new(future)` | The component's owned work has finished. |
+| `ConnectionDriver::passive()` | No work is owned here; readiness says nothing about either I/O half. |
+
+A raw `Channel` is passive. Its bridge preserves both directions independently:
+one sender closing must not prevent a final response in the reverse direction.
+Owned completion lets a bridge stop accepting new output, drain frames already
+accepted, and finish without waiting for unrelated remote input to close.
+Outbound forwarding must remain polled while owned work is running; otherwise
+a component waiting for a response to its own request could deadlock.
+
+Buffered adapters are responsible for flushing their accepted output before
+reporting successful completion. The built-in line and byte-stream adapters
+keep the read half moving during write drain and propagate incoming errors;
+their explicit finish handling does not require remote read EOF. Merely
+wrapping an arbitrary future cannot make an opaque custom adapter drain safely.
+
+Most components implement only `connect_to`; default normalization supplies
+the owned driver. Direct transports override `into_channel_and_future` to avoid
+an intermediate copy. Wrappers that expose an existing endpoint should forward
+its driver unchanged so passive identity and built-in completion handling are
+not lost.
+
+See [Migrating Connection Drivers](./migration-connection-drivers.md) for custom
+override changes. This lifecycle distinction does not change the existing raw
+channel types or introduce frame-size, queue, or task limits.
 
 ## Transport Implementations
 

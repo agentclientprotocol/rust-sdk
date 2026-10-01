@@ -27,9 +27,95 @@
 //! ```
 
 use futures::future::BoxFuture;
-use std::{fmt::Debug, future::Future, marker::PhantomData};
+use std::{
+    fmt::Debug,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{Channel, Result, role::Role};
+
+/// Drives an endpoint and declares who owns its connection lifetime.
+///
+/// An active driver owns the endpoint: successful completion means no further
+/// output is expected, and adapters must drain output already accepted before
+/// terminating. An error terminates the connection immediately.
+///
+/// A passive driver has no work to drive. Its readiness does **not** mean EOF:
+/// the channel's two halves independently determine the endpoint's lifetime.
+/// Adapters must inspect [`Self::is_passive`] before using completion as a
+/// shutdown signal, and poll active drivers concurrently with channel traffic.
+#[must_use = "active connection drivers must be polled to make progress"]
+pub struct ConnectionDriver {
+    future: Option<BoxFuture<'static, Result<()>>>,
+    finish: Option<futures::channel::oneshot::Sender<()>>,
+}
+
+impl ConnectionDriver {
+    /// Create an active driver that owns the endpoint's lifetime.
+    ///
+    /// Custom normalized adapters must finish accepted output when their channel
+    /// input closes. This constructor cannot externally flush or shut down an
+    /// opaque future that waits for additional, independently owned input.
+    pub fn new(future: impl Future<Output = Result<()>> + Send + 'static) -> Self {
+        Self {
+            future: Some(Box::pin(future)),
+            finish: None,
+        }
+    }
+
+    /// Create a passive driver for an endpoint whose channel halves own its lifetime.
+    pub fn passive() -> Self {
+        Self {
+            future: None,
+            finish: None,
+        }
+    }
+
+    /// Whether this driver is passive, so readiness must not be treated as EOF.
+    #[must_use]
+    pub fn is_passive(&self) -> bool {
+        self.future.is_none()
+    }
+
+    // Physical transports can finish their write half without waiting for read
+    // EOF. Keep this coordination private; arbitrary futures cannot support it.
+    pub(crate) fn with_finish(
+        future: impl Future<Output = Result<()>> + Send + 'static,
+        finish: futures::channel::oneshot::Sender<()>,
+    ) -> Self {
+        Self {
+            future: Some(Box::pin(future)),
+            finish: Some(finish),
+        }
+    }
+
+    pub(crate) fn take_finish(&mut self) -> Option<futures::channel::oneshot::Sender<()>> {
+        self.finish.take()
+    }
+}
+
+impl Future for ConnectionDriver {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.future {
+            Some(future) => future.as_mut().poll(cx),
+            None => Poll::Ready(Ok(())),
+        }
+    }
+}
+
+impl Debug for ConnectionDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionDriver")
+            .field("passive", &self.is_passive())
+            .field("finishable", &self.finish.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 /// A component that can exchange JSON-RPC messages to an endpoint playing the role `R`
 /// (e.g., an ACP [`Agent`](`crate::role::acp::Agent`) or an MCP [`Server`](`crate::role::mcp::Server`)).
@@ -129,7 +215,7 @@ pub trait ConnectTo<R: Role>: Send + 'static {
         client: impl ConnectTo<R::Counterpart>,
     ) -> impl Future<Output = Result<()>> + Send;
 
-    /// Convert this component into a channel endpoint and connection future.
+    /// Convert this component into a channel endpoint and connection driver.
     ///
     /// The returned [`Channel`] is the canonical frame-aware boundary. It carries
     /// complete [`TransportFrame`](crate::TransportFrame) values so default
@@ -137,7 +223,7 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// This method returns:
     /// - A `Channel` that can be used to communicate with this component
-    /// - A `BoxFuture` that drives the component's connection logic
+    /// - A [`ConnectionDriver`] that drives the component's connection logic
     ///
     /// The default implementation creates an intermediate channel pair and calls `connect_to`
     /// on one endpoint while returning the other endpoint for the caller to use.
@@ -146,14 +232,16 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// # Returns
     ///
-    /// A tuple of `(Channel, BoxFuture)` where the channel is for the caller to use
-    /// and the future must be polled to drive the connection.
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>)
+    /// A tuple of `(Channel, ConnectionDriver)` where the channel is for the caller
+    /// to use and active drivers must be polled concurrently with channel traffic.
+    /// Successful active completion ends the endpoint after draining accepted
+    /// output; passive readiness is not EOF and preserves both channel half-closes.
+    fn into_channel_and_future(self) -> (Channel, ConnectionDriver)
     where
         Self: Sized,
     {
         let (channel_a, channel_b) = Channel::duplex();
-        let future = Box::pin(self.connect_to(channel_b));
+        let future = ConnectionDriver::new(self.connect_to(channel_b));
         (channel_a, future)
     }
 }
@@ -171,8 +259,7 @@ trait ErasedConnectTo<R: Role>: Send {
         client: Box<dyn ErasedConnectTo<R::Counterpart>>,
     ) -> BoxFuture<'static, Result<()>>;
 
-    fn into_channel_and_future_erased(self: Box<Self>)
-    -> (Channel, BoxFuture<'static, Result<()>>);
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, ConnectionDriver);
 }
 
 /// Blanket implementation: any `ConnectTo<R>` can be type-erased.
@@ -195,9 +282,7 @@ impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
         })
     }
 
-    fn into_channel_and_future_erased(
-        self: Box<Self>,
-    ) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, ConnectionDriver) {
         (*self).into_channel_and_future()
     }
 }
@@ -251,7 +336,7 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
             .await
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future(self) -> (Channel, ConnectionDriver) {
         self.inner.into_channel_and_future_erased()
     }
 }
@@ -268,6 +353,30 @@ impl<R: Role> Debug for DynConnectTo<R> {
 mod tests {
     use super::*;
     use crate::role::UntypedRole;
+
+    #[test]
+    fn passive_readiness_does_not_claim_an_owned_lifetime() {
+        let driver = ConnectionDriver::passive();
+        assert!(driver.is_passive());
+        futures::executor::block_on(driver).unwrap();
+    }
+
+    #[test]
+    fn active_driver_preserves_errors_and_polls_unpinned() {
+        let error = crate::Error::internal_error().data("driver failure");
+        let mut driver = ConnectionDriver::new(futures::future::ready(Err(error.clone())));
+        assert!(!driver.is_passive());
+        assert_eq!(futures::executor::block_on(&mut driver), Err(error));
+        // Completion does not reclassify an owned endpoint as passive.
+        assert!(!driver.is_passive());
+    }
+
+    #[test]
+    fn type_erasure_preserves_passive_lifetime() {
+        let (channel, _other) = Channel::duplex();
+        let (_, driver) = DynConnectTo::<UntypedRole>::new(channel).into_channel_and_future();
+        assert!(driver.is_passive());
+    }
 
     #[test]
     fn dyn_connect_to_reports_static_type_name_and_correct_debug_label() {

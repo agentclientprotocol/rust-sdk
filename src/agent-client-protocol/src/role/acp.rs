@@ -957,7 +957,8 @@ async fn reject_initialize(
     frame: &TransportFrame,
     error: crate::Error,
 ) -> Result<(), crate::Error> {
-    let RunningProtocolPeer { mut rx, tx, future } = client;
+    let RunningProtocolPeer { mut rx, tx, driver } = client;
+    let future = driver.into_driver();
     send_initialize_error(&tx, frame, error)?;
     drop(tx);
 
@@ -969,37 +970,89 @@ async fn reject_initialize(
         Ok::<_, crate::Error>(())
     };
 
-    let ((), ()) = futures::try_join!(future, drain_incoming)?;
-    Ok(())
+    if future.is_passive() {
+        return drain_incoming.await;
+    }
+
+    match future::select(future, Box::pin(drain_incoming)).await {
+        future::Either::Left((result, _)) => result,
+        future::Either::Right((result, future)) => {
+            result?;
+            future.await
+        }
+    }
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 struct RunningProtocolPeer {
     rx: futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
     tx: futures::channel::mpsc::UnboundedSender<TransportFrame>,
-    future: crate::BoxFuture<'static, Result<(), crate::Error>>,
+    driver: ProtocolPeerDriver,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+enum ProtocolPeerDriver {
+    Passive,
+    Active(crate::ConnectionDriver),
+    Completed,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl ProtocolPeerDriver {
+    fn into_driver(self) -> crate::ConnectionDriver {
+        match self {
+            Self::Passive => crate::ConnectionDriver::passive(),
+            Self::Active(driver) => driver,
+            // Conversion happens only when handing the peer to its final
+            // bridge, never while reading its remaining queued frames.
+            Self::Completed => crate::ConnectionDriver::new(future::ready(Ok(()))),
+        }
+    }
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl RunningProtocolPeer {
     fn new<R: Role>(component: impl ConnectTo<R>) -> Self {
         let (Channel { rx, tx }, future) = component.into_channel_and_future();
-        Self { rx, tx, future }
+        let driver = if future.is_passive() {
+            ProtocolPeerDriver::Passive
+        } else {
+            ProtocolPeerDriver::Active(future)
+        };
+        Self { rx, tx, driver }
     }
 
     async fn next_frame(self) -> Result<Option<(TransportFrame, Self)>, crate::Error> {
-        let Self { mut rx, tx, future } = self;
-        match future::select(Box::pin(rx.next()), future).await {
-            future::Either::Left((Some(frame), future)) => {
-                Ok(Some((frame, Self { rx, tx, future })))
-            }
-            future::Either::Left((None, future)) => {
+        let Self { mut rx, tx, driver } = self;
+        let ProtocolPeerDriver::Active(future) = driver else {
+            return Ok(rx
+                .next()
+                .await
+                .map(|frame| (frame, Self { rx, tx, driver })));
+        };
+
+        // Poll the owned driver first: a ready error must not be hidden by
+        // an equally ready frame or clean channel EOF.
+        match future::select(future, Box::pin(rx.next())).await {
+            future::Either::Right((Some(frame), future)) => Ok(Some((
+                frame,
+                Self {
+                    rx,
+                    tx,
+                    driver: ProtocolPeerDriver::Active(future),
+                },
+            ))),
+            future::Either::Right((None, future)) => {
+                drop(tx);
                 future.await?;
                 Ok(None)
             }
-            future::Either::Right((result, next_message)) => {
+            future::Either::Left((result, next_message)) => {
                 result?;
                 drop(next_message);
+                // No more output may be accepted from an owned endpoint once
+                // its driver completes, even if a sender escaped the component.
+                rx.close();
                 let Some(frame) = rx.next().await else {
                     return Ok(None);
                 };
@@ -1008,7 +1061,7 @@ impl RunningProtocolPeer {
                     Self {
                         rx,
                         tx,
-                        future: Box::pin(future::ready(Ok(()))),
+                        driver: ProtocolPeerDriver::Completed,
                     },
                 )))
             }
@@ -1071,19 +1124,17 @@ async fn pipe_protocol_peers_until_closed(
     left: RunningProtocolPeer,
     right: RunningProtocolPeer,
 ) -> Result<(), crate::Error> {
-    let ((), (), (), ()) = futures::try_join!(
-        left.future,
-        right.future,
+    let ((), ()) = futures::try_join!(
         Channel {
             rx: left.rx,
             tx: right.tx,
         }
-        .copy(),
+        .copy_with_driver(left.driver.into_driver()),
         Channel {
             rx: right.rx,
             tx: left.tx,
         }
-        .copy(),
+        .copy_with_driver(right.driver.into_driver()),
     )?;
 
     Ok(())
@@ -1094,28 +1145,52 @@ async fn pipe_protocol_peers_until_done(
     left: RunningProtocolPeer,
     right: RunningProtocolPeer,
 ) -> Result<(), crate::Error> {
-    let bridge = Box::pin(async move {
-        let ((), ()) = futures::try_join!(
-            Channel {
-                rx: left.rx,
-                tx: right.tx,
-            }
-            .copy(),
-            Channel {
-                rx: right.rx,
-                tx: left.tx,
-            }
-            .copy(),
-        )?;
-        Ok(())
-    });
+    let mut left_driver = left.driver.into_driver();
+    let mut right_driver = right.driver.into_driver();
+    let left_passive = left_driver.is_passive();
+    let right_passive = right_driver.is_passive();
+    let left_finish = left_driver.take_finish();
+    let right_finish = right_driver.take_finish();
+    let left_to_right = Box::pin(
+        Channel {
+            rx: left.rx,
+            tx: right.tx,
+        }
+        .copy_with_driver(left_driver),
+    );
+    let right_to_left = Box::pin(
+        Channel {
+            rx: right.rx,
+            tx: left.tx,
+        }
+        .copy_with_driver(right_driver),
+    );
 
-    match future::select(left.future, future::select(right.future, bridge)).await {
-        future::Either::Left((result, _))
-        | future::Either::Right((
-            future::Either::Left((result, _)) | future::Either::Right((result, _)),
-            _,
-        )) => result,
+    match future::select(left_to_right, right_to_left).await {
+        future::Either::Left((result, right_to_left)) => {
+            result?;
+            if left_passive || !right_passive {
+                if !left_passive && let Some(finish) = right_finish {
+                    let _ = finish.send(());
+                }
+                right_to_left.await
+            } else {
+                // Passive input may remain independently open, but a ready
+                // forwarding error must still beat foreground success.
+                crate::util::run_until(right_to_left, future::ready(Ok(()))).await
+            }
+        }
+        future::Either::Right((result, left_to_right)) => {
+            result?;
+            if right_passive || !left_passive {
+                if !right_passive && let Some(finish) = left_finish {
+                    let _ = finish.send(());
+                }
+                left_to_right.await
+            } else {
+                crate::util::run_until(left_to_right, future::ready(Ok(()))).await
+            }
+        }
     }
 }
 
@@ -1722,5 +1797,194 @@ where
 
     fn describe_chain(&self) -> impl std::fmt::Debug {
         format!("ProxySessionMessages({})", self.session_id)
+    }
+}
+
+#[cfg(all(test, feature = "unstable_protocol_v2"))]
+mod lifetime_tests {
+    use super::*;
+    use crate::{ConnectionDriver, UntypedRole};
+    use futures::FutureExt as _;
+
+    fn frame() -> TransportFrame {
+        TransportFrame::parse_json(r#"{"jsonrpc":"2.0","method":"test/queued","params":{}}"#)
+    }
+
+    #[tokio::test]
+    async fn passive_initialization_waits_for_a_frame_not_driver_readiness() {
+        let (channel, remote) = Channel::duplex();
+        let peer = RunningProtocolPeer::new::<UntypedRole>(channel);
+        let mut next = Box::pin(peer.next_frame());
+        assert!(next.as_mut().now_or_never().is_none());
+
+        remote.tx.unbounded_send(frame()).unwrap();
+        let (_, peer) = next.await.unwrap().expect("passive peer remains connected");
+        assert!(matches!(peer.driver, ProtocolPeerDriver::Passive));
+    }
+
+    #[tokio::test]
+    async fn active_initialization_drains_accepted_frames_without_escaped_sender_eof() {
+        let (Channel { rx, tx }, remote) = Channel::duplex();
+        remote.tx.unbounded_send(frame()).unwrap();
+        remote.tx.unbounded_send(frame()).unwrap();
+        let mut polls = 0;
+        let driver = ConnectionDriver::new(future::poll_fn(move |_| {
+            polls += 1;
+            assert_eq!(polls, 1, "the completed driver must never be re-polled");
+            std::task::Poll::Ready(Ok(()))
+        }));
+        let peer = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(driver),
+        };
+
+        let (_, peer) = peer.next_frame().await.unwrap().unwrap();
+        assert!(
+            remote.tx.unbounded_send(frame()).is_err(),
+            "active completion must reject new output from escaped handles"
+        );
+        let (_, peer) = peer.next_frame().await.unwrap().unwrap();
+        assert!(peer.next_frame().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ready_initialization_driver_error_beats_queued_frames() {
+        let (Channel { rx, tx }, remote) = Channel::duplex();
+        remote.tx.unbounded_send(frame()).unwrap();
+        let error = crate::Error::internal_error().data("owned initialization failed");
+        let peer = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::new(future::ready(Err(
+                error.clone()
+            )))),
+        };
+
+        match peer.next_frame().await {
+            Err(actual) => assert_eq!(actual, error),
+            Ok(_) => panic!("ready driver error must not be hidden by a queued frame"),
+        }
+    }
+
+    struct QueuedFinalClient;
+
+    impl ConnectTo<Agent> for QueuedFinalClient {
+        async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), crate::Error> {
+            let (mut channel, driver) = agent.into_channel_and_future();
+            let foreground = async move {
+                channel
+                    .tx
+                    .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+                        "initialize".into(),
+                        serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+                        RequestId::Number(1),
+                    )?))
+                    .unwrap();
+                assert!(channel.rx.next().await.is_some(), "initialize response");
+                // Exceed the physical writer capacity so only concurrent polling
+                // of the sink can make this bridge finish.
+                for index in 0..3 {
+                    channel
+                        .tx
+                        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::notification(
+                            "test/final".into(),
+                            serde_json::json!({ "index": index, "payload": "x".repeat(1024) }),
+                        )?))
+                        .unwrap();
+                }
+                Ok(())
+            };
+            crate::util::run_until(driver, foreground).await
+        }
+    }
+
+    #[tokio::test]
+    async fn connector_completion_flushes_byte_streams_without_remote_read_eof() {
+        use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+        use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
+
+        let (writer, remote_reader) = tokio::io::duplex(64);
+        let (mut remote_input, reader) = tokio::io::duplex(64);
+        let physical = crate::ByteStreams::new(writer.compat_write(), reader.compat());
+        let mut physical = Some(crate::DynConnectTo::<Client>::new(physical));
+        let connector = tokio::spawn(
+            ClientProtocolConnector::new()
+                .with_v1(|| QueuedFinalClient)
+                .connect_to(move || physical.take().expect("one physical connection")),
+        );
+        let mut lines = BufReader::new(remote_reader).lines();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let initialize = lines
+                .next_line()
+                .await
+                .unwrap()
+                .expect("initialize request");
+            let value: serde_json::Value = serde_json::from_str(&initialize).unwrap();
+            assert_eq!(value["method"], "initialize");
+            remote_input
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}\n")
+                .await
+                .unwrap();
+            for index in 0..3 {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("accepted final output");
+                let value: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(value["params"]["index"], index);
+                assert_eq!(value["params"]["payload"].as_str().unwrap().len(), 1024);
+            }
+            connector.await.unwrap().unwrap();
+            assert!(lines.next_line().await.unwrap().is_none());
+        })
+        .await
+        .expect("physical flush must not wait for independent remote input EOF");
+        drop(remote_input);
+    }
+
+    #[tokio::test]
+    async fn foreground_completion_does_not_hide_opposed_ready_driver_error() {
+        let (Channel { rx, tx }, _foreground_remote) = Channel::duplex();
+        let foreground = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::new(future::ready(Ok(())))),
+        };
+        let (Channel { rx, tx }, _opposed_remote) = Channel::duplex();
+        let error = crate::Error::internal_error().data("opposed driver failed");
+        let opposed = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::new(future::ready(Err(
+                error.clone()
+            )))),
+        };
+
+        assert_eq!(
+            pipe_protocol_peers_until_done(foreground, opposed).await,
+            Err(error)
+        );
+    }
+
+    #[tokio::test]
+    async fn passive_protocol_bridge_preserves_the_reverse_half_after_eof() {
+        let (left, mut remote_left) = Channel::duplex();
+        let (right, mut remote_right) = Channel::duplex();
+        let mut bridge = Box::pin(pipe_protocol_peers_until_done(
+            RunningProtocolPeer::new::<UntypedRole>(left),
+            RunningProtocolPeer::new::<UntypedRole>(right),
+        ));
+        remote_left.tx.close_channel();
+        assert!(bridge.as_mut().now_or_never().is_none());
+        assert!(remote_right.rx.next().await.is_none());
+
+        remote_right.tx.unbounded_send(frame()).unwrap();
+        remote_right.tx.close_channel();
+        bridge.await.unwrap();
+        assert!(remote_left.rx.next().await.is_some());
+        assert!(remote_left.rx.next().await.is_none());
     }
 }

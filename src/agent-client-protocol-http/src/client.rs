@@ -4,7 +4,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
+    Agent, Channel, Client, ConnectTo, ConnectionDriver, Error as AcpError, RawJsonRpcMessage,
     RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
@@ -122,9 +122,9 @@ impl ConnectTo<Client> for HttpClient {
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), AcpError>>) {
+    fn into_channel_and_future(self) -> (Channel, ConnectionDriver) {
         let (caller, transport) = Channel::duplex();
-        (caller, Box::pin(run(self, transport)))
+        (caller, ConnectionDriver::new(run(self, transport)))
     }
 }
 
