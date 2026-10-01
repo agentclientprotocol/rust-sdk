@@ -1100,7 +1100,6 @@ pub trait InstantiateProxies: Send {
     /// Static component collections supplied by this crate support both
     /// versions and pass the request through unchanged.
     #[cfg(feature = "unstable_protocol_v2")]
-    #[must_use]
     fn instantiate_v2_proxies(
         self: Box<Self>,
         req: v2::InitializeRequest,
@@ -1205,7 +1204,6 @@ pub trait InstantiateProxiesAndAgent: Send {
     /// Implementors that only support v1 can rely on the default rejection.
     /// [`AgentOnly`] and [`ProxiesAndAgent`] support both versions.
     #[cfg(feature = "unstable_protocol_v2")]
-    #[must_use]
     fn instantiate_v2_proxies_and_agent(
         self: Box<Self>,
         req: v2::InitializeRequest,

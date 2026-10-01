@@ -408,7 +408,7 @@ fn queue_response_post(
         TransportFrame::Single(message) => state.prepare_post(message),
         frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
             state.prepare_frame_post(frame).map(|(post, session_ids)| {
-                debug_assert!(session_ids.is_empty());
+                debug_assert_eq!(session_ids, Vec::<String>::new());
                 post
             })
         }
