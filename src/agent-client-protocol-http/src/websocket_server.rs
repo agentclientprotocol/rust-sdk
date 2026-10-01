@@ -235,8 +235,8 @@ where
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{
-        Channel, TransportBatch, TransportBatchEntry, TransportFrame,
-        schema::v1::{RequestId, Response as RpcResponse},
+        Channel, RawJsonRpcResponse as RpcResponse, TransportBatch, TransportBatchEntry,
+        TransportFrame, schema::v1::RequestId,
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};

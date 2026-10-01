@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve raw JSON-RPC error codes, omitted versus null data, and error
+  extension fields across HTTP/SSE and WebSocket transports, using the core
+  SDK's new `RawJsonRpcResponse` representation.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.1.0...agent-client-protocol-http-v2.2.0) - 2026-09-18
 
 ### Other

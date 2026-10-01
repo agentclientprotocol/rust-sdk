@@ -1084,7 +1084,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
                 .send_request(v2::ListSessionsRequest::new())
                 .block_task()
                 .await?;
-            assert!(sessions.sessions.is_empty());
+            assert_eq!(sessions.sessions, Vec::<v2::SessionInfo>::new());
 
             let update = next_update(&mut update_rx).await;
             assert_eq!(update.session_id, session_id);
@@ -1156,7 +1156,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
             .send_request(v2::ListSessionsRequest::new())
             .block_task()
             .await?;
-        assert!(sessions.sessions.is_empty());
+        assert_eq!(sessions.sessions, Vec::<v2::SessionInfo>::new());
         Ok(())
     });
 

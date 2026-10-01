@@ -1,8 +1,8 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
 use agent_client_protocol::{
-    RawJsonRpcMessage, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
-    schema::v1::Response as RpcResponse,
+    RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame,
+    schema::v1::RequestId,
 };
 use axum::{
     body::Body,

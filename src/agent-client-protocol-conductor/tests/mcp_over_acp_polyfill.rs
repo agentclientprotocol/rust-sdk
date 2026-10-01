@@ -267,7 +267,10 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
         };
         assert_eq!(server.name, SERVER_NAME);
         assert_eq!(server.meta.as_ref(), Some(&expected_meta));
-        assert!(server.headers.is_empty());
+        assert_eq!(
+            server.headers,
+            Vec::<agent_client_protocol::schema::v1::HttpHeader>::new()
+        );
         assert!(server.url.starts_with("http://127.0.0.1:"));
         if let Some(endpoint) = &endpoint {
             assert_eq!(

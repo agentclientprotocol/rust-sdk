@@ -18,6 +18,7 @@ use crate::jsonrpc::PendingReplies;
 use crate::jsonrpc::PendingReply;
 use crate::jsonrpc::RawJsonRpcMessage;
 use crate::jsonrpc::RawJsonRpcParams;
+use crate::jsonrpc::RawJsonRpcResponse as Response;
 use crate::jsonrpc::RequestReplyTarget;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseDestination;
@@ -32,7 +33,7 @@ use crate::jsonrpc::protocol_compat::ProtocolCompat;
 use crate::jsonrpc::{is_response_only_shape, raw_is_response_only_shape};
 
 use crate::role::Role;
-use crate::schema::v1::{RequestId, Response};
+use crate::schema::v1::RequestId;
 
 use super::Handled;
 
@@ -208,7 +209,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                         Ok(RawJsonRpcMessage::Response(response)) => {
                             let (id, result) = match response {
                                 Response::Result { id, result } => (id, Ok(result)),
-                                Response::Error { id, error } => (id, Err(error)),
+                                Response::Error { id, error } => (id, Err(error.into_acp_error())),
                             };
 
                             tracing::trace!(?id, "Handling response");

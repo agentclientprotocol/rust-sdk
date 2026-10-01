@@ -119,7 +119,7 @@ mod tests {
             agent.config().command(),
             Path::new("/Applications/My Agent")
         );
-        assert!(agent.config().arguments().is_empty());
+        assert_eq!(agent.config().arguments(), &[] as &[String]);
     }
 
     #[test]

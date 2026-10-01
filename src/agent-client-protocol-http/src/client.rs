@@ -4,9 +4,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage, TransportBatchEntry,
-    TransportFrame,
-    schema::v1::{RequestId, Response as RpcResponse},
+    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
+    RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
@@ -409,7 +408,7 @@ fn queue_response_post(
         TransportFrame::Single(message) => state.prepare_post(message),
         frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
             state.prepare_frame_post(frame).map(|(post, session_ids)| {
-                debug_assert!(session_ids.is_empty());
+                debug_assert_eq!(session_ids, Vec::<String>::new());
                 post
             })
         }

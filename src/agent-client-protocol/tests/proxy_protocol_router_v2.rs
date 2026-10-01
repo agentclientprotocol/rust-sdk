@@ -8,7 +8,7 @@ use std::sync::{
 use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     ByteStreams, Channel, Client, Conductor, ConnectTo, Error, Proxy, ProxyProtocolRouter,
-    RawJsonRpcMessage, TransportFrame,
+    RawJsonRpcMessage, RawJsonRpcResponse, TransportFrame,
 };
 use futures::StreamExt as _;
 use serde_json::Value;
@@ -93,8 +93,10 @@ async fn request(
             continue;
         };
         match response {
-            v1::Response::Result { id, result } if id == request_id => break Ok(result),
-            v1::Response::Error { id, error } if id == request_id => break Err(error),
+            RawJsonRpcResponse::Result { id, result } if id == request_id => break Ok(result),
+            RawJsonRpcResponse::Error { id, error } if id == request_id => {
+                break Err(error.into_acp_error());
+            }
             _ => {}
         }
     };

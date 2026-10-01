@@ -19,6 +19,19 @@ There are no separate request and notification method names for successor or
 MCP message forwarding. The presence of an outer JSON-RPC `id` distinguishes a
 request from a notification.
 
+## Raw JSON-RPC Responses
+
+Transport frames carry protocol-neutral `RawJsonRpcResponse` values. Their
+boxed `RawJsonRpcError` preserves numeric error codes, distinguishes omitted
+`data` from explicit null, and retains error extension fields. Raw relays
+should forward these values without ACP interpretation.
+
+Typed ACP dispatch converts raw errors to `Error` explicitly using
+`RawJsonRpcError::into_acp_error`; ACP error codes are interpreted at that
+boundary and error extension fields are discarded. `RawJsonRpcMessage::response`
+still accepts an ACP `Result<Value, Error>` and converts its error to the raw
+representation. Other protocols should construct `RawJsonRpcResponse` directly.
+
 ## Proxy Initialization
 
 The conductor sends `_proxy/initialize` to a component that has a successor.

@@ -267,7 +267,10 @@ mod tests {
 
         projection.apply(metadata_only.clone());
         assert_eq!(projection.order.as_slice(), std::slice::from_ref(&first_id));
-        assert!(projection.messages[&first_id].is_empty());
+        assert_eq!(
+            projection.messages[&first_id],
+            Vec::<v2::ContentBlock>::new()
+        );
         assert_eq!(projection.text(), "");
 
         // The first message's content arrives last, but its metadata already

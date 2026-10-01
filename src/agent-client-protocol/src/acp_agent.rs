@@ -1590,7 +1590,7 @@ mod tests {
         }))
         .unwrap();
 
-        assert!(config.arguments().is_empty());
+        assert_eq!(config.arguments(), &[] as &[String]);
         assert!(config.environment().is_empty());
         assert_eq!(
             serde_json::to_value(config).unwrap(),

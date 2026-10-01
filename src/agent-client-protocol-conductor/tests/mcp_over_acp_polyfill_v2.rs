@@ -354,7 +354,7 @@ async fn http_downstream_adapts_v2_capabilities_and_only_transforms_native_serve
                 .list_tools(None)
                 .await
                 .map_err(agent_client_protocol::Error::into_internal_error)?;
-            assert!(tools.tools.is_empty());
+            assert_eq!(tools.tools, Vec::<rmcp::model::Tool>::new());
             mcp_client
                 .cancel()
                 .await
@@ -402,7 +402,7 @@ async fn http_downstream_adapts_v2_capabilities_and_only_transforms_native_serve
         };
         assert_eq!(server.name, SERVER_NAME);
         assert_eq!(server.meta.as_ref(), Some(&expected_meta));
-        assert!(server.headers.is_empty());
+        assert_eq!(server.headers, Vec::<v2::HttpHeader>::new());
         assert!(server.url.starts_with("http://127.0.0.1:"));
         assert_eq!(
             request.mcp_servers[1], expected_future_server,

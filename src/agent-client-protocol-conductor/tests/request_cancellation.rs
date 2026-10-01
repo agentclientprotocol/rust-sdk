@@ -448,7 +448,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         )
         .on_receive_request(
             async |request: NewSessionRequest, responder, _cx: ConnectionTo<Client>| {
-                assert!(request.mcp_servers.is_empty());
+                assert_eq!(request.mcp_servers, Vec::<SchemaMcpServer>::new());
                 responder.respond(NewSessionResponse::new(SessionId::new("test-session")))
             },
             agent_client_protocol::on_receive_request!(),
