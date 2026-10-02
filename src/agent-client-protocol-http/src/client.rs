@@ -4,7 +4,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, Error as AcpError, RawJsonRpcMessage,
+    Agent, Channel, Client, ConnectTo, ConnectionDriver, Error as AcpError, RawJsonRpcMessage,
     RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
@@ -102,6 +102,7 @@ impl HttpClient {
 impl ConnectTo<Client> for HttpClient {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), AcpError> {
         let (channel, transport) = ConnectTo::<Client>::into_channel_and_future(self);
+        let transport = transport.expect("HttpClient owns its physical transport driver");
         let shutdown_tx = channel.tx.clone();
         match futures::future::select(
             std::pin::pin!(client.connect_to(channel)),
@@ -122,9 +123,9 @@ impl ConnectTo<Client> for HttpClient {
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<(), AcpError>>) {
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>) {
         let (caller, transport) = Channel::duplex();
-        (caller, Box::pin(run(self, transport)))
+        (caller, Some(ConnectionDriver::new(run(self, transport))))
     }
 }
 
@@ -1589,6 +1590,12 @@ mod tests {
                 Ok(())
             };
 
+            let transport = async move {
+                if let Some(transport) = transport {
+                    transport.await?;
+                }
+                Ok::<(), AcpError>(())
+            };
             let ((), ()) = futures::try_join!(transport, client)?;
             Ok(())
         }
@@ -1624,6 +1631,12 @@ mod tests {
                 Ok(())
             };
 
+            let transport = async move {
+                if let Some(transport) = transport {
+                    transport.await?;
+                }
+                Ok::<(), AcpError>(())
+            };
             let ((), ()) = futures::try_join!(transport, client)?;
             Ok(())
         }

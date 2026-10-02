@@ -2,11 +2,25 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Adapt `HttpClient`'s `ConnectTo` conversion to the core SDK's breaking
+  optional `ConnectionDriver` return type. Channels and HTTP framing remain
+  unchanged; no new resource limits are introduced.
+
 ### Fixed
 
 - Preserve raw JSON-RPC error codes, omitted versus null data, and error
   extension fields across HTTP/SSE and WebSocket transports, using the core
   SDK's new `RawJsonRpcResponse` representation.
+- Preserve HTTP channel pumps when an agent-factory endpoint has no owned
+  driver; absence is not agent completion while its transport remains open.
+- On active agent completion, reject further output from escaped sender clones
+  and drain accepted frames before removing the connection and closing its
+  streams, without waiting for those clones to be dropped.
+- Keep router cancellation owned while natural cleanup awaits its drain.
+  Explicit shutdown no longer detaches a taken router task or retains the
+  connection through that orphaned task.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.1.0...agent-client-protocol-http-v2.2.0) - 2026-09-18
 

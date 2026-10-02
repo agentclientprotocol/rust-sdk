@@ -1,7 +1,7 @@
 //! HTTP-based MCP bridge transport.
 
 use agent_client_protocol::{
-    BoxFuture, Channel, ConnectTo, RawJsonRpcMessage, RawJsonRpcParams,
+    Channel, ConnectTo, ConnectionDriver, RawJsonRpcMessage, RawJsonRpcParams,
     RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame,
     role::mcp,
     schema::v1::{Notification as RpcNotification, Request as RpcRequest, RequestId},
@@ -69,22 +69,21 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
         client: impl ConnectTo<mcp::Server>,
     ) -> Result<(), agent_client_protocol::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
+        let serve_self = serve_self.expect("HttpMcpBridge owns its HTTP listener driver");
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
-    fn into_channel_and_future(
-        self,
-    ) -> (
-        Channel,
-        BoxFuture<'static, Result<(), agent_client_protocol::Error>>,
-    )
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>)
     where
         Self: Sized,
     {
         let (channel_a, channel_b) = Channel::duplex();
-        (channel_a, Box::pin(run(self.listener, channel_b)))
+        (
+            channel_a,
+            Some(ConnectionDriver::new(run(self.listener, channel_b))),
+        )
     }
 }
 

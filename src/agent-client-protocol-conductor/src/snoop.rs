@@ -45,6 +45,20 @@ impl<R: Role> ConnectTo<R> for SnooperComponent<R> {
             self.outgoing_message,
         );
 
+        // Absence contributes no owned work to the all-half join; it is not
+        // an EOF signal for either direction of the channel bridge.
+        let client_future = async move {
+            if let Some(driver) = client_future {
+                driver.await?;
+            }
+            Ok::<(), agent_client_protocol::Error>(())
+        };
+        let base_future = async move {
+            if let Some(driver) = base_future {
+                driver.await?;
+            }
+            Ok::<(), agent_client_protocol::Error>(())
+        };
         (client_future, base_future, snoop).try_join().await?;
         Ok(())
     }
@@ -60,8 +74,11 @@ mod tests {
         time::Duration,
     };
 
-    use agent_client_protocol::{ByteStreams, ConnectionTo, Responder, UntypedRole};
+    use agent_client_protocol::{
+        ByteStreams, ConnectionTo, Responder, TransportFrame, UntypedRole,
+    };
     use agent_client_protocol_test::{MyRequest, MyResponse};
+    use futures::StreamExt as _;
     use serde_json::{Value, json};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
     use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -69,6 +86,67 @@ mod tests {
     use super::*;
 
     const TIMEOUT: Duration = Duration::from_secs(10);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn absent_drivers_preserve_both_channel_halves() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (client, mut client_peer) = Channel::duplex();
+                let (base, mut base_peer) = Channel::duplex();
+                let incoming_count = Arc::new(AtomicUsize::new(0));
+                let outgoing_count = Arc::new(AtomicUsize::new(0));
+                let observed_incoming = incoming_count.clone();
+                let observed_outgoing = outgoing_count.clone();
+                let snooper = SnooperComponent::<UntypedRole>::new(
+                    base,
+                    move |_| {
+                        observed_incoming.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                    move |_| {
+                        observed_outgoing.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                );
+                let task = tokio::task::spawn_local(snooper.connect_to(client));
+                let frame = TransportFrame::Single(
+                    RawJsonRpcMessage::notification("test/passive".into(), json!({})).unwrap(),
+                );
+
+                client_peer.tx.unbounded_send(frame.clone()).unwrap();
+                assert!(
+                    tokio::time::timeout(TIMEOUT, base_peer.rx.next())
+                        .await
+                        .expect("absent drivers must not stop forwarding")
+                        .is_some()
+                );
+                drop(client_peer.tx);
+                assert!(
+                    tokio::time::timeout(TIMEOUT, base_peer.rx.next())
+                        .await
+                        .expect("client half-close must reach the base")
+                        .is_none()
+                );
+                assert!(!task.is_finished(), "one half-close must not end the join");
+
+                base_peer.tx.unbounded_send(frame).unwrap();
+                assert!(
+                    tokio::time::timeout(TIMEOUT, client_peer.rx.next())
+                        .await
+                        .expect("reverse forwarding must survive the first half-close")
+                        .is_some()
+                );
+                assert_eq!(incoming_count.load(Ordering::SeqCst), 1);
+                assert_eq!(outgoing_count.load(Ordering::SeqCst), 1);
+                drop(base_peer.tx);
+                tokio::time::timeout(TIMEOUT, task)
+                    .await
+                    .expect("snooper must finish after both channel halves close")
+                    .expect("snooper task panicked")
+                    .expect("snooper connection failed");
+            })
+            .await;
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn tracing_preserves_json_rpc_batch_frames() {
