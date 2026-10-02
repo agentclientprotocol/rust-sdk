@@ -29,6 +29,7 @@ pub(super) async fn outgoing_protocol_actor(
     pending_replies: PendingReplies,
     transport_tx: mpsc::UnboundedSender<TransportFrame>,
     protocol_compat: ProtocolCompat,
+    foreground_done: super::SharedCompletionSignal,
 ) -> Result<(), crate::Error> {
     let mut drain_waiters = Vec::new();
 
@@ -99,19 +100,35 @@ pub(super) async fn outgoing_protocol_actor(
                     continue;
                 }
 
-                if let Some(readiness) = readiness
-                    && let Err(error) = readiness.await
-                {
-                    tracing::warn!(
-                        ?id,
-                        %method,
-                        ?error,
-                        "Outgoing request readiness failed"
-                    );
-                    if let Some(pending_reply) = pending_replies.remove(&id) {
-                        pending_reply.fail(error);
+                if let Some(readiness) = readiness {
+                    // A route-installation gate may depend on an application
+                    // handler that never returns. Foreground success cancels
+                    // unresolved gates, but ready gates still publish in FIFO
+                    // order; shutdown must never bypass route readiness.
+                    // Poll a fresh clone for each gate: a Shared handle that
+                    // returned Ready cannot itself be polled a second time.
+                    let result =
+                        match futures::future::select(Box::pin(readiness), foreground_done.clone())
+                            .await
+                        {
+                            futures::future::Either::Left((result, _)) => result,
+                            futures::future::Either::Right(((), _)) => {
+                                Err(crate::Error::internal_error()
+                                    .data("foreground completed before outgoing request readiness"))
+                            }
+                        };
+                    if let Err(error) = result {
+                        tracing::warn!(
+                            ?id,
+                            %method,
+                            ?error,
+                            "Outgoing request readiness failed"
+                        );
+                        if let Some(pending_reply) = pending_replies.remove(&id) {
+                            pending_reply.fail(error);
+                        }
+                        continue;
                     }
-                    continue;
                 }
 
                 if !pending_replies.contains(&id) {

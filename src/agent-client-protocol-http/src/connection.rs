@@ -589,13 +589,24 @@ impl ConnectionRegistry {
     }
 }
 
+// Taking a JoinHandle transfers cancellation ownership out of the connection.
+// Keep that ownership through the await: dropping a bare handle detaches it.
+struct AbortTakenRouterOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortTakenRouterOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 async fn drain_connection_router(connection: Weak<Connection>) -> Option<Arc<Connection>> {
     let connection = connection.upgrade()?;
     let router_handle = connection.router_handle.lock().await.take();
-    if let Some(h) = router_handle
-        && let Err(error) = h.await
-    {
-        error!("outbound router task failed while draining: {error}");
+    if let Some(handle) = router_handle {
+        let _abort_on_drop = AbortTakenRouterOnDrop(handle.abort_handle());
+        if let Err(error) = handle.await {
+            error!("outbound router task failed while draining: {error}");
+        }
     }
     Some(connection)
 }
@@ -1149,6 +1160,92 @@ mod tests {
             RawJsonRpcMessage::Notification(notification)
                 if notification.method.as_ref() == "test/final"
         ));
+    }
+
+    struct RouterDropProbe(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for RouterDropProbe {
+        fn drop(&mut self) {
+            let _sent = self.0.take().unwrap().send(());
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_natural_router_drain_cancels_owned_router() {
+        let emit = Arc::new(Notify::new());
+        let registry = ConnectionRegistry::new(Arc::new(FinalFrameThenExitAgentFactory {
+            emit: emit.clone(),
+            escaped_output: Arc::new(StdMutex::new(None)),
+        }));
+        let (connection_id, connection) = registry.create_connection().await;
+        let weak_connection = Arc::downgrade(&connection);
+        let mut outbound = connection.subscribe_connection_stream().unwrap();
+        let mut closed = connection.subscribe_closed();
+        let mut frames = connection.outbound_rx.lock().await.take().unwrap();
+        let (routing_started_tx, routing_started_rx) = tokio::sync::oneshot::channel();
+        let (release_router_tx, release_router_rx) = tokio::sync::oneshot::channel::<()>();
+        let (dropped_tx, mut dropped_rx) = tokio::sync::oneshot::channel();
+        let routing_connection = connection.clone();
+        let router = tokio::spawn(async move {
+            let _drop_probe = RouterDropProbe(Some(dropped_tx));
+            let frame = frames.recv().await.expect("accepted final frame");
+            routing_started_tx.send(()).unwrap();
+            let _released = release_router_rx.await;
+            routing_connection.route_outbound(frame).await.unwrap();
+            while let Some(frame) = frames.recv().await {
+                routing_connection.route_outbound(frame).await.unwrap();
+            }
+        });
+        // Keep an independent abort handle solely to clean up a failing probe.
+        let failed_test_cleanup = router.abort_handle();
+        *connection.router_handle.lock().await = Some(router);
+
+        emit.notify_one();
+        timeout(Duration::from_secs(1), async {
+            routing_started_rx.await.unwrap();
+            while connection.router_handle.lock().await.is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("natural cleanup must have taken the router join handle");
+        assert!(registry.get(&connection_id).await.is_some());
+        assert!(!*closed.borrow());
+
+        // Match DELETE: remove the discoverable connection and shut it down.
+        let removed = registry.remove(&connection_id).await.unwrap();
+        removed.shutdown().await;
+        closed.changed().await.unwrap();
+        assert!(*closed.borrow());
+        // Raw mailbox EOF is not the stream-closure contract.
+        assert_eq!(outbound.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+        drop(removed);
+        drop(connection);
+
+        // The gate remains held throughout both observations. Only cancellation,
+        // not releasing or dropping its sender, may finish the owned router.
+        let router_cancelled = timeout(Duration::from_secs(1), &mut dropped_rx)
+            .await
+            .is_ok_and(|result| result.is_ok());
+        let connection_released = timeout(Duration::from_secs(1), async {
+            while weak_connection.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        if !router_cancelled {
+            failed_test_cleanup.abort();
+            timeout(Duration::from_secs(1), &mut dropped_rx)
+                .await
+                .expect("failed-test cleanup must cancel the orphan")
+                .unwrap();
+        }
+        drop(release_router_tx);
+        assert!(
+            router_cancelled && connection_released,
+            "shutdown must cancel the gated owned router without releasing its gate: router_cancelled={router_cancelled}, connection_released={connection_released}"
+        );
     }
 
     #[tokio::test]

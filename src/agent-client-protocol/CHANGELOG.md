@@ -20,6 +20,13 @@
 
 - Add an owned-only, awaitable `ConnectionDriver`. Passive endpoints have no
   driver, so absence cannot be mistaken for a successful completed future.
+- Add `ConnectionDriver::with_finish(future, finish)` and `request_finish()` for
+  custom adapters to request graceful shutdown separately from awaiting
+  completion. Requests are idempotent; the one-shot hook signals the adapter
+  once, and its future must drain, flush, and close accepted output before
+  reporting success. Already-requested drivers retain that contract on handoff.
+- Add `ConnectionDriver::map_future` for tracing, error annotation, and
+  completion cleanup without losing finish capability or requested state.
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to
   the schema crate and gates the typed MCP tool helpers. Set
   `default-features = false` to use the core SDK without `schemars`; custom MCP
@@ -34,6 +41,27 @@
 - Drain accepted output when an owned component finishes, including through
   line and byte-stream adapters, without requiring unrelated remote input to
   close. Ready component and I/O failures remain authoritative during drain.
+- Drain routable queued output on successful `Builder::connect_with`
+  foreground completion and finish cooperative physical transports without
+  starting queued application tasks solely for physical drain. Preserve the
+  inherited underway-close-callback cleanup phase. Fail unresolved
+  request-readiness gates rather than waiting indefinitely or publishing those
+  requests after shutdown.
+- Close and drain the incoming producer boundary when owned transport work
+  completes, including when escaped senders remain alive.
+- Forward physical write-half shutdown through byte-stream adapters so split
+  streams can receive a final reverse response after output EOF. Preserve
+  partial-write, flush, pending-shutdown, and close-error behavior.
+- Discard input to a completed foreground during physical finish, including
+  frames already queued at normalization, without losing genuine I/O errors
+  or cancelling accepted output.
+- Apply one ownership-aware drain rule to protocol connectors and agent/proxy
+  routers. Request cooperative finish after initialization rejection or owned
+  foreground completion; do not indefinitely join opposed opaque work.
+- Do not begin late application delivery or close callbacks after finite
+  foreground success. An underway close callback completes before output is
+  sealed, so clean EOF during physical drain cannot turn a late callback send
+  into a closed-queue failure that cancels accepted output.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
 

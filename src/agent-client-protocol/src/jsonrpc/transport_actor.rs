@@ -186,7 +186,81 @@ async fn transport_outgoing_frames_actor(
             }
         }
     }
-    Ok(())
+    outgoing_lines
+        .close()
+        .await
+        .map_err(crate::Error::into_internal_error)
+}
+
+/// A newline writer whose sink close reaches the actual write half. An unfold
+/// sink can flush each line, but has no way to forward `AsyncWrite::close`.
+pub(super) struct LineWriter<W> {
+    writer: std::pin::Pin<Box<W>>,
+    bytes: Vec<u8>,
+    written: usize,
+    closing: bool,
+}
+
+impl<W> LineWriter<W> {
+    pub(super) fn new(writer: W) -> Self {
+        Self {
+            writer: Box::pin(writer),
+            bytes: Vec::new(),
+            written: 0,
+            closing: false,
+        }
+    }
+}
+
+impl<W: futures::AsyncWrite> futures::Sink<String> for LineWriter<W> {
+    type Error = std::io::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.poll_flush(cx)
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, line: String) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        this.bytes = line.into_bytes();
+        this.bytes.push(b'\n');
+        this.written = 0;
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        let this = self.get_mut();
+        while this.written < this.bytes.len() {
+            let count = futures::ready!(
+                this.writer
+                    .as_mut()
+                    .poll_write(cx, &this.bytes[this.written..])
+            )?;
+            if count == 0 {
+                return std::task::Poll::Ready(Err(std::io::ErrorKind::WriteZero.into()));
+            }
+            this.written += count;
+        }
+        this.bytes.clear();
+        this.written = 0;
+        this.writer.as_mut().poll_flush(cx)
+    }
+
+    fn poll_close(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        if !self.closing {
+            futures::ready!(self.as_mut().poll_flush(cx))?;
+            self.closing = true;
+        }
+        self.get_mut().writer.as_mut().poll_close(cx)
+    }
 }
 
 fn malformed_line_value(raw: String) -> Result<String, crate::Error> {
@@ -256,6 +330,56 @@ mod tests {
 
     use super::*;
     use crate::ErrorCode;
+
+    #[derive(Default)]
+    struct PendingCloseWriter {
+        bytes: Vec<u8>,
+        close_polls: usize,
+    }
+
+    impl futures::AsyncWrite for PendingCloseWriter {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            self.bytes.extend_from_slice(bytes);
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            assert_eq!(self.close_polls, 0, "do not flush again during shutdown");
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.close_polls += 1;
+            if self.close_polls == 1 {
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+    }
+
+    #[test]
+    fn byte_writer_flushes_then_continues_pending_shutdown_without_reflushing() {
+        use futures::SinkExt as _;
+        let mut sink = LineWriter::new(PendingCloseWriter::default());
+        futures::executor::block_on(async {
+            sink.send("line".to_string()).await.unwrap();
+            sink.close().await.unwrap();
+        });
+        assert_eq!(sink.writer.bytes, b"line\n");
+        assert_eq!(sink.writer.close_polls, 2);
+    }
 
     #[test]
     fn parses_batch_entries_independently() {

@@ -1804,9 +1804,9 @@ impl<
         self,
         transport: impl ConnectTo<Host> + 'static,
     ) -> Result<(), crate::Error> {
-        let (_, future) = self.into_connection_and_future(transport, async move |cx| {
+        let (_, future) = self.into_connection_and_future(transport, true, async move |cx| {
             cx.incoming_closed().await;
-            cx.drain_outgoing().await
+            Ok(())
         });
         future.await
     }
@@ -1881,9 +1881,10 @@ impl<
         transport: impl ConnectTo<Host> + 'static,
         main_fn: impl AsyncFnOnce(Context::Connection<Host::Counterpart>) -> Result<R, crate::Error>,
     ) -> Result<R, crate::Error> {
-        let (_, future) = self.into_connection_and_future(transport, async move |connection| {
-            main_fn(connection_context::from_raw::<Context, _>(connection)).await
-        });
+        let (_, future) =
+            self.into_connection_and_future(transport, false, async move |connection| {
+                main_fn(connection_context::from_raw::<Context, _>(connection)).await
+            });
         future.await
     }
 
@@ -1891,6 +1892,7 @@ impl<
     fn into_connection_and_future<R>(
         self,
         transport: impl ConnectTo<Host> + 'static,
+        wait_owned_transport: bool,
         main_fn: impl AsyncFnOnce(ConnectionTo<Host::Counterpart>) -> Result<R, crate::Error>,
     ) -> (
         ConnectionTo<Host::Counterpart>,
@@ -1909,11 +1911,18 @@ impl<
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
         let (new_task_tx, new_task_rx) = mpsc::unbounded();
         let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
+        let (foreground_succeeded_tx, foreground_succeeded) = completion_signal();
+        let (foreground_done_tx, foreground_done) = completion_signal();
         let pending_replies = PendingReplies::default();
 
         // Normalize the transport without losing ownership or finish metadata.
         let transport_component = crate::DynConnectTo::new(transport);
-        let (transport_channel, transport_future) = transport_component.into_channel_and_future();
+        let (transport_channel, mut transport_future) =
+            transport_component.into_channel_and_future();
+        let owned_transport = transport_future.is_some();
+        let transport_finish = transport_future
+            .as_mut()
+            .and_then(crate::ConnectionDriver::take_finish);
         let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
         let transport_completion = transport_completion_rx
             .map(|result| {
@@ -1935,61 +1944,107 @@ impl<
             pending_replies.registrar(),
             protocol_mode,
         );
-        let spawn_result = if let Some(driver) = transport_future {
-            connection.spawn(async move {
+        // Transport progress must outlive successful foreground completion.
+        // Application tasks remain cancellable. The inherited close-callback
+        // phase still polls them for cleanup, but physical drain alone does not.
+        let transport_driver = if let Some(driver) = transport_future {
+            async move {
                 let result = driver.await;
                 drop(transport_completion_tx.send(result.clone()));
                 result
-            })
+            }
+            .boxed()
         } else {
             // Channel-only endpoints have no physical sink work to await.
             // Their protocol drain marker still orders accepted output.
             drop(transport_completion_tx.send(Ok(())));
-            Ok(())
+            future::ready(Ok(())).boxed()
         };
 
         // Destructure the channel endpoints
         let Channel {
-            rx: transport_incoming_rx,
+            rx: mut transport_incoming_rx,
             tx: transport_outgoing_tx,
         } = transport_channel;
+
+        let transport_incoming = futures::stream::poll_fn({
+            let mut completion = connection.transport_completion.clone();
+            let mut completed = false;
+            move |cx| {
+                if owned_transport
+                    && !completed
+                    && let std::task::Poll::Ready(Ok(())) =
+                        std::pin::Pin::new(&mut completion).poll(cx)
+                {
+                    // Owned completion closes the producer boundary, not the
+                    // accepted buffer. The incoming actor still dispatches every
+                    // accepted frame and completes its close callbacks in order.
+                    transport_incoming_rx.close();
+                    completed = true;
+                }
+                transport_incoming_rx.poll_next_unpin(cx)
+            }
+        });
 
         let protocol_compat = ProtocolCompat::new(protocol_mode);
 
         let future = crate::util::instrument_with_connection_name(name, {
             let connection = connection.clone();
             async move {
-                let () = spawn_result?;
-
                 let background = async {
-                    let incoming = incoming_actor::incoming_protocol_actor(
-                        me.counterpart(),
-                        &connection,
-                        transport_incoming_rx,
-                        dynamic_handler_rx,
-                        pending_replies.clone(),
-                        incoming_actor::IncomingHandlers::new(handler, on_close),
-                        protocol_compat.clone(),
-                    );
+                    let incoming = {
+                        let pending_replies = pending_replies.clone();
+                        let protocol_compat = protocol_compat.clone();
+                        async {
+                            let mut transport_incoming = std::pin::pin!(transport_incoming);
+                            let incoming = incoming_actor::incoming_protocol_actor(
+                                me.counterpart(),
+                                &connection,
+                                transport_incoming.as_mut(),
+                                dynamic_handler_rx,
+                                pending_replies,
+                                incoming_actor::IncomingHandlers::new(
+                                    handler,
+                                    on_close,
+                                    foreground_succeeded.clone(),
+                                ),
+                                protocol_compat,
+                            );
+                            // Success stops delivery, not physical I/O. An
+                            // underway close callback finishes before sealing.
+                            run_incoming_until_foreground_succeeds(
+                                incoming,
+                                foreground_succeeded,
+                                connection.incoming_closed.clone(),
+                            )
+                            .await?;
+                            // Keep the raw producer boundary alive while the
+                            // physical driver drains. Discard without application
+                            // delivery, rather than fail a late read-side send.
+                            while transport_incoming.next().await.is_some() {}
+                            Ok(())
+                        }
+                    };
                     let other_actors = async {
                         futures::try_join!(
+                            // A ready driver error is authoritative even if its
+                            // closed channel would also make output forwarding fail.
+                            transport_driver,
                             // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
                             outgoing_actor::outgoing_protocol_actor(
                                 outgoing_rx,
                                 pending_replies,
                                 transport_outgoing_tx,
                                 protocol_compat,
+                                foreground_done,
                             ),
-                            task_actor::task_actor(new_task_rx, &connection),
-                            runner.run_with_connection_to(connection.clone()),
                         )?;
                         Ok(())
                     };
 
-                    // EOF can wake a pending request consumer, which may make
-                    // the task actor fail while close callbacks are running.
-                    // Keep the incoming actor alive until those callbacks have
-                    // all finished, just as we do when the foreground wakes.
+                    // Keep close callbacks alive when another core actor fails.
+                    // The outer coordination provides the same protection when
+                    // EOF wakes an application task or the foreground.
                     run_until_connection_close(
                         incoming,
                         other_actors,
@@ -2000,7 +2055,38 @@ impl<
 
                 run_until_connection_close(
                     background,
-                    main_fn(connection.clone()),
+                    async {
+                        let application = async {
+                            futures::try_join!(
+                                task_actor::task_actor(new_task_rx, &connection),
+                                runner.run_with_connection_to(connection.clone()),
+                            )?;
+                            Ok(())
+                        };
+                        let result = run_until_connection_close(
+                            application,
+                            async {
+                                let result = main_fn(connection.clone()).await;
+                                if result.is_ok() {
+                                    // Stop new incoming delivery immediately,
+                                    // including during the callback cleanup phase.
+                                    let _ = foreground_succeeded_tx.send(());
+                                }
+                                // Shutdown cancels local consumers, not remote
+                                // requests. Do not add cancellation traffic while
+                                // dropping those consumers before the drain.
+                                connection.pending_replies.disarm_cancellations();
+                                result
+                            },
+                            connection.incoming_closed.clone(),
+                        )
+                        .await?;
+                        let _ = foreground_done_tx.send(());
+                        connection
+                            .drain_outgoing(transport_finish, wait_owned_transport)
+                            .await?;
+                        Ok(result)
+                    },
                     connection.incoming_closed.clone(),
                 )
                 .await
@@ -2262,6 +2348,15 @@ struct PendingRepliesRegistrar {
 }
 
 impl PendingRepliesRegistrar {
+    fn disarm_cancellations(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            let inner = inner.lock().expect("pending replies mutex poisoned");
+            for reply in inner.replies.values() {
+                reply.cancellation_disarm.disarm();
+            }
+        }
+    }
+
     /// Register a response destination before the request becomes observable.
     ///
     /// Returns `false` after failing `reply` when EOF has already made a
@@ -3461,6 +3556,21 @@ pub struct ConnectionTo<Counterpart: Role> {
 
 type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
 
+type SharedCompletionSignal = future::Shared<BoxFuture<'static, ()>>;
+
+fn completion_signal() -> (oneshot::Sender<()>, SharedCompletionSignal) {
+    let (tx, rx) = oneshot::channel();
+    let signal = async move {
+        // Dropping a sender (e.g. foreground failure) is not success.
+        if rx.await.is_err() {
+            future::pending::<()>().await;
+        }
+    }
+    .boxed()
+    .shared();
+    (tx, signal)
+}
+
 #[derive(Clone)]
 struct IncomingClosed {
     state: Arc<IncomingClosedState>,
@@ -3551,6 +3661,25 @@ fn incoming_transport_closed_error(method: &str) -> crate::Error {
         "reason": INCOMING_TRANSPORT_CLOSED_REASON,
         "method": method,
     }))
+}
+
+/// Unlike the cleanup coordinator below, check success before polling delivery:
+/// an already-ready success must not resume a message handler into another
+/// dispatch (including another entry of the same batch).
+fn run_incoming_until_foreground_succeeds(
+    incoming: impl Future<Output = Result<(), crate::Error>>,
+    foreground_succeeded: SharedCompletionSignal,
+    incoming_closed: IncomingClosed,
+) -> impl Future<Output = Result<(), crate::Error>> {
+    let mut incoming = Box::pin(incoming);
+    future::poll_fn(move |cx| {
+        if foreground_succeeded.clone().poll_unpin(cx).is_ready() && !incoming_closed.is_closing() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        // A close callback already underway is protected. Its result is polled
+        // before stopping, so callback errors retain their existing precedence.
+        incoming.as_mut().poll(cx)
+    })
 }
 
 /// Run the connection background alongside its foreground while ensuring that
@@ -3646,9 +3775,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.incoming_closed.is_closed()
     }
 
-    /// Stop accepting outgoing messages, drain those already accepted through
-    /// the protocol actor, and wait for the transport sink to finish them.
-    async fn drain_outgoing(&self) -> Result<(), crate::Error> {
+    /// Stop accepting outgoing messages, drain routable output through the
+    /// protocol actor, and finish cooperative physical sinks. Reactive serving also
+    /// joins owned transport work after incoming EOF.
+    async fn drain_outgoing(
+        &self,
+        finish: Option<crate::component::FinishControl>,
+        wait_owned_transport: bool,
+    ) -> Result<(), crate::Error> {
         let (done_tx, done_rx) = oneshot::channel();
         let marker_result = send_raw_message(
             &self.message_tx,
@@ -3663,10 +3797,20 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             Err(error) => Err(error),
         };
 
-        // The marker only proves that all accepted protocol messages entered
-        // the raw transport queue. Transport completion is the sink-level
-        // barrier that proves a backpressured writer finished them.
-        self.transport_completion.clone().await?;
+        let physical_finish = finish.is_some();
+        if let Some(mut finish) = finish {
+            // Only finish the physical sink after the protocol actor has handed
+            // off its accepted output. Closing it earlier races the drain.
+            finish.request();
+        }
+        if physical_finish || wait_owned_transport {
+            // Cooperative completion proves physical sink drain. Reactive serving
+            // also waits for owned work after EOF (e.g. child exit status).
+            self.transport_completion.clone().await?;
+        }
+        // Opaque application drivers have no physical finish contract. Keep
+        // polling their errors in the background, but do not globally join work
+        // which may intentionally run forever after the foreground returns.
         marker_result
     }
 
@@ -3840,7 +3984,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
         let (connection, future) =
-            builder.into_connection_and_future(transport, |_| std::future::pending());
+            builder.into_connection_and_future(transport, false, |_| std::future::pending());
         Task::new(std::panic::Location::caller(), future).spawn(&self.task_tx)?;
         Ok(connection)
     }
@@ -6331,7 +6475,9 @@ where
                     Either::Right((result, _)) => result,
                 }
             },
-            finish_tx,
+            move || {
+                let _ = finish_tx.send(());
+            },
         );
 
         (channel_for_caller, server_future)
@@ -6345,7 +6491,7 @@ where
 {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (channel, mut serve_self) = self.into_channel_transport();
-        let finish = serve_self
+        let mut finish = serve_self
             .take_finish()
             .expect("built-in Lines transport supports explicit finishing");
         let client_future = Box::pin(ConnectTo::<R>::connect_to(channel, client));
@@ -6355,7 +6501,7 @@ where
                 result?;
                 // The local bridge has transferred all accepted client output.
                 // Finish the physical sink without waiting for remote read EOF.
-                let _ = finish.send(());
+                finish.request();
                 serve_self.await
             }
             Either::Right((result, _)) => result,
@@ -6433,16 +6579,13 @@ where
         let Self { outgoing, incoming } = self;
 
         let incoming_lines = Box::pin(BufReader::new(incoming).lines());
-        let outgoing_lines =
-            futures::sink::unfold(Box::pin(outgoing), async move |mut writer, line: String| {
-                write_line(&mut writer, line).await?;
-                Ok::<_, std::io::Error>(writer)
-            });
+        let outgoing_lines = transport_actor::LineWriter::new(outgoing);
 
         Lines::new(outgoing_lines, incoming_lines)
     }
 }
 
+#[cfg(any(not(target_family = "wasm"), test))]
 pub(crate) async fn write_line<W>(writer: &mut W, line: String) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin + ?Sized,
@@ -6528,47 +6671,61 @@ impl Channel {
     /// Copy output concurrently with its owning driver, then drain accepted frames.
     /// Passive endpoints instead retain the channel's independent half-close lifetime.
     pub(crate) async fn copy_with_driver(
-        mut self,
+        self,
         driver: Option<crate::ConnectionDriver>,
     ) -> Result<(), crate::Error> {
-        let Some(mut driver) = driver else {
-            return self.copy().await;
-        };
+        self.copy_with_driver_until(driver, future::pending()).await
+    }
 
+    /// After the destination's owned foreground finishes, keep driving source
+    /// errors and sink work, but never deliver queued or new input to it.
+    pub(crate) async fn copy_with_driver_until(
+        mut self,
+        mut driver: Option<crate::ConnectionDriver>,
+        stop_delivery: impl Future<Output = ()>,
+    ) -> Result<(), crate::Error> {
+        let mut stop_delivery = pin!(stop_delivery);
+        let mut delivering = true;
         let mut done = false;
         loop {
-            let frame = if done {
-                self.rx.next().await
-            } else {
-                // Driver errors remain authoritative even when output EOF is ready.
-                let event = future::poll_fn(|cx| {
-                    if let std::task::Poll::Ready(result) = std::pin::Pin::new(&mut driver).poll(cx)
-                    {
-                        return std::task::Poll::Ready(Either::Left(result));
-                    }
-                    self.rx.poll_next_unpin(cx).map(Either::Right)
-                })
-                .await;
-                match event {
-                    Either::Left(result) => {
-                        result?;
-                        done = true;
-                        self.rx.close();
-                        continue;
-                    }
-                    Either::Right(frame) => frame,
+            let event = future::poll_fn(|cx| {
+                if delivering && stop_delivery.as_mut().poll(cx).is_ready() {
+                    delivering = false;
                 }
+                // Driver errors remain authoritative even when stop or EOF is ready.
+                if !done
+                    && let Some(driver) = driver.as_mut()
+                    && let std::task::Poll::Ready(result) = std::pin::Pin::new(driver).poll(cx)
+                {
+                    return std::task::Poll::Ready(Either::Left(result));
+                }
+                if !delivering && driver.is_none() {
+                    return std::task::Poll::Ready(Either::Right(None));
+                }
+                self.rx.poll_next_unpin(cx).map(Either::Right)
+            })
+            .await;
+            let frame = match event {
+                Either::Left(result) => {
+                    result?;
+                    done = true;
+                    self.rx.close();
+                    continue;
+                }
+                Either::Right(frame) => frame,
             };
             let Some(frame) = frame else {
                 break;
             };
-            self.tx
-                .unbounded_send(frame)
-                .map_err(crate::util::internal_error)?;
+            if delivering {
+                self.tx
+                    .unbounded_send(frame)
+                    .map_err(crate::util::internal_error)?;
+            }
         }
         // Propagate this half-close before waiting for a still-running driver.
         drop(self);
-        if !done {
+        if !done && let Some(driver) = driver {
             driver.await?;
         }
         Ok(())
@@ -6700,7 +6857,7 @@ mod tests {
         });
         let incoming = futures::stream::iter([Err(std::io::Error::other("finish read failed"))]);
         let (_channel, mut driver) = Lines::new(outgoing, incoming).into_channel_transport();
-        driver.take_finish().unwrap().send(()).unwrap();
+        assert!(driver.request_finish());
 
         let error = futures::executor::block_on(driver).unwrap_err();
         assert_eq!(
@@ -6873,6 +7030,7 @@ mod tests {
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::v2_proxy()),
+            future::pending::<()>().boxed().shared(),
         ));
         assert!(
             actor.as_mut().now_or_never().is_none(),
@@ -7207,6 +7365,7 @@ mod tests {
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::disabled()),
+            future::pending::<()>().boxed().shared(),
         ));
 
         assert!(
@@ -7236,6 +7395,93 @@ mod tests {
         ));
 
         drop(sent);
+    }
+
+    #[test]
+    fn foreground_finish_settles_unready_requests_and_preserves_ready_output_fifo() {
+        let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
+        let unready = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("unready", serde_json::json!({})).unwrap(),
+            future::pending(),
+        );
+        let unready_id = unready.id().clone();
+        send_raw_message(
+            &connection.message_tx,
+            OutgoingMessage::Notification {
+                untyped: UntypedMessage::new("first", serde_json::json!({})).unwrap(),
+            },
+        )
+        .unwrap();
+        let ready = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("ready", serde_json::json!({})).unwrap(),
+            future::ready(Ok(())),
+        );
+        let unready_after = connection.send_ordered_request_to_after(
+            crate::role::UntypedRole,
+            UntypedMessage::new("unready-after", serde_json::json!({})).unwrap(),
+            future::pending(),
+        );
+        let unready_after_id = unready_after.id().clone();
+        send_raw_message(
+            &connection.message_tx,
+            OutgoingMessage::Notification {
+                untyped: UntypedMessage::new("last", serde_json::json!({})).unwrap(),
+            },
+        )
+        .unwrap();
+        let (done_tx, done_rx) = oneshot::channel();
+        send_raw_message(
+            &connection.message_tx,
+            OutgoingMessage::CloseAfterDraining { done: done_tx },
+        )
+        .unwrap();
+        let (transport_tx, transport_rx) = mpsc::unbounded();
+        futures::executor::block_on(outgoing_actor::outgoing_protocol_actor(
+            message_rx,
+            pending_replies.clone(),
+            transport_tx,
+            ProtocolCompat::new(ProtocolMode::disabled()),
+            future::ready(()).boxed().shared(),
+        ))
+        .unwrap();
+        futures::executor::block_on(done_rx).unwrap();
+        let error = futures::executor::block_on(unready.block_task())
+            .expect_err("an unresolved gate must explicitly fail its consumer");
+        assert!(
+            error
+                .data
+                .unwrap()
+                .to_string()
+                .contains("foreground completed before outgoing request readiness")
+        );
+        assert!(!pending_replies.contains(&unready_id));
+        let error = futures::executor::block_on(unready_after.block_task())
+            .expect_err("each unresolved gate must fail without repolling a consumed signal");
+        assert!(
+            error
+                .data
+                .unwrap()
+                .to_string()
+                .contains("foreground completed before outgoing request readiness")
+        );
+        assert!(!pending_replies.contains(&unready_after_id));
+        assert!(pending_replies.contains(ready.id()));
+        let frames = futures::executor::block_on(transport_rx.collect::<Vec<_>>());
+        let methods = frames
+            .into_iter()
+            .map(|frame| match frame {
+                TransportFrame::Single(RawJsonRpcMessage::Notification(message)) => {
+                    message.method.to_string()
+                }
+                TransportFrame::Single(RawJsonRpcMessage::Request(message)) => {
+                    message.method.to_string()
+                }
+                _ => panic!("expected ready request/notification output"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(methods, ["first", "ready", "last"]);
     }
 
     #[test]
@@ -7319,6 +7565,7 @@ mod tests {
             pending_replies,
             transport_tx,
             ProtocolCompat::new(ProtocolMode::disabled()),
+            future::pending::<()>().boxed().shared(),
         ));
 
         assert!(

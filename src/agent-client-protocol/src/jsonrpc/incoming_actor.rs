@@ -1,4 +1,5 @@
 // Types re-exported from crate root
+use futures::FutureExt as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::stream;
@@ -41,11 +42,20 @@ use super::Handled;
 pub(super) struct IncomingHandlers<Message, Close> {
     messages: Message,
     close: Close,
+    foreground_succeeded: super::SharedCompletionSignal,
 }
 
 impl<Message, Close> IncomingHandlers<Message, Close> {
-    pub(super) fn new(messages: Message, close: Close) -> Self {
-        Self { messages, close }
+    pub(super) fn new(
+        messages: Message,
+        close: Close,
+        foreground_succeeded: super::SharedCompletionSignal,
+    ) -> Self {
+        Self {
+            messages,
+            close,
+            foreground_succeeded,
+        }
     }
 }
 
@@ -60,7 +70,7 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
+    transport_rx: impl futures::Stream<Item = TransportFrame>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
     handlers: IncomingHandlers<
@@ -72,6 +82,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let IncomingHandlers {
         messages: mut handler,
         close: on_close,
+        foreground_succeeded,
     } = handlers;
 
     // `merge` does not expose when one of its source streams ends. Preserve
@@ -81,8 +92,9 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         transport_rx.map(IncomingProtocolMsg::Transport),
         stream::iter([IncomingProtocolMsg::TransportClosed]),
     );
-    let mut my_rx =
+    let my_rx =
         transport_with_close.merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler));
+    let mut my_rx = std::pin::pin!(my_rx);
 
     let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
         FxHashMap::default();
@@ -101,6 +113,13 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             };
             message
         };
+        // Check after the receive await as well: success may have occurred
+        // while this actor was waiting for its next message/EOF. The caller
+        // cancels a blocked message handler, but protects an underway close
+        // callback. Neither path may start another delivery after success.
+        if foreground_succeeded.clone().now_or_never().is_some() {
+            break;
+        }
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {

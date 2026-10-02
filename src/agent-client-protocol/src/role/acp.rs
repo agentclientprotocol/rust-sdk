@@ -439,7 +439,7 @@ impl ConnectTo<Client> for AgentProtocolRouter {
 
         let agent = RunningProtocolPeer::new(agent);
         agent.send_frame(first_frame)?;
-        pipe_protocol_peers_until_closed(client, agent).await
+        pipe_protocol_peers_until_done(client, agent).await
     }
 }
 
@@ -958,9 +958,19 @@ async fn reject_initialize(
     error: crate::Error,
 ) -> Result<(), crate::Error> {
     let RunningProtocolPeer { mut rx, tx, driver } = client;
-    let future = driver.into_driver();
     send_initialize_error(&tx, frame, error)?;
     drop(tx);
+
+    let Some(mut driver) = driver.into_driver() else {
+        // The rejection has already been handed to the raw channel. There is
+        // no owned transport work or physical drain to await.
+        return Ok(());
+    };
+    if !driver.request_finish() {
+        // An opaque driver has no finite physical-finish contract. Preserve a
+        // ready error before cancelling it rather than wait for remote EOF.
+        return crate::util::run_until(driver, future::ready(Ok(()))).await;
+    }
 
     let drain_incoming = async move {
         // Later input has no protocol meaning once initialization is rejected.
@@ -970,15 +980,11 @@ async fn reject_initialize(
         Ok::<_, crate::Error>(())
     };
 
-    let Some(future) = future else {
-        return drain_incoming.await;
-    };
-
-    match future::select(future, Box::pin(drain_incoming)).await {
+    match future::select(driver, Box::pin(drain_incoming)).await {
         future::Either::Left((result, _)) => result,
-        future::Either::Right((result, future)) => {
+        future::Either::Right((result, driver)) => {
             result?;
-            future.await
+            driver.await
         }
     }
 }
@@ -995,7 +1001,7 @@ enum ProtocolPeerDriver {
     Passive,
     Active(crate::ConnectionDriver),
     Completed {
-        finish: Option<futures::channel::oneshot::Sender<()>>,
+        finish: Option<crate::component::FinishControl>,
     },
 }
 
@@ -1009,7 +1015,11 @@ impl ProtocolPeerDriver {
             // bridge, never while reading its remaining queued frames. This
             // records actual owned completion, not a passive ready sentinel.
             Self::Completed { finish } => Some(match finish {
-                Some(finish) => crate::ConnectionDriver::with_finish(future::ready(Ok(())), finish),
+                Some(mut finish) => {
+                    crate::ConnectionDriver::with_finish(future::ready(Ok(())), move || {
+                        finish.request();
+                    })
+                }
                 None => crate::ConnectionDriver::new(future::ready(Ok(()))),
             }),
         }
@@ -1126,27 +1136,9 @@ fn initialize_message_mut(
     }
 }
 
-#[cfg(feature = "unstable_protocol_v2")]
-async fn pipe_protocol_peers_until_closed(
-    left: RunningProtocolPeer,
-    right: RunningProtocolPeer,
-) -> Result<(), crate::Error> {
-    let ((), ()) = futures::try_join!(
-        Channel {
-            rx: left.rx,
-            tx: right.tx,
-        }
-        .copy_with_driver(left.driver.into_driver()),
-        Channel {
-            rx: right.rx,
-            tx: left.tx,
-        }
-        .copy_with_driver(right.driver.into_driver()),
-    )?;
-
-    Ok(())
-}
-
+// Every protocol router uses the same ownership rule. Passive halves keep
+// independent lifetimes; owned completion drains output and then either joins
+// an opposed cooperative driver or cancels opaque work after polling errors.
 #[cfg(feature = "unstable_protocol_v2")]
 async fn pipe_protocol_peers_until_done(
     left: RunningProtocolPeer,
@@ -1162,40 +1154,53 @@ async fn pipe_protocol_peers_until_done(
     let right_finish = right_driver
         .as_mut()
         .and_then(crate::ConnectionDriver::take_finish);
+    let (stop_left_tx, stop_left_rx) = futures::channel::oneshot::channel();
+    let (stop_right_tx, stop_right_rx) = futures::channel::oneshot::channel();
+    let stop = async |rx: futures::channel::oneshot::Receiver<()>| {
+        if rx.await.is_err() {
+            future::pending::<()>().await;
+        }
+    };
     let left_to_right = Box::pin(
         Channel {
             rx: left.rx,
             tx: right.tx,
         }
-        .copy_with_driver(left_driver),
+        .copy_with_driver_until(left_driver, stop(stop_left_rx)),
     );
     let right_to_left = Box::pin(
         Channel {
             rx: right.rx,
             tx: left.tx,
         }
-        .copy_with_driver(right_driver),
+        .copy_with_driver_until(right_driver, stop(stop_right_rx)),
     );
 
     match future::select(left_to_right, right_to_left).await {
         future::Either::Left((result, right_to_left)) => {
             result?;
-            if left_passive || !right_passive {
-                if !left_passive && let Some(finish) = right_finish {
-                    let _ = finish.send(());
+            if !left_passive {
+                let _ = stop_right_tx.send(());
+            }
+            if left_passive || right_finish.is_some() {
+                if !left_passive && let Some(mut finish) = right_finish {
+                    finish.request();
                 }
                 right_to_left.await
             } else {
-                // Passive input may remain independently open, but a ready
-                // forwarding error must still beat foreground success.
+                // Without a cooperative finish hook, opposed work may remain
+                // open indefinitely. Poll ready errors before cancelling it.
                 crate::util::run_until(right_to_left, future::ready(Ok(()))).await
             }
         }
         future::Either::Right((result, left_to_right)) => {
             result?;
-            if right_passive || !left_passive {
-                if !right_passive && let Some(finish) = left_finish {
-                    let _ = finish.send(());
+            if !right_passive {
+                let _ = stop_left_tx.send(());
+            }
+            if right_passive || left_finish.is_some() {
+                if !right_passive && let Some(mut finish) = left_finish {
+                    finish.request();
                 }
                 left_to_right.await
             } else {
@@ -1555,7 +1560,7 @@ impl ConnectTo<Conductor> for ProxyProtocolRouter {
 
         let proxy = RunningProtocolPeer::new(proxy);
         proxy.send_frame(first_frame)?;
-        pipe_protocol_peers_until_closed(conductor, proxy).await
+        pipe_protocol_peers_until_done(conductor, proxy).await
     }
 }
 
@@ -1846,7 +1851,9 @@ mod lifetime_tests {
                     done_rx.await.unwrap();
                     Ok(())
                 },
-                finish_tx,
+                move || {
+                    let _ = finish_tx.send(());
+                },
             )),
         };
 
@@ -1865,7 +1872,7 @@ mod lifetime_tests {
             .driver
             .into_driver()
             .expect("completed owned work must not become passive");
-        driver.take_finish().unwrap().send(()).unwrap();
+        assert!(driver.request_finish());
         finish_rx.await.unwrap();
         driver.await.unwrap();
     }
@@ -1994,6 +2001,236 @@ mod lifetime_tests {
         .await
         .expect("physical flush must not wait for independent remote input EOF");
         drop(remote_input);
+    }
+
+    #[derive(Default, Debug)]
+    struct GatedLineSinkState {
+        pending: Vec<String>,
+        flushed: Vec<String>,
+        closed: bool,
+        dropped: bool,
+    }
+
+    struct GatedLineSink {
+        state: std::sync::Arc<std::sync::Mutex<GatedLineSinkState>>,
+        release: futures::channel::oneshot::Receiver<()>,
+        released: bool,
+    }
+
+    impl futures::Sink<String> for GatedLineSink {
+        type Error = std::io::Error;
+
+        fn poll_ready(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn start_send(self: std::pin::Pin<&mut Self>, line: String) -> Result<(), Self::Error> {
+            self.state.lock().unwrap().pending.push(line);
+            Ok(())
+        }
+
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            if !self.released {
+                if std::pin::Pin::new(&mut self.release).poll(cx).is_pending() {
+                    return std::task::Poll::Pending;
+                }
+                self.released = true;
+            }
+            let mut state = self.state.lock().unwrap();
+            let pending = std::mem::take(&mut state.pending);
+            state.flushed.extend(pending);
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_close(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            match self.as_mut().poll_flush(cx) {
+                std::task::Poll::Ready(Ok(())) => {
+                    self.state.lock().unwrap().closed = true;
+                    std::task::Poll::Ready(Ok(()))
+                }
+                result => result,
+            }
+        }
+    }
+
+    impl Drop for GatedLineSink {
+        fn drop(&mut self) {
+            self.state.lock().unwrap().dropped = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn foreground_completion_flushes_lines_with_already_normalized_remote_input() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(GatedLineSinkState::default()));
+        let (release_tx, release_rx) = futures::channel::oneshot::channel();
+        let sink = GatedLineSink {
+            state: state.clone(),
+            release: release_rx,
+            released: false,
+        };
+        let (remote_input, incoming) = futures::channel::mpsc::unbounded();
+        remote_input
+            .unbounded_send(Ok(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#.to_string(),
+            ))
+            .unwrap();
+        remote_input
+            .unbounded_send(Ok(
+                r#"{"jsonrpc":"2.0","method":"test/queued","params":{}}"#.to_string(),
+            ))
+            .unwrap();
+        let physical = RunningProtocolPeer::new::<Client>(crate::Lines::new(sink, incoming));
+        // The real Lines driver reads both ready lines before this returns.
+        let (initialize, physical) = physical.next_frame().await.unwrap().unwrap();
+        assert_eq!(
+            futures::Stream::size_hint(&physical.rx).0,
+            1,
+            "trailing input must already be in the original normalized queue"
+        );
+
+        let (Channel { rx, tx }, mut local) = Channel::duplex();
+        tx.unbounded_send(initialize).unwrap();
+        let foreground = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::new(async move {
+                assert!(local.rx.next().await.is_some(), "initialize response");
+                for index in 0..3 {
+                    local
+                        .tx
+                        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::notification(
+                            "test/final".into(),
+                            serde_json::json!({ "index": index, "payload": "x".repeat(1024) }),
+                        )?))
+                        .unwrap();
+                }
+                // This owns the foreground input receiver: completion closes it.
+                drop(local);
+                Ok(())
+            })),
+        };
+        let mut bridge = Box::pin(pipe_protocol_peers_until_done(foreground, physical));
+        let early_result = bridge.as_mut().now_or_never();
+        assert!(
+            !state.lock().unwrap().pending.is_empty(),
+            "the real physical writer must accept output before the gated flush"
+        );
+        // Never use time to establish the race: only the sink gate controls drain.
+        let _released = release_tx.send(());
+        let result = match early_result {
+            Some(result) => result,
+            None => tokio::time::timeout(std::time::Duration::from_secs(1), bridge)
+                .await
+                .expect("physical drain must not require remote input EOF"),
+        };
+        let state = state.lock().unwrap();
+        assert!(
+            result.is_ok() && state.flushed.len() == 3 && state.closed,
+            "accepted output must drain cleanly despite queued remote input: result={result:?}, pending={}, flushed={}, closed={}, dropped={}",
+            state.pending.len(),
+            state.flushed.len(),
+            state.closed,
+            state.dropped,
+        );
+        for (index, line) in state.flushed.iter().enumerate() {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            assert_eq!(value["method"], "test/final");
+            assert_eq!(value["params"]["index"], index);
+            assert_eq!(value["params"]["payload"].as_str().unwrap().len(), 1024);
+        }
+        drop(remote_input);
+    }
+
+    #[tokio::test]
+    async fn foreground_completion_keeps_read_errors_during_lines_drain() {
+        let state = std::sync::Arc::new(std::sync::Mutex::new(GatedLineSinkState::default()));
+        let (_release_tx, release_rx) = futures::channel::oneshot::channel();
+        let sink = GatedLineSink {
+            state: state.clone(),
+            release: release_rx,
+            released: false,
+        };
+        let (remote_input, incoming) = futures::channel::mpsc::unbounded();
+        let physical = RunningProtocolPeer::new::<Client>(crate::Lines::new(sink, incoming));
+        let (Channel { rx, tx }, local) = Channel::duplex();
+        local.tx.unbounded_send(frame()).unwrap();
+        drop(local);
+        let foreground = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::new(future::ready(Ok(())))),
+        };
+        let mut bridge = Box::pin(pipe_protocol_peers_until_done(foreground, physical));
+        assert!(bridge.as_mut().now_or_never().is_none());
+        assert_eq!(state.lock().unwrap().pending.len(), 1);
+
+        // Newly read successful input is irrelevant to the completed foreground,
+        // but a genuine read failure must still cancel the blocked sink drain.
+        remote_input
+            .unbounded_send(Ok(r#"{"jsonrpc":"2.0","method":"late"}"#.to_string()))
+            .unwrap();
+        remote_input
+            .unbounded_send(Err(std::io::Error::other("read failed after foreground")))
+            .unwrap();
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), bridge)
+            .await
+            .expect("read failure must not wait for the sink gate")
+            .expect_err("real read error must win over foreground success");
+        assert!(
+            error
+                .data
+                .unwrap()
+                .to_string()
+                .contains("read failed after foreground"),
+            "the read error must not become a receiver-gone forwarding error"
+        );
+        assert_eq!(state.lock().unwrap().flushed, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn foreground_completion_cancels_opposed_opaque_work_in_both_directions() {
+        for foreground_on_left in [true, false] {
+            let (Channel { rx, tx }, foreground_remote) = Channel::duplex();
+            foreground_remote.tx.unbounded_send(frame()).unwrap();
+            let foreground = RunningProtocolPeer {
+                rx,
+                tx,
+                driver: ProtocolPeerDriver::Active(ConnectionDriver::new(future::ready(Ok(())))),
+            };
+            let (Channel { rx, tx }, mut opposed_remote) = Channel::duplex();
+            let (work_tx, work_rx) = futures::channel::oneshot::channel::<()>();
+            let opposed = RunningProtocolPeer {
+                rx,
+                tx,
+                driver: ProtocolPeerDriver::Active(ConnectionDriver::new(async move {
+                    work_rx.await.map_err(crate::util::internal_error)?;
+                    Ok(())
+                })),
+            };
+            let mut bridge = Box::pin(if foreground_on_left {
+                pipe_protocol_peers_until_done(foreground, opposed)
+            } else {
+                pipe_protocol_peers_until_done(opposed, foreground)
+            });
+
+            assert_eq!(
+                bridge.as_mut().now_or_never(),
+                Some(Ok(())),
+                "finite foreground must not join an opaque pending peer"
+            );
+            assert!(work_tx.is_canceled(), "opaque work must be dropped");
+            assert!(opposed_remote.rx.next().await.is_some());
+            assert!(opposed_remote.rx.next().await.is_none());
+        }
     }
 
     #[tokio::test]

@@ -292,15 +292,30 @@ a component waiting for a response to its own request could deadlock.
 Buffered adapters are responsible for flushing their accepted output before
 reporting successful completion. The built-in line and byte-stream adapters
 keep the read half moving during write drain and propagate incoming errors;
-their explicit finish handling does not require remote read EOF. Merely
-wrapping an arbitrary future cannot make an opaque custom adapter drain safely.
+their explicit finish handling does not require remote read EOF.
+`ConnectionDriver::with_finish(future, finish)` lets custom adapters declare
+the same cooperative contract. Its one-shot, nonblocking hook requests finish
+after protocol output handoff; the still-polled future performs the drain and
+reports completion or I/O errors. `request_finish()` exposes this request to
+low-level callers and is idempotent: a supported request remains supported
+after it has been issued. The callback still runs at most once. Neither
+requesting finish nor dropping the hook proves a successful flush, and no
+implicit timeout is imposed.
+
+`ConnectionDriver::new(future)` remains appropriate for opaque cancellable
+work. A finite foreground does not wait indefinitely for such work after
+handing off protocol output. Merely wrapping an arbitrary future cannot make
+an opaque custom adapter drain safely.
 
 Most components implement only `connect_to`; default normalization supplies
 `Some(driver)` containing the owned work. Direct transports override
 `into_channel_and_future` to avoid an intermediate copy. Wrappers that expose an
 existing endpoint should forward
-its driver unchanged so passive identity and built-in completion handling are
-not lost.
+its driver unchanged so absence and cooperative completion handling are
+not lost. Wrappers that decorate execution use `map_future` to transform the
+owned future while preserving its finish capability and requested state.
+Direct custom transport entry points must also request and await cooperative
+finish after a finite peer completes; a bare join does not provide that step.
 
 See [Migrating Connection Drivers](./migration-connection-drivers.md) for custom
 override changes. This lifecycle distinction does not change the existing raw

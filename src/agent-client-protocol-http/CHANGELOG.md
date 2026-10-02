@@ -18,6 +18,9 @@
 - On active agent completion, reject further output from escaped sender clones
   and drain accepted frames before removing the connection and closing its
   streams, without waiting for those clones to be dropped.
+- Keep router cancellation owned while natural cleanup awaits its drain.
+  Explicit shutdown no longer detaches a taken router task or retains the
+  connection through that orphaned task.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.1.0...agent-client-protocol-http-v2.2.0) - 2026-09-18
 
