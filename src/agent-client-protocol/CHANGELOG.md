@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.2.0...v3.0.0) - 2026-10-02
+
+### Added
+
+- *(acp)* make schemars optional ([#373](https://github.com/agentclientprotocol/rust-sdk/pull/373))
+
+### Fixed
+
+- *(acp)* [**breaking**] preserve connection lifetimes and graceful drain ([#385](https://github.com/agentclientprotocol/rust-sdk/pull/385))
+- *(acp)* [**breaking**] preserve protocol-neutral raw JSON-RPC errors ([#384](https://github.com/agentclientprotocol/rust-sdk/pull/384))
+
+### Other
+
+- Simplify logs in example ([#386](https://github.com/agentclientprotocol/rust-sdk/pull/386))
+
 ### Changed
 
 - **Breaking:** `RawJsonRpcMessage::Response` carries `RawJsonRpcResponse` with

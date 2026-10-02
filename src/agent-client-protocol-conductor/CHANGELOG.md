@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.2.0...agent-client-protocol-conductor-v3.0.0) - 2026-10-02
+
+### Added
+
+- *(deps)* bump the minor group with 14 updates ([#381](https://github.com/agentclientprotocol/rust-sdk/pull/381))
+- *(rmcp)* [**breaking**] upgrade integration to rmcp 3.4
+
+### Fixed
+
+- *(acp)* [**breaking**] preserve connection lifetimes and graceful drain ([#385](https://github.com/agentclientprotocol/rust-sdk/pull/385))
+- *(acp)* [**breaking**] preserve protocol-neutral raw JSON-RPC errors ([#384](https://github.com/agentclientprotocol/rust-sdk/pull/384))
+
 ### Fixed
 
 - Retain raw JSON-RPC error codes, omitted/null data, and error extension
