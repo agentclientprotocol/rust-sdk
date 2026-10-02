@@ -53,9 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             async move |_request: v2::RequestPermissionRequest,
                         responder: Responder<v2::RequestPermissionResponse>,
                         _connection: V2ConnectionTo<Agent>| {
-                eprintln!(
-                    "Agent requested permission; cancelling in this non-interactive example"
-                );
+                eprintln!("Agent requested permission; cancelling in this non-interactive example");
                 responder.respond(v2::RequestPermissionResponse::new(
                     v2::RequestPermissionOutcome::Cancelled,
                 ))
