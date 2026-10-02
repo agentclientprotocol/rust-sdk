@@ -1911,8 +1911,7 @@ impl<
         let (dynamic_handler_tx, dynamic_handler_rx) = mpsc::unbounded();
         let pending_replies = PendingReplies::default();
 
-        // Convert transport into server - this returns a channel for us to use
-        // and a future that runs the transport.
+        // Normalize the transport without losing ownership or finish metadata.
         let transport_component = crate::DynConnectTo::new(transport);
         let (transport_channel, transport_future) = transport_component.into_channel_and_future();
         let (transport_completion_tx, transport_completion_rx) = oneshot::channel();
@@ -1936,11 +1935,18 @@ impl<
             pending_replies.registrar(),
             protocol_mode,
         );
-        let spawn_result = connection.spawn(async move {
-            let result = transport_future.await;
-            drop(transport_completion_tx.send(result.clone()));
-            result
-        });
+        let spawn_result = if let Some(driver) = transport_future {
+            connection.spawn(async move {
+                let result = driver.await;
+                drop(transport_completion_tx.send(result.clone()));
+                result
+            })
+        } else {
+            // Channel-only endpoints have no physical sink work to await.
+            // Their protocol drain marker still orders accepted output.
+            drop(transport_completion_tx.send(Ok(())));
+            Ok(())
+        };
 
         // Destructure the channel endpoints
         let Channel {
@@ -6356,8 +6362,9 @@ where
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
-        self.into_channel_transport()
+    fn into_channel_and_future(self) -> (Channel, Option<crate::ConnectionDriver>) {
+        let (channel, driver) = self.into_channel_transport();
+        (channel, Some(driver))
     }
 }
 
@@ -6457,7 +6464,7 @@ where
         ConnectTo::<R>::connect_to(self.into_lines(), client).await
     }
 
-    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
+    fn into_channel_and_future(self) -> (Channel, Option<crate::ConnectionDriver>) {
         ConnectTo::<R>::into_channel_and_future(self.into_lines())
     }
 }
@@ -6522,11 +6529,11 @@ impl Channel {
     /// Passive endpoints instead retain the channel's independent half-close lifetime.
     pub(crate) async fn copy_with_driver(
         mut self,
-        mut driver: crate::ConnectionDriver,
+        driver: Option<crate::ConnectionDriver>,
     ) -> Result<(), crate::Error> {
-        if driver.is_passive() {
+        let Some(mut driver) = driver else {
             return self.copy().await;
-        }
+        };
 
         let mut done = false;
         loop {
@@ -6619,7 +6626,7 @@ impl<R: Role> ConnectTo<R> for Channel {
     async fn connect_to(self, client: impl ConnectTo<R::Counterpart>) -> Result<(), crate::Error> {
         let (client_channel, client_future) = client.into_channel_and_future();
 
-        let passive = client_future.is_passive();
+        let passive = client_future.is_none();
         let outgoing = Box::pin(
             Channel {
                 rx: client_channel.rx,
@@ -6648,8 +6655,8 @@ impl<R: Role> ConnectTo<R> for Channel {
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, crate::ConnectionDriver) {
-        (self, crate::ConnectionDriver::passive())
+    fn into_channel_and_future(self) -> (Channel, Option<crate::ConnectionDriver>) {
+        (self, None)
     }
 }
 

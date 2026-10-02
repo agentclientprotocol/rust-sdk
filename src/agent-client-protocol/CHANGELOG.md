@@ -10,15 +10,16 @@
   new response type. Typed ACP consumers still receive `Error`; conversion to
   ACP is explicit through `RawJsonRpcError::into_acp_error`.
 - **Breaking:** `ConnectTo::into_channel_and_future` now returns
-  `(Channel, ConnectionDriver)` instead of a boxed future. Custom overrides
-  must distinguish owned connection work from passive endpoints; wrappers
-  should preserve the returned driver rather than erase its lifecycle metadata.
+  `(Channel, Option<ConnectionDriver>)` instead of a boxed future. `Some` owns
+  connection work; a passive endpoint returns `None`. Custom overrides and
+  low-level callers must handle absence explicitly; wrappers should preserve
+  the original optional driver rather than erase its lifecycle metadata.
   See the [connection-driver migration guide](../../md/migration-connection-drivers.md).
 
 ### Added
 
-- Add `ConnectionDriver::new`, `passive`, and `is_passive`. Drivers remain
-  awaitable; passive readiness does not signal transport EOF.
+- Add an owned-only, awaitable `ConnectionDriver`. Passive endpoints have no
+  driver, so absence cannot be mistaken for a successful completed future.
 - Add a default-enabled `schemars` feature that forwards JSON Schema support to
   the schema crate and gates the typed MCP tool helpers. Set
   `default-features = false` to use the core SDK without `schemars`; custom MCP

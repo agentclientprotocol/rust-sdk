@@ -265,18 +265,24 @@ component to its counterpart and drives the connection until completion.
 `Channel` plus an explicit connection driver:
 
 ```rust,ignore
-fn into_channel_and_future(self) -> (Channel, ConnectionDriver);
+fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>);
 ```
 
-The channel carries only `TransportFrame` wire events. The awaitable
-`ConnectionDriver` distinguishes owned work from a passive endpoint:
+The channel carries only `TransportFrame` wire events. The optional driver
+distinguishes owned work from a passive endpoint:
 
-| Driver | Meaning of successful completion |
+| Returned work | Lifetime rule |
 | --- | --- |
-| `ConnectionDriver::new(future)` | The component's owned work has finished. |
-| `ConnectionDriver::passive()` | No work is owned here; readiness says nothing about either I/O half. |
+| `Some(ConnectionDriver::new(future))` | Poll the owned work alongside traffic; successful completion ends it after accepted output is drained. |
+| `None` | No work is owned here; each channel half determines its own lifetime. |
 
-A raw `Channel` is passive. Its bridge preserves both directions independently:
+A `ConnectionDriver` always contains a real future; the optional return value
+cannot itself be awaited. There is no ready-successful passive driver and no
+finish hook in the `None` case. This makes the ownership decision explicit
+rather than requiring callers to recognize a special future.
+
+A raw `Channel` returns `None`. Its bridge preserves both directions
+independently:
 one sender closing must not prevent a final response in the reverse direction.
 Owned completion lets a bridge stop accepting new output, drain frames already
 accepted, and finish without waiting for unrelated remote input to close.
@@ -290,8 +296,9 @@ their explicit finish handling does not require remote read EOF. Merely
 wrapping an arbitrary future cannot make an opaque custom adapter drain safely.
 
 Most components implement only `connect_to`; default normalization supplies
-the owned driver. Direct transports override `into_channel_and_future` to avoid
-an intermediate copy. Wrappers that expose an existing endpoint should forward
+`Some(driver)` containing the owned work. Direct transports override
+`into_channel_and_future` to avoid an intermediate copy. Wrappers that expose an
+existing endpoint should forward
 its driver unchanged so passive identity and built-in completion handling are
 not lost.
 
@@ -372,7 +379,9 @@ Split the socket and pass compatible read/write halves to `ByteStreams::new`.
 Embedders supply and drive their own runtime and host transport:
 
 - Exchange `TransportFrame` values through an in-component `Channel`. A caller
-  using `ConnectTo::into_channel_and_future` must poll the returned future.
+  using `ConnectTo::into_channel_and_future` polls a present owned driver
+  alongside traffic. When no driver is returned, preserve the channel halves'
+  independent lifetimes; absence is not EOF.
 - Exchange newline-delimited JSON through `Lines`, using a
   `futures::Sink<String>` and
   `futures::Stream<Item = std::io::Result<String>>`.

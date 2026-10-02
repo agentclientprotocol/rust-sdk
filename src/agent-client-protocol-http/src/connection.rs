@@ -424,7 +424,7 @@ pub(crate) struct ConnectionRegistry {
 }
 
 pub(crate) trait AgentFactory: Send + Sync + 'static {
-    fn spawn_agent(&self) -> (Channel, agent_client_protocol::ConnectionDriver);
+    fn spawn_agent(&self) -> (Channel, Option<agent_client_protocol::ConnectionDriver>);
 }
 
 impl<F, C> AgentFactory for F
@@ -432,7 +432,7 @@ where
     F: Fn() -> C + Send + Sync + 'static,
     C: agent_client_protocol::ConnectTo<agent_client_protocol::Client>,
 {
-    fn spawn_agent(&self) -> (Channel, agent_client_protocol::ConnectionDriver) {
+    fn spawn_agent(&self) -> (Channel, Option<agent_client_protocol::ConnectionDriver>) {
         self().into_channel_and_future()
     }
 }
@@ -540,25 +540,27 @@ impl ConnectionRegistry {
         let connection_for_task = Arc::downgrade(&connection);
         let agent_handle = tokio::spawn(async move {
             let conn_id_for_agent = conn_id_for_task.clone();
-            let agent = async move {
-                if agent_future.is_passive() {
-                    // A passive endpoint is driven only by the channel pumps;
-                    // its immediately ready no-op driver is not connection EOF.
-                    std::future::pending::<()>().await;
+            if let Some(agent_future) = agent_future {
+                let agent = async move {
+                    if let Err(e) = agent_future.await {
+                        error!(connection_id = %conn_id_for_agent, "ACP agent task error: {e}");
+                    }
+                };
+                futures::pin_mut!(agent);
+                futures::pin_mut!(pump);
+                match futures::future::select(agent, pump).await {
+                    futures::future::Either::Left(((), pump)) => {
+                        inbound_abort.abort();
+                        let _sent = finish_outbound_tx.send(());
+                        pump.await;
+                    }
+                    futures::future::Either::Right(((), _agent)) => {}
                 }
-                if let Err(e) = agent_future.await {
-                    error!(connection_id = %conn_id_for_agent, "ACP agent task error: {e}");
-                }
-            };
-            futures::pin_mut!(agent);
-            futures::pin_mut!(pump);
-            match futures::future::select(agent, pump).await {
-                futures::future::Either::Left(((), pump)) => {
-                    inbound_abort.abort();
-                    let _sent = finish_outbound_tx.send(());
-                    pump.await;
-                }
-                futures::future::Either::Right(((), _agent)) => {}
+            } else {
+                // With no owned agent work, only the channel pumps determine
+                // completion. Do not interpret absence as connection EOF.
+                drop(finish_outbound_tx);
+                pump.await;
             }
             debug!(connection_id = %conn_id_for_task, "ACP connection task ended");
             let connection_to_close = drain_connection_router(connection_for_task).await;
@@ -754,7 +756,7 @@ mod tests {
     }
 
     impl AgentFactory for ExitingAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let exit = self.exit.clone();
             let future = ConnectionDriver::new(async move {
@@ -763,14 +765,14 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
     struct RespondThenExitAgentFactory;
 
     impl AgentFactory for RespondThenExitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let future = ConnectionDriver::new(async move {
                 agent
@@ -783,7 +785,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -792,7 +794,7 @@ mod tests {
     }
 
     impl AgentFactory for MalformedThenWaitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
             let future = ConnectionDriver::new(async move {
@@ -808,7 +810,7 @@ mod tests {
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -818,7 +820,7 @@ mod tests {
     }
 
     impl AgentFactory for SendThenWaitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let message = self.message.clone();
             let exit = self.exit.clone();
@@ -831,7 +833,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -840,7 +842,7 @@ mod tests {
     }
 
     impl AgentFactory for BatchThenWaitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let exit = self.exit.clone();
             let future = ConnectionDriver::new(async move {
@@ -865,7 +867,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -876,7 +878,7 @@ mod tests {
     }
 
     impl AgentFactory for FinalFrameThenExitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             *self.escaped_output.lock().unwrap() = Some(agent.tx.clone());
             let emit = self.emit.clone();
@@ -895,12 +897,12 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
     #[tokio::test]
-    async fn passive_agent_driver_does_not_close_http_channel_pumps() {
+    async fn absent_agent_driver_preserves_half_closes_and_natural_completion() {
         let (endpoint, mut remote) = Channel::duplex();
         let endpoint = std::sync::Mutex::new(Some(endpoint));
         let registry = ConnectionRegistry::new(Arc::new(move || {
@@ -914,10 +916,10 @@ mod tests {
         assert!(
             timeout(Duration::from_secs(1), remote.rx.next())
                 .await
-                .expect("passive readiness must not abort inbound forwarding")
+                .expect("absent owned work must not abort inbound forwarding")
                 .is_some()
         );
-        remote.tx.unbounded_send(frame).unwrap();
+        remote.tx.unbounded_send(frame.clone()).unwrap();
         assert!(
             timeout(Duration::from_secs(1), connection.recv_initial())
                 .await
@@ -925,8 +927,38 @@ mod tests {
                 .is_some()
         );
         assert!(registry.get(&connection_id).await.is_some());
-        connection.shutdown().await;
-        registry.remove(&connection_id).await;
+        assert!(!*connection.subscribe_closed().borrow());
+
+        drop(remote.tx);
+        assert!(
+            timeout(Duration::from_secs(1), connection.recv_initial())
+                .await
+                .expect("the outbound pump should observe its half-close")
+                .is_none()
+        );
+        connection.inbound_tx.send(frame.clone()).unwrap();
+        assert!(
+            timeout(Duration::from_secs(1), remote.rx.next())
+                .await
+                .expect("the other half must still forward after outbound EOF")
+                .is_some()
+        );
+        assert!(registry.get(&connection_id).await.is_some());
+        let mut closed = connection.subscribe_closed();
+        assert!(!*closed.borrow());
+
+        drop(remote.rx);
+        // Forwarding observes the closed recipient on its next send; no
+        // explicit registry shutdown is needed to finish the two pumps.
+        connection.inbound_tx.send(frame).unwrap();
+        timeout(Duration::from_secs(1), async {
+            while !*closed.borrow() {
+                closed.changed().await.unwrap();
+            }
+        })
+        .await
+        .expect("both closed halves should finish without a synthetic driver");
+        assert!(registry.get(&connection_id).await.is_none());
     }
 
     #[tokio::test]

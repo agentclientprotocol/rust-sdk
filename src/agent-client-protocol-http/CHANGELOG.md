@@ -5,16 +5,16 @@
 ### Changed
 
 - Adapt `HttpClient`'s `ConnectTo` conversion to the core SDK's breaking
-  `ConnectionDriver` return type. Channels and HTTP framing remain unchanged;
-  no new resource limits are introduced.
+  optional `ConnectionDriver` return type. Channels and HTTP framing remain
+  unchanged; no new resource limits are introduced.
 
 ### Fixed
 
 - Preserve raw JSON-RPC error codes, omitted versus null data, and error
   extension fields across HTTP/SSE and WebSocket transports, using the core
   SDK's new `RawJsonRpcResponse` representation.
-- Do not treat a passive agent-factory endpoint's no-op driver as agent
-  completion while its transport remains open.
+- Preserve HTTP channel pumps when an agent-factory endpoint has no owned
+  driver; absence is not agent completion while its transport remains open.
 - On active agent completion, reject further output from escaped sender clones
   and drain accepted frames before removing the connection and closing its
   streams, without waiting for those clones to be dropped.

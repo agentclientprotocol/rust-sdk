@@ -405,7 +405,7 @@ impl ConnectTo<Agent> for InitializingV2Client {
 impl ConnectTo<Agent> for FutureInitializeV2Client {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
         let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
-        let agent_task = tokio::spawn(agent_future);
+        let agent_task = agent_future.map(tokio::spawn);
 
         channel
             .tx
@@ -426,11 +426,15 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
             };
             let initialize = v2::InitializeResponse::from_value("initialize", result)?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
-            agent_task.abort();
+            if let Some(task) = agent_task {
+                task.abort();
+            }
             return Ok(());
         }
 
-        agent_task.abort();
+        if let Some(task) = agent_task {
+            task.abort();
+        }
         Err(agent_client_protocol::util::internal_error(
             "v2 agent did not respond to initialize",
         ))
@@ -485,7 +489,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         agent_client_protocol::on_receive_request!(),
     );
     let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
-    let agent_task = tokio::spawn(agent_future);
+    let agent_task = tokio::spawn(agent_future.expect("v2 agent owns a connection driver"));
 
     channel
         .tx
@@ -2024,7 +2028,7 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
         ));
 
     let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
-    let agent_task = tokio::spawn(agent_future);
+    let agent_task = tokio::spawn(agent_future.expect("agent router owns a connection driver"));
 
     channel
         .tx
@@ -2760,7 +2764,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         ));
 
     let (mut channel, agent_future) = ConnectTo::<Client>::into_channel_and_future(agent);
-    let agent_task = tokio::spawn(agent_future);
+    let agent_task = tokio::spawn(agent_future.expect("agent router owns a connection driver"));
 
     let mut initialize = json_value(v2_initialize_request(ProtocolVersion::from(3_u16)))?;
     initialize

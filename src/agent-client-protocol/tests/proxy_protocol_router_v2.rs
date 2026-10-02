@@ -75,7 +75,7 @@ async fn request(
     params: Value,
 ) -> Result<Result<Value, Error>, Error> {
     let (Channel { mut rx, tx }, future) = ConnectTo::<Conductor>::into_channel_and_future(router);
-    let task = tokio::spawn(future);
+    let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
     let request_id = v1::RequestId::Number(1);
 
     tx.unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(

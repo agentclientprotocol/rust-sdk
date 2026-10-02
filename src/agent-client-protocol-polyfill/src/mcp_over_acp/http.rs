@@ -69,19 +69,20 @@ impl ConnectTo<mcp::Client> for HttpMcpBridge {
         client: impl ConnectTo<mcp::Server>,
     ) -> Result<(), agent_client_protocol::Error> {
         let (channel, serve_self) = self.into_channel_and_future();
+        let serve_self = serve_self.expect("HttpMcpBridge owns its HTTP listener driver");
         match futures::future::select(pin!(client.connect_to(channel)), serve_self).await {
             Either::Left((result, _)) | Either::Right((result, _)) => result,
         }
     }
 
-    fn into_channel_and_future(self) -> (Channel, ConnectionDriver)
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>)
     where
         Self: Sized,
     {
         let (channel_a, channel_b) = Channel::duplex();
         (
             channel_a,
-            ConnectionDriver::new(run(self.listener, channel_b)),
+            Some(ConnectionDriver::new(run(self.listener, channel_b))),
         )
     }
 }

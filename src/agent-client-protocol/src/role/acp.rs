@@ -970,9 +970,9 @@ async fn reject_initialize(
         Ok::<_, crate::Error>(())
     };
 
-    if future.is_passive() {
+    let Some(future) = future else {
         return drain_incoming.await;
-    }
+    };
 
     match future::select(future, Box::pin(drain_incoming)).await {
         future::Either::Left((result, _)) => result,
@@ -994,18 +994,24 @@ struct RunningProtocolPeer {
 enum ProtocolPeerDriver {
     Passive,
     Active(crate::ConnectionDriver),
-    Completed,
+    Completed {
+        finish: Option<futures::channel::oneshot::Sender<()>>,
+    },
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl ProtocolPeerDriver {
-    fn into_driver(self) -> crate::ConnectionDriver {
+    fn into_driver(self) -> Option<crate::ConnectionDriver> {
         match self {
-            Self::Passive => crate::ConnectionDriver::passive(),
-            Self::Active(driver) => driver,
+            Self::Passive => None,
+            Self::Active(driver) => Some(driver),
             // Conversion happens only when handing the peer to its final
-            // bridge, never while reading its remaining queued frames.
-            Self::Completed => crate::ConnectionDriver::new(future::ready(Ok(()))),
+            // bridge, never while reading its remaining queued frames. This
+            // records actual owned completion, not a passive ready sentinel.
+            Self::Completed { finish } => Some(match finish {
+                Some(finish) => crate::ConnectionDriver::with_finish(future::ready(Ok(())), finish),
+                None => crate::ConnectionDriver::new(future::ready(Ok(()))),
+            }),
         }
     }
 }
@@ -1014,17 +1020,16 @@ impl ProtocolPeerDriver {
 impl RunningProtocolPeer {
     fn new<R: Role>(component: impl ConnectTo<R>) -> Self {
         let (Channel { rx, tx }, future) = component.into_channel_and_future();
-        let driver = if future.is_passive() {
-            ProtocolPeerDriver::Passive
-        } else {
-            ProtocolPeerDriver::Active(future)
+        let driver = match future {
+            None => ProtocolPeerDriver::Passive,
+            Some(future) => ProtocolPeerDriver::Active(future),
         };
         Self { rx, tx, driver }
     }
 
     async fn next_frame(self) -> Result<Option<(TransportFrame, Self)>, crate::Error> {
         let Self { mut rx, tx, driver } = self;
-        let ProtocolPeerDriver::Active(future) = driver else {
+        let ProtocolPeerDriver::Active(mut future) = driver else {
             return Ok(rx
                 .next()
                 .await
@@ -1033,8 +1038,8 @@ impl RunningProtocolPeer {
 
         // Poll the owned driver first: a ready error must not be hidden by
         // an equally ready frame or clean channel EOF.
-        match future::select(future, Box::pin(rx.next())).await {
-            future::Either::Right((Some(frame), future)) => Ok(Some((
+        match future::select(&mut future, Box::pin(rx.next())).await {
+            future::Either::Right((Some(frame), _)) => Ok(Some((
                 frame,
                 Self {
                     rx,
@@ -1042,7 +1047,7 @@ impl RunningProtocolPeer {
                     driver: ProtocolPeerDriver::Active(future),
                 },
             ))),
-            future::Either::Right((None, future)) => {
+            future::Either::Right((None, _)) => {
                 drop(tx);
                 future.await?;
                 Ok(None)
@@ -1061,7 +1066,9 @@ impl RunningProtocolPeer {
                     Self {
                         rx,
                         tx,
-                        driver: ProtocolPeerDriver::Completed,
+                        driver: ProtocolPeerDriver::Completed {
+                            finish: future.take_finish(),
+                        },
                     },
                 )))
             }
@@ -1147,10 +1154,14 @@ async fn pipe_protocol_peers_until_done(
 ) -> Result<(), crate::Error> {
     let mut left_driver = left.driver.into_driver();
     let mut right_driver = right.driver.into_driver();
-    let left_passive = left_driver.is_passive();
-    let right_passive = right_driver.is_passive();
-    let left_finish = left_driver.take_finish();
-    let right_finish = right_driver.take_finish();
+    let left_passive = left_driver.is_none();
+    let right_passive = right_driver.is_none();
+    let left_finish = left_driver
+        .as_mut()
+        .and_then(crate::ConnectionDriver::take_finish);
+    let right_finish = right_driver
+        .as_mut()
+        .and_then(crate::ConnectionDriver::take_finish);
     let left_to_right = Box::pin(
         Channel {
             rx: left.rx,
@@ -1823,6 +1834,43 @@ mod lifetime_tests {
     }
 
     #[tokio::test]
+    async fn owned_peer_preserves_finish_metadata_through_active_and_completed_states() {
+        let (Channel { rx, tx }, remote) = Channel::duplex();
+        let (done_tx, done_rx) = futures::channel::oneshot::channel();
+        let (finish_tx, finish_rx) = futures::channel::oneshot::channel();
+        let peer = RunningProtocolPeer {
+            rx,
+            tx,
+            driver: ProtocolPeerDriver::Active(ConnectionDriver::with_finish(
+                async move {
+                    done_rx.await.unwrap();
+                    Ok(())
+                },
+                finish_tx,
+            )),
+        };
+
+        remote.tx.unbounded_send(frame()).unwrap();
+        let (_, peer) = peer.next_frame().await.unwrap().unwrap();
+        assert!(matches!(&peer.driver, ProtocolPeerDriver::Active(_)));
+
+        remote.tx.unbounded_send(frame()).unwrap();
+        done_tx.send(()).unwrap();
+        let (_, peer) = peer.next_frame().await.unwrap().unwrap();
+        assert!(matches!(
+            &peer.driver,
+            ProtocolPeerDriver::Completed { finish: Some(_) }
+        ));
+        let mut driver = peer
+            .driver
+            .into_driver()
+            .expect("completed owned work must not become passive");
+        driver.take_finish().unwrap().send(()).unwrap();
+        finish_rx.await.unwrap();
+        driver.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn active_initialization_drains_accepted_frames_without_escaped_sender_eof() {
         let (Channel { rx, tx }, remote) = Channel::duplex();
         remote.tx.unbounded_send(frame()).unwrap();
@@ -1895,7 +1943,10 @@ mod lifetime_tests {
                 }
                 Ok(())
             };
-            crate::util::run_until(driver, foreground).await
+            match driver {
+                Some(driver) => crate::util::run_until(driver, foreground).await,
+                None => foreground.await,
+            }
         }
     }
 

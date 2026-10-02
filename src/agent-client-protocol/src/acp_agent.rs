@@ -1406,7 +1406,8 @@ mod tests {
         let (agent, mut pid_rx) = wrapper_agent(
             "echo ACP_TEST_CHILD_PID=$$ >&2; exec 1>&-; sleep 30 & child=$!; wait \"$child\"",
         );
-        let (channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let (channel, connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let mut connection = connection.expect("AcpAgent owns its process connection");
         let crate::Channel {
             rx: _incoming,
             tx: outgoing,
@@ -1448,7 +1449,8 @@ mod tests {
         let (agent, mut pid_rx) = wrapper_agent(
             "sleep 30 & child=$!; echo ACP_TEST_CHILD_PID=$child >&2; wait \"$child\"",
         );
-        let (_channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let (_channel, connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let mut connection = connection.expect("AcpAgent owns its process connection");
         let descendant_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
         let mut cleanup = KillOnDrop(Some(descendant_pid));
 
@@ -1464,7 +1466,8 @@ mod tests {
         let (agent, mut pid_rx) = wrapper_agent(
             "sh -c 'trap \"\" HUP; exec sleep 30' >/dev/null & child=$!; echo ACP_TEST_CHILD_PID=$child >&2; exit 17",
         );
-        let (_channel, mut connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let (_channel, connection) = crate::ConnectTo::<Client>::into_channel_and_future(agent);
+        let mut connection = connection.expect("AcpAgent owns its process connection");
         let descendant_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
         let mut cleanup = KillOnDrop(Some(descendant_pid));
 

@@ -108,7 +108,10 @@ impl ConnectTo<UntypedRole> for QueuedClient {
         drop(self.escaped.send(channel.tx.clone()));
         let _ = self.started.send(());
         drop(channel);
-        transport_future.await
+        if let Some(driver) = transport_future {
+            driver.await?;
+        }
+        Ok(())
     }
 }
 
@@ -184,7 +187,9 @@ impl ConnectTo<UntypedRole> for CompletingClient {
                 .map_err(Error::into_internal_error)?;
         }
         drop(channel);
-        driver.await?;
+        if let Some(driver) = driver {
+            driver.await?;
+        }
         self.0
     }
 }
@@ -215,7 +220,10 @@ impl ConnectTo<UntypedRole> for RequestReplyClient {
         assert_eq!(id, RequestId::Number(42));
         assert_eq!(result, serde_json::json!({ "status": "received" }));
         drop(channel);
-        driver.await
+        if let Some(driver) = driver {
+            driver.await?;
+        }
+        Ok(())
     }
 }
 
@@ -233,8 +241,8 @@ impl ConnectTo<UntypedRole> for DrivenEndpoint {
         Ok(())
     }
 
-    fn into_channel_and_future(self) -> (Channel, ConnectionDriver) {
-        (self.channel, self.driver)
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>) {
+        (self.channel, Some(self.driver))
     }
 }
 
@@ -430,7 +438,7 @@ async fn assert_passive_bridge_preserves_half_close(
 }
 
 #[test]
-fn channel_and_erased_channel_drivers_are_explicitly_passive() {
+fn channel_and_erased_channel_have_no_driver() {
     for erased in [false, true] {
         let (endpoint, _peer) = Channel::duplex();
         let (_channel, driver) = if erased {
@@ -438,18 +446,13 @@ fn channel_and_erased_channel_drivers_are_explicitly_passive() {
         } else {
             ConnectTo::<UntypedRole>::into_channel_and_future(endpoint)
         };
-        assert!(driver.is_passive());
-        driver
-            .now_or_never()
-            .expect("passive driver should be immediately ready")
-            .expect("passive readiness should succeed");
+        assert!(driver.is_none(), "Channel does not own runnable work");
     }
+}
 
+#[test]
+fn ready_owned_driver_is_awaitable() {
     let driver = ConnectionDriver::new(future::ready(Ok(())));
-    assert!(
-        !driver.is_passive(),
-        "ready owned work is active even when it completes immediately"
-    );
     driver.now_or_never().unwrap().unwrap();
 }
 
@@ -679,6 +682,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
     let (mut peer_outgoing, sdk_incoming) = tokio::io::duplex(1024);
     let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
     let (channel, transport_future) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
+    let transport_future = transport_future.expect("byte streams own a transport driver");
     let Channel { mut rx, tx } = channel;
 
     tx.unbounded_send(TransportFrame::Single(

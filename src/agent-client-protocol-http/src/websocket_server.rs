@@ -258,7 +258,7 @@ mod tests {
     }
 
     impl AgentFactory for CapturingAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
             let future = ConnectionDriver::new(async move {
@@ -286,7 +286,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -295,7 +295,7 @@ mod tests {
     }
 
     impl AgentFactory for BatchAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (mut agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
             let future = ConnectionDriver::new(async move {
@@ -325,7 +325,7 @@ mod tests {
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -334,7 +334,7 @@ mod tests {
     }
 
     impl AgentFactory for FinalFrameThenExitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
             let future = ConnectionDriver::new(async move {
@@ -352,7 +352,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -361,7 +361,7 @@ mod tests {
     }
 
     impl AgentFactory for FinalFrameAfterInputCloseAgentFactory {
-        fn spawn_agent(&self) -> (Channel, ConnectionDriver) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
             let future = ConnectionDriver::new(async move {
@@ -380,7 +380,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
