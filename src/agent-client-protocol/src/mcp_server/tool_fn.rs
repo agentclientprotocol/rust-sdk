@@ -7,6 +7,7 @@ use futures::{
 };
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
+use std::sync::{Arc, Mutex};
 
 use crate::{ConnectionTo, Error, Role, RunWithConnectionTo};
 
@@ -16,12 +17,57 @@ struct ToolCall<P, R, MyRole: Role> {
     params: P,
     mcp_connection: McpConnectionTo<MyRole>,
     result_tx: futures::channel::oneshot::Sender<Result<R, Error>>,
+    done_tx: oneshot::Sender<()>,
 }
 
-/// Dropping the result receiver cancels the invocation by dropping its user future.
+/// The channel owns a queue slot, not exclusive ownership of its
+/// payload. Either the caller or the runner may claim that payload exactly once.
+/// This lets cancellation destroy queued work even while a mutable invocation
+/// borrows the closure and the runner cannot receive another queue entry.
+struct QueuedCall<P, R, MyRole: Role>(Arc<Mutex<Option<ToolCall<P, R, MyRole>>>>);
+
+impl<P, R, MyRole: Role> QueuedCall<P, R, MyRole> {
+    fn share(&self) -> Self {
+        Self(self.0.clone())
+    }
+
+    fn take(&self) -> Option<ToolCall<P, R, MyRole>> {
+        self.0.lock().unwrap().take()
+    }
+}
+
+impl<P, R, MyRole: Role> Drop for QueuedCall<P, R, MyRole> {
+    fn drop(&mut self) {
+        if let Some(ToolCall {
+            params,
+            mcp_connection,
+            result_tx,
+            done_tx,
+        }) = self.take()
+        {
+            // Release the lock before user destructors. Cleanup must observe
+            // destruction of both queued input and its host context first.
+            drop(params);
+            drop(mcp_connection);
+            drop(result_tx);
+            let _finished = done_tx.send(());
+        }
+    }
+}
+
+struct CallResult<P, R, MyRole: Role> {
+    // Fields drop in declaration order: cancel running work before trying to
+    // reclaim queued work. A runner that won take() owns the cleanup ack.
+    result_rx: oneshot::Receiver<Result<R, Error>>,
+    queued_call: QueuedCall<P, R, MyRole>,
+}
+
+/// A result receiver's lifetime is the invocation's cancellation scope. Signal
+/// completion only after the actual user future has completed or been dropped.
 async fn run_call<R>(
     future: impl Future<Output = Result<R, Error>>,
     mut result_tx: oneshot::Sender<Result<R, Error>>,
+    done_tx: oneshot::Sender<()>,
 ) {
     let result = {
         let cancelled = result_tx.cancellation();
@@ -35,11 +81,12 @@ async fn run_call<R>(
         // A caller leaving is not a failure of the shared tool runner.
         drop(result_tx.send(result));
     }
+    let _finished = done_tx.send(());
 }
 
 struct ToolFnMutRunner<F, P, R, Counterpart: Role> {
     func: F,
-    call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
+    call_rx: mpsc::Receiver<QueuedCall<P, R, Counterpart>>,
     tool_future_fn: Box<
         dyn for<'a> Fn(
                 &'a mut F,
@@ -68,16 +115,28 @@ where
             mut call_rx,
             tool_future_fn,
         } = self;
-        while let Some(ToolCall {
-            params,
-            mcp_connection,
-            result_tx,
-        }) = call_rx.next().await
-        {
+        while let Some(queued_call) = call_rx.next().await {
+            let Some(ToolCall {
+                params,
+                mcp_connection,
+                result_tx,
+                done_tx,
+            }) = queued_call.take()
+            else {
+                continue;
+            };
             if result_tx.is_canceled() {
+                drop(params);
+                drop(mcp_connection);
+                let _finished = done_tx.send(());
                 continue;
             }
-            run_call(tool_future_fn(&mut func, params, mcp_connection), result_tx).await;
+            run_call(
+                tool_future_fn(&mut func, params, mcp_connection),
+                result_tx,
+                done_tx,
+            )
+            .await;
         }
         Ok(())
     }
@@ -85,7 +144,7 @@ where
 
 struct ToolFnRunner<F, P, R, Counterpart: Role> {
     func: F,
-    call_rx: mpsc::Receiver<ToolCall<P, R, Counterpart>>,
+    call_rx: mpsc::Receiver<QueuedCall<P, R, Counterpart>>,
     tool_future_fn: Box<
         dyn for<'a> Fn(&'a F, P, McpConnectionTo<Counterpart>) -> BoxFuture<'a, Result<R, Error>>
             + Send
@@ -128,6 +187,7 @@ where
                                 + Sync
                         ),
                     result_tx: oneshot::Sender<Result<R, Error>>,
+                    done_tx: oneshot::Sender<()>,
                 ) -> BoxFuture<'a, ()>
                 where
                     MyRole: Role,
@@ -137,19 +197,39 @@ where
                 {
                     Box::pin(async move {
                         if result_tx.is_canceled() {
+                            drop(params);
+                            drop(mcp_connection);
+                            let _finished = done_tx.send(());
                             return;
                         }
-                        run_call(tool_future_fn(func, params, mcp_connection), result_tx).await;
+                        run_call(
+                            tool_future_fn(func, params, mcp_connection),
+                            result_tx,
+                            done_tx,
+                        )
+                        .await;
                     })
                 }
 
-                let ToolCall {
+                let Some(ToolCall {
                     params,
                     mcp_connection,
                     result_tx,
-                } = tool_call;
+                    done_tx,
+                }) = tool_call.take()
+                else {
+                    return Ok(());
+                };
 
-                hack(&func, params, mcp_connection, &*tool_future_fn, result_tx).await;
+                hack(
+                    &func,
+                    params,
+                    mcp_connection,
+                    &*tool_future_fn,
+                    result_tx,
+                    done_tx,
+                )
+                .await;
                 Ok(())
             },
             |a, b| Box::pin(a(b)),
@@ -161,7 +241,7 @@ where
 struct ToolFnTool<P, Ret, R: Role> {
     name: String,
     description: String,
-    call_tx: mpsc::Sender<ToolCall<P, Ret, R>>,
+    call_tx: mpsc::Sender<QueuedCall<P, Ret, R>>,
 }
 
 impl<P, Ret, R> McpTool<R> for ToolFnTool<P, Ret, R>
@@ -183,18 +263,30 @@ where
 
     async fn call_tool(&self, params: P, mcp_connection: McpConnectionTo<R>) -> Result<Ret, Error> {
         let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        mcp_connection.register_cleanup(done_rx);
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        let _done_rx = done_rx;
 
-        self.call_tx
-            .clone()
-            .send(ToolCall {
+        let mut call = CallResult {
+            result_rx,
+            queued_call: QueuedCall(Arc::new(Mutex::new(Some(ToolCall {
                 params,
                 mcp_connection,
                 result_tx,
-            })
+                done_tx,
+            })))),
+        };
+        self.call_tx
+            .clone()
+            .send(call.queued_call.share())
             .await
             .map_err(crate::util::internal_error)?;
 
-        result_rx.await.map_err(crate::util::internal_error)?
+        (&mut call.result_rx)
+            .await
+            .map_err(crate::util::internal_error)?
     }
 }
 
@@ -288,7 +380,7 @@ mod tests {
     use super::*;
     use crate::{Channel, mcp_server::McpConnectionContext, role::mcp};
 
-    type ResultReceiver = oneshot::Receiver<Result<u32, Error>>;
+    type ResultReceiver = CallResult<u32, u32, mcp::Client>;
 
     #[derive(Default)]
     struct State {
@@ -334,7 +426,7 @@ mod tests {
     fn runner(
         mode: Mode,
         state: &State,
-        call_rx: mpsc::Receiver<ToolCall<u32, u32, mcp::Client>>,
+        call_rx: mpsc::Receiver<QueuedCall<u32, u32, mcp::Client>>,
         connection: ConnectionTo<mcp::Client>,
     ) -> BoxFuture<'_, Result<(), Error>> {
         match mode {
@@ -376,18 +468,25 @@ mod tests {
         connection: &McpConnectionTo<mcp::Client>,
     ) -> ResultReceiver {
         let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        drop(done_rx);
+        let call = CallResult {
+            result_rx,
+            queued_call: QueuedCall(Arc::new(Mutex::new(Some(ToolCall {
+                params: id,
+                mcp_connection: connection.clone(),
+                result_tx,
+                done_tx,
+            })))),
+        };
         // Await admission while the runner is paused: cancellation cannot
         // accidentally happen before the call is actually queued.
         tool.call_tx
             .clone()
-            .send(ToolCall {
-                params: id,
-                mcp_connection: connection.clone(),
-                result_tx,
-            })
+            .send(call.queued_call.share())
             .await
             .unwrap();
-        result_rx
+        call
     }
 
     fn assert_pending(future: impl Future) {
@@ -410,6 +509,8 @@ mod tests {
                 let context = McpConnectionTo {
                     context: McpConnectionContext::Standalone,
                     connection: connection.clone(),
+                    #[cfg(feature = "unstable_mcp_over_acp")]
+                    cleanup: None,
                 };
                 let state = State::default();
                 let (call_tx, call_rx) = mpsc::channel(128);
@@ -431,7 +532,7 @@ mod tests {
                         if matches!(case, Case::ConcurrentProgress) {
                             let mut next = enqueue(&tool, 1, &context).await;
                             assert_pending(runner.as_mut());
-                            assert_eq!(next.try_recv().unwrap().unwrap().unwrap(), 1);
+                            assert_eq!(next.result_rx.try_recv().unwrap().unwrap().unwrap(), 1);
                             // The second call finished while the first remained
                             // suspended, proving concurrent execution.
                             assert_eq!(*state.dropped.lock().unwrap(), [1]);
@@ -450,9 +551,22 @@ mod tests {
                         assert_eq!(*state.entered.lock().unwrap(), [0]);
                         assert!(state.dropped.lock().unwrap().is_empty());
 
-                        // Also cancel queued work while the first call is
-                        // running, without polling the runner between send/drop.
-                        drop(enqueue(&tool, 3, &context).await);
+                        // A real call future is definitely admitted behind A
+                        // before cancellation. No further runner poll is needed
+                        // to destroy B and acknowledge its cleanup.
+                        let queued_context = context.clone();
+                        #[cfg(feature = "unstable_mcp_over_acp")]
+                        let queued_context = McpConnectionTo {
+                            cleanup: Some(Arc::new(Mutex::new(Vec::new()))),
+                            ..queued_context
+                        };
+                        let mut queued = Box::pin(tool.call_tool(3, queued_context.clone()));
+                        assert_pending(queued.as_mut());
+                        drop(queued);
+                        #[cfg(feature = "unstable_mcp_over_acp")]
+                        queued_context.wait_cleanup().now_or_never().unwrap();
+                        assert_eq!(*state.entered.lock().unwrap(), [0]);
+                        assert!(state.dropped.lock().unwrap().is_empty());
                         drop(first);
                         assert_pending(runner.as_mut());
                         assert_eq!(*state.entered.lock().unwrap(), [0]);
@@ -516,5 +630,134 @@ mod tests {
     #[test]
     fn concurrent_borrowed_futures_make_independent_progress() {
         check(Mode::Concurrent, Case::ConcurrentProgress);
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[derive(serde::Deserialize, JsonSchema)]
+    struct DropParams {
+        #[serde(skip)]
+        #[schemars(skip)]
+        on_drop: Option<Box<dyn FnOnce() + Send>>,
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    impl Drop for DropParams {
+        fn drop(&mut self) {
+            if let Some(on_drop) = self.on_drop.take() {
+                on_drop();
+            }
+        }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    #[test]
+    fn cancellation_during_enqueue_destroys_payload_before_cleanup_ack() {
+        let (channel, _peer) = Channel::duplex();
+        futures::executor::block_on(mcp::Server.builder().connect_with(
+            channel,
+            async |connection| {
+                type QueueState = Mutex<Option<ToolCall<DropParams, u32, mcp::Client>>>;
+
+                let cleanup = Arc::new(Mutex::new(Vec::<oneshot::Receiver<()>>::new()));
+                let context = McpConnectionTo {
+                    context: McpConnectionContext::Standalone,
+                    connection,
+                    cleanup: Some(cleanup.clone()),
+                };
+                // Force send() to suspend in its flush, with the payload
+                // already in the channel but no runner receiving it.
+                let (call_tx, mut call_rx) = mpsc::channel(0);
+                let tool = ToolFnTool::<DropParams, u32, _> {
+                    name: "test".into(),
+                    description: "test".into(),
+                    call_tx,
+                };
+                let dropped = Arc::new(Mutex::new(false));
+                let queue_state = Arc::new(Mutex::new(None::<std::sync::Weak<QueueState>>));
+                let params = DropParams {
+                    on_drop: Some(Box::new({
+                        let dropped = dropped.clone();
+                        let cleanup = cleanup.clone();
+                        let queue_state = queue_state.clone();
+                        move || {
+                            assert!(
+                                cleanup.lock().unwrap()[0].try_recv().unwrap().is_none(),
+                                "cleanup ack preceded queued params destructor"
+                            );
+                            let queue = queue_state
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .unwrap()
+                                .upgrade()
+                                .unwrap();
+                            assert!(
+                                queue.try_lock().is_ok(),
+                                "params destructor ran under queue lock"
+                            );
+                            *dropped.lock().unwrap() = true;
+                        }
+                    })),
+                };
+                let mut call = Box::pin(tool.call_tool(params, context.clone()));
+                assert_pending(call.as_mut());
+                assert_eq!(cleanup.lock().unwrap().len(), 1);
+                let queued = call_rx.next().now_or_never().unwrap().unwrap();
+                *queue_state.lock().unwrap() = Some(Arc::downgrade(&queued.0));
+                // Do not poll the caller after receive: its send future is
+                // still suspended, not yet awaiting result_rx.
+                drop(call);
+                assert!(*dropped.lock().unwrap());
+                assert!(
+                    queued.take().is_none(),
+                    "cancelled payload retained by queue"
+                );
+                assert_eq!(
+                    Arc::strong_count(&cleanup),
+                    2,
+                    "queued host context survived cleanup acknowledgment"
+                );
+                context.wait_cleanup().now_or_never().unwrap();
+                Ok(())
+            },
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn running_cleanup_ack_follows_actual_future_destructor() {
+        struct PendingUser {
+            done: Arc<Mutex<oneshot::Receiver<()>>>,
+            dropped: Arc<Mutex<bool>>,
+        }
+        impl Future for PendingUser {
+            type Output = Result<(), Error>;
+            fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+                Poll::Pending
+            }
+        }
+        impl Drop for PendingUser {
+            fn drop(&mut self) {
+                assert!(self.done.lock().unwrap().try_recv().unwrap().is_none());
+                *self.dropped.lock().unwrap() = true;
+            }
+        }
+        let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        let done = Arc::new(Mutex::new(done_rx));
+        let dropped = Arc::new(Mutex::new(false));
+        let mut call = Box::pin(run_call(
+            PendingUser {
+                done: done.clone(),
+                dropped: dropped.clone(),
+            },
+            result_tx,
+            done_tx,
+        ));
+        assert_pending(call.as_mut());
+        drop(result_rx);
+        call.now_or_never().unwrap();
+        assert!(*dropped.lock().unwrap());
+        assert_eq!(done.lock().unwrap().try_recv().unwrap(), Some(()));
     }
 }

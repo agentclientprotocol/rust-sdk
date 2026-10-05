@@ -2012,12 +2012,16 @@ impl<
                             );
                             // Success stops delivery, not physical I/O. An
                             // underway close callback finishes before sealing.
-                            run_incoming_until_foreground_succeeds(
+                            let result = run_incoming_until_foreground_succeeds(
                                 incoming,
                                 foreground_succeeded,
                                 connection.incoming_closed.clone(),
                             )
-                            .await?;
+                            .await;
+                            if result.is_err() {
+                                connection.request_shutdown();
+                            }
+                            result?;
                             // Keep the raw producer boundary alive while the
                             // physical driver drains. Discard without application
                             // delivery, rather than fail a late read-side send.
@@ -2026,7 +2030,7 @@ impl<
                         }
                     };
                     let other_actors = async {
-                        futures::try_join!(
+                        let result = futures::try_join!(
                             // A ready driver error is authoritative even if its
                             // closed channel would also make output forwarding fail.
                             transport_driver,
@@ -2038,7 +2042,12 @@ impl<
                                 protocol_compat,
                                 foreground_done,
                             ),
-                        )?;
+                        );
+                        // Signal before awaiting an underway close callback.
+                        if result.is_err() {
+                            connection.request_shutdown();
+                        }
+                        result?;
                         Ok(())
                     };
 
@@ -2054,12 +2063,18 @@ impl<
                 };
 
                 run_until_connection_close(
-                    background,
+                    finish_actor_error(background, &connection),
                     async {
                         let application = async {
                             futures::try_join!(
-                                task_actor::task_actor(new_task_rx, &connection),
-                                runner.run_with_connection_to(connection.clone()),
+                                finish_actor_error(
+                                    task_actor::task_actor(new_task_rx, &connection),
+                                    &connection,
+                                ),
+                                finish_actor_error(
+                                    runner.run_with_connection_to(connection.clone()),
+                                    &connection,
+                                ),
                             )?;
                             Ok(())
                         };
@@ -2067,6 +2082,7 @@ impl<
                             application,
                             async {
                                 let result = main_fn(connection.clone()).await;
+                                connection.request_shutdown();
                                 if result.is_ok() {
                                     // Stop new incoming delivery immediately,
                                     // including during the callback cleanup phase.
@@ -2076,6 +2092,10 @@ impl<
                                 // requests. Do not add cancellation traffic while
                                 // dropping those consumers before the drain.
                                 connection.pending_replies.disarm_cancellations();
+                                // The application actor (including actual scoped
+                                // runners) remains polled while supervisors finish.
+                                // Only then may ordinary application tasks drop.
+                                connection.wait_protected_operations().await;
                                 result
                             },
                             connection.incoming_closed.clone(),
@@ -2095,6 +2115,23 @@ impl<
 
         (connection, future)
     }
+}
+
+/// Defer an actor error without dropping the other actors that drive owned
+/// cleanup or an underway close callback. Physical output drain stays separate.
+async fn finish_actor_error<R: Role>(
+    actor: impl Future<Output = Result<(), crate::Error>>,
+    connection: &ConnectionTo<R>,
+) -> Result<(), crate::Error> {
+    let result = actor.await;
+    if result.is_err() {
+        connection.request_shutdown();
+        if connection.incoming_closed.is_closing() {
+            connection.incoming_closed.closed().await;
+        }
+        connection.wait_protected_operations().await;
+    }
+    result
 }
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -3552,11 +3589,29 @@ pub struct ConnectionTo<Counterpart: Role> {
     )]
     protocol_mode: ProtocolMode,
     incoming_closed: IncomingClosed,
+    protected_operations: Arc<Mutex<ProtectedOperations>>,
+    runner_error_scope: Option<run::RunnerErrorScope>,
 }
 
 type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
 
 type SharedCompletionSignal = future::Shared<BoxFuture<'static, ()>>;
+
+#[derive(Default)]
+struct ProtectedOperations {
+    pending: Vec<oneshot::Receiver<()>>,
+    joining: Option<SharedCompletionSignal>,
+}
+
+impl Debug for ProtectedOperations {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProtectedOperations")
+            .field("pending", &self.pending.len())
+            .field("joining", &self.joining.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 fn completion_signal() -> (oneshot::Sender<()>, SharedCompletionSignal) {
     let (tx, rx) = oneshot::channel();
@@ -3581,23 +3636,45 @@ struct IncomingClosedState {
     closed: AtomicBool,
     signal_tx: Mutex<Option<oneshot::Sender<()>>>,
     signal_rx: future::Shared<BoxFuture<'static, ()>>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    #[cfg(any(feature = "unstable_mcp_over_acp", test))]
+    shutdown_rx: SharedCompletionSignal,
 }
 
 impl IncomingClosed {
     fn new() -> Self {
         let (signal_tx, signal_rx) = oneshot::channel();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        #[cfg(not(any(feature = "unstable_mcp_over_acp", test)))]
+        drop(shutdown_rx);
         Self {
             state: Arc::new(IncomingClosedState {
                 closing: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
                 signal_tx: Mutex::new(Some(signal_tx)),
                 signal_rx: signal_rx.map(|_| ()).boxed().shared(),
+                shutdown_tx: Mutex::new(Some(shutdown_tx)),
+                #[cfg(any(feature = "unstable_mcp_over_acp", test))]
+                shutdown_rx: shutdown_rx.map(|_| ()).boxed().shared(),
             }),
         }
     }
 
     fn begin_close(&self) {
         self.state.closing.store(true, Ordering::Release);
+        self.request_shutdown();
+    }
+
+    fn request_shutdown(&self) {
+        if let Some(tx) = self
+            .state
+            .shutdown_tx
+            .lock()
+            .expect("shutdown signal mutex poisoned")
+            .take()
+        {
+            let _ = tx.send(());
+        }
     }
 
     fn finish_close(&self) {
@@ -3742,7 +3819,91 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             pending_replies,
             protocol_mode,
             incoming_closed: IncomingClosed::new(),
+            protected_operations: Arc::default(),
+            runner_error_scope: None,
         }
+    }
+
+    pub(crate) fn with_runner_error_scope(mut self, scope: run::RunnerErrorScope) -> Self {
+        self.runner_error_scope = Some(scope);
+        self
+    }
+
+    pub(crate) fn finish_runner_error(
+        &self,
+        error: crate::Error,
+    ) -> impl Future<Output = ()> + Send + '_ {
+        if let Some(scope) = &self.runner_error_scope {
+            Either::Left(scope.finish(error))
+        } else {
+            // Unscoped runners belong to the connection itself.
+            self.request_shutdown();
+            Either::Right(self.wait_protected_operations())
+        }
+    }
+
+    /// Spawn only a connection-owned supervisor whose async cleanup must finish
+    /// before the driver returns. Ordinary application work must use `spawn`.
+    #[cfg(any(feature = "unstable_mcp_over_acp", test))]
+    #[track_caller]
+    pub(crate) fn spawn_protected(
+        &self,
+        task: impl IntoFuture<Output = Result<(), crate::Error>, IntoFuture: Send + 'static>,
+    ) -> Result<(), crate::Error> {
+        let mut state = self
+            .protected_operations
+            .lock()
+            .expect("protected operations mutex poisoned");
+        if state.joining.is_some() {
+            return Err(crate::Error::request_cancelled());
+        }
+        // Reap completed acknowledgments at admission, rather than retaining
+        // every operation for the entire lifetime of the connection.
+        state
+            .pending
+            .retain_mut(|done| matches!(done.try_recv(), Ok(None)));
+        let (done_tx, done_rx) = oneshot::channel();
+        let task = task.into_future();
+        self.spawn(async move {
+            let result = task.await;
+            let _ = done_tx.send(());
+            result
+        })?;
+        state.pending.push(done_rx);
+        Ok(())
+    }
+
+    pub(crate) async fn wait_protected_operations(&self) {
+        let joining = {
+            let mut state = self
+                .protected_operations
+                .lock()
+                .expect("protected operations mutex poisoned");
+            if state.joining.is_none() {
+                let operations = std::mem::take(&mut state.pending);
+                state.joining = Some(
+                    async move {
+                        for operation in operations {
+                            let _ = operation.await;
+                        }
+                    }
+                    .boxed()
+                    .shared(),
+                );
+            }
+            state.joining.as_ref().expect("join initialized").clone()
+        };
+        joining.await;
+    }
+
+    pub(crate) fn request_shutdown(&self) {
+        self.incoming_closed.request_shutdown();
+    }
+
+    /// Early cancellation for owned native work, before close callbacks or drain.
+    #[cfg(any(feature = "unstable_mcp_over_acp", test))]
+    pub(crate) async fn shutdown_requested(&self) {
+        self.incoming_closed.state.shutdown_rx.clone().await;
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
@@ -4540,6 +4701,13 @@ pub struct DynamicHandlerGuard<R: Role> {
     uuid: Option<Uuid>,
     active: Arc<AtomicBool>,
     cx: ConnectionTo<R>,
+    cleanup: Option<Arc<dyn DynamicHandlerCleanup>>,
+}
+
+/// Private registration-local cleanup, independent of connection task admission.
+pub(crate) trait DynamicHandlerCleanup: std::fmt::Debug + Send + Sync {
+    fn close(&self);
+    fn wait(&self) -> futures::future::BoxFuture<'static, ()>;
 }
 
 impl<R: Role> DynamicHandlerGuard<R> {
@@ -4548,7 +4716,18 @@ impl<R: Role> DynamicHandlerGuard<R> {
             uuid: Some(uuid),
             active,
             cx,
+            cleanup: None,
         }
+    }
+
+    #[cfg(feature = "unstable_mcp_over_acp")]
+    pub(crate) fn with_cleanup(mut self, cleanup: Arc<dyn DynamicHandlerCleanup>) -> Self {
+        self.cleanup = Some(cleanup);
+        self
+    }
+
+    pub(crate) fn cleanup(&self) -> Option<Arc<dyn DynamicHandlerCleanup>> {
+        self.cleanup.clone()
     }
 
     /// Keep the dynamic handler registered after this guard is dropped.
@@ -4565,6 +4744,9 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
     fn drop(&mut self) {
         if let Some(uuid) = self.uuid {
             self.active.store(false, Ordering::Release);
+            if let Some(cleanup) = &self.cleanup {
+                cleanup.close();
+            }
             self.cx.remove_dynamic_handler(uuid);
         }
     }
@@ -6820,6 +7002,253 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_cleanup_keeps_scoped_runners_polled_on_every_shutdown_path() {
+        #[derive(Clone, Copy, Debug)]
+        enum Stop {
+            ForegroundSuccess,
+            ForegroundError,
+            InputEof,
+            TransportError,
+            TaskError,
+            RunnerError,
+            SupervisorError,
+        }
+
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+
+        for stop in [
+            Stop::ForegroundSuccess,
+            Stop::ForegroundError,
+            Stop::InputEof,
+            Stop::TransportError,
+            Stop::TaskError,
+            Stop::RunnerError,
+            Stop::SupervisorError,
+        ] {
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let disposable_dropped = Arc::new(AtomicBool::new(false));
+            let close_finished = Arc::new(AtomicBool::new(false));
+            let (cleanup_tx, cleanup_rx) = oneshot::channel::<()>();
+            let (scoped_done_tx, scoped_done_rx) = completion_signal();
+            let (stop_tx, stop_rx) = oneshot::channel::<()>();
+            let stop_signal = stop_rx.map(|_| ()).boxed().shared();
+            let (incoming_tx, incoming_rx) = mpsc::unbounded();
+            let outgoing = futures::sink::unfold((), |(), _line: String| {
+                future::ready(Ok::<_, std::io::Error>(()))
+            });
+            let builder = Client
+                .builder()
+                .with_spawned({
+                    let cleaned = cleaned.clone();
+                    async move |cx: ConnectionTo<Agent>| {
+                        cx.shutdown_requested().await;
+                        // This stands in for the actual scoped native operation:
+                        // its async cleanup only advances if this runner is polled.
+                        cleanup_rx.await.unwrap();
+                        cleaned.store(true, Ordering::Release);
+                        let _ = scoped_done_tx.send(());
+                        Ok(())
+                    }
+                })
+                .with_spawned({
+                    let stop_signal = stop_signal.clone();
+                    async move |_cx| {
+                        stop_signal.await;
+                        if matches!(stop, Stop::RunnerError) {
+                            Err(crate::Error::internal_error().data("runner failure"))
+                        } else {
+                            future::pending().await
+                        }
+                    }
+                })
+                .on_close({
+                    let close_finished = close_finished.clone();
+                    let scoped_done = scoped_done_rx.clone();
+                    async move |cx: ConnectionTo<Agent>| {
+                        // EOF cancellation must precede, not await, close callbacks.
+                        cx.shutdown_requested().await;
+                        assert!(!cx.is_incoming_closed());
+                        scoped_done.await;
+                        close_finished.store(true, Ordering::Release);
+                        Ok(())
+                    }
+                });
+            let (connection, driver) =
+                builder.into_connection_and_future(Lines::new(outgoing, incoming_rx), false, {
+                    let stop_signal = stop_signal.clone();
+                    async move |cx| {
+                        if matches!(stop, Stop::InputEof) {
+                            cx.incoming_closed().await;
+                            return Ok(());
+                        }
+                        stop_signal.await;
+                        match stop {
+                            Stop::ForegroundSuccess | Stop::SupervisorError => Ok(()),
+                            Stop::ForegroundError => {
+                                Err(crate::Error::internal_error().data("foreground failure"))
+                            }
+                            _ => future::pending().await,
+                        }
+                    }
+                });
+            let disposable = Dropped(disposable_dropped.clone());
+            connection
+                .spawn(async move {
+                    let _disposable = disposable;
+                    future::pending().await
+                })
+                .unwrap();
+            connection
+                .spawn({
+                    let stop_signal = stop_signal.clone();
+                    async move {
+                        stop_signal.await;
+                        if matches!(stop, Stop::TaskError) {
+                            Err(crate::Error::internal_error().data("task failure"))
+                        } else {
+                            future::pending().await
+                        }
+                    }
+                })
+                .unwrap();
+            connection
+                .spawn_protected({
+                    let connection = connection.clone();
+                    async move {
+                        connection.shutdown_requested().await;
+                        scoped_done_rx.await;
+                        if matches!(stop, Stop::SupervisorError) {
+                            Err(crate::Error::internal_error().data("supervisor failure"))
+                        } else {
+                            Ok(())
+                        }
+                    }
+                })
+                .unwrap();
+            let mut driver = Box::pin(driver);
+            assert!(driver.as_mut().now_or_never().is_none(), "{stop:?}");
+            assert!(connection.shutdown_requested().now_or_never().is_none());
+            let _ = stop_tx.send(());
+            let incoming_tx = match stop {
+                Stop::InputEof => {
+                    drop(incoming_tx);
+                    None
+                }
+                Stop::TransportError => {
+                    incoming_tx
+                        .unbounded_send(Err(std::io::Error::other("transport failure")))
+                        .unwrap();
+                    Some(incoming_tx)
+                }
+                _ => Some(incoming_tx),
+            };
+            for _ in 0..10 {
+                assert!(driver.as_mut().now_or_never().is_none(), "{stop:?}");
+                if connection.shutdown_requested().now_or_never().is_some() {
+                    break;
+                }
+            }
+            assert!(
+                connection.shutdown_requested().now_or_never().is_some(),
+                "{stop:?}"
+            );
+            assert!(!cleaned.load(Ordering::Acquire), "{stop:?}");
+            assert!(!disposable_dropped.load(Ordering::Acquire), "{stop:?}");
+            cleanup_tx.send(()).unwrap();
+            // Task acknowledgments may wake an actor already polled in this turn.
+            // Bound the probe so a broken scoped-runner join fails, not hangs.
+            let mut result = None;
+            for _ in 0..10 {
+                result = driver.as_mut().now_or_never();
+                if result.is_some() {
+                    break;
+                }
+            }
+            let result =
+                result.unwrap_or_else(|| panic!("driver did not finish owned cleanup: {stop:?}"));
+            match stop {
+                Stop::ForegroundSuccess | Stop::InputEof => result.unwrap(),
+                _ => {
+                    let error = result.expect_err("shutdown must preserve the first error");
+                    let expected = match stop {
+                        Stop::ForegroundError => "foreground failure",
+                        Stop::TransportError => "transport failure",
+                        Stop::TaskError => "task failure",
+                        Stop::RunnerError => "runner failure",
+                        Stop::SupervisorError => "supervisor failure",
+                        _ => unreachable!(),
+                    };
+                    assert!(
+                        error.data.unwrap().to_string().contains(expected),
+                        "{stop:?}"
+                    );
+                }
+            }
+            assert!(cleaned.load(Ordering::Acquire), "{stop:?}");
+            assert!(disposable_dropped.load(Ordering::Acquire), "{stop:?}");
+            assert_eq!(
+                close_finished.load(Ordering::Acquire),
+                matches!(stop, Stop::InputEof),
+                "{stop:?}",
+            );
+            assert!(connection.spawn_protected(async { Ok(()) }).is_err());
+            drop(incoming_tx);
+        }
+    }
+
+    #[test]
+    fn protected_operation_acknowledgments_are_reaped_and_join_seals_registration() {
+        let (connection, _message_rx, _pending_replies) = connection_for_response_hook_tests();
+        // The helper drops its task receiver, so use a live receiver for this probe.
+        let (task_tx, mut task_rx) = mpsc::unbounded();
+        let connection = ConnectionTo {
+            task_tx,
+            ..connection
+        };
+        for _ in 0..100 {
+            connection.spawn_protected(async { Ok(()) }).unwrap();
+            assert_eq!(
+                connection
+                    .protected_operations
+                    .lock()
+                    .unwrap()
+                    .pending
+                    .len(),
+                1
+            );
+            let task = task_rx.next().now_or_never().unwrap().unwrap();
+            futures::executor::block_on(task.run_for_test()).unwrap();
+        }
+        assert!(
+            connection
+                .wait_protected_operations()
+                .now_or_never()
+                .is_some()
+        );
+        assert!(
+            connection
+                .wait_protected_operations()
+                .now_or_never()
+                .is_some()
+        );
+        assert!(
+            connection
+                .protected_operations
+                .lock()
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+        assert!(connection.spawn_protected(async { Ok(()) }).is_err());
+        assert!(task_rx.next().now_or_never().is_none());
+    }
 
     #[test]
     fn dropping_unused_finish_signal_preserves_physical_half_closes() {

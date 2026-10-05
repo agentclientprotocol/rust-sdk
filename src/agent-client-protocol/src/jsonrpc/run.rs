@@ -6,12 +6,72 @@
 
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::{Arc, Mutex};
+
+use futures::FutureExt;
+use futures::future::{Either, select};
 
 use crate::{
     ConnectionTo,
     jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
     role::Role,
 };
+
+/// Cleanup policy installed by the boundary that owns a runner composition.
+/// The first error is visible even while a chain retains its sibling for cleanup.
+#[derive(Clone)]
+pub(crate) struct RunnerErrorScope {
+    error: Arc<Mutex<Option<crate::Error>>>,
+    close: Arc<dyn Fn() + Send + Sync>,
+    cleanup: futures::future::Shared<futures::future::BoxFuture<'static, ()>>,
+}
+
+impl std::fmt::Debug for RunnerErrorScope {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunnerErrorScope")
+            .finish_non_exhaustive()
+    }
+}
+
+impl RunnerErrorScope {
+    pub(crate) fn new(
+        close: impl Fn() + Send + Sync + 'static,
+        cleanup: impl Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        Self {
+            error: Arc::default(),
+            close: Arc::new(close),
+            cleanup: cleanup.boxed().shared(),
+        }
+    }
+
+    pub(crate) fn error(&self) -> Option<crate::Error> {
+        self.error
+            .lock()
+            .expect("runner error mutex poisoned")
+            .clone()
+    }
+
+    pub(crate) fn finish(
+        &self,
+        error: crate::Error,
+    ) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
+        let first_error = {
+            let mut stored = self.error.lock().expect("runner error mutex poisoned");
+            if stored.is_none() {
+                *stored = Some(error);
+                true
+            } else {
+                false
+            }
+        };
+        if first_error {
+            (self.close)();
+        }
+        self.cleanup.clone()
+    }
+}
 
 /// A background task that runs alongside a connection.
 ///
@@ -67,8 +127,31 @@ where
         // Box the futures to avoid stack overflow with deeply nested RunIn chains
         let a_fut = Box::pin(self.a.run_with_connection_to(cx.clone()));
         let b_fut = Box::pin(self.b.run_with_connection_to(cx.clone()));
-        let ((), ()) = futures::future::try_join(a_fut, b_fut).await?;
-        Ok(())
+        match select(a_fut, b_fut).await {
+            Either::Left((Ok(()), b)) => b.await,
+            Either::Right((Ok(()), a)) => a.await,
+            Either::Left((Err(error), b)) => {
+                finish_runner_after_error(b, &cx, error.clone()).await;
+                Err(error)
+            }
+            Either::Right((Err(error), a)) => {
+                finish_runner_after_error(a, &cx, error.clone()).await;
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn finish_runner_after_error<R: Role>(
+    runner: impl Future<Output = Result<(), crate::Error>>,
+    cx: &ConnectionTo<R>,
+    error: crate::Error,
+) {
+    // A sibling runner can own the actual scoped operation. Keep it polled
+    // through the owning boundary's cleanup, never arbitrary infinite user work.
+    match select(Box::pin(runner), Box::pin(cx.finish_runner_error(error))).await {
+        Either::Left((_, cleanup)) => cleanup.await,
+        Either::Right(((), _)) => {}
     }
 }
 
@@ -111,5 +194,38 @@ where
                     "data": data,
                 }))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunnerErrorScope;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn repeated_runner_errors_close_and_join_scope_once() {
+        let closes = Arc::new(AtomicUsize::new(0));
+        let joins = Arc::new(AtomicUsize::new(0));
+        let close_count = closes.clone();
+        let join_count = joins.clone();
+        let scope = RunnerErrorScope::new(
+            move || {
+                close_count.fetch_add(1, Ordering::SeqCst);
+            },
+            async move {
+                join_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        let first_error = crate::Error::invalid_params().data("first");
+        let first = scope.finish(first_error.clone());
+        let second = scope.clone().finish(crate::Error::internal_error());
+
+        assert_eq!(scope.error(), Some(first_error));
+        assert_eq!(closes.load(Ordering::SeqCst), 1);
+        futures::executor::block_on(futures::future::join(first, second));
+        assert_eq!(joins.load(Ordering::SeqCst), 1);
     }
 }

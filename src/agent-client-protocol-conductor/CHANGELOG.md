@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Trace inner MCP errors separately from outer ACP binding failures and redact
+  HTTP declaration credentials without modifying transport messages.
 - Retain raw JSON-RPC error codes, omitted/null data, and error extension
   fields in traced response payloads. Trace method and parameter normalization
   is unchanged.

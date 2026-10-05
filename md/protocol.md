@@ -11,9 +11,7 @@ unstable and is available only with the `unstable_mcp_over_acp` feature.
 | --- | --- | --- |
 | `_proxy/initialize` | request | Initialize a component as a proxy |
 | `_proxy/successor` | request or notification | Forward one inner ACP message to the next component |
-| `mcp/connect` | request | Open a connection to an ACP-provided MCP server |
-| `mcp/message` | request or notification | Carry one inner MCP message over ACP |
-| `mcp/disconnect` | request | Close an MCP-over-ACP connection |
+| `mcp/message` | request or notification | Invoke one MCP operation or carry its notification |
 
 There are no separate request and notification method names for successor or
 MCP message forwarding. The presence of an outer JSON-RPC `id` distinguishes a
@@ -87,7 +85,7 @@ Its wire shape contains a human-readable name and an opaque server identifier:
 }
 ```
 
-`serverId` identifies the declared server and is used to route `mcp/connect`
+`serverId` identifies the declared server and is used to route `mcp/message`
 back to the component that provided it. A provider must not reuse one server ID
 for multiple visible servers on the same ACP connection. The high-level
 `agent_client_protocol::mcp_server::McpServer` APIs create this declaration
@@ -98,37 +96,13 @@ An agent that consumes this transport advertises
 not ACP-transport MCP servers, place the [MCP-over-ACP compatibility
 bridge](./mcp-bridge.md) immediately before it.
 
-### `mcp/connect`
-
-The MCP client opens a connection to the declared server ID:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 20,
-  "method": "mcp/connect",
-  "params": { "serverId": "mcp-server:01" }
-}
-```
-
-The provider creates one active MCP connection and returns a distinct
-connection ID:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 20,
-  "result": { "connectionId": "mcp-connection:01" }
-}
-```
-
-The server ID selects what to connect to; the connection ID selects that
-particular running connection. All subsequent messages use the connection ID.
-
 ### `mcp/message`
 
-`mcp/message` carries one inner MCP method and its named parameters. The method
-is bidirectional because MCP clients and servers can both issue requests:
+An agent-to-provider request invokes one MCP operation. A provider-to-agent
+notification belongs to that active operation. This is an ACP envelope choice,
+not an MCP method-name convention: the outer `id` distinguishes message kind,
+and inner methods such as `tools/call` and `notifications/progress` stay distinct.
+Reverse requests are not part of this binding.
 
 ```json
 {
@@ -136,43 +110,47 @@ is bidirectional because MCP clients and servers can both issue requests:
   "id": 21,
   "method": "mcp/message",
   "params": {
-    "connectionId": "mcp-connection:01",
+    "serverId": "mcp-server:01",
+    "requestId": "logical-request:01",
     "method": "tools/call",
     "params": {
       "name": "example",
-      "arguments": {}
+      "arguments": {},
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
     }
   }
 }
 ```
 
-Use an outer request for an inner MCP request and an outer notification for an
-inner MCP notification. The outer response carries the inner MCP result or
-error.
-
-### `mcp/disconnect`
-
-Disconnect is a request so the caller knows that the provider has released the
-active connection:
+The logical ID stays stable through proxies; the outer ACP ID is hop-local.
+Each inner request declares its version and capabilities. This binding exposes
+MCP 2026-07-28 only, without `initialize` or a discovery prerequisite.
 
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 22,
-  "method": "mcp/disconnect",
-  "params": { "connectionId": "mcp-connection:01" }
+  "id": 21,
+  "result": {
+    "result": { "content": [] }
+  }
 }
 ```
 
-A successful disconnect returns an empty result:
+Successful ACP responses carry exactly one inner `result` or `error`.
+An MCP error's code, omitted/null data, and extensions retain MCP meaning.
+Outer ACP errors describe binding failures. MRTR's `input_required` remains an
+inner result; subscriptions remain active requests with scoped notifications.
 
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 22,
-  "result": {}
-}
-```
+Cancellation uses ACP's existing best-effort mechanism. The Rust SDK supervises
+owned cleanup, but that stronger implementation behavior is not an extra
+requirement for advertising the transport capability.
+
+See the [native guide](./mcp-over-acp.md) and
+[migration guide](./migration-stateless-mcp.md). The previous connection IDs
+and connect/disconnect methods are removed.
 
 ## Related Documentation
 

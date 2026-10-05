@@ -1,14 +1,17 @@
-# MCP-over-ACP Compatibility Bridge
+# Request-scoped MCP HTTP Re-export
 
 `agent-client-protocol-polyfill::mcp_over_acp::McpOverAcpPolyfill` adapts the
-native ACP MCP transport for a final agent that accepts HTTP MCP
-servers. MCP adaptation is explicit and is not built into the conductor.
+native ACP MCP transport for a final agent with an MCP 2026-07-28 HTTP client.
+MCP adaptation is explicit and is not built into the conductor. There is no
+fallback to older revisions.
 
 The component-facing side of the bridge always uses the opt-in native protocol:
 
 - Servers are declared as `McpServer::Acp` with a `serverId`.
-- Connections use `mcp/connect`, `mcp/message`, and `mcp/disconnect`.
-- `mcp/disconnect` is a request with a response.
+- Each operation uses `mcp/message` with the server ID and a fresh logical ID.
+- Provider notifications belong to that operation; its final response carries
+  an inner MCP result or error.
+- There is no initialize/connect/disconnect or MCP session-header exchange.
 
 The SDK-local underscore-prefixed method family and HTTP declarations with a
 special URL scheme have been retired. The polyfill now translates native
@@ -88,17 +91,14 @@ support and rejects any native declaration that is nevertheless supplied.
 For each schema-selected `McpServer::Acp` entry in a session setup request, the
 polyfill:
 
-1. Creates or reuses a connection-scoped localhost bridge endpoint for the
-   `serverId` and replaces the declaration with the HTTP transport for the
-   final agent.
-2. Retains the native `serverId` so connections can be routed back to the
-   component that provided the server.
-3. Opens the endpoint's native connection by sending `mcp/connect` with that
-   server ID toward the provider.
-4. Relays requests and notifications through `mcp/message`, using the returned
-   `connectionId` for that active MCP connection.
-5. Sends an `mcp/disconnect` request when the local transport closes and removes
-   the connection from the bridge.
+1. Creates or reuses one connection-scoped loopback listener.
+2. Replaces the declaration with a server-addressed URL and an HMAC-derived
+   Bearer token in an Authorization header, preserving name and metadata.
+3. Maps each HTTP POST to one independent `mcp/message` request with a fresh
+   UUID logical ID. External HTTP IDs may overlap without sharing lifetime.
+4. Streams that operation's notifications and projects its terminal carrier
+   into the corresponding HTTP JSON-RPC response.
+5. Cancels only that operation if its HTTP response stream is dropped.
 
 Enable the polyfill crate's `unstable_session_fork` feature when adapting fork
 requests. Stable v1 setup includes `session/new`, `session/load`, and
@@ -108,39 +108,57 @@ versions include `session/fork` when `unstable_session_fork` is enabled.
 Declarations using another transport are left unchanged, including extension
 transports represented by v2's `McpServer::Other`.
 
-Endpoints are cached by `serverId` across session setup requests on the ACP
-connection. The output declaration is rebuilt for each occurrence, preserving
-that occurrence's `name`, `_meta`, and other unmodified extension fields even
-when its endpoint is reused.
+Routes are derived from server IDs, not accumulated as per-server listeners or
+route-table entries. The token authenticates that server on this ACP connection.
+Keep the declaration's header; never place its bearer credential in the URL.
 
 The native wire envelopes are documented in the [SDK Protocol
 Reference](./protocol.md#native-mcp-over-acp).
 
 ## HTTP Mode
 
-`McpOverAcpPolyfill::http()` is the default compatibility shape. It replaces
-the native declaration with an HTTP MCP URL at `http://127.0.0.1:PORT`. The
-embedded server accepts MCP POST requests and an SSE GET stream at `/`, retaining
-JSON-RPC batch frames and correlating each POST with its response.
+`McpOverAcpPolyfill::http()` replaces native declarations with loopback HTTP
+URLs. Each POST carries current MCP method/version headers and required inner
+version/client-capabilities metadata. Results use JSON, or an operation-scoped
+SSE response when notifications are emitted.
 
 ```rust,ignore
 let bridge = McpOverAcpPolyfill::http();
 ```
 
-The listener is bound only on loopback and uses an ephemeral port. It does not
-implement resumable SSE event IDs.
+Authentication and Origin checks precede bounded request parsing. The adapter
+does not accept batches, client responses, MCP initialize/session headers, or
+standalone GET/DELETE streams. It has no resumable SSE event IDs.
+
+### Native-tool semantics, not another HTTP gateway's policy
+
+The endpoint re-exports native tools with its own routing and authentication.
+It strips transport-only `x-mcp-header` annotations from schema positions in
+`tools/list`, retaining argument validation, property names, defaults, examples,
+and other instance data. Annotated native tools remain listed and callable.
+
+`tools/call` is forwarded directly, without hidden descriptor discovery.
+`Mcp-Param-*` headers are rejected and have no authorization or routing meaning.
+An external HTTP gateway's mirrored-header security policy is not transported;
+deployments relying on it must enforce that policy separately at the new endpoint.
 
 ## Lifecycle and Failure Behavior
 
-Each bridge endpoint receives a unique `connectionId` from `mcp/connect`. The
-polyfill keeps a connection map until the endpoint's transport task closes,
-then removes the entry, sends `mcp/disconnect`, and observes its response.
-Request failures use the corresponding request's error path; notifications are
-never answered with synthetic errors.
+Previously queued notifications precede the terminal outcome. Only a matching
+namespaced subscription ID is rewritten to the external HTTP ID; opaque retry
+state, unrelated metadata, and progress tokens are untouched.
 
-A reverse `mcp/message` request for an unknown `connectionId` receives
-`Invalid params`. A reverse notification for an unknown connection is ignored,
-as required for JSON-RPC notifications.
+Inner MCP errors retain their code, data, and extensions. Outer ACP failures are
+projected as binding failures, not mistaken for MCP method outcomes.
 
-The polyfill does not infer or store ACP session IDs. Association is carried by
-the declared `serverId` and the resulting active `connectionId`.
+Incoming request bodies retain the previous bridge's 2 MiB parsing limit.
+Each operation has a finite 128-message notification queue. If its receiver closes
+or the queue fills, only that operation is stopped; an open SSE stream ends without
+a terminal outcome rather than silently losing notifications or blocking other
+operations. The adapter does not impose an operation-count admission limit,
+notification-byte budget, or terminal-response size limit. These contracts do not
+establish a bound on total application memory.
+
+The polyfill does not infer ACP session IDs. Native registration dispatch remains
+the authority for whether a server exists. The listener and signing secret live
+only for the containing ACP connection.

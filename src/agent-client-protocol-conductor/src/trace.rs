@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
-    MessageMcpNotification, MessageMcpRequest, Notification as RpcNotification,
+    MessageMcpNotification, MessageMcpRequest, MessageMcpResponse, Notification as RpcNotification,
     Request as RpcRequest, RequestId,
 };
 use agent_client_protocol::{
@@ -99,6 +99,11 @@ pub struct ResponseEvent {
     /// True if this is an error response.
     pub is_error: bool,
 
+    /// Whether an error belongs to the ACP binding or the inner MCP peer.
+    /// Older trace files omit this provenance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_domain: Option<Protocol>,
+
     /// Response result or error object.
     pub payload: serde_json::Value,
 }
@@ -182,12 +187,7 @@ impl std::fmt::Debug for TraceWriter {
 }
 
 struct RequestDetails {
-    #[expect(dead_code)]
     protocol: Protocol,
-
-    #[expect(dead_code)]
-    method: String,
-
     request_from: ComponentIndex,
     request_to: ComponentIndex,
 }
@@ -233,13 +233,13 @@ impl TraceWriter {
         id: serde_json::Value,
         method: String,
         session: Option<String>,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
     ) {
+        redact_http_credentials(&mut params);
         self.request_details.insert(
             id.clone(),
             RequestDetails {
                 protocol,
-                method: method.clone(),
                 request_from: from,
                 request_to: to,
             },
@@ -262,15 +262,17 @@ impl TraceWriter {
         from: ComponentIndex,
         to: ComponentIndex,
         id: serde_json::Value,
-        is_error: bool,
-        payload: serde_json::Value,
+        error_domain: Option<Protocol>,
+        mut payload: serde_json::Value,
     ) {
+        redact_http_credentials(&mut payload);
         self.write_event(&TraceEvent::Response(ResponseEvent {
             ts: self.elapsed(),
             from: format!("{from:?}"),
             to: format!("{to:?}"),
             id,
-            is_error,
+            is_error: error_domain.is_some(),
+            error_domain,
             payload,
         }));
     }
@@ -283,8 +285,9 @@ impl TraceWriter {
         to: ComponentIndex,
         method: impl Into<String>,
         session: Option<String>,
-        params: serde_json::Value,
+        mut params: serde_json::Value,
     ) {
+        redact_http_credentials(&mut params);
         self.write_event(&TraceEvent::Notification(NotificationEvent {
             ts: self.elapsed(),
             protocol,
@@ -368,13 +371,13 @@ impl TraceWriter {
                 };
                 let id = id_to_json(&id);
                 if let Some(RequestDetails {
-                    protocol: _,
-                    method: _,
+                    protocol,
                     request_from,
                     request_to,
                 }) = self.request_details.remove(&id)
                 {
-                    self.response(request_to, request_from, id, is_error, payload);
+                    let (error_domain, payload) = response_outcome(protocol, is_error, payload);
+                    self.response(request_to, request_from, id, error_domain, payload);
                 }
             }
         }
@@ -527,6 +530,82 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
     params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)
 }
 
+/// Keep an MCP outcome separate from a failure of its ACP binding.
+fn response_outcome(
+    protocol: Protocol,
+    outer_error: bool,
+    payload: serde_json::Value,
+) -> (Option<Protocol>, serde_json::Value) {
+    if outer_error {
+        return (Some(Protocol::Acp), payload);
+    }
+    if protocol == Protocol::Mcp {
+        match serde_json::from_value::<MessageMcpResponse>(payload.clone()) {
+            Ok(MessageMcpResponse::Result { result, .. }) => return (None, result),
+            Ok(MessageMcpResponse::Error { error, .. }) => {
+                return (
+                    Some(Protocol::Mcp),
+                    serde_json::to_value(error).expect("MCP errors contain only JSON values"),
+                );
+            }
+            // Preserve a malformed carrier as observed, not as an invented error.
+            _ => {}
+        }
+    }
+    (None, payload)
+}
+
+/// Redact only the trace copy; transport declarations keep their credentials.
+fn redact_http_credentials(value: &mut serde_json::Value) {
+    fn is_credential(name: &str) -> bool {
+        [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "set-cookie",
+            "x-api-key",
+        ]
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+    }
+
+    match value {
+        serde_json::Value::Object(object) => {
+            match object.get_mut("headers") {
+                Some(serde_json::Value::Array(headers)) => {
+                    for header in headers {
+                        if header
+                            .get("name")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(is_credential)
+                            && let Some(value) = header.get_mut("value")
+                        {
+                            *value = serde_json::Value::String("[REDACTED]".to_owned());
+                        }
+                    }
+                }
+                Some(serde_json::Value::Object(headers)) => {
+                    for (name, value) in headers {
+                        if is_credential(name) {
+                            *value = serde_json::Value::String("[REDACTED]".to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for value in object.values_mut() {
+                redact_http_credentials(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_http_credentials(value);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// A message observed going over a channel connected to `left` and `right`.
 /// This could be a successor message, a mcp-over-acp message, etc.
 #[derive(Debug)]
@@ -652,26 +731,105 @@ mod tests {
     use agent_client_protocol::RawJsonRpcMessage;
     use serde_json::json;
 
-    use super::{MessageInfo, Protocol};
+    use super::{MessageInfo, Protocol, ResponseEvent, redact_http_credentials, response_outcome};
 
     #[test]
-    fn tolerant_mcp_notification_params_are_traced_as_mcp() {
-        let RawJsonRpcMessage::Notification(notification) = RawJsonRpcMessage::notification(
-            "mcp/message".into(),
-            json!({
-                "connectionId": "connection-1",
-                "method": "notifications/progress",
-                "params": ["invalid named params"]
-            }),
-        )
-        .expect("notification is valid JSON-RPC") else {
+    fn mcp_and_binding_errors_keep_their_domains() {
+        let inner = json!({"code":-32000,"message":"peer","data":null,"extension":true});
+        assert_eq!(
+            response_outcome(Protocol::Mcp, false, json!({"error":inner})),
+            (Some(Protocol::Mcp), inner)
+        );
+        let outer = json!({"code":-33002,"message":"binding failure"});
+        assert_eq!(
+            response_outcome(Protocol::Mcp, true, outer.clone()),
+            (Some(Protocol::Acp), outer)
+        );
+        for result in [
+            json!(null),
+            json!({"resultType":"input_required","requestState":"opaque"}),
+        ] {
+            assert_eq!(
+                response_outcome(Protocol::Mcp, false, json!({"result":result})),
+                (None, result)
+            );
+        }
+    }
+
+    #[test]
+    fn old_trace_response_without_domain_remains_readable() {
+        let event: ResponseEvent = serde_json::from_value(json!({
+            "ts":0,"from":"client","to":"agent","id":1,"is_error":true,
+            "payload":{"code":-32602,"message":"old trace"}
+        }))
+        .unwrap();
+        assert!(event.is_error);
+        assert_eq!(event.error_domain, None);
+    }
+
+    #[test]
+    fn declaration_credentials_are_redacted_without_changing_transport_payload() {
+        let original = json!({"mcpServers":[
+            {"headers":[{"name":"Authorization","value":"Bearer private"},{"name":"visible","value":"ok"}]},
+            {"headers":{"COOKIE":"private","visible":"ok"}}
+        ]});
+        let mut trace_copy = original.clone();
+        redact_http_credentials(&mut trace_copy);
+        assert_eq!(
+            trace_copy["mcpServers"][0]["headers"][0]["value"],
+            "[REDACTED]"
+        );
+        assert_eq!(
+            trace_copy["mcpServers"][1]["headers"]["COOKIE"],
+            "[REDACTED]"
+        );
+        assert_eq!(trace_copy["mcpServers"][0]["headers"][1]["value"], "ok");
+        assert_eq!(
+            original["mcpServers"][0]["headers"][0]["value"],
+            "Bearer private"
+        );
+    }
+
+    #[test]
+    fn malformed_mcp_notification_preserves_the_observed_envelope() {
+        let params = json!({
+            "serverId": "server-1",
+            "requestId": "request-1",
+            "method": "notifications/progress",
+            "params": ["invalid named params"]
+        });
+        let RawJsonRpcMessage::Notification(notification) =
+            RawJsonRpcMessage::notification("mcp/message".into(), params.clone())
+                .expect("notification is valid JSON-RPC")
+        else {
             unreachable!("notification constructor returned a different message kind")
         };
 
         let info = MessageInfo::from_notification(notification);
 
+        // Schema 1.10.1 requires named inner parameters. Do not pretend this
+        // malformed envelope was a successfully decoded MCP notification.
+        assert_eq!(info.protocol, Protocol::Acp);
+        assert_eq!(info.method, "mcp/message");
+        assert_eq!(info.params, params);
+    }
+
+    #[test]
+    fn valid_mcp_notification_is_traced_as_inner_mcp() {
+        let params = json!({"progressToken":"token", "progress":1});
+        let RawJsonRpcMessage::Notification(notification) = RawJsonRpcMessage::notification(
+            "mcp/message".into(),
+            json!({
+                "serverId":"server-1","requestId":"request-1",
+                "method":"notifications/progress","params":params
+            }),
+        )
+        .unwrap() else {
+            unreachable!("notification constructor")
+        };
+        let info = MessageInfo::from_notification(notification);
         assert_eq!(info.protocol, Protocol::Mcp);
         assert_eq!(info.method, "notifications/progress");
-        assert_eq!(info.params, serde_json::Value::Null);
+        assert_eq!(info.params, params);
     }
 }

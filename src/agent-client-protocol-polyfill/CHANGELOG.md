@@ -7,10 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Adapt native MCP servers to request-scoped MCP 2026-07-28 HTTP POSTs, with
+  fresh logical request IDs, per-request notifications, and cancellation when
+  the HTTP response stream is dropped. Remove the connection handshake and
+  legacy MCP session/initialization behavior.
+- Use one loopback listener per ACP connection with server-addressed URLs and
+  server-specific HMAC bearer credentials in declaration headers. Validate
+  authentication and Origin before reading request bodies.
+- Re-export native tool schemas without transport-only `x-mcp-header`
+  annotations, preserving argument properties, examples, and defaults.
+- Retain the previous bridge's 2 MiB incoming-body parsing limit and
+  128-message queue capacity, with notification queues scoped to each POST.
+  A closed or full queue terminates only its operation without a terminal
+  outcome; it does not stall the bridge or silently discard notifications.
+
 ### Fixed
 
 - Preserve raw JSON-RPC error codes, omitted/null data, and error extension
   fields in the MCP HTTP bridge instead of interpreting them as ACP errors.
+- Keep inner MCP outcomes separate from outer ACP binding failures, preserve
+  external JSON-RPC IDs, and rewrite only the standard subscription metadata.
 
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.1.0...agent-client-protocol-polyfill-v2.2.0) - 2026-09-18
 

@@ -152,9 +152,9 @@ v2.
 MCP-over-ACP adaptation is intentionally not built into `ConductorImpl`. Add
 `McpOverAcpPolyfill::http()` as a proxy in the chain immediately before a final
 agent that cannot consume native `McpServer::Acp` declarations. The
-provider-facing side continues to use the feature-gated `mcp/connect`,
-`mcp/message`, and `mcp/disconnect` methods; only the final-agent side is
-adapted to HTTP. Keeping the polyfill explicit prevents instrumentation or
+provider-facing side uses feature-gated, request-scoped `mcp/message`
+operations for MCP 2026-07-28; only the final-agent side is adapted to HTTP.
+Keeping the polyfill explicit prevents instrumentation or
 orchestration from silently changing session MCP declarations. See [MCP
 Bridge](./mcp-bridge.md).
 

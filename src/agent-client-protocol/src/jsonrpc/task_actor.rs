@@ -1,6 +1,11 @@
 use std::panic::Location;
+use std::sync::{Arc, Mutex};
 
-use futures::{FutureExt, channel::mpsc, future::BoxFuture};
+use futures::{
+    FutureExt,
+    channel::{mpsc, oneshot},
+    future::{self, BoxFuture, Either},
+};
 
 use crate::ConnectionTo;
 use crate::role::Role;
@@ -55,12 +60,36 @@ impl Task {
 /// The "task actor" manages dynamically spawned tasks.
 pub(super) async fn task_actor<R: Role>(
     task_rx: mpsc::UnboundedReceiver<Task>,
-    _cx: &ConnectionTo<R>,
+    cx: &ConnectionTo<R>,
 ) -> Result<(), crate::Error> {
-    process_stream_concurrently(
+    let (error_tx, error_rx) = oneshot::channel();
+    let first_error = Arc::new(Mutex::new(Some(error_tx)));
+    let running = process_stream_concurrently(
         task_rx,
-        async |task| task.future.await,
+        async |task: Task| {
+            if let Err(error) = task.future.await
+                && let Some(tx) = first_error
+                    .lock()
+                    .expect("task error mutex poisoned")
+                    .take()
+            {
+                drop(tx.send(error));
+            }
+            Ok(())
+        },
         |a, b| Box::pin(a(b)),
-    )
-    .await
+    );
+    let on_error = async {
+        let error = error_rx
+            .await
+            .expect("task driver dropped before completion");
+        cx.request_shutdown();
+        // Keep polling all tasks until owned supervisors acknowledge cleanup.
+        // Do not join arbitrary never-ending application tasks afterwards.
+        cx.wait_protected_operations().await;
+        Err(error)
+    };
+    match future::select(Box::pin(running), Box::pin(on_error)).await {
+        Either::Left((result, _)) | Either::Right((result, _)) => result,
+    }
 }

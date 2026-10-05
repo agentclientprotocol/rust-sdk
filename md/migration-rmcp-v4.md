@@ -56,6 +56,7 @@ the required request metadata.
 
 This upgrade does not change ACP's unstable `mcp/connect`, `mcp/message`, or
 `mcp/disconnect` envelopes. Redesigning that transport around stateless,
-server-addressed requests is separate work. The new transport's latest-only
+server-addressed requests is covered by the later
+[native binding migration](./migration-stateless-mcp.md). The new transport's latest-only
 target does not require removing existing rmcp behavior from this prerequisite
 dependency upgrade.

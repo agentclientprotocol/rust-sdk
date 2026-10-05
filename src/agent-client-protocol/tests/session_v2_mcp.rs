@@ -12,8 +12,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, ErrorCode, JsonRpcNotification,
-    JsonRpcRequest, JsonRpcResponse, Responder, RunWithConnectionTo, V2ConnectionTo,
+    Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, ErrorCode, JsonRpcRequest,
+    JsonRpcResponse, Responder, RunWithConnectionTo, V2ConnectionTo,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
     schema::{ProtocolVersion, v2},
@@ -66,6 +66,7 @@ async fn next<T>(receiver: &mut UnboundedReceiver<T>, description: &str) -> T {
 #[request(method = "_test/echo", response = EchoResponse)]
 struct EchoRequest {
     message: String,
+    notice: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
@@ -87,16 +88,10 @@ struct ConnectionProbeResponse {
     nonce: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcNotification)]
-#[notification(method = "_test/notice")]
-struct NoticeNotification {
-    message: String,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct ObservedMcpContext {
     server_id: String,
-    connection_id: String,
+    request_id: String,
 }
 
 struct EchoMcpConnect {
@@ -135,9 +130,9 @@ impl McpServerConnect<Agent> for EchoMcpConnect {
                     .server_id()
                     .expect("the MCP server should be attached through ACP")
                     .to_string(),
-                connection_id: context
-                    .connection_id()
-                    .expect("an attached MCP connection should have an ID")
+                request_id: context
+                    .request_id()
+                    .expect("an attached MCP request should have an ID")
                     .to_string(),
             })
             .expect("MCP context receiver should remain active");
@@ -158,16 +153,13 @@ impl ConnectTo<role::mcp::Client> for EchoMcpComponent {
 
         role::mcp::Server
             .builder()
-            .on_receive_notification(
-                async move |notification: NoticeNotification, _connection| {
-                    notice_tx
-                        .unbounded_send(notification.message)
-                        .map_err(Error::into_internal_error)
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
             .on_receive_request(
-                async |request: EchoRequest, responder: Responder<EchoResponse>, _connection| {
+                async move |request: EchoRequest,
+                            responder: Responder<EchoResponse>,
+                            _connection| {
+                    notice_tx
+                        .unbounded_send(request.notice)
+                        .map_err(Error::into_internal_error)?;
                     responder.respond(EchoResponse {
                         echoed: request.message,
                     })
@@ -210,7 +202,7 @@ impl RunWithConnectionTo<Agent> for ProbeRunner {
 #[derive(Debug)]
 struct RoundTrip {
     server_id: String,
-    connection_id: String,
+    request_id: String,
     notice: String,
     response: Value,
 }
@@ -220,35 +212,34 @@ async fn run_mcp_round_trip(
     server_id: &v2::McpServerAcpId,
     sequence: usize,
 ) -> Result<RoundTrip, Error> {
-    let connected = connection
-        .send_request(v2::ConnectMcpRequest::new(server_id.clone()))
-        .block_task()
-        .await?;
-    let connection_id = connected.connection_id;
+    let request_id = format!("request-{sequence}");
     let notice = format!("notice-{sequence}");
-    connection.send_notification(
-        v2::MessageMcpNotification::new(connection_id.clone(), "_test/notice")
-            .params(object(json!({ "message": notice }))),
-    )?;
 
     let message = format!("message-{sequence}");
     let response = connection
         .send_request(
-            v2::MessageMcpRequest::new(connection_id.clone(), "_test/echo")
-                .params(object(json!({ "message": message }))),
+            v2::MessageMcpRequest::new(server_id.clone(), request_id.clone(), "_test/echo").params(
+                object(json!({
+                    "message": message, "notice": notice,
+                    "_meta": {
+                        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                        "io.modelcontextprotocol/clientCapabilities": {}
+                    }
+                })),
+            ),
         )
         .block_task()
         .await?;
-    let response = serde_json::from_str(response.0.get()).map_err(Error::into_internal_error)?;
-
-    connection
-        .send_request(v2::DisconnectMcpRequest::new(connection_id.clone()))
-        .block_task()
-        .await?;
+    let v2::MessageMcpResponse::Result {
+        result: response, ..
+    } = response
+    else {
+        panic!("expected successful MCP result")
+    };
 
     Ok(RoundTrip {
         server_id: server_id.to_string(),
-        connection_id: connection_id.to_string(),
+        request_id,
         notice,
         response,
     })
@@ -265,7 +256,7 @@ async fn assert_round_trip(
     let notice = next(notice_rx, "inner MCP notification").await;
 
     assert_eq!(context.server_id, round_trip.server_id);
-    assert_eq!(context.connection_id, round_trip.connection_id);
+    assert_eq!(context.request_id, round_trip.request_id);
     assert_eq!(notice, round_trip.notice);
     assert_eq!(
         round_trip.response,

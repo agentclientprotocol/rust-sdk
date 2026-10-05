@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- Native attachments use request-scoped MCP 2026-07-28 and inner outcome
+  carriers. `from_rmcp` lazily creates one reusable service for native requests;
+  standalone connections retain per-connection factories.
 - Upgrade the public `rmcp` dependency from 2.x to 3.4. This requires the next
   major release of `agent-client-protocol-rmcp` (4.x), while the core ACP SDK
   remains on 2.x. Services supplied to `McpServer::from_rmcp` must use rmcp 3.x.
@@ -20,8 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Integration coverage for MCP 2026-07-28 requests without initialization,
   discovery, per-request metadata/version validation, and MRTR results from
-  caller-supplied rmcp services. This dependency upgrade does not replace the
-  current unstable MCP-over-ACP wire lifecycle.
+  caller-supplied rmcp services.
+- Add supervised native execution, request-scoped cancellation/notification
+  context, borrowed tool cleanup acknowledgments, and a runnable direct ACP
+  example. Independent `unstable_protocol_v2` and `unstable_mcp_over_acp`
+  features forward their respective core gates; the v2 native example
+  explicitly requires both.
 
 ## [3.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.0...agent-client-protocol-rmcp-v3.1.1) - 2026-09-18
 

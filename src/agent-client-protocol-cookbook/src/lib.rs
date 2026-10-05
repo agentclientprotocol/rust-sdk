@@ -731,8 +731,10 @@ pub mod global_mcp_server {
     //! let mcp_server = McpServer::<Conductor, _>::from_rmcp("my-server", MyMcpServer::new);
     //! ```
     //!
-    //! The `from_rmcp` function takes a factory closure that creates a new server
-    //! instance. This allows each MCP connection to get a fresh server instance.
+    //! The `from_rmcp` factory initializes one reusable application service lazily
+    //! for native ACP requests. Standalone MCP connections retain per-connection
+    //! construction. Each native operation has its own logical ID, metadata,
+    //! notifications, and cancellation lifetime.
     //!
     //! # How it works
     //!
@@ -746,7 +748,8 @@ pub mod global_mcp_server {
     //!    `session/new`, `session/resume`, and feature-gated `session/fork`
     //!    while preserving unrelated request fields
     //! 2. Passes the modified request through to the next handler
-    //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
+    //! 3. Handles independent `mcp/message` operations for that server ID, without
+    //!    an initialization prerequisite or connect/disconnect exchange
     //!
     //! [`McpServer::builder`]: agent_client_protocol_rmcp::McpServerExt::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp

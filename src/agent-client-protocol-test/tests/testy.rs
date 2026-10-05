@@ -858,7 +858,7 @@ async fn testy_delete_cancels_in_flight_prompt_before_cleanup()
                 .await?;
             assert_eq!(
                 list.sessions,
-                Vec::<agent_client_protocol::schema::v1::SessionInfo>::new()
+                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
             );
             assert!(
                 cx.send_request(PromptRequest::new(
@@ -970,7 +970,7 @@ async fn testy_close_cancels_in_flight_prompt_before_cleanup()
                 .await?;
             assert_eq!(
                 list.sessions,
-                Vec::<agent_client_protocol::schema::v1::SessionInfo>::new()
+                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
             );
             assert!(
                 cx.send_request(PromptRequest::new(
