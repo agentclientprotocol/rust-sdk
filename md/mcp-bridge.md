@@ -149,15 +149,13 @@ namespaced subscription ID is rewritten to the external HTTP ID; opaque retry
 state, unrelated metadata, and progress tokens are untouched.
 
 Inner MCP errors retain their code, data, and extensions. Outer ACP failures are
-projected as binding failures, not mistaken for MCP method outcomes.
+projected as binding failures, not mistaken for MCP method outcomes. Local
+overflow cancels that request and reports a distinct resource error.
 
-Incoming request bodies retain the previous bridge's 2 MiB parsing limit.
-Each operation has a finite 128-message notification queue. If its receiver closes
-or the queue fills, only that operation is stopped; an open SSE stream ends without
-a terminal outcome rather than silently losing notifications or blocking other
-operations. The adapter does not impose an operation-count admission limit,
-notification-byte budget, or terminal-response size limit. These contracts do not
-establish a bound on total application memory.
+Admission belongs to the HTTP response body until consumption or drop, including
+admitted validation-error responses. Notification buffering and request/terminal
+payload sizes have adapter-local bounds. These policies do not change generic ACP
+frame queues or establish a bound on arbitrary application memory.
 
 The polyfill does not infer ACP session IDs. Native registration dispatch remains
 the authority for whether a server exists. The listener and signing secret live

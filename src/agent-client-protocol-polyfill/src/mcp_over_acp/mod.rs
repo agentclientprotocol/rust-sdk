@@ -6,7 +6,13 @@
 pub(crate) mod http;
 mod protocol;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
@@ -24,9 +30,62 @@ use self::protocol::{
     DownstreamMcpMode, NativeMcpNotification, NativeMcpOutcome, PolyfillProtocol,
 };
 
-// Retain the previous bridge's finite message queue capacity, now per POST.
-// Terminal outcomes use a separate path so they follow queued notifications.
-const MAX_QUEUED_NOTIFICATIONS: usize = 128;
+// Conservative per-bridge limits. Notifications are bounded per HTTP POST by
+// both message count and serialized bytes; terminal responses bypass the queue.
+const MAX_ACTIVE_REQUESTS: usize = 64;
+const MAX_QUEUED_NOTIFICATIONS: usize = 16;
+const MAX_QUEUED_BYTES: usize = 256 * 1024;
+const MAX_TERMINAL_BYTES: usize = 1024 * 1024;
+const LOCAL_LIMIT_ERROR: i64 = -33000;
+
+struct QueuedNotification {
+    value: Value,
+    bytes: usize,
+    used: Arc<AtomicUsize>,
+}
+
+impl Drop for QueuedNotification {
+    fn drop(&mut self) {
+        self.used.fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone)]
+struct StreamSender {
+    tx: tokio_mpsc::Sender<QueuedNotification>,
+    used: Arc<AtomicUsize>,
+}
+
+impl StreamSender {
+    fn send(&self, value: Value) -> Result<(), ()> {
+        let bytes = serde_json::to_vec(&value).map_err(|_| ())?.len();
+        let mut used = self.used.load(Ordering::Relaxed);
+        loop {
+            let total = used
+                .checked_add(bytes)
+                .filter(|total| *total <= MAX_QUEUED_BYTES)
+                .ok_or(())?;
+            match self
+                .used
+                .compare_exchange_weak(used, total, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => break,
+                Err(current) => used = current,
+            }
+        }
+        self.tx
+            .try_send(QueuedNotification {
+                value,
+                bytes,
+                used: self.used.clone(),
+            })
+            .map_err(|_| ())
+    }
+
+    async fn closed(&self) {
+        self.tx.closed().await;
+    }
+}
 
 enum BridgeMessage {
     SetProtocol {
@@ -43,7 +102,7 @@ enum BridgeMessage {
         http_id: Value,
         method: String,
         params: Option<serde_json::Map<String, Value>>,
-        response_tx: tokio_mpsc::Sender<Value>,
+        response_tx: StreamSender,
         terminal_tx: tokio::sync::oneshot::Sender<Value>,
     },
     Notification(NativeMcpNotification),
@@ -283,9 +342,9 @@ struct ActiveRequest {
     server_id: String,
     http_id: Value,
     method: String,
-    response_tx: tokio_mpsc::Sender<Value>,
+    response_tx: StreamSender,
     terminal_tx: tokio::sync::oneshot::Sender<Value>,
-    _cancel_tx: tokio::sync::oneshot::Sender<()>,
+    cancel_tx: tokio::sync::oneshot::Sender<()>,
 }
 
 struct BridgeRunner {
@@ -349,6 +408,14 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                         )));
                         continue;
                     };
+                    if !self.can_admit_request() {
+                        drop(terminal_tx.send(http::rpc_error(
+                            http_id,
+                            LOCAL_LIMIT_ERROR,
+                            "Too many active MCP requests",
+                        )));
+                        continue;
+                    }
                     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
                     self.active.insert(
                         request_id.clone(),
@@ -359,7 +426,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                             method: method.clone(),
                             response_tx: response_tx.clone(),
                             terminal_tx,
-                            _cancel_tx: cancel_tx,
+                            cancel_tx,
                         },
                     );
                     let mut tx = self.bridge_tx.clone();
@@ -402,11 +469,19 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                             "method": notification.method,
                             "params": params,
                         });
-                        if active.response_tx.try_send(message).is_err() {
-                            // A full or closed queue cannot silently lose a notification
-                            // or stall other operations. Dropping this operation closes
-                            // its stream and cancellation control path.
-                            self.active.remove(&notification.request_id);
+                        if active.response_tx.send(message).is_err() {
+                            // Stop only this request. Its final error goes through a
+                            // separate control path that cannot be blocked by a full queue.
+                            let active = self
+                                .active
+                                .remove(&notification.request_id)
+                                .expect("active request checked above");
+                            let _ = active.cancel_tx.send(());
+                            drop(active.terminal_tx.send(http::rpc_error(
+                                active.http_id,
+                                LOCAL_LIMIT_ERROR,
+                                "MCP notification queue overflow",
+                            )));
                         }
                     }
                 }
@@ -415,6 +490,7 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                         continue;
                     };
                     if let Some(result) = result {
+                        let http_id = active.http_id.clone();
                         let value = match result {
                             Ok(carrier) => project_mcp_carrier(
                                 active.protocol,
@@ -424,6 +500,17 @@ impl agent_client_protocol::RunWithConnectionTo<Conductor> for BridgeRunner {
                                 carrier,
                             ),
                             Err(error) => http::rpc_binding_error(active.http_id, error),
+                        };
+                        let value = if serde_json::to_vec(&value)
+                            .is_ok_and(|bytes| bytes.len() <= MAX_TERMINAL_BYTES)
+                        {
+                            value
+                        } else {
+                            http::rpc_error(
+                                http_id,
+                                LOCAL_LIMIT_ERROR,
+                                "MCP terminal response too large",
+                            )
                         };
                         drop(active.terminal_tx.send(value));
                     }
@@ -456,6 +543,10 @@ fn project_mcp_carrier(
 }
 
 impl BridgeRunner {
+    fn can_admit_request(&self) -> bool {
+        self.active.len() < MAX_ACTIVE_REQUESTS
+    }
+
     async fn transform_servers(
         &mut self,
         connection: &ConnectionTo<Conductor>,
@@ -582,7 +673,7 @@ fn strip_schema_annotation(schema: &mut Value) {
 }
 
 #[cfg(test)]
-mod schema_tests {
+mod http_limits_tests {
     use super::*;
 
     #[test]
@@ -626,6 +717,94 @@ mod schema_tests {
         assert!(schema["items"][0].get("x-mcp-header").is_none());
         assert!(schema["properties"]["nested"].get("x-mcp-header").is_none());
         assert!(schema["$defs"]["inner"].get("x-mcp-header").is_none());
+    }
+
+    #[test]
+    fn slow_reader_overflows_by_count_without_blocking_other_requests() {
+        let (tx, mut rx) = tokio_mpsc::channel(MAX_QUEUED_NOTIFICATIONS);
+        let sender = StreamSender {
+            tx,
+            used: Arc::new(AtomicUsize::new(0)),
+        };
+        let (other_tx, mut other_rx) = tokio_mpsc::channel(MAX_QUEUED_NOTIFICATIONS);
+        let other = StreamSender {
+            tx: other_tx,
+            used: Arc::new(AtomicUsize::new(0)),
+        };
+        for i in 0..MAX_QUEUED_NOTIFICATIONS {
+            assert!(sender.send(serde_json::json!({"sequence":i})).is_ok());
+        }
+        assert!(
+            sender
+                .send(serde_json::json!({"sequence":"overflow"}))
+                .is_err()
+        );
+        assert!(
+            other
+                .send(serde_json::json!({"sequence":"unaffected"}))
+                .is_ok()
+        );
+        assert_eq!(other_rx.try_recv().unwrap().value["sequence"], "unaffected");
+        while rx.try_recv().is_ok() {}
+        assert_eq!(sender.used.load(Ordering::Relaxed), 0);
+        assert!(
+            sender
+                .send(serde_json::json!({"sequence":"recovered"}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn large_notification_exceeds_byte_budget_without_reserving_memory() {
+        let (tx, _rx) = tokio_mpsc::channel(MAX_QUEUED_NOTIFICATIONS);
+        let sender = StreamSender {
+            tx,
+            used: Arc::new(AtomicUsize::new(0)),
+        };
+        assert!(
+            sender
+                .send(serde_json::json!({"data":"x".repeat(MAX_QUEUED_BYTES)}))
+                .is_err()
+        );
+        assert_eq!(sender.used.load(Ordering::Relaxed), 0);
+        assert!(sender.send(serde_json::json!({"data":"ok"})).is_ok());
+    }
+
+    #[test]
+    fn backend_capacity_reopens_when_an_active_request_finishes() {
+        let (bridge_tx, bridge_rx) = mpsc::channel(1);
+        let mut runner = BridgeRunner {
+            bridge_tx,
+            bridge_rx,
+            protocol: None,
+            downstream_mode: DownstreamMcpMode::Unknown,
+            listener: None,
+            active: HashMap::new(),
+        };
+        let (tx, _rx) = tokio_mpsc::channel(MAX_QUEUED_NOTIFICATIONS);
+        let sender = StreamSender {
+            tx,
+            used: Arc::new(AtomicUsize::new(0)),
+        };
+        for index in 0..MAX_ACTIVE_REQUESTS {
+            let (terminal_tx, _terminal_rx) = tokio::sync::oneshot::channel();
+            let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
+            runner.active.insert(
+                index.to_string(),
+                ActiveRequest {
+                    protocol: PolyfillProtocol::V1,
+                    server_id: String::new(),
+                    http_id: Value::Null,
+                    method: String::new(),
+                    response_tx: sender.clone(),
+                    terminal_tx,
+                    cancel_tx,
+                },
+            );
+        }
+        assert!(!runner.can_admit_request());
+        runner.active.remove("0");
+        assert!(runner.can_admit_request());
     }
 }
 

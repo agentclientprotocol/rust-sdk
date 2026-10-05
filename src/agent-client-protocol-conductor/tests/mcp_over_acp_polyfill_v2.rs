@@ -83,19 +83,28 @@ impl ConnectTo<Conductor> for TestProvider {
                     assert!(uuid::Uuid::parse_str(&request.request_id.to_string()).is_ok());
                     self.0.lock().unwrap().push(request.request_id.to_string());
                     self.1.fetch_add(1, Ordering::SeqCst);
-                    if request.method == "subscriptions/listen" {
-                        assert_eq!(
-                            request.params.as_ref().unwrap()["notifications"],
-                            serde_json::json!({"toolsListChanged":true})
-                        );
-                        let params = serde_json::json!({
-                            "_meta":{"io.modelcontextprotocol/subscriptionId":
-                                request.request_id.to_string(), "fixture":"preserved"},
-                            "notifications":{"toolsListChanged":true}
-                        })
-                        .as_object()
-                        .unwrap()
-                        .clone();
+                    if request.method == "subscriptions/listen"
+                        || request.method == "subscriptions/flood"
+                    {
+                        let params = if request.method == "subscriptions/flood" {
+                            serde_json::Map::from_iter([(
+                                "payload".into(),
+                                serde_json::json!("x".repeat(300 * 1024)),
+                            )])
+                        } else {
+                            assert_eq!(
+                                request.params.as_ref().unwrap()["notifications"],
+                                serde_json::json!({"toolsListChanged":true})
+                            );
+                            serde_json::json!({
+                                "_meta":{"io.modelcontextprotocol/subscriptionId":
+                                    request.request_id.to_string(), "fixture":"preserved"},
+                                "notifications":{"toolsListChanged":true}
+                            })
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                        };
                         cx.send_notification_to(
                             Agent,
                             v2::MessageMcpNotification::new(
@@ -105,23 +114,25 @@ impl ConnectTo<Conductor> for TestProvider {
                             )
                             .params(params),
                         )?;
-                        cx.send_notification_to(
-                            Agent,
-                            v2::MessageMcpNotification::new(
-                                SERVER_ID,
-                                request.request_id.clone(),
-                                "notifications/tools/list_changed",
-                            )
-                            .params(
-                                serde_json::json!({
-                                    "_meta":{"io.modelcontextprotocol/subscriptionId":
-                                        request.request_id.to_string(), "fixture":"preserved"}
-                                })
-                                .as_object()
-                                .unwrap()
-                                .clone(),
-                            ),
-                        )?;
+                        if request.method == "subscriptions/listen" {
+                            cx.send_notification_to(
+                                Agent,
+                                v2::MessageMcpNotification::new(
+                                    SERVER_ID,
+                                    request.request_id.clone(),
+                                    "notifications/tools/list_changed",
+                                )
+                                .params(
+                                    serde_json::json!({
+                                        "_meta":{"io.modelcontextprotocol/subscriptionId":
+                                            request.request_id.to_string(), "fixture":"preserved"}
+                                    })
+                                    .as_object()
+                                    .unwrap()
+                                    .clone(),
+                                ),
+                            )?;
+                        }
                         let cancelled = responder.cancellation();
                         let count = self.2.clone();
                         cx.spawn(async move {
@@ -481,6 +492,13 @@ async fn closing_subscription_stream_cancels_only_its_native_request()
                     tokio::task::yield_now().await;
                 }
             }).await.expect("closing the second stream must cancel its own ACP request");
+            let overflow = post(&url, &bearer, "subscriptions/flood", "").await;
+            assert_eq!(overflow["error"]["code"], -33000, "{overflow}");
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                while cancelled.load(Ordering::SeqCst) != 3 {
+                    tokio::task::yield_now().await;
+                }
+            }).await.expect("overflow must cancel only its native ACP request");
             assert_eq!(post(&url, &bearer, "tools/list", "").await["result"]["tools"][0]["name"], "ping");
             Ok(())
         },
