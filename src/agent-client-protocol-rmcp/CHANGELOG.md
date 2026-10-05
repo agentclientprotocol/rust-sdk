@@ -26,8 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller-supplied rmcp services.
 - Add supervised native execution, request-scoped cancellation/notification
   context, borrowed tool cleanup acknowledgments, and a runnable direct ACP
-  example. `unstable_protocol_v2` enables the v2 native example and forwards
-  both required core feature gates.
+  example. Independent `unstable_protocol_v2` and `unstable_mcp_over_acp`
+  features forward their respective core gates; the v2 native example
+  explicitly requires both.
 
 ## [3.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.0...agent-client-protocol-rmcp-v3.1.1) - 2026-09-18
 
