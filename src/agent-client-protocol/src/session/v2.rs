@@ -18,7 +18,7 @@ use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
 use super::{
     SessionCleanup, close_session_registrations, drive_session_cleanup,
-    run_attached_session_runner, session_cleanup, wait_session_cleanup,
+    run_attached_session_runner, session_cleanup, session_runner_connection, wait_session_cleanup,
 };
 
 async fn run_pending_session_setup<Counterpart, Run>(
@@ -32,10 +32,23 @@ where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
 {
+    let (connection, error_scope) = session_runner_connection(connection, &cleanup);
     let mut run = Box::pin(run.run_with_connection_to(connection));
     let first_poll =
         future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(run.as_mut(), cx)))
             .await;
+    // A composed runner may have observed an immediate error but remain Pending
+    // while its sibling drives owned cleanup. It still failed before publication.
+    if let Some(error) = error_scope.error() {
+        close_session_registrations(&cleanup);
+        if first_poll.is_pending() {
+            drop(drive_session_cleanup(run, cleanup).await);
+        } else {
+            wait_session_cleanup(cleanup).await;
+        }
+        drop(started_tx.send(Err(error)));
+        return Ok(());
+    }
     let readiness = match &first_poll {
         std::task::Poll::Ready(result) => result.clone(),
         std::task::Poll::Pending => Ok(()),
@@ -70,10 +83,12 @@ where
                 }
                 result
             }
-            Either::Right((Ok(()), run)) => run_attached_session_runner(run, cleanup).await,
+            Either::Right((Ok(()), run)) => {
+                run_attached_session_runner(run, cleanup, error_scope).await
+            }
             Either::Right((Err(_), run)) => {
                 close_session_registrations(&cleanup);
-                drive_session_cleanup(run, cleanup).await
+                run_attached_session_runner(run, cleanup, error_scope).await
             }
         },
     }

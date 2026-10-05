@@ -83,6 +83,11 @@ operation's notification rights, cancels its work, and joins supported cleanup.
 The logical ID remains active until cleanup finishes; completion may win a
 cancellation race.
 
+Mutable function tools serialize user execution, not cancellation of queued work.
+A cancelled queued call is destroyed without entering its closure or waiting for
+another registration's active call. Recoverable session-local runner failures close
+only that session's registrations; they do not seal connection-wide admission.
+
 Custom services must observe `operation_cancellation()` and return only after
 owned cleanup finishes. This also applies when their registration is removed,
 the ACP input closes, or the application foreground completes. The SDK keeps

@@ -44,6 +44,12 @@
 
 ### Fixed
 
+- Keep recoverable session-local runner failures from cancelling unrelated native
+  MCP registrations or sealing connection-wide operation admission. Scoped sibling
+  runners remain driven through their own cleanup.
+- Destroy and acknowledge cancelled queued mutable-tool calls independently of an
+  active invocation, so cancelling a call or removing its provider does not wait
+  for another registration's unrelated work.
 - Cancel running function-backed MCP tool futures when their result receiver is
   dropped, skip cancelled queued calls before invoking the tool closure, and keep
   mutable and concurrent runners usable after a caller leaves or result delivery

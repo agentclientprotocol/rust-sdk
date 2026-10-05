@@ -3590,6 +3590,7 @@ pub struct ConnectionTo<Counterpart: Role> {
     protocol_mode: ProtocolMode,
     incoming_closed: IncomingClosed,
     protected_operations: Arc<Mutex<ProtectedOperations>>,
+    runner_error_scope: Option<run::RunnerErrorScope>,
 }
 
 type SharedTransportCompletion = future::Shared<BoxFuture<'static, Result<(), crate::Error>>>;
@@ -3819,6 +3820,25 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             protocol_mode,
             incoming_closed: IncomingClosed::new(),
             protected_operations: Arc::default(),
+            runner_error_scope: None,
+        }
+    }
+
+    pub(crate) fn with_runner_error_scope(mut self, scope: run::RunnerErrorScope) -> Self {
+        self.runner_error_scope = Some(scope);
+        self
+    }
+
+    pub(crate) fn finish_runner_error(
+        &self,
+        error: crate::Error,
+    ) -> impl Future<Output = ()> + Send + '_ {
+        if let Some(scope) = &self.runner_error_scope {
+            Either::Left(scope.finish(error))
+        } else {
+            // Unscoped runners belong to the connection itself.
+            self.request_shutdown();
+            Either::Right(self.wait_protected_operations())
         }
     }
 
