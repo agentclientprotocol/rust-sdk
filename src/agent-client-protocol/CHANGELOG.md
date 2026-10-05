@@ -36,6 +36,10 @@
 
 ### Fixed
 
+- Cancel running function-backed MCP tool futures when their result receiver is
+  dropped, skip cancelled queued calls before invoking the tool closure, and keep
+  mutable and concurrent runners usable after a caller leaves or result delivery
+  fails. This drops the user future; it does not join operation-level async cleanup.
 - Preserve both directions of passive channel bridges after a write
   half-close, allowing a final reverse-direction response.
 - Drain accepted output when an owned component finishes, including through
