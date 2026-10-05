@@ -574,6 +574,30 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
+    fn response_failure_diagnostics_escape_line_breaks_and_terminal_controls() {
+        let response = "HTTP/1.1 500 Bad response\r\n\r\n[INFO] forged\n\x1b[31m\u{2028}\u{2029}";
+        let failure = std::panic::catch_unwind(|| {
+            assert!(response.starts_with("HTTP/1.1 200"), "{response:?}");
+        })
+        .expect_err("the deliberately invalid HTTP status must fail the assertion");
+        let diagnostic = failure
+            .downcast_ref::<String>()
+            .expect("formatted assertion message");
+
+        for control in ['\r', '\n', '\x1b', '\u{2028}', '\u{2029}'] {
+            assert!(!diagnostic.contains(control));
+        }
+        assert!(diagnostic.contains("\\r\\n"));
+        assert!(diagnostic.contains("[INFO] forged\\n"));
+        assert!(diagnostic.contains("\\u{1b}"));
+        // Only diagnostics are encoded; protocol checks still use original bytes.
+        assert_eq!(
+            response.split("\r\n\r\n").next(),
+            Some("HTTP/1.1 500 Bad response")
+        );
+    }
+
+    #[test]
     fn stateless_declarations_do_not_allocate_routes() {
         let (tx, _rx) = mpsc::channel(1);
         let state = BridgeState::new(tx);
@@ -903,28 +927,28 @@ mod tests {
         let task = tokio::spawn(run_http_listener(listener, state));
         let auth = format!("Authorization: Bearer {token}\r\n");
         let legacy = exchange(address, route, "GET", &auth, "").await;
-        assert!(legacy.starts_with("HTTP/1.1 405"), "{legacy}");
+        assert!(legacy.starts_with("HTTP/1.1 405"), "{legacy:?}");
         let delete = exchange(address, route, "DELETE", &auth, "").await;
-        assert!(delete.starts_with("HTTP/1.1 405"), "{delete}");
+        assert!(delete.starts_with("HTTP/1.1 405"), "{delete:?}");
         let invalid_origin =
             exchange(address, route, "POST", "Origin: http://evil.test\r\n", "{}").await;
         assert!(
             invalid_origin.starts_with("HTTP/1.1 403"),
-            "{invalid_origin}"
+            "{invalid_origin:?}"
         );
         let invalid_get_origin =
             exchange(address, route, "GET", "Origin: http://evil.test\r\n", "").await;
         assert!(
             invalid_get_origin.starts_with("HTTP/1.1 403"),
-            "{invalid_get_origin}"
+            "{invalid_get_origin:?}"
         );
         let invalid_auth = exchange(address, route, "POST", "", "{}").await;
-        assert!(invalid_auth.starts_with("HTTP/1.1 401"), "{invalid_auth}");
+        assert!(invalid_auth.starts_with("HTTP/1.1 401"), "{invalid_auth:?}");
         assert!(
             invalid_auth
                 .to_ascii_lowercase()
                 .contains("www-authenticate: bearer"),
-            "{invalid_auth}"
+            "{invalid_auth:?}"
         );
         let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list",
             "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":VERSION,
@@ -934,10 +958,10 @@ mod tests {
             "{auth}Accept: application/json, text/event-stream\r\nContent-Type: application/json\r\nMCP-Protocol-Version: 2026-07-28\r\nMcp-Method: wrong/method\r\n"
         );
         let mismatch = exchange(address, route, "POST", &headers, &body).await;
-        assert!(mismatch.starts_with("HTTP/1.1 400"), "{mismatch}");
-        assert!(mismatch.contains("-32020"), "{mismatch}");
+        assert!(mismatch.starts_with("HTTP/1.1 400"), "{mismatch:?}");
+        assert!(mismatch.contains("-32020"), "{mismatch:?}");
         let batch = exchange(address, route, "POST", &headers, "[]").await;
-        assert!(batch.starts_with("HTTP/1.1 400"), "{batch}");
+        assert!(batch.starts_with("HTTP/1.1 400"), "{batch:?}");
         let headers = headers.replace("wrong/method", "tools/list");
         for version in [
             None,
@@ -956,7 +980,7 @@ mod tests {
                 }
             }
             let response = exchange(address, route, "POST", &headers, &invalid.to_string()).await;
-            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+            assert!(response.starts_with("HTTP/1.1 400"), "{response:?}");
             let payload: Value =
                 serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
             assert_eq!(payload["id"], 1);
@@ -966,8 +990,8 @@ mod tests {
         wrong_version["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"] =
             serde_json::json!("2025-11-25");
         let mismatch = exchange(address, route, "POST", &headers, &wrong_version.to_string()).await;
-        assert!(mismatch.starts_with("HTTP/1.1 400"), "{mismatch}");
-        assert!(mismatch.contains("-32020"), "{mismatch}");
+        assert!(mismatch.starts_with("HTTP/1.1 400"), "{mismatch:?}");
+        assert!(mismatch.contains("-32020"), "{mismatch:?}");
         let other_server = exchange(
             address,
             &server_route("another-server"),
@@ -976,7 +1000,7 @@ mod tests {
             &body,
         )
         .await;
-        assert!(other_server.starts_with("HTTP/1.1 401"), "{other_server}");
+        assert!(other_server.starts_with("HTTP/1.1 401"), "{other_server:?}");
         for capabilities in [
             Value::Null,
             serde_json::json!(true),
@@ -986,8 +1010,8 @@ mod tests {
             let mut invalid: Value = serde_json::from_str(&body).unwrap();
             invalid["params"]["_meta"]["io.modelcontextprotocol/clientCapabilities"] = capabilities;
             let response = exchange(address, route, "POST", &headers, &invalid.to_string()).await;
-            assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-            assert!(response.contains("-32602"), "{response}");
+            assert!(response.starts_with("HTTP/1.1 400"), "{response:?}");
+            assert!(response.contains("-32602"), "{response:?}");
         }
         let mut missing: Value = serde_json::from_str(&body).unwrap();
         missing["params"]["_meta"]
@@ -995,8 +1019,8 @@ mod tests {
             .unwrap()
             .remove("io.modelcontextprotocol/clientCapabilities");
         let response = exchange(address, route, "POST", &headers, &missing.to_string()).await;
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-        assert!(response.contains("-32602"), "{response}");
+        assert!(response.starts_with("HTTP/1.1 400"), "{response:?}");
+        assert!(response.contains("-32602"), "{response:?}");
         let response = exchange(
             address,
             route,
@@ -1005,8 +1029,8 @@ mod tests {
             &body,
         )
         .await;
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-        assert!(response.contains("-32020"), "{response}");
+        assert!(response.starts_with("HTTP/1.1 400"), "{response:?}");
+        assert!(response.contains("-32020"), "{response:?}");
         let initialize = body.replace("tools/list", "initialize");
         let response = exchange(
             address,
@@ -1016,7 +1040,7 @@ mod tests {
             &initialize,
         )
         .await;
-        assert!(response.starts_with("HTTP/1.1 404"), "{response}");
+        assert!(response.starts_with("HTTP/1.1 404"), "{response:?}");
         let fractional_id = body.replace("\"id\":1", "\"id\":1.5");
         let fractional = tokio::time::timeout(
             std::time::Duration::from_secs(3),
@@ -1024,8 +1048,8 @@ mod tests {
         )
         .await
         .expect("an invalid request ID must be rejected before forwarding");
-        assert!(fractional.starts_with("HTTP/1.1 400"), "{fractional}");
-        assert!(fractional.contains("-32600"), "{fractional}");
+        assert!(fractional.starts_with("HTTP/1.1 400"), "{fractional:?}");
+        assert!(fractional.contains("-32600"), "{fractional:?}");
         let error: Value =
             serde_json::from_str(fractional.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert!(error.get("id").is_none());

@@ -251,7 +251,7 @@ async fn post(url: &str, bearer: &str, method: &str, tool: &str) -> serde_json::
     .await
     .expect("HTTP response should finish")
     .unwrap();
-    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.starts_with("HTTP/1.1 200"), "{response:?}");
     serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap()
 }
 
@@ -269,7 +269,7 @@ async fn assert_subscription_events(stream: &mut tokio::net::TcpStream) {
                 .filter_map(|json| serde_json::from_str::<serde_json::Value>(json).ok())
                 .collect::<Vec<_>>();
             if events.len() == 2 {
-                assert!(output.starts_with("HTTP/1.1 200"), "{output}");
+                assert!(output.starts_with("HTTP/1.1 200"), "{output:?}");
                 return events;
             }
         }
