@@ -7,6 +7,8 @@
 use std::future::Future;
 use std::marker::PhantomData;
 
+use futures::future::{Either, select};
+
 use crate::{
     ConnectionTo,
     jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
@@ -67,8 +69,31 @@ where
         // Box the futures to avoid stack overflow with deeply nested RunIn chains
         let a_fut = Box::pin(self.a.run_with_connection_to(cx.clone()));
         let b_fut = Box::pin(self.b.run_with_connection_to(cx.clone()));
-        let ((), ()) = futures::future::try_join(a_fut, b_fut).await?;
-        Ok(())
+        match select(a_fut, b_fut).await {
+            Either::Left((Ok(()), b)) => b.await,
+            Either::Right((Ok(()), a)) => a.await,
+            Either::Left((Err(error), b)) => {
+                finish_runner_after_error(b, &cx).await;
+                Err(error)
+            }
+            Either::Right((Err(error), a)) => {
+                finish_runner_after_error(a, &cx).await;
+                Err(error)
+            }
+        }
+    }
+}
+
+async fn finish_runner_after_error<R: Role>(
+    runner: impl Future<Output = Result<(), crate::Error>>,
+    cx: &ConnectionTo<R>,
+) {
+    cx.request_shutdown();
+    // A sibling runner can own the actual scoped operation. Keep it polled
+    // while its supervisor awaits cleanup, but never join unrelated user work.
+    match select(Box::pin(runner), Box::pin(cx.wait_protected_operations())).await {
+        Either::Left((_, cleanup)) => cleanup.await,
+        Either::Right(((), _)) => {}
     }
 }
 

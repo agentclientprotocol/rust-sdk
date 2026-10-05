@@ -16,12 +16,15 @@ struct ToolCall<P, R, MyRole: Role> {
     params: P,
     mcp_connection: McpConnectionTo<MyRole>,
     result_tx: futures::channel::oneshot::Sender<Result<R, Error>>,
+    done_tx: oneshot::Sender<()>,
 }
 
-/// Dropping the result receiver cancels the invocation by dropping its user future.
+/// A result receiver's lifetime is the invocation's cancellation scope. Signal
+/// completion only after the actual user future has completed or been dropped.
 async fn run_call<R>(
     future: impl Future<Output = Result<R, Error>>,
     mut result_tx: oneshot::Sender<Result<R, Error>>,
+    done_tx: oneshot::Sender<()>,
 ) {
     let result = {
         let cancelled = result_tx.cancellation();
@@ -35,6 +38,7 @@ async fn run_call<R>(
         // A caller leaving is not a failure of the shared tool runner.
         drop(result_tx.send(result));
     }
+    let _finished = done_tx.send(());
 }
 
 struct ToolFnMutRunner<F, P, R, Counterpart: Role> {
@@ -72,12 +76,21 @@ where
             params,
             mcp_connection,
             result_tx,
+            done_tx,
         }) = call_rx.next().await
         {
             if result_tx.is_canceled() {
+                drop(params);
+                drop(mcp_connection);
+                let _finished = done_tx.send(());
                 continue;
             }
-            run_call(tool_future_fn(&mut func, params, mcp_connection), result_tx).await;
+            run_call(
+                tool_future_fn(&mut func, params, mcp_connection),
+                result_tx,
+                done_tx,
+            )
+            .await;
         }
         Ok(())
     }
@@ -128,6 +141,7 @@ where
                                 + Sync
                         ),
                     result_tx: oneshot::Sender<Result<R, Error>>,
+                    done_tx: oneshot::Sender<()>,
                 ) -> BoxFuture<'a, ()>
                 where
                     MyRole: Role,
@@ -137,9 +151,17 @@ where
                 {
                     Box::pin(async move {
                         if result_tx.is_canceled() {
+                            drop(params);
+                            drop(mcp_connection);
+                            let _finished = done_tx.send(());
                             return;
                         }
-                        run_call(tool_future_fn(func, params, mcp_connection), result_tx).await;
+                        run_call(
+                            tool_future_fn(func, params, mcp_connection),
+                            result_tx,
+                            done_tx,
+                        )
+                        .await;
                     })
                 }
 
@@ -147,9 +169,18 @@ where
                     params,
                     mcp_connection,
                     result_tx,
+                    done_tx,
                 } = tool_call;
 
-                hack(&func, params, mcp_connection, &*tool_future_fn, result_tx).await;
+                hack(
+                    &func,
+                    params,
+                    mcp_connection,
+                    &*tool_future_fn,
+                    result_tx,
+                    done_tx,
+                )
+                .await;
                 Ok(())
             },
             |a, b| Box::pin(a(b)),
@@ -183,6 +214,11 @@ where
 
     async fn call_tool(&self, params: P, mcp_connection: McpConnectionTo<R>) -> Result<Ret, Error> {
         let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        mcp_connection.register_cleanup(done_rx);
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        let _done_rx = done_rx;
 
         self.call_tx
             .clone()
@@ -190,6 +226,7 @@ where
                 params,
                 mcp_connection,
                 result_tx,
+                done_tx,
             })
             .await
             .map_err(crate::util::internal_error)?;
@@ -376,6 +413,8 @@ mod tests {
         connection: &McpConnectionTo<mcp::Client>,
     ) -> ResultReceiver {
         let (result_tx, result_rx) = oneshot::channel();
+        let (done_tx, done_rx) = oneshot::channel();
+        drop(done_rx);
         // Await admission while the runner is paused: cancellation cannot
         // accidentally happen before the call is actually queued.
         tool.call_tx
@@ -384,6 +423,7 @@ mod tests {
                 params: id,
                 mcp_connection: connection.clone(),
                 result_tx,
+                done_tx,
             })
             .await
             .unwrap();
@@ -410,6 +450,8 @@ mod tests {
                 let context = McpConnectionTo {
                     context: McpConnectionContext::Standalone,
                     connection: connection.clone(),
+                    #[cfg(feature = "unstable_mcp_over_acp")]
+                    cleanup: None,
                 };
                 let state = State::default();
                 let (call_tx, call_rx) = mpsc::channel(128);

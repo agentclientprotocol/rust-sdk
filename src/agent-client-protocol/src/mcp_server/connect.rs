@@ -37,10 +37,13 @@ pub trait McpServerConnect<Counterpart: Role>: Send + Sync + 'static {
     /// The name of the MCP server, used in ACP declarations when attached.
     fn name(&self) -> String;
 
-    /// Create a component to service a new MCP connection.
+    /// Create a component to service a standalone connection or a native operation.
     ///
-    /// This is called each time an MCP client connects to this server. The returned
-    /// component will handle MCP protocol messages for that connection.
+    /// Standalone serving invokes this factory once per connection. Native ACP
+    /// invokes it independently for each `mcp/message` operation. A native
+    /// component receives an MCP 2026-07-28 request directly; it must not wait
+    /// for `initialize` or share protocol state with a previous operation.
+    /// Prefer `McpService` for reusable native application services.
     ///
     /// Any communication primitives shared with the server's
     /// [`RunWithConnectionTo`](crate::RunWithConnectionTo) task must be created
@@ -49,7 +52,7 @@ pub trait McpServerConnect<Counterpart: Role>: Send + Sync + 'static {
     /// while connections and their messages are queued.
     ///
     /// [`McpConnectionTo`] distinguishes a direct MCP connection from an
-    /// ACP-attached connection and provides the corresponding host connection.
+    /// ACP-attached operation and provides the corresponding host connection.
     fn connect(&self, cx: McpConnectionTo<Counterpart>) -> DynConnectTo<role::mcp::Client>;
 }
 

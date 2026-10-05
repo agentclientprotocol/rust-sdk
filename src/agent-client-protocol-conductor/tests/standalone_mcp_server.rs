@@ -41,7 +41,7 @@ fn create_test_server() -> McpServer<mcp::Client, impl RunWithConnectionTo<mcp::
             async |input: EchoInput, cx| {
                 assert!(cx.context().is_standalone());
                 assert_eq!(cx.server_id(), None);
-                assert_eq!(cx.connection_id(), None);
+                assert_eq!(cx.request_id(), None);
                 Ok(format!("Echo: {}", input.message))
             },
             agent_client_protocol::tool_fn!(),

@@ -9,12 +9,23 @@ runtime-agnostic MCP server framework from `agent-client-protocol`. It lets you 
 Rust, serve them directly, or attach them to an ACP proxy.
 
 Attached servers are advertised with the opt-in native MCP-over-ACP transport:
-`McpServer::Acp` plus `mcp/connect`, `mcp/message`, and `mcp/disconnect`. This
+`McpServer::Acp` plus request-scoped `mcp/message` for MCP 2026-07-28, without
+an initialization prerequisite or connect/disconnect exchange. This
 crate does not enable the core SDK's `unstable_mcp_over_acp` feature merely to
 build or directly serve a server. Enable this crate's matching
 `unstable_mcp_over_acp` feature when using `with_mcp_server`. Use
 `agent-client-protocol-polyfill` when the final agent accepts HTTP but not
 ACP-transport MCP servers.
+
+Native attachments lazily initialize one shared rmcp application service.
+Standalone connections still invoke the factory separately. Each native
+request owns its metadata, notifications, cancellation, and supervised cleanup.
+Run the direct ACP example with:
+
+```sh
+cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
+  --features unstable_protocol_v2
+```
 
 ## Usage
 

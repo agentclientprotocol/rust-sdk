@@ -7,6 +7,7 @@
 - [Design Overview](./design.md)
 - [Cargo Features](./features.md)
 - [Protocol Reference](./protocol.md)
+- [Native MCP-over-ACP](./mcp-over-acp.md)
 - [Request Cancellation](./request-cancellation.md)
 - [Ordered Application Dispatch](./ordered-application-dispatch.md)
 - [Configurable LLM Providers](./llm-providers.md)
@@ -31,6 +32,7 @@
 
 # Reference
 
+- [Migrating the Native MCP Binding](./migration-stateless-mcp.md)
 - [Migrating Connection Drivers](./migration-connection-drivers.md)
 - [Migrating the rmcp Integration to v4](./migration-rmcp-v4.md)
 - [Migrating to v2.0](./migration_v2.0.md)

@@ -58,6 +58,8 @@ mod context;
 #[cfg(feature = "schemars")]
 mod registry;
 mod server;
+#[cfg(feature = "unstable_mcp_over_acp")]
+mod service;
 #[cfg(feature = "schemars")]
 mod tool;
 #[cfg(feature = "schemars")]
@@ -71,6 +73,17 @@ pub use registry::{
     EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
 };
 pub use server::McpServer;
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub use service::{
+    McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpService,
+};
+
+/// The declared MCP provider is no longer available.
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub const MCP_SERVER_UNAVAILABLE: i32 = -33001;
+/// The MCP backend failed independently of an MCP application error.
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub const MCP_BACKEND_FAILURE: i32 = -33002;
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool::McpTool;

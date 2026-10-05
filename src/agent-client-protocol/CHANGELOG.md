@@ -4,6 +4,11 @@
 
 ### Changed
 
+- **Breaking (unstable MCP):** adopt schema 1.10.1's request-scoped
+  `mcp/message(serverId, requestId, method, params)` binding and independent
+  inner MCP result/error carriers. Remove MCP connect/disconnect and connection
+  IDs. Native MCP supports 2026-07-28 without an initialization prerequisite.
+  See the [native binding migration guide](../../md/migration-stateless-mcp.md).
 - **Breaking:** `RawJsonRpcMessage::Response` carries `RawJsonRpcResponse` with
   a boxed `RawJsonRpcError`, preserving numeric codes, omitted/null data, and
   error extension fields without ACP interpretation. Raw adapters must use the
@@ -18,6 +23,9 @@
 
 ### Added
 
+- Add reusable native MCP services with request-scoped metadata, notification
+  authority, and cancellation. Supervise owned operation cleanup through ACP
+  shutdown without changing generic frame queues or task limits.
 - Add an owned-only, awaitable `ConnectionDriver`. Passive endpoints have no
   driver, so absence cannot be mistaken for a successful completed future.
 - Add `ConnectionDriver::with_finish(future, finish)` and `request_finish()` for

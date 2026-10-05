@@ -637,6 +637,13 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
             Dispatch::Request(_, responder) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
+                #[cfg(feature = "unstable_mcp_over_acp")]
+                if method == "mcp/message" {
+                    return responder.respond_with_error(crate::Error::new(
+                        crate::mcp_server::MCP_SERVER_UNAVAILABLE,
+                        "MCP server registration unavailable",
+                    ));
+                }
                 responder.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {

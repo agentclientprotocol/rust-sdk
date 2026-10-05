@@ -96,7 +96,8 @@ The runtime-agnostic `mcp_server` module can build and directly serve standalone
 MCP servers without enabling an ACP schema extension. Attaching one to ACP with
 the `with_mcp_server` builder methods requires `unstable_mcp_over_acp`.
 Attached servers are advertised with native `McpServer::Acp` declarations and
-communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
+communicate through request-scoped `mcp/message` operations targeting MCP
+2026-07-28, without connect/disconnect or initialization handshakes. Use
 `agent-client-protocol-polyfill` immediately before an HTTP-capable agent.
 Stable protocol v1 supports per-session and global proxy attachment. Draft
 protocol v2 supports both scopes when both unstable features are enabled:

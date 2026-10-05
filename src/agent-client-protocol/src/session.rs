@@ -1,12 +1,13 @@
-use std::{future::Future, marker::PhantomData, path::Path};
+use std::{future::Future, marker::PhantomData, path::Path, sync::Arc};
 
 use futures::channel::{mpsc, oneshot};
+use futures::future::{self, Either};
 
 use crate::{
     Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcRequest, Responder,
     Role,
     jsonrpc::{
-        DynamicHandlerGuard,
+        DynamicHandlerCleanup, DynamicHandlerGuard,
         run::{NullRun, RunWithConnectionTo},
     },
     role::{HasPeer, acp::ProxySessionMessages},
@@ -16,7 +17,7 @@ use crate::{
         ResumeSessionResponse, SessionConfigOption, SessionId, SessionModeState,
         SessionNotification, SessionUpdate, StopReason,
     },
-    util::{MatchDispatch, MatchDispatchFrom, run_until},
+    util::{MatchDispatch, MatchDispatchFrom},
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -26,6 +27,78 @@ use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 mod v2;
 #[cfg(feature = "unstable_protocol_v2")]
 pub use v2::*;
+
+type SessionCleanup = Vec<Arc<dyn DynamicHandlerCleanup>>;
+
+fn session_cleanup<R: Role>(guards: &[DynamicHandlerGuard<R>]) -> SessionCleanup {
+    guards
+        .iter()
+        .filter_map(DynamicHandlerGuard::cleanup)
+        .collect()
+}
+
+fn close_session_registrations(cleanup: &SessionCleanup) {
+    for registration in cleanup {
+        registration.close();
+    }
+}
+
+async fn wait_session_cleanup(cleanup: SessionCleanup) {
+    future::join_all(cleanup.iter().map(|registration| registration.wait())).await;
+}
+
+/// Keep the actual (possibly borrowed) runner alive until only these
+/// registrations finish. Never seal connection-wide protected admission here.
+async fn drive_session_cleanup(
+    run: impl Future<Output = Result<(), crate::Error>>,
+    cleanup: SessionCleanup,
+) -> Result<(), crate::Error> {
+    match future::select(Box::pin(wait_session_cleanup(cleanup)), Box::pin(run)).await {
+        Either::Left(((), _run)) => Ok(()),
+        Either::Right((result, cleanup)) => {
+            cleanup.await;
+            result
+        }
+    }
+}
+
+async fn run_attached_session_runner(
+    run: impl Future<Output = Result<(), crate::Error>>,
+    cleanup: SessionCleanup,
+) -> Result<(), crate::Error> {
+    if cleanup.is_empty() {
+        run.await
+    } else {
+        drive_session_cleanup(run, cleanup).await
+    }
+}
+
+async fn run_session_scope<T>(
+    run: impl Future<Output = Result<(), crate::Error>>,
+    op: impl Future<Output = Result<T, crate::Error>>,
+    cleanup: SessionCleanup,
+) -> Result<T, crate::Error> {
+    match future::select(Box::pin(run), Box::pin(op)).await {
+        Either::Left((run_result, op)) => {
+            let result = match run_result {
+                Ok(()) => op.await,
+                Err(error) => {
+                    drop(op);
+                    Err(error)
+                }
+            };
+            close_session_registrations(&cleanup);
+            wait_session_cleanup(cleanup).await;
+            result
+        }
+        Either::Right((result, run)) => {
+            close_session_registrations(&cleanup);
+            let runner_result = drive_session_cleanup(run, cleanup).await;
+            // Foreground failure remains authoritative over cleanup failures.
+            result.and_then(|value| runner_result.map(|()| value))
+        }
+    }
+}
 
 /// Marker type indicating the session builder will block the current task.
 #[derive(Debug)]
@@ -671,14 +744,18 @@ where
             block_state: _,
         } = self;
 
+        let cleanup = session_cleanup(&dynamic_handler_registrations);
+        connection.spawn(run_attached_session_runner(
+            run.run_with_connection_to(connection.clone()),
+            cleanup,
+        ))?;
+
         connection
             .send_ordered_request_to(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
                 async move |result| {
                     let response = result?;
-
-                    connection.spawn(run.run_with_connection_to(connection.clone()))?;
 
                     let active_session =
                         connection.attach_session(response, dynamic_handler_registrations)?;
@@ -761,6 +838,12 @@ where
             block_state: _,
         } = self;
 
+        let cleanup = session_cleanup(&dynamic_handler_registrations);
+        connection.spawn(run_attached_session_runner(
+            run.run_with_connection_to(connection.clone()),
+            cleanup,
+        ))?;
+
         // Send the "new session" request to the agent.
         let sent = connection.send_ordered_request_to(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
@@ -778,8 +861,7 @@ where
                     .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
                     .detach();
 
-                // Spawn off the run and dynamic handlers to run indefinitely
-                connection.spawn(run.run_with_connection_to(connection.clone()))?;
+                // Keep dynamic handlers live for the connection.
                 dynamic_handler_registrations
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
@@ -835,8 +917,6 @@ where
             ActiveSession<'runner, Counterpart>,
         ) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
-        ensure_v1_session_protocol(&self.connection)?;
-
         let Self {
             connection,
             request,
@@ -845,16 +925,20 @@ where
             block_state: _,
         } = self;
 
-        let response = connection
-            .send_request_to(Agent, request)
-            .block_task()
-            .await?;
-
-        let active_session = connection.attach_session(response, dynamic_handler_registrations)?;
-
-        run_until(
+        let cleanup = session_cleanup(&dynamic_handler_registrations);
+        run_session_scope(
             run.run_with_connection_to(connection.clone()),
-            op(active_session),
+            async move {
+                ensure_v1_session_protocol(&connection)?;
+                let response = connection
+                    .send_request_to(Agent, request)
+                    .block_task()
+                    .await?;
+                let active_session =
+                    connection.attach_session(response, dynamic_handler_registrations)?;
+                op(active_session).await
+            },
+            cleanup,
         )
         .await
     }
@@ -884,13 +968,17 @@ where
 
         let (active_session_tx, active_session_rx) = oneshot::channel();
 
+        let cleanup = session_cleanup(&dynamic_handler_registrations);
+        connection.spawn(run_attached_session_runner(
+            run.run_with_connection_to(connection.clone()),
+            cleanup,
+        ))?;
+
         connection.clone().spawn(async move {
             let response = connection
                 .send_request_to(Agent, request)
                 .block_task()
                 .await?;
-
-            connection.spawn(run.run_with_connection_to(connection.clone()))?;
 
             let active_session =
                 connection.attach_session(response, dynamic_handler_registrations)?;
