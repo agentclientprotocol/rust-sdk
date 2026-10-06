@@ -125,7 +125,7 @@ impl RoleId {
     /// Create the role ID for a singleton role type.
     pub fn from_singleton<R>(_role: &R) -> RoleId
     where
-        R: Role + Default,
+        R: Role,
     {
         RoleId::Singleton(std::any::type_name::<R>(), TypeId::of::<R>())
     }

@@ -50,6 +50,8 @@
 
 ### Fixed
 
+- Allow custom roles without a `Default` implementation to construct their
+  singleton `RoleId`.
 - Keep recoverable session-local runner failures from cancelling unrelated native
   MCP registrations or sealing connection-wide operation admission. Scoped sibling
   runners remain driven through their own cleanup.
