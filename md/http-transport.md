@@ -179,6 +179,25 @@ handshake headers to its destination; resolve the intended WebSocket endpoint
 before connecting. HTTP/SSE retains the caller's HTTP-version and redirect
 settings.
 
+#### Proxy Headers
+
+For WebSocket clients, **do not set `Host`, `Connection`, `Upgrade`, or any
+`Sec-WebSocket-*` header through `reqwest::Proxy::headers`**. Use that API only
+for non-handshake headers required by the proxy; proxy authentication can use
+`Proxy::basic_auth` or `custom_http_auth`.
+
+The SDK explicitly sets `Connection`, `Upgrade`, `Sec-WebSocket-Version`, and
+`Sec-WebSocket-Key` over `default_headers`, but reqwest applies non-tunnel proxy
+headers afterward on plain `ws://` requests and can overwrite those values.
+The callback's proxy configuration is opaque: the SDK cannot
+inspect, sanitize, or reject those settings at `build()`. This is a caller
+configuration constraint, not an enforced builder restriction. Upgrade response
+validation still precedes ACP data; it does not prove that every request header
+was unchanged. For example, replacing the random key causes a response computed
+from the replacement key to fail accept validation, but other reserved-header
+overrides are not necessarily detected. For `wss://`, proxy headers apply to the
+CONNECT request rather than the tunneled WebSocket handshake.
+
 Reqwest's connection timeout covers connection establishment. Its request/read
 timeouts also cover the opening WebSocket handshake but do not impose a lifetime
 or idle timeout on the upgraded socket. For HTTP/SSE, request/read timeouts retain
@@ -232,4 +251,46 @@ already-built reqwest client enforce the WebSocket connection policies.
 - To retain a shared, already-built HTTP/SSE client, use
   `from_http_client(exact_endpoint, client)`. Unlike the old base-URL constructor,
   this does not append `/acp`.
-- Code using `new` or `with_endpoint` needs no changes.
+- Code using `new` or `with_endpoint` needs no source changes, but WebSocket
+  proxy discovery and TLS trust defaults change as described below.
+
+#### WebSocket Proxy and TLS Defaults
+
+Unconfigured WebSockets intentionally share reqwest's defaults with HTTP/SSE.
+Previously, the tungstenite connection was direct and WSS used bundled WebPKI
+roots. Now `new`, `with_endpoint`, and unconfigured builders discover environment
+proxies, honor system proxies when reqwest's `system-proxy` feature is enabled,
+and use reqwest's TLS verifier. With this SDK's rustls feature selection, that
+is platform certificate verification instead of the old bundled roots. Downstream
+reqwest feature selection and explicit TLS configuration can affect this behavior.
+Consequently, an unchanged WebSocket URL may take a different network route or
+trust a different set of certificate authorities.
+
+To disable proxy discovery and explicitly supplied proxies, opt into a direct
+connection:
+
+```rust
+let transport = HttpClient::builder("wss://agent.example")
+    .configure_http(|http| http.no_proxy())
+    .build()?;
+```
+
+For deterministic trust, supply the application's root certificates with
+reqwest 0.13's `tls_certs_only`, which disables platform/built-in roots:
+
+```rust
+use agent_client_protocol_http::HttpClient;
+
+fn direct_with_root(root_pem: &[u8]) -> Result<HttpClient, Box<dyn std::error::Error>> {
+    let root = reqwest::Certificate::from_pem(root_pem)?;
+    Ok(HttpClient::builder("wss://agent.example")
+        .configure_http(|http| http.no_proxy().tls_certs_only([root]))
+        .build()?)
+}
+```
+
+Supply the complete root set you intend to trust; this example does not recreate
+the old bundled WebPKI root set. Use `tls_certs_merge([root])` instead to add
+private roots while retaining the selected verifier's default trust. Do not disable
+certificate validation to work around a trust-store difference. The
+[proxy-header constraint](#proxy-headers) applies when explicitly configuring proxies.

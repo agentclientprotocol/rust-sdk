@@ -10,6 +10,11 @@
   `builder_with_endpoint(...)` so the transport can enforce connection policies.
   See the
   [migration guide](https://agentclientprotocol.github.io/rust-sdk/http-transport.html#migrating-custom-client-construction).
+- Unconfigured WebSockets now share reqwest's proxy discovery and TLS verification
+  defaults, replacing direct connections and bundled WebPKI roots. Environment
+  proxies, enabled system-proxy discovery, and platform certificate verification
+  can change routing and trust. Use `no_proxy()` and explicit `tls_certs_only`
+  roots when those defaults are not appropriate.
 
 ### Deprecated
 
@@ -20,6 +25,11 @@
 
 ### Changed
 
+- Document the caller constraint against setting reserved WebSocket handshake
+  headers through `reqwest::Proxy::headers`. Plain-WS proxy headers can overwrite
+  SDK request headers after assembly; opaque proxy configuration cannot be
+  inspected or rejected at build time. Cover normal plain-WS proxy headers and
+  fail-closed accept validation after a proxy key override.
 - Limit Axum to HTTP1/Tokio, WebSockets, and tracing/tower-log observability.
   Remove unused Axum macros and extractors; JSON extraction is enabled only for
   tests. Drop unused test-utility and tracing-subscriber dev dependencies and

@@ -23,6 +23,13 @@ reqwest headers, TLS, proxies, DNS, and timeouts. WebSocket handshakes use HTTP/
 do not follow redirects, and are validated before sending ACP data. A raw
 preconfigured TLS backend must itself use HTTP/1.1 ALPN.
 
+Unconfigured WebSockets now share reqwest's proxy discovery and TLS trust defaults
+with HTTP/SSE, rather than direct connections with bundled WebPKI roots. Use
+`.configure_http(|http| http.no_proxy())` for direct connections and
+`tls_certs_only` for explicit roots. Do not set handshake headers through
+`reqwest::Proxy::headers`: plain-WS proxy headers can overwrite SDK request headers
+after assembly, and the SDK cannot inspect that opaque configuration.
+
 `HttpClient::from_http_client(exact_endpoint, client)` reuses an existing reqwest
 client for HTTP/SSE only. The old `with_client` and `with_endpoint_and_client`
 constructors remain as deprecated HTTP/SSE compatibility wrappers. WebSocket

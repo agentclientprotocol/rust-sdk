@@ -196,8 +196,39 @@ impl HttpClientBuilder {
     ///
     /// For WebSockets, [`Self::build`] overrides the HTTP version preference with
     /// HTTP/1.1 and disables redirects. HTTP/SSE retains the supplied settings.
-    /// Handshake headers are transport-owned; subprotocols and extensions are not
-    /// negotiated, even if custom default headers request them.
+    /// Subprotocols and extensions are not negotiated, even if custom default
+    /// headers request them.
+    ///
+    /// # Proxy headers
+    ///
+    /// Do not set `Host`, `Connection`, `Upgrade`, or any `Sec-WebSocket-*` header
+    /// through [`reqwest::Proxy::headers`] for WebSocket clients. The SDK sets
+    /// `Connection`, `Upgrade`, `Sec-WebSocket-Version`, and `Sec-WebSocket-Key`
+    /// over `default_headers`, but reqwest can overwrite them
+    /// afterward with proxy headers on plain `ws://` connections. The SDK cannot
+    /// inspect or reject this opaque proxy configuration at build time.
+    /// Response validation still runs before sending ACP data; it does not prove
+    /// that proxy configuration left every request header unchanged.
+    ///
+    /// # Defaults
+    ///
+    /// Both transports use reqwest's proxy discovery and TLS verification defaults.
+    /// This changes unconfigured WebSockets from direct connections with bundled
+    /// WebPKI roots to environment proxies (and system proxies when enabled) and,
+    /// with the SDK's rustls configuration, platform certificate verification.
+    /// Use `http.no_proxy()` to connect directly. Use `tls_certs_only` for an
+    /// explicit root set, or `tls_certs_merge` to add roots to the default trust:
+    ///
+    /// ```
+    /// use agent_client_protocol_http::HttpClient;
+    ///
+    /// fn direct_with_root(root_pem: &[u8]) -> Result<HttpClient, Box<dyn std::error::Error>> {
+    ///     let root = reqwest::Certificate::from_pem(root_pem)?;
+    ///     Ok(HttpClient::builder("wss://agent.example")
+    ///         .configure_http(|http| http.no_proxy().tls_certs_only([root]))
+    ///         .build()?)
+    /// }
+    /// ```
     ///
     /// # Timeouts
     ///
@@ -1396,6 +1427,8 @@ async fn connect_ws(
     let expected_accept =
         async_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
 
+    // Explicit headers override client defaults, but reqwest can overwrite them
+    // later with non-tunnel Proxy::headers. See configure_http's caller constraint.
     let response = http
         .get(http_url)
         .version(reqwest::Version::HTTP_11)

@@ -262,6 +262,103 @@ async fn redirect(mut socket: impl AsyncRead + AsyncWrite + Unpin, location: &st
 }
 
 #[tokio::test]
+async fn configured_proxy_carries_plain_websocket_and_custom_headers() {
+    let proxy = listen().await;
+    let mut custom = reqwest::header::HeaderMap::new();
+    custom.insert("x-proxy-route", "acp".parse().unwrap());
+    let client = HttpClient::builder("ws://agent.invalid")
+        .configure_http(|builder| {
+            builder.no_proxy().proxy(
+                reqwest::Proxy::http(format!("http://{}", proxy.local_addr().unwrap()))
+                    .unwrap()
+                    .headers(custom),
+            )
+        })
+        .build()
+        .unwrap();
+    successful_exchange(client, async {
+        let (socket, _) = proxy.accept().await.unwrap();
+        // Act as the proxy's upstream peer. An absolute URI demonstrates the
+        // non-tunnel proxy path, not a direct connection or a CONNECT tunnel.
+        #[allow(clippy::result_large_err)]
+        let check = |request: &Request, response| {
+            assert_eq!(request.uri().to_string(), "http://agent.invalid/acp");
+            assert_eq!(request.headers()["x-proxy-route"], "acp");
+            assert_eq!(request.headers()["upgrade"], "websocket");
+            assert_eq!(request.headers()["sec-websocket-version"], "13");
+            Ok(response)
+        };
+        let mut ws = accept_hdr_async(socket, check).await.unwrap();
+        let message = ws.next().await.unwrap().unwrap();
+        let value: serde_json::Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+        assert_eq!(value["method"], "custom/queued");
+        assert_eq!(value["params"]["probe"], 333);
+        ws.send(message).await.unwrap();
+        assert!(ws.next().await.unwrap().unwrap().is_close());
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn plain_websocket_proxy_key_override_fails_before_acp_data() {
+    let proxy = listen().await;
+    let replacement_key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let mut custom = reqwest::header::HeaderMap::new();
+    custom.insert("sec-websocket-key", replacement_key.parse().unwrap());
+    let client = HttpClient::builder("ws://agent.invalid")
+        .configure_http(|builder| {
+            builder.no_proxy().proxy(
+                reqwest::Proxy::http(format!("http://{}", proxy.local_addr().unwrap()))
+                    .unwrap()
+                    .headers(custom),
+            )
+        })
+        .build()
+        .unwrap();
+    let (caller, transport) = queued(client);
+    let fixture = async {
+        let (mut socket, _) = proxy.accept().await.unwrap();
+        let request = headers(&mut socket).await;
+        assert!(request.starts_with("GET http://agent.invalid/acp HTTP/1.1\r\n"));
+        let key = request
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("sec-websocket-key"))
+            .unwrap()
+            .1
+            .trim();
+        assert_eq!(
+            key, replacement_key,
+            "reqwest overwrites the SDK's random key"
+        );
+        let accept = async_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+        socket
+            .write_all(format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+            ).as_bytes())
+            .await
+            .unwrap();
+        let mut received = Vec::new();
+        socket.read_to_end(&mut received).await.unwrap();
+        assert!(
+            received.is_empty(),
+            "ACP sent after proxy changed the handshake key"
+        );
+    };
+    let (result, ()) = timeout(DEADLINE, async { futures::join!(transport, fixture) })
+        .await
+        .unwrap();
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid Sec-WebSocket-Accept"),
+        "validation must use the SDK's original key, not the overwritten wire key"
+    );
+    drop(caller);
+}
+
+#[tokio::test]
 async fn configured_proxy_tunnels_wss_with_authentication() {
     let tls = Tls::new();
     let origin = listen().await;
