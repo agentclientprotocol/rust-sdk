@@ -27,8 +27,12 @@
 //! proxy setup. With `unstable_session_fork`, `V2ForkSessionBuilder` provides
 //! the same shape for forked sessions and uses the response's new session ID.
 //! Per-session MCP routes and runners are ready before a setup request is
-//! published, as is proxy session routing for resume replay; successful
-//! attachments remain active for the connection lifetime.
+//! published, as is proxy session routing for resume replay. Successful v2
+//! setup detaches MCP handlers for the connection lifetime; dropping the
+//! returned `V2Session` does not unregister them. In v1, `ActiveSession` owns
+//! per-session MCP registrations until drop, unless a proxy handoff detaches
+//! them (`proxy_remaining_messages` or successful `on_proxy_session_start`).
+//! Global proxy attachments are connection-scoped in both versions.
 //!
 //! Here's a minimal example that initializes a v1 connection, creates a
 //! session, and sends a prompt:

@@ -10,11 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking changes
 
 - Native attachments use request-scoped MCP 2026-07-28 and inner outcome
-  carriers. `from_rmcp` lazily creates one reusable service for native requests;
-  standalone connections retain per-connection factories.
-- Upgrade the public `rmcp` dependency from 2.x to 3.4. This requires the next
-  major release of `agent-client-protocol-rmcp` (4.x), while the core ACP SDK
-  remains on 2.x. Services supplied to `McpServer::from_rmcp` must use rmcp 3.x.
+  carriers, replacing the old `mcp/connect` / `mcp/disconnect` binding without
+  a legacy fallback. `from_rmcp` lazily creates one reusable service for native
+  requests; standalone connections retain per-connection factories and rmcp
+  protocol negotiation. See the
+  [native binding migration](https://agentclientprotocol.github.io/rust-sdk/migration-stateless-mcp.html)
+  and [request-scoped MCP guide](https://agentclientprotocol.github.io/rust-sdk/mcp-over-acp.html).
+- Release `agent-client-protocol-rmcp` 4.x together with core ACP 3.x and the
+  public `rmcp` dependency upgrade from 2.x to 3.4. Migrate both public
+  dependencies together. Services supplied to `McpServer::from_rmcp` must use
+  rmcp 3.x; custom transports and low-level callers must follow the core
+  [connection-driver migration](https://agentclientprotocol.github.io/rust-sdk/migration-connection-drivers.html).
 - Adapt tool handlers to rmcp's `CallToolResponse`, use `ServerConfig` in place
   of the deprecated `ServerInfo` alias, and remove legacy tool-execution
   metadata. See the [migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-rmcp-v4.html).

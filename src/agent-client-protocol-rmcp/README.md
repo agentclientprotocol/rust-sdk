@@ -81,16 +81,22 @@ release of either dependency therefore requires a major release of this crate.
 
 | agent-client-protocol-rmcp | agent-client-protocol | rmcp |
 | -------------------------- | --------------------- | ---- |
-| 4.x (unreleased)           | 2.x                   | 3.x  |
+| 4.x (unreleased)           | 3.x                   | 3.x  |
 | 3.x                        | 2.x                   | 2.x  |
 | 2.x                        | 1.x                   | 2.x  |
 | 1.x                        | 1.x                   | 1.x  |
 
 See the [rmcp 4.x integration migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-rmcp-v4.html)
-for adapting services to rmcp 3.x. The minimum supported Rust version remains
-1.88. The dependency upgrade does not itself change the unstable ACP transport
-envelopes or require applications to use modern MCP instead of rmcp's default
-protocol version.
+for migrating both public dependencies in the combined core 3.x / integration
+4.x / rmcp 3.x release. The minimum supported Rust version remains 1.88.
+Native attachments also move to the
+[request-scoped MCP binding](https://agentclientprotocol.github.io/rust-sdk/migration-stateless-mcp.html)
+for MCP 2026-07-28 only; the old connect/disconnect binding is removed.
+Standalone rmcp serving retains protocol negotiation. Custom transports and
+low-level callers should follow the
+[connection-driver migration](https://agentclientprotocol.github.io/rust-sdk/migration-connection-drivers.html),
+and raw response adapters should follow the
+[core 3.x migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-v3.html).
 
 ## Related Crates
 
