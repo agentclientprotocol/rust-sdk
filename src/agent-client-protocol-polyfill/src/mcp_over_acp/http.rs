@@ -8,7 +8,7 @@ use std::{convert::Infallible, sync::Arc};
 use agent_client_protocol::Error;
 use axum::{
     Json, Router,
-    body::{Body, to_bytes},
+    body::{Body, HttpBody as _, to_bytes},
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{
@@ -18,20 +18,19 @@ use axum::{
     routing::any,
 };
 use base64::Engine as _;
-use futures::{SinkExt, channel::mpsc};
+use futures::{SinkExt, StreamExt, channel::mpsc};
 use hmac::{Hmac, Mac};
 use serde_json::{Map, Value};
 use sha2::Sha256;
 use tokio::{
     net::TcpListener,
-    sync::{mpsc as tokio_mpsc, oneshot},
+    sync::{Semaphore, mpsc as tokio_mpsc, oneshot},
 };
 
 use super::BridgeMessage;
 
 const VERSION: &str = "2026-07-28";
-// Match Axum's default body limit used by the previous bridge's String extractor.
-const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 
 fn server_route(server_id: &str) -> String {
     // Even an empty opaque ID must occupy a real route segment.
@@ -43,6 +42,7 @@ fn server_route(server_id: &str) -> String {
 
 pub(super) struct BridgeState {
     secret: [u8; 32],
+    admission: Arc<Semaphore>,
     tx: mpsc::Sender<BridgeMessage>,
 }
 
@@ -67,6 +67,7 @@ impl BridgeState {
                 secret[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
                 secret
             },
+            admission: Arc::new(Semaphore::new(super::MAX_ACTIVE_REQUESTS)),
             tx,
         })
     }
@@ -336,6 +337,42 @@ async fn handle_request(
             "Expected application/json",
         );
     }
+    // Acquire before reading a potentially slow/large request body. The permit
+    // stays owned by the response body until the client consumes or drops it.
+    let Ok(permit) = state.admission.clone().try_acquire_owned() else {
+        return error(
+            StatusCode::TOO_MANY_REQUESTS,
+            Value::Null,
+            -33000,
+            "Too many outstanding MCP responses",
+        );
+    };
+    let response = handle_admitted_request(state, server_id, headers, body).await;
+    let (mut parts, body) = response.into_parts();
+    if let Some(length) = body.size_hint().exact() {
+        parts
+            .headers
+            .entry(header::CONTENT_LENGTH)
+            .or_insert_with(|| length.to_string().parse().expect("decimal body length"));
+    }
+    // One ownership rule for every admitted response, including validation
+    // failures that echo a potentially large, but valid, external request ID.
+    let stream = async_stream::stream! {
+        let _permit = permit;
+        let mut body = body.into_data_stream();
+        while let Some(chunk) = body.next().await {
+            yield chunk;
+        }
+    };
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
+async fn handle_admitted_request(
+    state: Arc<BridgeState>,
+    server_id: String,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     let Ok(body) = to_bytes(body, MAX_REQUEST_BODY_BYTES).await else {
         return error(
             StatusCode::PAYLOAD_TOO_LARGE,
@@ -482,7 +519,11 @@ async fn handle_request(
         return error(StatusCode::NOT_FOUND, id, -32601, "Method not found");
     }
     let id_for_bridge_error = id.clone();
-    let (response_tx, mut response_rx) = tokio_mpsc::channel(super::MAX_QUEUED_NOTIFICATIONS);
+    let (notification_tx, mut response_rx) = tokio_mpsc::channel(super::MAX_QUEUED_NOTIFICATIONS);
+    let response_tx = super::StreamSender {
+        tx: notification_tx,
+        used: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    };
     let (terminal_tx, mut terminal_rx) = oneshot::channel();
     let message = BridgeMessage::Request {
         server_id,
@@ -506,7 +547,7 @@ async fn handle_request(
         biased;
         notification = response_rx.recv(), if !response_rx.is_closed() || !response_rx.is_empty() =>
             match notification {
-                Some(message) => Some(message),
+                Some(mut message) => Some(std::mem::take(&mut message.value)),
                 None => (&mut terminal_rx).await.ok(),
             },
         terminal = &mut terminal_rx => terminal.ok(),
@@ -544,11 +585,12 @@ async fn handle_request(
         yield Ok::<_, Infallible>(Event::default().data(first.to_string()));
         loop {
             // Drain already-queued notifications before a successful final response.
+            // Overflow is delivered through the independent terminal path.
             let message = tokio::select! {
                 biased;
                 notification = response_rx.recv(), if !response_rx.is_closed() || !response_rx.is_empty() =>
                     match notification {
-                        Some(message) => Some(message),
+                        Some(mut message) => Some(std::mem::take(&mut message.value)),
                         None => (&mut terminal_rx).await.ok(),
                     },
                 terminal = &mut terminal_rx => terminal.ok(),
@@ -696,7 +738,7 @@ mod tests {
                     };
                     if streamed {
                         response_tx
-                            .try_send(serde_json::json!({
+                            .send(serde_json::json!({
                                 "jsonrpc":"2.0","method":"notifications/progress",
                                 "params":{"progress":1}
                             }))
@@ -783,6 +825,114 @@ mod tests {
         let body: Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body["id"], "external");
         assert_eq!(body["error"]["code"], -33002);
+    }
+
+    #[tokio::test]
+    async fn unread_validation_errors_hold_admission_until_consumed_or_dropped() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = BridgeState::new(tx);
+        let (_, token) = state.declaration_url(8000, "server");
+        let route = server_route("server");
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        headers.insert("content-type", "application/json".parse().unwrap());
+        // No method: validation must echo this large known ID without releasing
+        // the permit while the client still owns its unread response.
+        let id = "external".repeat(32 * 1024);
+        let body = serde_json::json!({"jsonrpc":"2.0", "id":id}).to_string();
+        let send = || {
+            handle_request(
+                State(state.clone()),
+                Path(route.clone()),
+                axum::http::Method::POST,
+                headers.clone(),
+                Body::from(body.clone()),
+            )
+        };
+        let mut responses = Vec::new();
+        for _ in 0..super::super::MAX_ACTIVE_REQUESTS {
+            let response = send().await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            responses.push(response);
+        }
+        assert_eq!(send().await.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let bytes = to_bytes(responses.pop().unwrap().into_body(), MAX_REQUEST_BODY_BYTES)
+            .await
+            .unwrap();
+        let error: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["id"], id);
+        assert_eq!(error["error"]["code"], -32600);
+        assert_eq!(state.admission.available_permits(), 1);
+        responses.push(send().await);
+        assert_eq!(state.admission.available_permits(), 0);
+
+        drop(responses.pop());
+        assert_eq!(state.admission.available_permits(), 1);
+        let recovered = send().await;
+        assert_eq!(recovered.status(), StatusCode::BAD_REQUEST);
+        drop(recovered);
+        drop(responses);
+        assert_eq!(
+            state.admission.available_permits(),
+            super::super::MAX_ACTIVE_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn unread_terminal_bodies_hold_admission_until_drop() {
+        let (tx, mut rx) = mpsc::channel(128);
+        let state = BridgeState::new(tx);
+        let (_, token) = state.declaration_url(8000, "server");
+        let route = server_route("server");
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:8000".parse().unwrap());
+        headers.insert("authorization", format!("bearer {token}").parse().unwrap());
+        headers.insert("accept", "application/json".parse().unwrap());
+        headers.append("accept", "text/event-stream;q=0.8".parse().unwrap());
+        headers.insert(
+            "content-type",
+            "application/json; charset=utf-8".parse().unwrap(),
+        );
+        headers.insert("mcp-protocol-version", VERSION.parse().unwrap());
+        headers.insert("mcp-method", "tools/list".parse().unwrap());
+        tokio::spawn(async move {
+            while let Some(BridgeMessage::Request {
+                terminal_tx,
+                http_id,
+                ..
+            }) = rx.next().await
+            {
+                drop(terminal_tx.send(rpc_result(http_id, "", serde_json::json!({"tools":[]}))));
+            }
+        });
+        let body = serde_json::json!({"jsonrpc":"2.0","id":"known","method":"tools/list",
+            "params":{"_meta":{"io.modelcontextprotocol/protocolVersion":VERSION,
+                "io.modelcontextprotocol/clientCapabilities":{}}}})
+        .to_string();
+        let send = || {
+            handle_request(
+                State(state.clone()),
+                Path(route.clone()),
+                axum::http::Method::POST,
+                headers.clone(),
+                Body::from(body.clone()),
+            )
+        };
+        let mut responses = Vec::new();
+        for _ in 0..super::super::MAX_ACTIVE_REQUESTS {
+            let response = send().await;
+            assert_eq!(response.status(), StatusCode::OK);
+            responses.push(response);
+        }
+        assert_eq!(send().await.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(responses.pop());
+        let recovered = send().await;
+        assert_eq!(recovered.status(), StatusCode::OK);
     }
 
     #[test]

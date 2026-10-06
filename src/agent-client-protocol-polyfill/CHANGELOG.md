@@ -18,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authentication and Origin before reading request bodies.
 - Re-export native tool schemas without transport-only `x-mcp-header`
   annotations, preserving argument properties, examples, and defaults.
-- Retain the previous bridge's 2 MiB incoming-body parsing limit and
-  128-message queue capacity, with notification queues scoped to each POST.
-  A closed or full queue terminates only its operation without a terminal
-  outcome; it does not stall the bridge or silently discard notifications.
+- Bound HTTP admission to 64 outstanding response bodies, each operation's
+  notification queue to 16 events and 256 KiB, and request/terminal payloads
+  to 1 MiB. Hold admission through body consumption or drop, including error
+  responses. Overflow reports a resource error and cancels only that operation.
 
 ### Fixed
 
