@@ -10,7 +10,10 @@ use agent_client_protocol::{
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
     Stream, StreamExt,
-    channel::mpsc::{self, UnboundedSender},
+    channel::{
+        mpsc::{self, UnboundedSender},
+        oneshot,
+    },
     future::{BoxFuture, FutureExt},
     pin_mut,
     stream::FuturesUnordered,
@@ -103,20 +106,19 @@ impl ConnectTo<Client> for HttpClient {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), AcpError> {
         let (channel, transport) = ConnectTo::<Client>::into_channel_and_future(self);
         let transport = transport.expect("HttpClient owns its physical transport driver");
-        let shutdown_tx = channel.tx.clone();
         match futures::future::select(
             std::pin::pin!(client.connect_to(channel)),
             std::pin::pin!(transport),
         )
         .await
         {
-            futures::future::Either::Left((result, transport)) => {
+            futures::future::Either::Left((result, mut transport)) => {
                 result?;
 
                 // Reject sends from escaped client handles while preserving
                 // messages already accepted into the channel, then let the
                 // physical transport finish those messages.
-                shutdown_tx.close_channel();
+                assert!(transport.request_finish());
                 transport.await
             }
             futures::future::Either::Right((result, _)) => result,
@@ -125,19 +127,58 @@ impl ConnectTo<Client> for HttpClient {
 
     fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>) {
         let (caller, transport) = Channel::duplex();
-        (caller, Some(ConnectionDriver::new(run(self, transport))))
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let driver = ConnectionDriver::with_finish(
+            run_with_finish(self, transport, Some(finish_rx)),
+            move || {
+                // The core has handed off its accepted output before requesting
+                // finish. Seal the producer, including escaped sender clones, and
+                // let run drain queued frames and complete the physical transport.
+                let _ = finish_tx.send(());
+            },
+        );
+        (caller, Some(driver))
     }
 }
 
+// A finish signal seals the receiver rather than retaining a producer clone:
+// ordinary producer EOF still works, and losing the hook is not a finish request.
+fn finishable_outgoing(
+    mut outgoing: mpsc::UnboundedReceiver<TransportFrame>,
+    mut finish: Option<oneshot::Receiver<()>>,
+) -> impl Stream<Item = TransportFrame> + Unpin + Send {
+    futures::stream::poll_fn(move |cx| {
+        if let Some(signal) = finish.as_mut()
+            && let std::task::Poll::Ready(result) = signal.poll_unpin(cx)
+        {
+            if result.is_ok() {
+                outgoing.close();
+            }
+            finish = None;
+        }
+        outgoing.poll_next_unpin(cx)
+    })
+}
+
+#[cfg(test)]
 async fn run(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
+    run_with_finish(client, channel, None).await
+}
+
+async fn run_with_finish(
+    client: HttpClient,
+    channel: Channel,
+    finish: Option<oneshot::Receiver<()>>,
+) -> Result<(), AcpError> {
     if client.is_websocket() {
-        return run_ws(client, channel).await;
+        return run_ws(client, channel, finish).await;
     }
     let HttpClient { endpoint, http } = client;
     let Channel {
-        rx: mut outgoing,
+        rx: outgoing,
         tx: incoming,
     } = channel;
+    let mut outgoing = finishable_outgoing(outgoing, finish);
     let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
     let connection = HttpConnection::new(endpoint, http);
     let mut state = ClientState {
@@ -557,7 +598,7 @@ enum SseStartOutcome {
 
 struct SseStartContext<'a> {
     events: &'a mut mpsc::UnboundedReceiver<SseMessage>,
-    outgoing: &'a mut mpsc::UnboundedReceiver<TransportFrame>,
+    outgoing: &'a mut (dyn Stream<Item = TransportFrame> + Unpin + Send),
     buffered_outgoing: &'a mut VecDeque<TransportFrame>,
     posts: &'a mut PostQueues,
     state: &'a mut ClientState,
@@ -1147,7 +1188,11 @@ fn pending_request_key(id: &RequestId) -> Option<RequestId> {
     }
 }
 
-async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
+async fn run_ws(
+    client: HttpClient,
+    channel: Channel,
+    finish: Option<oneshot::Receiver<()>>,
+) -> Result<(), AcpError> {
     let HttpClient { endpoint, .. } = client;
 
     let (ws_stream, response) = async_tungstenite::tokio::connect_async(endpoint.as_str())
@@ -1159,7 +1204,7 @@ async fn run_ws(client: HttpClient, channel: Channel) -> Result<(), AcpError> {
     );
     let (ws_tx, ws_rx) = ws_stream.split();
 
-    drive_ws(ws_tx, ws_rx, channel).await
+    drive_ws_with_finish(ws_tx, ws_rx, channel, finish).await
 }
 
 trait WsSink {
@@ -1180,10 +1225,21 @@ where
     }
 }
 
-async fn drive_ws<Tx, Rx, RxError>(
+#[cfg(test)]
+async fn drive_ws<Tx, Rx, RxError>(ws_tx: Tx, ws_rx: Rx, channel: Channel) -> Result<(), AcpError>
+where
+    Tx: WsSink,
+    Rx: Stream<Item = Result<WsMessage, RxError>> + Unpin,
+    RxError: std::fmt::Display,
+{
+    drive_ws_with_finish(ws_tx, ws_rx, channel, None).await
+}
+
+async fn drive_ws_with_finish<Tx, Rx, RxError>(
     mut ws_tx: Tx,
     mut ws_rx: Rx,
     channel: Channel,
+    finish: Option<oneshot::Receiver<()>>,
 ) -> Result<(), AcpError>
 where
     Tx: WsSink,
@@ -1191,9 +1247,10 @@ where
     RxError: std::fmt::Display,
 {
     let Channel {
-        rx: mut outgoing,
+        rx: outgoing,
         tx: incoming,
     } = channel;
+    let mut outgoing = finishable_outgoing(outgoing, finish);
     let writer = async move {
         while let Some(frame) = outgoing.next().await {
             let text = match frame.to_json() {
@@ -1209,7 +1266,10 @@ where
             }
         }
 
-        drop(ws_tx.send(WsMessage::Close(None)).await);
+        ws_tx
+            .send(WsMessage::Close(None))
+            .await
+            .map_err(|error| AcpError::internal_error().data(format!("ws close: {error}")))?;
         Ok(())
     };
 
@@ -1267,7 +1327,7 @@ mod tests {
         time::Duration,
     };
 
-    use agent_client_protocol::{TransportBatch, schema::v1::RequestId};
+    use agent_client_protocol::{TransportBatch, UntypedMessage, schema::v1::RequestId};
     use axum::{
         Json, Router,
         extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},
@@ -1317,6 +1377,70 @@ mod tests {
 
     fn single_frame(message: RawJsonRpcMessage) -> TransportFrame {
         TransportFrame::Single(message)
+    }
+
+    #[tokio::test]
+    async fn finish_seals_escaped_senders_and_drains_accepted_frames() {
+        let (tx, rx) = mpsc::unbounded();
+        let escaped = tx.clone();
+        let (finish_tx, finish_rx) = oneshot::channel();
+        for method in ["custom/first", "custom/second"] {
+            tx.unbounded_send(single_frame(
+                RawJsonRpcMessage::notification(method.to_string(), json!({})).unwrap(),
+            ))
+            .unwrap();
+        }
+        let mut outgoing = finishable_outgoing(rx, Some(finish_rx));
+        finish_tx.send(()).unwrap();
+        for method in ["custom/first", "custom/second"] {
+            let message = into_single_message(outgoing.next().await.unwrap()).unwrap();
+            assert_eq!(method_for_message(&message), Some(method));
+            assert!(escaped.is_closed());
+        }
+        assert!(outgoing.next().await.is_none());
+        assert!(
+            escaped
+                .unbounded_send(single_frame(
+                    RawJsonRpcMessage::notification("custom/too-late".to_string(), json!({}))
+                        .unwrap(),
+                ))
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_finish_signal_does_not_close_outgoing() {
+        let (tx, rx) = mpsc::unbounded();
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let mut outgoing = finishable_outgoing(rx, Some(finish_rx));
+        drop(finish_tx);
+        assert!(outgoing.next().now_or_never().is_none());
+        assert!(!tx.is_closed());
+        tx.unbounded_send(single_frame(
+            RawJsonRpcMessage::notification("custom/still-open".to_string(), json!({})).unwrap(),
+        ))
+        .unwrap();
+        assert!(outgoing.next().await.is_some());
+        drop(tx);
+        assert!(outgoing.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn converted_driver_supports_finish_and_natural_producer_eof() {
+        for request_finish in [false, true] {
+            let client = HttpClient::new("http://127.0.0.1:1").unwrap();
+            let (caller, driver) = ConnectTo::<Client>::into_channel_and_future(client);
+            let mut driver = driver.unwrap();
+            if request_finish {
+                assert!(driver.request_finish());
+            } else {
+                drop(caller.tx);
+            }
+            timeout(Duration::from_secs(1), driver)
+                .await
+                .unwrap()
+                .unwrap();
+        }
     }
 
     fn into_single_message(frame: TransportFrame) -> Result<RawJsonRpcMessage, AcpError> {
@@ -2564,6 +2688,203 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn builder_completion_drains_ordered_posts_and_delete() {
+        timeout(Duration::from_secs(3), builder_http_finish(false))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn builder_completion_preserves_post_failure() {
+        timeout(Duration::from_secs(3), builder_http_finish(true))
+            .await
+            .unwrap();
+    }
+
+    async fn builder_http_finish(fail_first: bool) {
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+        let release_delete = Arc::new(Notify::new());
+        let (seen_tx, mut seen) = mpsc::unbounded();
+        let app = Router::new().route(
+            "/acp",
+            post({
+                let first_started = first_started.clone();
+                let release_first = release_first.clone();
+                let seen_tx = seen_tx.clone();
+                move |Json(message): Json<serde_json::Value>| {
+                    let first_started = first_started.clone();
+                    let release_first = release_first.clone();
+                    let seen_tx = seen_tx.clone();
+                    async move {
+                        if message["method"] == "initialize" {
+                            return (
+                                [(HEADER_CONNECTION_ID, "conn-1")],
+                                Json(json!({
+                                    "jsonrpc": "2.0",
+                                    "id": message["id"],
+                                    "result": {"protocolVersion": 1, "agentCapabilities": {}}
+                                })),
+                            )
+                                .into_response();
+                        }
+                        let method = message["method"].as_str().unwrap().to_string();
+                        seen_tx.unbounded_send(method.clone()).unwrap();
+                        if method == "custom/first" {
+                            first_started.notify_one();
+                            release_first.notified().await;
+                            if fail_first {
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                        }
+                        StatusCode::ACCEPTED.into_response()
+                    }
+                }
+            })
+            .get(pending_sse)
+            .delete({
+                let release_delete = release_delete.clone();
+                move || {
+                    let release_delete = release_delete.clone();
+                    let seen_tx = seen_tx.clone();
+                    async move {
+                        seen_tx.unbounded_send("delete".to_string()).unwrap();
+                        release_delete.notified().await;
+                        StatusCode::ACCEPTED
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = HttpClient::new(format!("http://{addr}")).unwrap();
+        let mut connection = Box::pin(Client.builder().connect_with(client, async move |cx| {
+            cx.send_request(UntypedMessage::new(
+                "initialize",
+                json!({"protocolVersion": 1, "clientCapabilities": {}}),
+            )?)
+            .block_task()
+            .await?;
+            for method in ["custom/first", "custom/second"] {
+                cx.send_notification(UntypedMessage::new(method, json!({}))?)?;
+            }
+            // Initialization is delivered before connection SSE establishment.
+            // Finish only once dependent output is flowing on that connection.
+            first_started.notified().await;
+            Ok(())
+        }));
+
+        tokio::select! {
+            result = &mut connection => panic!("returned before first POST drain: {result:?}"),
+            event = seen.next() => assert_eq!(event.as_deref(), Some("custom/first")),
+        }
+        assert!(
+            connection.as_mut().now_or_never().is_none(),
+            "a gated POST must keep graceful shutdown pending"
+        );
+        assert!(seen.try_recv().is_err(), "ordered POST bypassed its gate");
+
+        release_first.notify_one();
+        if !fail_first {
+            tokio::select! {
+                result = &mut connection => panic!("returned before second POST: {result:?}"),
+                event = seen.next() => assert_eq!(event.as_deref(), Some("custom/second")),
+            }
+        }
+        tokio::select! {
+            result = &mut connection => panic!("returned before DELETE: {result:?}"),
+            event = seen.next() => assert_eq!(event.as_deref(), Some("delete")),
+        }
+        assert!(
+            connection.as_mut().now_or_never().is_none(),
+            "transport must await physical cleanup, not just spawn DELETE"
+        );
+        release_delete.notify_one();
+        let result = connection.await;
+        if fail_first {
+            assert!(result.unwrap_err().to_string().contains("500"));
+        } else {
+            result.unwrap();
+        }
+        assert!(seen.try_recv().is_err());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn builder_completion_drains_websocket_and_closes_without_peer_eof() {
+        let release_upgrade = Arc::new(Notify::new());
+        let (frames_tx, mut frames) = mpsc::unbounded();
+        let app = Router::new().route(
+            "/acp",
+            get({
+                let release_upgrade = release_upgrade.clone();
+                move |ws: WebSocketUpgrade| {
+                    let release_upgrade = release_upgrade.clone();
+                    let frames_tx = frames_tx.clone();
+                    async move {
+                        release_upgrade.notified().await;
+                        ws.on_upgrade(async move |mut socket| {
+                            while let Some(Ok(message)) = socket.recv().await {
+                                let closed = matches!(message, AxumWsMessage::Close(_));
+                                frames_tx.unbounded_send(message).unwrap();
+                                if closed {
+                                    // Do not require the peer to finish its read half.
+                                    futures::future::pending::<()>().await;
+                                }
+                            }
+                        })
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (callback_done_tx, callback_done_rx) = futures::channel::oneshot::channel();
+        let client = HttpClient::new(format!("ws://{addr}")).unwrap();
+        let mut connection = Box::pin(Client.builder().connect_with(client, async move |cx| {
+            for method in ["custom/first", "custom/second"] {
+                cx.send_notification(UntypedMessage::new(method, json!({}))?)?;
+            }
+            callback_done_tx.send(()).unwrap();
+            Ok(())
+        }));
+        assert!(
+            connection.as_mut().now_or_never().is_none(),
+            "queued sends must await the gated WebSocket handshake"
+        );
+        callback_done_rx.now_or_never().unwrap().unwrap();
+        release_upgrade.notify_one();
+        timeout(Duration::from_secs(3), connection)
+            .await
+            .unwrap()
+            .unwrap();
+        for method in ["custom/first", "custom/second"] {
+            let frame = timeout(Duration::from_secs(1), frames.next())
+                .await
+                .unwrap()
+                .unwrap();
+            let AxumWsMessage::Text(text) = frame else {
+                panic!("expected outbound text frame, got {frame:?}");
+            };
+            let message = serde_json::from_str::<RawJsonRpcMessage>(&text).unwrap();
+            assert_eq!(method_for_message(&message), Some(method));
+        }
+        assert!(matches!(
+            timeout(Duration::from_secs(1), frames.next())
+                .await
+                .unwrap(),
+            Some(AxumWsMessage::Close(None))
+        ));
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn client_completion_cancels_pending_sse_establishment() {
         let sse_started = Arc::new(Notify::new());
         let delete_count = Arc::new(AtomicUsize::new(0));
@@ -3379,6 +3700,31 @@ mod tests {
         assert_eq!(method_for_message(&message), Some("custom/queued"));
         assert!(matches!(frames.get(1), Some(WsMessage::Close(None))));
         assert_eq!(frames.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn websocket_finish_preserves_close_failure() {
+        struct FailingCloseSink;
+        impl WsSink for FailingCloseSink {
+            fn send(
+                &mut self,
+                message: WsMessage,
+            ) -> impl std::future::Future<Output = Result<(), String>> + Send {
+                assert!(matches!(message, WsMessage::Close(None)));
+                futures::future::ready(Err("close failed".to_string()))
+            }
+        }
+
+        let (caller, transport) = Channel::duplex();
+        drop(caller.tx);
+        let error = drive_ws(
+            FailingCloseSink,
+            futures::stream::pending::<Result<WsMessage, Infallible>>(),
+            transport,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("ws close: close failed"));
     }
 
     #[tokio::test]
