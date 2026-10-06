@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Mark `AcpAgentConfig` non-exhaustive for future configuration extensions.
+  Existing private fields, constructors, fluent methods, getters, and JSON
+  behavior are unchanged; an executable is still required.
+  See the [config API migration guide](../../md/migration-config-api.md).
 - **Breaking (unstable MCP):** adopt schema 1.10.1's request-scoped
   `mcp/message(serverId, requestId, method, params)` binding and independent
   inner MCP result/error carriers. Remove MCP connect/disconnect and connection
