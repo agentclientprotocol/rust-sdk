@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.2.0...agent-client-protocol-conductor-v3.0.0) - 2026-10-06
+
+### Added
+
+- *(acp)* [**breaking**] make native transports and schema support opt-in ([#397](https://github.com/agentclientprotocol/rust-sdk/pull/397))
+- *(acp)* [**breaking**] adopt request-scoped MCP binding ([#388](https://github.com/agentclientprotocol/rust-sdk/pull/388))
+- *(deps)* bump the minor group with 14 updates ([#381](https://github.com/agentclientprotocol/rust-sdk/pull/381))
+- *(rmcp)* [**breaking**] upgrade integration to rmcp 3.4
+
+### Fixed
+
+- avoid sensitive transport logs and redact trace URL credentials ([#401](https://github.com/agentclientprotocol/rust-sdk/pull/401))
+- *(polyfill)* bound request-scoped HTTP resources ([#389](https://github.com/agentclientprotocol/rust-sdk/pull/389))
+- *(acp)* [**breaking**] preserve connection lifetimes and graceful drain ([#385](https://github.com/agentclientprotocol/rust-sdk/pull/385))
+- *(acp)* [**breaking**] preserve protocol-neutral raw JSON-RPC errors ([#384](https://github.com/agentclientprotocol/rust-sdk/pull/384))
+
+### Other
+
+- omit peer-controlled HTTP responses from test failure logs ([#405](https://github.com/agentclientprotocol/rust-sdk/pull/405))
+- prepare v3 package metadata and release guidance ([#404](https://github.com/agentclientprotocol/rust-sdk/pull/404))
+- slim dependency features and CI validation ([#399](https://github.com/agentclientprotocol/rust-sdk/pull/399))
+
 ### Changed
 
 - Keep the Tokio/futures compatibility adapter in dev dependencies and omit

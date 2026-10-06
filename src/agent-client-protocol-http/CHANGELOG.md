@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.2.0...agent-client-protocol-http-v3.0.0) - 2026-10-06
+
+### Added
+
+- *(config)* [**breaking**] make public configuration APIs extensible ([#403](https://github.com/agentclientprotocol/rust-sdk/pull/403))
+
+### Fixed
+
+- *(http)* [**breaking**] honor custom configuration with safe WebSocket handshakes ([#333](https://github.com/agentclientprotocol/rust-sdk/pull/333))
+- avoid sensitive transport logs and redact trace URL credentials ([#401](https://github.com/agentclientprotocol/rust-sdk/pull/401))
+- *(http)* gracefully finish client transports after builder completion ([#396](https://github.com/agentclientprotocol/rust-sdk/pull/396))
+- *(acp)* [**breaking**] preserve connection lifetimes and graceful drain ([#385](https://github.com/agentclientprotocol/rust-sdk/pull/385))
+- *(acp)* [**breaking**] preserve protocol-neutral raw JSON-RPC errors ([#384](https://github.com/agentclientprotocol/rust-sdk/pull/384))
+
+### Other
+
+- prepare v3 package metadata and release guidance ([#404](https://github.com/agentclientprotocol/rust-sdk/pull/404))
+- slim dependency features and CI validation ([#399](https://github.com/agentclientprotocol/rust-sdk/pull/399))
+
 ### Breaking changes
 
 - WebSocket URLs passed to `HttpClient::with_client` or

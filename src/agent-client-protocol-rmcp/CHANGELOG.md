@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.1...agent-client-protocol-rmcp-v4.0.0) - 2026-10-06
+
+### Added
+
+- *(acp)* [**breaking**] make native transports and schema support opt-in ([#397](https://github.com/agentclientprotocol/rust-sdk/pull/397))
+- *(acp)* [**breaking**] adopt request-scoped MCP binding ([#388](https://github.com/agentclientprotocol/rust-sdk/pull/388))
+- *(rmcp)* [**breaking**] upgrade integration to rmcp 3.4
+- *(acp)* make schemars optional ([#373](https://github.com/agentclientprotocol/rust-sdk/pull/373))
+
+### Other
+
+- prepare v3 package metadata and release guidance ([#404](https://github.com/agentclientprotocol/rust-sdk/pull/404))
+- slim dependency features and CI validation ([#399](https://github.com/agentclientprotocol/rust-sdk/pull/399))
+- reconcile combined breaking release migrations ([#395](https://github.com/agentclientprotocol/rust-sdk/pull/395))
+
 ### Breaking changes
 
 - Native attachments use request-scoped MCP 2026-07-28 and inner outcome
