@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Request rmcp's native MCP-over-ACP attachment feature explicitly for the
+  compiled recipes. Keep subprocess support for the `AcpAgent` recipe, but
+  remove unused core stdio and futures executor features from dev dependencies.
+
 ## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.1.0...agent-client-protocol-cookbook-v2.2.0) - 2026-09-18
 
 ### Other

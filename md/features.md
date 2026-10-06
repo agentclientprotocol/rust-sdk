@@ -69,6 +69,39 @@ its tool builders. HTTP and polyfill transports do not enable it themselves.
 Cargo features are additive: another dependency that requests a feature can
 enable it for the same core crate, even if your direct dependency omits it.
 
+## Transport and tooling dependencies
+
+Internal crates request only the core capabilities they use:
+
+| Consumer | Core features requested |
+| --- | --- |
+| HTTP client/server | None; transport sides remain opt-in through `client` and `server` |
+| MCP-over-ACP polyfill | `unstable_mcp_over_acp`, with independent draft-v2 and session-fork passthrough features |
+| rmcp integration | `schemars`, with independent draft-v2 and MCP-over-ACP passthrough features |
+| Conductor | `process`, `stdio`, and `unstable_mcp_over_acp` for launching components, serving stdio, and classifying MCP traces |
+| YOPO | `process` for launching the agent |
+| Test utilities | `process` and `stdio` for fixture binaries and launch helpers |
+
+Conductor integration tests and cookbook recipes explicitly enable the rmcp
+integration's `unstable_mcp_over_acp` feature when attaching native servers.
+Conductor tests request `schemars` separately from production dependencies, and
+enable draft-v2 polyfill support only with the conductor's `unstable_protocol_v2`
+feature. Internal consumers disable test-utility defaults rather than enabling
+the core's entire `unstable` aggregate incidentally.
+
+The Axum consumers share HTTP1/Tokio serving and tracing/tower-log observability,
+but do not enable its default extractor features. The HTTP server opts into
+WebSockets, the polyfill opts into JSON responses, and HTTP tests opt into JSON
+extraction. The trace viewer serializes its responses directly and requires
+neither. Axum macros are not needed. Tracing subscribers retain environment
+filtering and text output without JSON log formatting.
+
+The core SDK enables the futures executor only for tests and doctests. The
+conductor's Tokio/futures compatibility adapter is test-only, and the test
+utilities need it only for the `arrow_proxy` example. The rmcp integration keeps
+compatibility adapters and cancellation tokens in production; rmcp itself still
+enables the futures executor transitively.
+
 ## Draft protocol features
 
 Unstable protocol features are independent of the native and schema features.

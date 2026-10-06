@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Limit Axum to HTTP1/Tokio, WebSockets, and tracing/tower-log observability.
+  Remove unused Axum macros and extractors; JSON extraction is enabled only for
+  tests. Drop unused test-utility and tracing-subscriber dev dependencies and
+  the unused production futures executor feature.
 - Adapt `HttpClient`'s `ConnectTo` conversion to the core SDK's breaking
   optional `ConnectionDriver` return type. Channels and HTTP framing remain
   unchanged; no new resource limits are introduced.

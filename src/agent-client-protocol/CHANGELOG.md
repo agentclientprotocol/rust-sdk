@@ -26,6 +26,9 @@
   features are independent and expose `LineDirection` with either enabled.
   Protocol serialization and generic transports remain available by default.
   See [Cargo Features](../../md/features.md) for migration examples.
+- Request the futures executor only for tests and doctests, not production
+  connections. Internal test utilities no longer implicitly enable unrelated
+  unstable protocol features or JSON Schema generation.
 
 ### Added
 

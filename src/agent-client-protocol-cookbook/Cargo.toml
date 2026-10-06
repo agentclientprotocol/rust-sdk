@@ -13,8 +13,8 @@ categories = ["development-tools"]
 [dependencies]
 
 [dev-dependencies]
-agent-client-protocol = { workspace = true, features = ["process", "stdio", "schemars", "unstable_mcp_over_acp", "unstable_protocol_v2"] }
-agent-client-protocol-rmcp.workspace = true
+agent-client-protocol = { workspace = true, features = ["process", "schemars", "unstable_mcp_over_acp", "unstable_protocol_v2"] }
+agent-client-protocol-rmcp = { workspace = true, features = ["unstable_mcp_over_acp"] }
 futures.workspace = true
 rmcp = { workspace = true, features = ["macros"] }
 schemars.workspace = true

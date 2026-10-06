@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Limit Axum to HTTP1/Tokio, JSON responses, and tracing/tower-log observability;
+  remove unused extractors and the unused futures executor feature.
 - Use one loopback listener per ACP connection with server-addressed URLs and
   server-specific HMAC bearer credentials in declaration headers. Validate
   authentication and Origin before reading request bodies.

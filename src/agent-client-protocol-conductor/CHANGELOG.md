@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Keep the Tokio/futures compatibility adapter in dev dependencies and omit
+  unused futures executor and JSON logging features from production dependencies.
+- Request JSON Schema generation and rmcp's native MCP-over-ACP attachment
+  support explicitly for integration tests. Enable the polyfill's draft-v2
+  support only with `unstable_protocol_v2`; test utilities no longer implicitly
+  enable unrelated unstable protocol features.
+
 ### Fixed
 
 - Trace inner MCP errors separately from outer ACP binding failures and redact
