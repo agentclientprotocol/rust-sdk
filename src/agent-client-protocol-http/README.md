@@ -9,8 +9,9 @@ The crate does not enable either transport side by default. Opt into the
 surface you need:
 
 ```toml
-agent-client-protocol-http = { version = "...", features = ["client"] }
-agent-client-protocol-http = { version = "...", features = ["server"] }
+agent-client-protocol-http = { version = "3", features = ["client"] }
+# For a server instead:
+# agent-client-protocol-http = { version = "3", features = ["server"] }
 ```
 
 Cross-origin browser access is disabled by default. Configure `ServerOptions`

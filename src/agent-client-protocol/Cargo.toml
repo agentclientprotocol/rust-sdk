@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+license-file.workspace = true
 repository.workspace = true
 description = "Core protocol types and traits for the Agent Client Protocol"
 keywords = ["acp", "agent", "protocol", "ai"]

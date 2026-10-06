@@ -82,9 +82,11 @@ stream for that returned session before expecting updates or responses for it.
 The crate does not enable either transport side by default. Opt into only the side(s) you need.
 
 ```toml
-agent-client-protocol-http = { version = "...", features = ["client"] }
-agent-client-protocol-http = { version = "...", features = ["server"] }
-agent-client-protocol-http = { version = "...", features = ["client", "server"] }
+agent-client-protocol-http = { version = "3", features = ["client"] }
+# For a server instead:
+# agent-client-protocol-http = { version = "3", features = ["server"] }
+# To enable both sides:
+# agent-client-protocol-http = { version = "3", features = ["client", "server"] }
 ```
 
 The `client` feature exposes `HttpClient`. The `server` feature exposes
@@ -95,7 +97,7 @@ The `client` feature exposes `HttpClient`. The `server` feature exposes
 Request cancellation is available through the core SDK:
 
 ```toml
-agent-client-protocol-http = { version = "...", features = ["client", "server"] }
+agent-client-protocol-http = { version = "3", features = ["client", "server"] }
 ```
 
 `$/cancel_request` is connection-scoped. The HTTP transport does not apply
