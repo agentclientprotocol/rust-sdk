@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.2.0...v3.0.0) - 2026-10-06
+
+### Added
+
+- *(acp)* forward unstable subagents schema support ([#402](https://github.com/agentclientprotocol/rust-sdk/pull/402))
+- *(config)* [**breaking**] make public configuration APIs extensible ([#403](https://github.com/agentclientprotocol/rust-sdk/pull/403))
+- *(acp)* [**breaking**] make native transports and schema support opt-in ([#397](https://github.com/agentclientprotocol/rust-sdk/pull/397))
+- *(acp)* [**breaking**] adopt request-scoped MCP binding ([#388](https://github.com/agentclientprotocol/rust-sdk/pull/388))
+- *(acp)* make schemars optional ([#373](https://github.com/agentclientprotocol/rust-sdk/pull/373))
+
+### Fixed
+
+- *(acp)* allow singleton role IDs without Default ([#400](https://github.com/agentclientprotocol/rust-sdk/pull/400))
+- *(acp)* cancel abandoned function-tool invocations ([#387](https://github.com/agentclientprotocol/rust-sdk/pull/387))
+- *(acp)* [**breaking**] preserve connection lifetimes and graceful drain ([#385](https://github.com/agentclientprotocol/rust-sdk/pull/385))
+- *(acp)* [**breaking**] preserve protocol-neutral raw JSON-RPC errors ([#384](https://github.com/agentclientprotocol/rust-sdk/pull/384))
+
+### Other
+
+- prepare v3 package metadata and release guidance ([#404](https://github.com/agentclientprotocol/rust-sdk/pull/404))
+- slim dependency features and CI validation ([#399](https://github.com/agentclientprotocol/rust-sdk/pull/399))
+- reconcile combined breaking release migrations ([#395](https://github.com/agentclientprotocol/rust-sdk/pull/395))
+- Simplify logs in example ([#386](https://github.com/agentclientprotocol/rust-sdk/pull/386))
+
 ### Changed
 
 - Mark `AcpAgentConfig` non-exhaustive for future configuration extensions.

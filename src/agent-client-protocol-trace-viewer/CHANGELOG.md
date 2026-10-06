@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v2.2.0...agent-client-protocol-trace-viewer-v3.0.0) - 2026-10-06
+
+### Other
+
+- prepare v3 package metadata and release guidance ([#404](https://github.com/agentclientprotocol/rust-sdk/pull/404))
+- slim dependency features and CI validation ([#399](https://github.com/agentclientprotocol/rust-sdk/pull/399))
+
 ### Changed
 
 - Limit Axum to HTTP1/Tokio and tracing/tower-log observability. The viewer
