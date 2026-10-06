@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Cooperatively finish HTTP client connections created through the public builder:
+  drain accepted ordered POSTs and WebSocket frames before physical cleanup, reject
+  output from escaped transport senders, and report transport failures during shutdown.
 - Preserve raw JSON-RPC error codes, omitted versus null data, and error
   extension fields across HTTP/SSE and WebSocket transports, using the core
   SDK's new `RawJsonRpcResponse` representation.
