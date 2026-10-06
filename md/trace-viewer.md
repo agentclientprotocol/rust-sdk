@@ -49,7 +49,7 @@ hyphens and underscores:
 - `secret`, `client_secret`, `password`, `passwd`, `pwd`
 - `auth`, `authorization`, `bearer`, `signature`, `sig`, `credential`, `credentials`
 
-Repeated and valueless credential parameters follow the same rule. Unparseable
+Repeated and valueless credential parameters follow the same rule. Unparsable
 HTTP(S) URLs are redacted in full. Credential-free URLs remain unchanged;
 redacted URLs may be canonicalized, but non-secret query pair spelling, order,
 and encoding are retained. Redaction never changes the original wire message.
