@@ -112,12 +112,40 @@ the browser origins that should be able to access the ACP endpoint:
 use agent_client_protocol_http::{AcpHttpServer, CorsOptions, ServerOptions};
 
 let app = AcpHttpServer::new(|| my_agent())
-    .with_options(ServerOptions {
-        cors: CorsOptions::allow_origins(["http://localhost:5173"])?,
-        ..ServerOptions::default()
-    })
+    .with_options(
+        ServerOptions::default()
+            .with_cors(CorsOptions::allow_origins(["http://localhost:5173"])?),
+    )
     .into_router();
 ```
+
+`ServerOptions` is non-exhaustive. Start from `ServerOptions::default()` and use
+`with_path(...)`, `with_cors(...)`, and `with_health_endpoint(...)`; its fields
+remain public for reading and mutation. Defaults remain `/acp`, disabled CORS,
+and an enabled `/health` endpoint. See the [config API migration](./migration-config-api.md)
+for replacing struct literals and update syntax.
+
+### Browser authentication and credential policy
+
+CORS controls browser cross-origin access; it does **not** authenticate clients.
+The WebSocket origin check accepts requests without an `Origin` header, so an
+origin allowlist is not a substitute for authentication.
+
+The built-in CORS policy allows ACP transport headers, but not `Authorization`,
+and does not enable credentialed CORS (`Access-Control-Allow-Credentials`).
+`CorsOptions::allow_any_origin()` is a wildcard origin policy, not an
+authentication or credential policy.
+
+Hosts that need bearer headers, cookies, or another credential policy should
+enforce authentication on the router returned by `into_router()` and supply
+their own CORS layer. Leave `ServerOptions::cors` disabled when providing that
+HTTP CORS layer to avoid stacking conflicting policies. The separate WebSocket
+origin check still uses `CorsOptions`; with the built-in policy disabled it
+rejects upgrades carrying an `Origin` header. Browser WebSocket hosts can use
+an explicit `CorsOptions::allow_origins(...)` allowlist, but a host needing a
+different credentialed HTTP CORS policy and browser WebSocket origins on the
+same endpoint needs additional host routing/policy integration beyond these
+options. This SDK does not provide a general authentication configuration.
 
 ## Client
 

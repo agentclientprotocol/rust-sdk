@@ -18,6 +18,10 @@ For the other transport changes in core 3.x, follow:
 
 For Cargo feature selection and defaults, see [Cargo Features](./features.md).
 
+For non-exhaustive server options and CORS policies, see
+[Migrating the Config API](./migration-config-api.md). Agent subprocess config
+constructors and fluent methods remain unchanged.
+
 ## Raw responses are no longer ACP errors
 
 `RawJsonRpcMessage::Response` now contains `RawJsonRpcResponse`, whose error

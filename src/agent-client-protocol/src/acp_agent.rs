@@ -28,6 +28,10 @@ const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 /// This is local SDK configuration, not an ACP wire-protocol type. It contains
 /// only the values used to launch the child process.
 ///
+/// This non-exhaustive type is constructed with [`Self::new`] and customized
+/// with its fluent methods. A command is required, so there is no `Default`
+/// configuration. Its JSON representation is unchanged by non-exhaustiveness.
+///
 /// ```
 /// use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 ///
@@ -39,6 +43,7 @@ const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
 /// ```
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[non_exhaustive]
 pub struct AcpAgentConfig {
     command: PathBuf,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

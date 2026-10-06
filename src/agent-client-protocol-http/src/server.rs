@@ -13,11 +13,71 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::connection::ConnectionRegistry;
 
+/// Configuration for an [`AcpHttpServer`].
+///
+/// Start with [`Self::default`] and use the fluent setters to customize it.
+/// Fields remain public for reading and mutation, but this type is non-exhaustive
+/// so new options can be added without breaking callers.
+///
+/// ```
+/// use agent_client_protocol_http::{CorsOptions, ServerOptions};
+///
+/// let options = ServerOptions::default()
+///     .with_path("/agent")
+///     .with_cors(CorsOptions::allow_origins(["https://example.com"])?)
+///     .with_health_endpoint(false);
+/// assert_eq!(options.path, "/agent");
+/// assert!(!options.health_endpoint);
+/// # Ok::<(), axum::http::header::InvalidHeaderValue>(())
+/// ```
+///
+/// Struct literals, including struct update syntax, are not supported outside
+/// this crate:
+///
+/// ```compile_fail
+/// use agent_client_protocol_http::ServerOptions;
+///
+/// let options = ServerOptions {
+///     path: "/agent".into(),
+///     ..ServerOptions::default()
+/// };
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ServerOptions {
+    /// ACP endpoint path. Defaults to `/acp`.
     pub path: String,
+    /// Browser origin policy. Defaults to [`CorsOptions::Disabled`].
     pub cors: CorsOptions,
+    /// Whether to expose `GET /health`. Defaults to `true`.
     pub health_endpoint: bool,
+}
+
+impl ServerOptions {
+    /// Set the ACP endpoint path.
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
+    }
+
+    /// Set the browser origin policy.
+    ///
+    /// CORS does not authenticate requests. The built-in CORS layer does not
+    /// allow the `Authorization` request header or enable credentialed CORS.
+    /// Authentication and custom credential policies belong to the host router.
+    #[must_use]
+    pub fn with_cors(mut self, cors: CorsOptions) -> Self {
+        self.cors = cors;
+        self
+    }
+
+    /// Enable or disable the `GET /health` endpoint.
+    #[must_use]
+    pub fn with_health_endpoint(mut self, enabled: bool) -> Self {
+        self.health_endpoint = enabled;
+        self
+    }
 }
 
 impl Default for ServerOptions {
@@ -30,25 +90,61 @@ impl Default for ServerOptions {
     }
 }
 
+/// Browser origin policy for HTTP CORS and WebSocket upgrades.
+///
+/// This is not authentication: requests without an `Origin` header are accepted
+/// by the origin check. Enforce authentication in the host router.
+///
+/// Prefer the constructors; matches outside this crate must include a wildcard
+/// arm to accommodate future policies:
+///
+/// ```
+/// use agent_client_protocol_http::CorsOptions;
+///
+/// let policy = CorsOptions::disabled();
+/// let disabled = match policy {
+///     CorsOptions::Disabled => true,
+///     _ => false,
+/// };
+/// assert!(disabled);
+/// ```
+///
+/// ```compile_fail
+/// use agent_client_protocol_http::CorsOptions;
+///
+/// let policy = CorsOptions::disabled();
+/// match policy {
+///     CorsOptions::Disabled => {},
+///     CorsOptions::AllowOrigins(_) => {},
+///     CorsOptions::AllowAnyOrigin => {},
+/// }
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CorsOptions {
+    /// Disable cross-origin HTTP access and reject WebSocket browser origins.
     #[default]
     Disabled,
+    /// Allow only the listed browser origins.
     AllowOrigins(Vec<HeaderValue>),
+    /// Allow all browser origins. Does not enable credentialed CORS.
     AllowAnyOrigin,
 }
 
 impl CorsOptions {
+    /// Disable cross-origin browser access.
     #[must_use]
     pub fn disabled() -> Self {
         Self::Disabled
     }
 
+    /// Allow any browser origin, without enabling credentialed CORS.
     #[must_use]
     pub fn allow_any_origin() -> Self {
         Self::AllowAnyOrigin
     }
 
+    /// Allow the given browser origins.
     pub fn allow_origins<I, S>(origins: I) -> Result<Self, InvalidHeaderValue>
     where
         I: IntoIterator<Item = S>,
