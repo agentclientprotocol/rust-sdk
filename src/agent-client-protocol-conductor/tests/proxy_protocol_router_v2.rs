@@ -300,7 +300,7 @@ async fn v1_conductor_routes_initialize_and_later_requests_to_v1() -> Result<(),
             .send_request(v1::ListSessionsRequest::new())
             .block_task()
             .await?;
-        assert!(response.sessions.is_empty());
+        assert_eq!(response.sessions, [] as [v1::SessionInfo; 0]);
         Ok(())
     })
     .await?;
@@ -328,7 +328,7 @@ async fn v2_conductor_routes_initialize_and_later_requests_to_v2() -> Result<(),
             .send_request(v2::ListSessionsRequest::new())
             .block_task()
             .await?;
-        assert!(response.sessions.is_empty());
+        assert_eq!(response.sessions, [] as [v2::SessionInfo; 0]);
         Ok(())
     })
     .await?;
@@ -356,7 +356,7 @@ async fn conductor_canonicalizes_future_version_before_proxy_routing() -> Result
             .send_request(v2::ListSessionsRequest::new())
             .block_task()
             .await?;
-        assert!(response.sessions.is_empty());
+        assert_eq!(response.sessions, [] as [v2::SessionInfo; 0]);
         Ok(())
     })
     .await?;

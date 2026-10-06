@@ -1,4 +1,5 @@
 // Types re-exported from crate root
+use futures::FutureExt as _;
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::stream;
@@ -18,6 +19,7 @@ use crate::jsonrpc::PendingReplies;
 use crate::jsonrpc::PendingReply;
 use crate::jsonrpc::RawJsonRpcMessage;
 use crate::jsonrpc::RawJsonRpcParams;
+use crate::jsonrpc::RawJsonRpcResponse as Response;
 use crate::jsonrpc::RequestReplyTarget;
 use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseDestination;
@@ -32,7 +34,7 @@ use crate::jsonrpc::protocol_compat::ProtocolCompat;
 use crate::jsonrpc::{is_response_only_shape, raw_is_response_only_shape};
 
 use crate::role::Role;
-use crate::schema::v1::{RequestId, Response};
+use crate::schema::v1::RequestId;
 
 use super::Handled;
 
@@ -40,11 +42,20 @@ use super::Handled;
 pub(super) struct IncomingHandlers<Message, Close> {
     messages: Message,
     close: Close,
+    foreground_succeeded: super::SharedCompletionSignal,
 }
 
 impl<Message, Close> IncomingHandlers<Message, Close> {
-    pub(super) fn new(messages: Message, close: Close) -> Self {
-        Self { messages, close }
+    pub(super) fn new(
+        messages: Message,
+        close: Close,
+        foreground_succeeded: super::SharedCompletionSignal,
+    ) -> Self {
+        Self {
+            messages,
+            close,
+            foreground_succeeded,
+        }
     }
 }
 
@@ -59,7 +70,7 @@ impl<Message, Close> IncomingHandlers<Message, Close> {
 pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     counterpart: Counterpart,
     connection: &ConnectionTo<Counterpart>,
-    transport_rx: mpsc::UnboundedReceiver<TransportFrame>,
+    transport_rx: impl futures::Stream<Item = TransportFrame>,
     dynamic_handler_rx: mpsc::UnboundedReceiver<DynamicHandlerMessage<Counterpart>>,
     pending_replies: PendingReplies,
     handlers: IncomingHandlers<
@@ -71,6 +82,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
     let IncomingHandlers {
         messages: mut handler,
         close: on_close,
+        foreground_succeeded,
     } = handlers;
 
     // `merge` does not expose when one of its source streams ends. Preserve
@@ -80,8 +92,9 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         transport_rx.map(IncomingProtocolMsg::Transport),
         stream::iter([IncomingProtocolMsg::TransportClosed]),
     );
-    let mut my_rx =
+    let my_rx =
         transport_with_close.merge(dynamic_handler_rx.map(IncomingProtocolMsg::DynamicHandler));
+    let mut my_rx = std::pin::pin!(my_rx);
 
     let mut dynamic_handlers: FxHashMap<Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>> =
         FxHashMap::default();
@@ -100,6 +113,13 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             };
             message
         };
+        // Check after the receive await as well: success may have occurred
+        // while this actor was waiting for its next message/EOF. The caller
+        // cancels a blocked message handler, but protects an underway close
+        // callback. Neither path may start another delivery after success.
+        if foreground_succeeded.clone().now_or_never().is_some() {
+            break;
+        }
         tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {
@@ -208,7 +228,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                         Ok(RawJsonRpcMessage::Response(response)) => {
                             let (id, result) = match response {
                                 Response::Result { id, result } => (id, Ok(result)),
-                                Response::Error { id, error } => (id, Err(error)),
+                                Response::Error { id, error } => (id, Err(error.into_acp_error())),
                             };
 
                             tracing::trace!(?id, "Handling response");
@@ -347,7 +367,6 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             dynamic_handlers.remove(&uuid);
         }
         DynamicHandlerMessage::Barrier => {}
-        #[cfg(feature = "unstable_protocol_v2")]
         DynamicHandlerMessage::AcknowledgedBarrier(acknowledgment) => {
             let _ = acknowledgment.send(());
         }
@@ -618,6 +637,13 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
             Dispatch::Request(_, responder) => {
                 tracing::info!(?method, "Rejecting request with error, no handler");
+                #[cfg(feature = "unstable_mcp_over_acp")]
+                if method == "mcp/message" {
+                    return responder.respond_with_error(crate::Error::new(
+                        crate::mcp_server::MCP_SERVER_UNAVAILABLE,
+                        "MCP server registration unavailable",
+                    ));
+                }
                 responder.respond_with_error(crate::Error::method_not_found().data(method))
             }
             Dispatch::Response(result, router) => {

@@ -6,7 +6,7 @@
 //! session reports that its foreground work is idle.
 //!
 //! ```text
-//! cargo run -p agent-client-protocol --features unstable_protocol_v2 \
+//! cargo run -p agent-client-protocol --features process,unstable_protocol_v2 \
 //!   --example v2_one_shot_client -- \
 //!   --command ./target/debug/examples/simple_agent_v2 \
 //!   "What should a v2 client wait for?"
@@ -50,13 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |request: v2::RequestPermissionRequest,
+            async move |_request: v2::RequestPermissionRequest,
                         responder: Responder<v2::RequestPermissionResponse>,
                         _connection: V2ConnectionTo<Agent>| {
-                eprintln!(
-                    "Agent requested permission for session {}; cancelling in this non-interactive example",
-                    request.session_id
-                );
+                eprintln!("Agent requested permission; cancelling in this non-interactive example");
                 responder.respond(v2::RequestPermissionResponse::new(
                     v2::RequestPermissionOutcome::Cancelled,
                 ))
@@ -214,6 +211,114 @@ mod tests {
             message_id,
         )));
         assert_eq!(projection.text(), "again");
+    }
+
+    #[test]
+    fn interleaved_messages_keep_independent_content_and_first_seen_order() {
+        // Reverse lexical order so sorting by ID would not preserve arrival order.
+        let first_id = v2::MessageId::new("message-z");
+        let second_id = v2::MessageId::new("message-a");
+        let mut projection = AgentTextProjection::default();
+
+        for (message_id, text) in [
+            (&first_id, "first "),
+            (&second_id, "second "),
+            (&first_id, "message"),
+            (&second_id, "message"),
+        ] {
+            projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+                text.into(),
+                message_id.clone(),
+            )));
+        }
+        assert_eq!(projection.text(), "first messagesecond message");
+        assert_eq!(projection.order, [first_id.clone(), second_id.clone()]);
+
+        projection.apply(v2::SessionUpdate::AgentMessage(
+            v2::AgentMessage::new(first_id.clone()).content(vec!["replacement".into()]),
+        ));
+        assert_eq!(projection.text(), "replacementsecond message");
+
+        projection.apply(v2::SessionUpdate::AgentMessage(
+            v2::AgentMessage::new(second_id.clone()).content(MaybeUndefined::Null),
+        ));
+        assert_eq!(projection.text(), "replacement");
+
+        projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+            "again".into(),
+            second_id.clone(),
+        )));
+        assert_eq!(projection.text(), "replacementagain");
+        assert_eq!(projection.order, [first_id, second_id]);
+    }
+
+    #[test]
+    fn metadata_only_updates_establish_order_without_changing_text() {
+        let first_id = v2::MessageId::new("metadata-first");
+        let second_id = v2::MessageId::new("content-first");
+        let metadata_only =
+            v2::SessionUpdate::AgentMessage(v2::AgentMessage::new(first_id.clone()).meta(
+                serde_json::Map::from_iter([("source".to_owned(), serde_json::json!("replay"))]),
+            ));
+        let mut projection = AgentTextProjection::default();
+
+        projection.apply(metadata_only.clone());
+        assert_eq!(projection.order.as_slice(), std::slice::from_ref(&first_id));
+        assert_eq!(
+            projection.messages[&first_id],
+            Vec::<v2::ContentBlock>::new()
+        );
+        assert_eq!(projection.text(), "");
+
+        // The first message's content arrives last, but its metadata already
+        // established its place in the text projection.
+        for (message_id, text) in [(&second_id, "second"), (&first_id, "first")] {
+            projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+                text.into(),
+                message_id.clone(),
+            )));
+        }
+        assert_eq!(projection.text(), "firstsecond");
+
+        projection.apply(metadata_only);
+        assert_eq!(projection.text(), "firstsecond");
+        assert_eq!(projection.order, [first_id, second_id]);
+    }
+
+    #[test]
+    fn repeated_chunks_append_before_and_after_content_replacements() {
+        let message_id = v2::MessageId::new("message-1");
+        let chunk = v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+            "repeat ".into(),
+            message_id.clone(),
+        ));
+        let mut projection = AgentTextProjection::default();
+
+        projection.apply(chunk.clone());
+        projection.apply(chunk.clone());
+        assert_eq!(projection.text(), "repeat repeat ");
+
+        for (content, expected) in [
+            (MaybeUndefined::Undefined, "repeat repeat "),
+            (
+                MaybeUndefined::Value(vec!["replacement ".into()]),
+                "replacement ",
+            ),
+            (MaybeUndefined::Null, ""),
+            (MaybeUndefined::Value(Vec::new()), ""),
+        ] {
+            projection.apply(v2::SessionUpdate::AgentMessage(
+                v2::AgentMessage::new(message_id.clone()).content(content),
+            ));
+            assert_eq!(projection.text(), expected);
+
+            // Repeating the exact same chunk is another append, not an
+            // idempotent replay, even after replacement or clearing.
+            projection.apply(chunk.clone());
+            projection.apply(chunk.clone());
+            assert_eq!(projection.text(), format!("{expected}repeat repeat "));
+        }
+        assert_eq!(projection.order, [message_id]);
     }
 
     #[tokio::test]

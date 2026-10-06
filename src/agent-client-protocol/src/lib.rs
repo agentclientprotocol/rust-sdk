@@ -27,8 +27,12 @@
 //! proxy setup. With `unstable_session_fork`, `V2ForkSessionBuilder` provides
 //! the same shape for forked sessions and uses the response's new session ID.
 //! Per-session MCP routes and runners are ready before a setup request is
-//! published, as is proxy session routing for resume replay; successful
-//! attachments remain active for the connection lifetime.
+//! published, as is proxy session routing for resume replay. Successful v2
+//! setup detaches MCP handlers for the connection lifetime; dropping the
+//! returned `V2Session` does not unregister them. In v1, `ActiveSession` owns
+//! per-session MCP registrations until drop, unless a proxy handoff detaches
+//! them (`proxy_remaining_messages` or successful `on_proxy_session_start`).
+//! Global proxy attachments are connection-scoped in both versions.
 //!
 //! Here's a minimal example that initializes a v1 connection, creates a
 //! session, and sends a prompt:
@@ -76,13 +80,46 @@
 //!
 //! [`agent_client_protocol_cookbook`]: https://docs.rs/agent-client-protocol-cookbook
 //!
-//! ## WASI
+//! ## Cargo Features
+//!
+//! No features are enabled by default. Protocol serialization, connections,
+//! sessions, custom MCP servers, and the generic transport adapters remain
+//! available without opting in to native I/O or JSON Schema generation.
+//!
+//! - `process`: native subprocess support through `AcpAgent` and `AcpAgentConfig`.
+//! - `stdio`: the native `Stdio` adapter.
+//! - `schemars`: `JsonSchema` implementations on protocol types and typed MCP
+//!   tool helpers in [`mcp_server`].
+//!
+//! For example, a native client launching an agent opts into `process`:
+//!
+//! ```toml
+//! agent-client-protocol = { version = "3", features = ["process"] }
+//! ```
+//!
+//! Enable `stdio` for an agent using `Stdio`, or `schemars` for typed MCP tool
+//! definitions. `LineDirection` is available on native targets with either
+//! `process` or `stdio`; neither feature enables the other.
+//!
+//! The `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its
+//! tool builders. Unstable protocol features remain independent opt-ins.
+//! When upgrading from 2.x, explicitly enable every feature your application
+//! uses; `default-features = false` is no longer needed for a lean dependency.
+//!
+//! ## WebAssembly
 //!
 //! The runtime-neutral protocol engine and transport abstractions compile for
-//! `wasm32-wasip1` and `wasm32-wasip2`. This crate does not provide a WASI
-//! executor or host I/O adapter. The native `AcpAgent` and `Stdio`
-//! implementations depend on process spawning and blocking-thread facilities,
-//! so they and `LineDirection` are not exported on these targets.
+//! `wasm32-wasip1` and `wasm32-wasip2` without additional features. For
+//! JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js` to select Web
+//! Crypto through `wasm-bindgen` as the UUID randomness backend. The target
+//! does not imply a JavaScript host, so this feature is not enabled by default;
+//! other OS-less WebAssembly hosts must arrange a compatible UUID randomness
+//! backend instead.
+//!
+//! This crate does not provide a WebAssembly executor or host I/O adapter. The
+//! native `process` and `stdio` features depend on process spawning and
+//! blocking-thread facilities, so their dependencies and exports (including
+//! `LineDirection`) remain excluded on WebAssembly even when enabled.
 //!
 //! Embedders provide their own runtime and transport. They can exchange
 //! `TransportFrame` values through `Channel`, newline-delimited JSON through
@@ -124,9 +161,9 @@ pub use jsonrpc::{
     Builder, ByteStreams, Channel, ConnectionContext, ConnectionTo, Dispatch, DynamicHandlerGuard,
     HandleConnectionClose, HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON,
     IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullClose, NullHandler, RawConnectionContext, RawJsonRpcMessage, RawJsonRpcParams, Responder,
-    ResponseRouter, SentRequest, TransportBatch, TransportBatchEntry, TransportFrame,
-    UntypedMessage, is_incoming_transport_closed,
+    NullClose, NullHandler, RawConnectionContext, RawJsonRpcError, RawJsonRpcMessage,
+    RawJsonRpcParams, RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportBatch,
+    TransportBatchEntry, TransportFrame, UntypedMessage, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 pub use jsonrpc::{RequestCancellation, is_cancel_request_notification};
@@ -140,7 +177,7 @@ pub use role::{
     acp::{Agent, Client, Conductor, Proxy},
 };
 
-pub use component::{ConnectTo, DynConnectTo};
+pub use component::{ConnectTo, ConnectionDriver, DynConnectTo};
 
 /// Implementation details used by the derive macros.
 #[doc(hidden)]
@@ -161,14 +198,30 @@ pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, Json
 mod session;
 pub use session::*;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "process", not(target_family = "wasm")))]
 mod acp_agent;
-#[cfg(not(target_family = "wasm"))]
-pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
+#[cfg(all(feature = "process", not(target_family = "wasm")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "process", not(target_family = "wasm"))))
+)]
+pub use acp_agent::{AcpAgent, AcpAgentConfig};
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(
+    any(feature = "process", feature = "stdio"),
+    not(target_family = "wasm")
+))]
+mod line_direction;
+#[cfg(all(
+    any(feature = "process", feature = "stdio"),
+    not(target_family = "wasm")
+))]
+pub use line_direction::LineDirection;
+
+#[cfg(all(feature = "stdio", not(target_family = "wasm")))]
 mod stdio;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "stdio", not(target_family = "wasm")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "stdio", not(target_family = "wasm")))))]
 pub use stdio::Stdio;
 
 /// This is a hack that must be given as the final argument of

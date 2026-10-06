@@ -27,9 +27,201 @@
 //! ```
 
 use futures::future::BoxFuture;
-use std::{fmt::Debug, future::Future, marker::PhantomData};
+use std::{
+    fmt::Debug,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 use crate::{Channel, Result, role::Role};
+
+// Presence of the control records the cooperative contract, even after its
+// one-shot action has run. Moving a requested driver must not erase that fact.
+pub(crate) struct FinishControl {
+    hook: Option<Box<dyn FnOnce() + Send + 'static>>,
+}
+
+impl FinishControl {
+    fn new(hook: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            hook: Some(Box::new(hook)),
+        }
+    }
+
+    pub(crate) fn request(&mut self) {
+        if let Some(hook) = self.hook.take() {
+            hook();
+        }
+    }
+}
+
+/// Drives owned endpoint work.
+///
+/// A driver owns the endpoint: successful completion means no further
+/// output is expected, and adapters must drain output already accepted before
+/// terminating. Errors may abort the connection without guaranteed output
+/// drain; an adapter may still preserve queued error replies before terminating.
+///
+/// Poll the driver concurrently with channel traffic. Endpoints without owned
+/// work return `None` from [`ConnectTo::into_channel_and_future`], not a driver:
+/// their channel halves independently determine their lifetime.
+///
+/// Use [`new`](Self::new) for opaque work or
+/// [`with_finish`](Self::with_finish) for a transport that can finish gracefully.
+/// Use [`map_future`](Self::map_future) to decorate existing work without losing
+/// its finish capability.
+#[must_use = "connection drivers must be polled to make progress"]
+pub struct ConnectionDriver {
+    future: BoxFuture<'static, Result<()>>,
+    finish: Option<FinishControl>,
+}
+
+impl ConnectionDriver {
+    /// Create a driver that owns the endpoint's lifetime.
+    ///
+    /// This driver has no cooperative finish hook. A finite foreground may drop
+    /// it after handing off accepted output, rather than wait for arbitrary
+    /// work to finish. Reactive serving still awaits owned work after input EOF.
+    ///
+    /// Custom transports that need to flush before a finite foreground returns
+    /// should use [`with_finish`](Self::with_finish) instead.
+    pub fn new(future: impl Future<Output = Result<()>> + Send + 'static) -> Self {
+        Self {
+            future: Box::pin(future),
+            finish: None,
+        }
+    }
+
+    /// Create owned work that supports cooperative graceful completion.
+    ///
+    /// The finish hook only requests completion; it must be nonblocking and
+    /// should signal the future to stop accepting output, drain what it has
+    /// already accepted, flush and close its write half, then return. It must
+    /// not require independently open remote input to reach EOF. The future
+    /// remains responsible for reporting I/O and flush errors.
+    ///
+    /// SDK consumers invoke the hook after handing off their accepted output,
+    /// then continue polling the driver until completion. There is no implicit
+    /// timeout: if the adapter cannot finish, the enclosing connection remains
+    /// pending and may be cancelled by its caller.
+    ///
+    /// The hook is invoked at most once. Dropping the driver drops its owned
+    /// future without requesting graceful completion. Dropping only the hook
+    /// does not invoke it or necessarily stop the work.
+    ///
+    /// # Example
+    ///
+    /// A custom adapter can use any signal understood by its future. For
+    /// example, a one-shot channel separates the finish request from completion:
+    ///
+    /// ```
+    /// use agent_client_protocol::ConnectionDriver;
+    /// use futures::{channel::oneshot, FutureExt};
+    ///
+    /// let (finish_tx, finish_rx) = oneshot::channel();
+    /// let mut driver = ConnectionDriver::with_finish(
+    ///     async move {
+    ///         if finish_rx.await.is_err() {
+    ///             // Losing the hook must not masquerade as a finish request.
+    ///             futures::future::pending::<()>().await;
+    ///         }
+    ///         // Seal the adapter's outgoing queue, drain it, and flush/close
+    ///         // the physical writer here before returning.
+    ///         Ok(())
+    ///     },
+    ///     move || { let _ = finish_tx.send(()); },
+    /// );
+    ///
+    /// assert!((&mut driver).now_or_never().is_none());
+    /// assert!(driver.request_finish());
+    /// assert!(driver.request_finish()); // Supported, but the hook runs only once.
+    /// futures::executor::block_on(driver).unwrap();
+    /// ```
+    pub fn with_finish(
+        future: impl Future<Output = Result<()>> + Send + 'static,
+        finish: impl FnOnce() + Send + 'static,
+    ) -> Self {
+        Self {
+            future: Box::pin(future),
+            finish: Some(FinishControl::new(finish)),
+        }
+    }
+
+    /// Decorate the owned future while preserving its finish capability.
+    ///
+    /// This is useful for tracing, error annotation, or completion cleanup.
+    /// Wrapping this driver in [`new`](Self::new) instead would hide its finish
+    /// control from the outer driver.
+    ///
+    /// `map` is called immediately and receives the boxed future, not the
+    /// driver. Its returned future must uphold the same completion contract:
+    /// keep driving the original work and do not report success before accepted
+    /// output is drained. An already-requested finish remains requested, and
+    /// opaque work remains opaque.
+    ///
+    /// ```
+    /// use agent_client_protocol::ConnectionDriver;
+    /// use futures::FutureExt;
+    ///
+    /// let driver = ConnectionDriver::new(async { Ok(()) });
+    /// let decorated = driver.map_future(|work| {
+    ///     work.inspect(|result| eprintln!("transport completed: {result:?}"))
+    /// });
+    /// futures::executor::block_on(decorated).unwrap();
+    /// ```
+    pub fn map_future<F>(self, map: impl FnOnce(BoxFuture<'static, Result<()>>) -> F) -> Self
+    where
+        F: Future<Output = Result<()>> + Send + 'static,
+    {
+        Self {
+            future: Box::pin(map(self.future)),
+            finish: self.finish,
+        }
+    }
+
+    /// Request graceful completion, without waiting for it.
+    ///
+    /// Returns `true` if this driver supports cooperative finish, including
+    /// when finish was already requested. Repeated requests are idempotent:
+    /// the hook runs at most once and the driver retains its graceful-finish
+    /// contract across wrapping or ownership handoff.
+    ///
+    /// Returns `false` for opaque work constructed with [`new`](Self::new);
+    /// this method does not cancel that work. A `true` return does not prove
+    /// flushing is complete: continue polling or await the driver to observe
+    /// completion and any errors.
+    #[must_use]
+    pub fn request_finish(&mut self) -> bool {
+        if let Some(finish) = self.finish.as_mut() {
+            finish.request();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn take_finish(&mut self) -> Option<FinishControl> {
+        self.finish.take()
+    }
+}
+
+impl Future for ConnectionDriver {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.future.as_mut().poll(cx)
+    }
+}
+
+impl Debug for ConnectionDriver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionDriver")
+            .field("finishable", &self.finish.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 /// A component that can exchange JSON-RPC messages to an endpoint playing the role `R`
 /// (e.g., an ACP [`Agent`](`crate::role::acp::Agent`) or an MCP [`Server`](`crate::role::mcp::Server`)).
@@ -52,7 +244,7 @@ use crate::{Channel, Result, role::Role};
 /// - **[`Channel`]**: A component communicating via in-process message channels (for testing or direct connections)
 /// - **Custom components**: Proxies, transformers, or any ACP-aware service
 #[cfg_attr(
-    not(target_family = "wasm"),
+    all(feature = "process", not(target_family = "wasm")),
     doc = "- **[`AcpAgent`]**: An external agent running in a separate process with stdio communication"
 )]
 ///
@@ -61,7 +253,7 @@ use crate::{Channel, Result, role::Role};
 /// Components can be used in two ways:
 ///
 /// 1. **`connect_to(client)`** - Connect directly to another component (most components implement this)
-/// 2. **`into_channel_and_future()`** - Obtain a channel endpoint and a future that drives the connection
+/// 2. **`into_channel_and_future()`** - Obtain a channel endpoint and optional owned driver
 ///
 /// Most components only need to implement `connect_to(client)`. The
 /// `into_channel_and_future()` method has a default implementation that creates an intermediate
@@ -103,7 +295,10 @@ use crate::{Channel, Result, role::Role};
 /// [`ByteStreams`]: crate::ByteStreams
 /// [`Lines`]: crate::Lines
 /// [`Builder`]: crate::Builder
-#[cfg_attr(not(target_family = "wasm"), doc = "[`AcpAgent`]: crate::AcpAgent")]
+#[cfg_attr(
+    all(feature = "process", not(target_family = "wasm")),
+    doc = "[`AcpAgent`]: crate::AcpAgent"
+)]
 pub trait ConnectTo<R: Role>: Send + 'static {
     /// Connect this component to another component.
     ///
@@ -129,7 +324,7 @@ pub trait ConnectTo<R: Role>: Send + 'static {
         client: impl ConnectTo<R::Counterpart>,
     ) -> impl Future<Output = Result<()>> + Send;
 
-    /// Convert this component into a channel endpoint and connection future.
+    /// Convert this component into a channel endpoint and optional owned driver.
     ///
     /// The returned [`Channel`] is the canonical frame-aware boundary. It carries
     /// complete [`TransportFrame`](crate::TransportFrame) values so default
@@ -137,7 +332,8 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// This method returns:
     /// - A `Channel` that can be used to communicate with this component
-    /// - A `BoxFuture` that drives the component's connection logic
+    /// - `Some(ConnectionDriver)` when the component owns work to drive
+    /// - `None` when the channel halves alone own the endpoint's lifetime
     ///
     /// The default implementation creates an intermediate channel pair and calls `connect_to`
     /// on one endpoint while returning the other endpoint for the caller to use.
@@ -146,15 +342,44 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     ///
     /// # Returns
     ///
-    /// A tuple of `(Channel, BoxFuture)` where the channel is for the caller to use
-    /// and the future must be polled to drive the connection.
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>)
+    /// A tuple of `(Channel, Option<ConnectionDriver>)`. Owned drivers must be
+    /// polled concurrently with channel traffic. Successful owned completion
+    /// ends the endpoint after draining accepted output. `None` is not EOF:
+    /// preserve both independent channel half-closes.
+    ///
+    /// Absence must be handled explicitly; the optional driver is not awaitable:
+    ///
+    /// ```compile_fail,E0277
+    /// use agent_client_protocol::{Channel, ConnectTo, UntypedRole};
+    ///
+    /// # async fn example() -> agent_client_protocol::Result<()> {
+    /// let (channel, _peer) = Channel::duplex();
+    /// let (_channel, driver) = ConnectTo::<UntypedRole>::into_channel_and_future(channel);
+    /// driver.await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Once present, the owned driver itself is awaitable:
+    ///
+    /// ```no_run
+    /// use agent_client_protocol::{Channel, ConnectionDriver, Result};
+    ///
+    /// async fn drive_owned_work((_channel, driver): (Channel, Option<ConnectionDriver>)) -> Result<()> {
+    ///     if let Some(driver) = driver {
+    ///         // In a real adapter, also poll the channel traffic concurrently.
+    ///         driver.await?;
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>)
     where
         Self: Sized,
     {
         let (channel_a, channel_b) = Channel::duplex();
-        let future = Box::pin(self.connect_to(channel_b));
-        (channel_a, future)
+        let future = ConnectionDriver::new(self.connect_to(channel_b));
+        (channel_a, Some(future))
     }
 }
 
@@ -171,8 +396,7 @@ trait ErasedConnectTo<R: Role>: Send {
         client: Box<dyn ErasedConnectTo<R::Counterpart>>,
     ) -> BoxFuture<'static, Result<()>>;
 
-    fn into_channel_and_future_erased(self: Box<Self>)
-    -> (Channel, BoxFuture<'static, Result<()>>);
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, Option<ConnectionDriver>);
 }
 
 /// Blanket implementation: any `ConnectTo<R>` can be type-erased.
@@ -195,9 +419,7 @@ impl<C: ConnectTo<R>, R: Role> ErasedConnectTo<R> for C {
         })
     }
 
-    fn into_channel_and_future_erased(
-        self: Box<Self>,
-    ) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future_erased(self: Box<Self>) -> (Channel, Option<ConnectionDriver>) {
         (*self).into_channel_and_future()
     }
 }
@@ -251,7 +473,7 @@ impl<R: Role> ConnectTo<R> for DynConnectTo<R> {
             .await
     }
 
-    fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>) {
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>) {
         self.inner.into_channel_and_future_erased()
     }
 }
@@ -268,6 +490,175 @@ impl<R: Role> Debug for DynConnectTo<R> {
 mod tests {
     use super::*;
     use crate::role::UntypedRole;
+    use futures::FutureExt as _;
+
+    struct OwnedWork(BoxFuture<'static, Result<()>>);
+
+    impl ConnectTo<UntypedRole> for OwnedWork {
+        async fn connect_to(self, _client: impl ConnectTo<UntypedRole>) -> Result<()> {
+            self.0.await
+        }
+    }
+
+    #[test]
+    fn raw_channel_has_no_owned_work() {
+        let (channel, _other) = Channel::duplex();
+        let (_, driver) = ConnectTo::<UntypedRole>::into_channel_and_future(channel);
+        assert!(driver.is_none());
+    }
+
+    #[test]
+    fn owned_driver_preserves_errors_and_polls_unpinned() {
+        let error = crate::Error::internal_error().data("driver failure");
+        let mut driver = ConnectionDriver::new(futures::future::ready(Err(error.clone())));
+        assert_eq!(futures::executor::block_on(&mut driver), Err(error));
+    }
+
+    #[test]
+    fn finish_request_is_idempotent_and_does_not_mean_completion() {
+        let (finish_tx, finish_rx) = futures::channel::oneshot::channel();
+        let (flushed_tx, flushed_rx) = futures::channel::oneshot::channel();
+        let mut driver = ConnectionDriver::with_finish(
+            async move {
+                finish_rx.await.unwrap();
+                flushed_rx.await.unwrap()
+            },
+            move || finish_tx.send(()).unwrap(),
+        );
+
+        assert!((&mut driver).now_or_never().is_none());
+        assert!(driver.request_finish());
+        assert!(driver.request_finish());
+        assert!((&mut driver).now_or_never().is_none());
+
+        let error = crate::Error::internal_error().data("custom flush failed");
+        flushed_tx.send(Err(error.clone())).unwrap();
+        assert_eq!(futures::executor::block_on(driver), Err(error));
+    }
+
+    #[test]
+    fn opaque_driver_cannot_be_cooperatively_finished() {
+        let mut driver = ConnectionDriver::new(futures::future::pending());
+        assert!(!driver.request_finish());
+        assert!((&mut driver).now_or_never().is_none());
+    }
+
+    #[test]
+    fn future_decoration_preserves_finish_and_completion_errors() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        for request_before_wrapping in [false, true] {
+            let (finish_tx, finish_rx) = futures::channel::oneshot::channel();
+            let (flush_tx, flush_rx) = futures::channel::oneshot::channel();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let hook_calls = calls.clone();
+            let mut driver = ConnectionDriver::with_finish(
+                async move {
+                    finish_rx.await.unwrap();
+                    flush_rx.await.unwrap()
+                },
+                move || {
+                    hook_calls.fetch_add(1, Ordering::SeqCst);
+                    finish_tx.send(()).unwrap();
+                },
+            );
+            if request_before_wrapping {
+                assert!(driver.request_finish());
+            }
+
+            let observed = Arc::new(AtomicUsize::new(0));
+            let observe_completion = observed.clone();
+            let mut decorated = driver.map_future(|work| {
+                work.inspect(move |_| {
+                    observe_completion.fetch_add(1, Ordering::SeqCst);
+                })
+            });
+            assert!(decorated.request_finish());
+            assert!(decorated.request_finish());
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!((&mut decorated).now_or_never().is_none());
+            assert_eq!(observed.load(Ordering::SeqCst), 0);
+
+            let error = crate::Error::internal_error().data("decorated flush failed");
+            flush_tx.send(Err(error.clone())).unwrap();
+            assert_eq!(futures::executor::block_on(decorated), Err(error));
+            assert_eq!(observed.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[test]
+    fn future_decoration_does_not_make_opaque_work_cooperative() {
+        let driver = ConnectionDriver::new(futures::future::pending());
+        let mut decorated = driver.map_future(|work| work);
+
+        assert!(!decorated.request_finish());
+        assert!((&mut decorated).now_or_never().is_none());
+    }
+
+    #[test]
+    fn dropping_driver_does_not_invoke_finish_hook() {
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hook_invoked = invoked.clone();
+        let driver = ConnectionDriver::with_finish(futures::future::pending(), move || {
+            hook_invoked.store(true, std::sync::atomic::Ordering::Release);
+        });
+
+        drop(driver);
+        assert!(!invoked.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn default_conversion_owns_real_work_until_completion() {
+        let (done_tx, done_rx) = futures::channel::oneshot::channel();
+        let component = OwnedWork(async move { done_rx.await.unwrap() }.boxed());
+        let (_channel, driver) = component.into_channel_and_future();
+        let mut driver = driver.expect("default conversion always owns its connect_to work");
+        assert!((&mut driver).now_or_never().is_none());
+
+        let error = crate::Error::internal_error().data("owned work failed");
+        done_tx.send(Err(error.clone())).unwrap();
+        assert_eq!(futures::executor::block_on(driver), Err(error));
+    }
+
+    #[test]
+    fn dropping_optional_owned_driver_cancels_unpolled_work() {
+        let (done_tx, done_rx) = futures::channel::oneshot::channel::<Result<()>>();
+        let component = OwnedWork(async move { done_rx.await.unwrap() }.boxed());
+        let (_channel, driver) = component.into_channel_and_future();
+        assert!(driver.is_some());
+        assert!(!done_tx.is_canceled());
+        drop(driver);
+        assert!(done_tx.is_canceled());
+    }
+
+    #[test]
+    fn type_erasure_preserves_owned_work_and_finish_metadata() {
+        let outgoing = futures::sink::unfold((), |(), _line: String| {
+            futures::future::ready(Ok::<_, std::io::Error>(()))
+        });
+        // Independent physical input remains open: only a preserved explicit
+        // finish handle can complete this driver without read EOF.
+        let incoming = futures::stream::pending::<std::io::Result<String>>();
+        let component = DynConnectTo::<UntypedRole>::new(crate::Lines::new(outgoing, incoming));
+        let (_channel, driver) = component.into_channel_and_future();
+        let mut driver = driver.expect("erasure must retain ownership");
+        assert!((&mut driver).now_or_never().is_none());
+        assert!(
+            driver.request_finish(),
+            "erasure must retain finish coordination"
+        );
+        futures::executor::block_on(driver).unwrap();
+    }
+
+    #[test]
+    fn type_erasure_preserves_passive_lifetime() {
+        let (channel, _other) = Channel::duplex();
+        let (_, driver) = DynConnectTo::<UntypedRole>::new(channel).into_channel_and_future();
+        assert!(driver.is_none());
+    }
 
     #[test]
     fn dyn_connect_to_reports_static_type_name_and_correct_debug_label() {

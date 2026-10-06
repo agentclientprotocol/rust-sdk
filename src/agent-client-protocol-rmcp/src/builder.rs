@@ -6,12 +6,17 @@ use futures::future::{BoxFuture, Either};
 use futures_concurrency::future::TryJoin;
 use rmcp::{
     ErrorData, ServerHandler,
-    model::{CallToolResult, ListToolsResult, Tool},
+    model::{
+        CacheScope, CallToolResponse, CallToolResult, ListToolsResult, ProtocolVersion,
+        ServerConfig, Tool,
+    },
 };
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+#[cfg(feature = "unstable_mcp_over_acp")]
+use acp::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
 use agent_client_protocol as acp;
 use agent_client_protocol::{
     ByteStreams, ChainRun, ConnectTo, DynConnectTo, NullRun, RunWithConnectionTo,
@@ -228,19 +233,46 @@ where
     /// feature, it can also be attached through
     /// `SessionBuilder::with_mcp_server` or `Builder::with_mcp_server`.
     pub fn build(self) -> McpServer<Counterpart, Runner> {
-        McpServer::new(
-            McpServerBuilt {
-                name: self.name,
-                data: Arc::new(self.data),
-            },
-            self.runner,
-        )
+        let built = McpServerBuilt {
+            name: self.name,
+            data: Arc::new(self.data),
+        };
+        #[cfg(feature = "unstable_mcp_over_acp")]
+        {
+            let standalone = McpServerBuilt {
+                name: built.name.clone(),
+                data: built.data.clone(),
+            };
+            McpServer::new_service_with_standalone(built, standalone, self.runner)
+        }
+        #[cfg(not(feature = "unstable_mcp_over_acp"))]
+        {
+            McpServer::new(built, self.runner)
+        }
     }
 }
 
 struct McpServerBuilt<Counterpart: Role> {
     name: String,
     data: Arc<McpToolRegistry<Counterpart>>,
+}
+
+#[cfg(feature = "unstable_mcp_over_acp")]
+impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> {
+    fn execute(
+        &self,
+        request: McpRequest,
+        context: McpRequestContext<Counterpart>,
+    ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
+        crate::native::execute(
+            Arc::new(McpServerConnection {
+                data: self.data.clone(),
+                mcp_connection: context.connection().clone(),
+            }),
+            request,
+            context,
+        )
+    }
 }
 
 impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {
@@ -303,7 +335,7 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         // Lookup the tool definition, erroring if not found or disabled
         let Some(registered) = self.data.enabled_tool(&request.name) else {
             return Err(rmcp::model::ErrorData::invalid_params(
@@ -328,11 +360,10 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
                 Ok(result) => {
                     // Use structured output only if the tool declared an output_schema
                     if has_structured_output {
-                        Ok(CallToolResult::structured(result))
+                        Ok(CallToolResult::structured(result).into())
                     } else {
-                        Ok(CallToolResult::success(vec![
-                            rmcp::model::ContentBlock::text(result.to_string()),
-                        ]))
+                        let content = rmcp::model::ContentBlock::text(result.to_string());
+                        Ok(CallToolResult::success(vec![content]).into())
                     }
                 }
                 Err(error) => Err(to_rmcp_error(error)),
@@ -348,7 +379,7 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
     fn list_tools(
         &self,
         _request: Option<rmcp::model::PaginatedRequestParams>,
-        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> impl Future<Output = Result<rmcp::model::ListToolsResult, ErrorData>> + Send {
         // Return only enabled tools
         let tools: Vec<_> = self
@@ -356,12 +387,21 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
             .enabled_tools()
             .map(|tool| make_tool_model(tool.metadata()))
             .collect();
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+        let mut result = ListToolsResult::with_all_items(tools);
+        if context
+            .protocol_version()
+            .is_some_and(|version| version >= ProtocolVersion::V_2026_07_28)
+        {
+            // Modern MCP requires cache metadata. Avoid sharing tool catalogs
+            // across authorization contexts or promising a stale cache lifetime.
+            result = result.with_ttl_ms(0).with_cache_scope(CacheScope::Private);
+        }
+        std::future::ready(Ok(result))
     }
 
-    fn get_info(&self) -> rmcp::model::ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // Basic server info
-        let base = rmcp::model::ServerInfo::new(
+        let base = ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build(),
@@ -383,8 +423,7 @@ fn make_tool_model(metadata: &McpToolMetadata) -> Tool {
         metadata.name().to_string(),
         metadata.description().to_string(),
         metadata.input_schema().clone(),
-    )
-    .with_execution(rmcp::model::ToolExecution::new());
+    );
 
     if let Some(title) = metadata.title() {
         tool = tool.with_title(title.to_string());

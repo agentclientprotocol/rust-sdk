@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Native attachments use request-scoped MCP 2026-07-28 and inner outcome
+  carriers, replacing the old `mcp/connect` / `mcp/disconnect` binding without
+  a legacy fallback. `from_rmcp` lazily creates one reusable service for native
+  requests; standalone connections retain per-connection factories and rmcp
+  protocol negotiation. See the
+  [native binding migration](https://agentclientprotocol.github.io/rust-sdk/migration-stateless-mcp.html)
+  and [request-scoped MCP guide](https://agentclientprotocol.github.io/rust-sdk/mcp-over-acp.html).
+- Release `agent-client-protocol-rmcp` 4.x together with core ACP 3.x and the
+  public `rmcp` dependency upgrade from 2.x to 3.4. Migrate both public
+  dependencies together. Services supplied to `McpServer::from_rmcp` must use
+  rmcp 3.x; custom transports and low-level callers must follow the core
+  [connection-driver migration](https://agentclientprotocol.github.io/rust-sdk/migration-connection-drivers.html).
+- Adapt tool handlers to rmcp's `CallToolResponse`, use `ServerConfig` in place
+  of the deprecated `ServerInfo` alias, and remove legacy tool-execution
+  metadata. See the [migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-rmcp-v4.html).
+
+### Added
+
+- Integration coverage for MCP 2026-07-28 requests without initialization,
+  discovery, per-request metadata/version validation, and MRTR results from
+  caller-supplied rmcp services.
+- Add supervised native execution, request-scoped cancellation/notification
+  context, borrowed tool cleanup acknowledgments, and a runnable direct ACP
+  example. Independent `unstable_protocol_v2` and `unstable_mcp_over_acp`
+  features forward their respective core gates; the v2 native example
+  explicitly requires both.
+
+### Changed
+
+- Request tokio-util's cancellation-token support explicitly for native MCP
+  attachments. Keep production compatibility adapters and JSON Schema tool
+  builders; remove unused JSON log formatting from example dependencies.
+- Keep Tokio stdio, the multithreaded runtime, and rmcp macros out of production
+  dependencies. Native examples and tests enable them separately. The integration
+  library now compiles for `wasm32-wasip1` and `wasm32-wasip2` with default or all
+  features; applications still supply a compatible runtime and host transport.
+
+## [3.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.0...agent-client-protocol-rmcp-v3.1.1) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+## [3.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.0.0...agent-client-protocol-rmcp-v3.1.0) - 2026-09-04
+
+### Added
+
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v2.0.1...agent-client-protocol-rmcp-v3.0.0) - 2026-07-23
 
 ### Breaking changes

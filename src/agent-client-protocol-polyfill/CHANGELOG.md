@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Replace the native MCP HTTP bridge with MCP 2026-07-28-only request-scoped
+  HTTP POSTs, fresh logical request IDs, per-request notifications, and
+  cancellation when the HTTP response stream is dropped. Remove the connection
+  handshake and legacy MCP session/initialization behavior. There is no fallback
+  to older MCP revisions; downstream HTTP clients must support MCP 2026-07-28.
+  See the [bridge guide](https://agentclientprotocol.github.io/rust-sdk/mcp-bridge.html).
+
+### Changed
+
+- Limit Axum to HTTP1/Tokio, JSON responses, and tracing/tower-log observability;
+  remove unused extractors and the unused futures executor feature.
+- Use one loopback listener per ACP connection with server-addressed URLs and
+  server-specific HMAC bearer credentials in declaration headers. Validate
+  authentication and Origin before reading request bodies.
+- Re-export native tool schemas without transport-only `x-mcp-header`
+  annotations, preserving argument properties, examples, and defaults.
+- Bound HTTP admission to 64 outstanding response bodies, each operation's
+  notification queue to 16 events and 256 KiB, and request/terminal payloads
+  to 1 MiB. Hold admission through body consumption or drop, including error
+  responses. Overflow reports a resource error and cancels only that operation.
+
+### Fixed
+
+- Preserve raw JSON-RPC error codes, omitted/null data, and error extension
+  fields in the MCP HTTP bridge instead of interpreting them as ACP errors.
+- Keep inner MCP outcomes separate from outer ACP binding failures, preserve
+  external JSON-RPC IDs, and rewrite only the standard subscription metadata.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.1.0...agent-client-protocol-polyfill-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.0.0...agent-client-protocol-polyfill-v2.1.0) - 2026-09-04
+
+### Added
+
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(polyfill)* Support v2 MCP-over-ACP bridge ([#305](https://github.com/agentclientprotocol/rust-sdk/pull/305))
+
 ### Added
 
 - Add an `unstable_protocol_v2` feature for using `McpOverAcpPolyfill` in a

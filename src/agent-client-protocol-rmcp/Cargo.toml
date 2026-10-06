@@ -1,12 +1,11 @@
 [package]
 name = "agent-client-protocol-rmcp"
-version = "3.0.0"
+version = "3.1.1"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "rmcp integration for Agent Client Protocol MCP servers"
 keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
@@ -14,23 +13,30 @@ categories = ["development-tools"]
 [features]
 default = []
 unstable_mcp_over_acp = ["agent-client-protocol/unstable_mcp_over_acp"]
+unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [[example]]
 name = "with_mcp_server"
 required-features = ["unstable_mcp_over_acp"]
 
+[[example]]
+name = "stateless_native_mcp"
+required-features = ["unstable_protocol_v2", "unstable_mcp_over_acp"]
+
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, features = ["schemars"] }
 futures.workspace = true
 futures-concurrency.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt-multi-thread"] }
-tokio-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
+tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
+rmcp = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["io-std", "rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

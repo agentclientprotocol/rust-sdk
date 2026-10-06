@@ -1,12 +1,11 @@
 [package]
 name = "agent-client-protocol-conductor"
-version = "2.0.0"
+version = "2.2.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Conductor for orchestrating Agent Client Protocol proxy chains"
 keywords = ["acp", "agent", "conductor", "ai"]
 categories = ["development-tools"]
@@ -17,10 +16,13 @@ path = "src/main.rs"
 
 [features]
 default = []
-unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
+unstable_protocol_v2 = [
+    "agent-client-protocol/unstable_protocol_v2",
+    "agent-client-protocol-polyfill/unstable_protocol_v2",
+]
 
 [dependencies]
-agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
+agent-client-protocol = { workspace = true, features = ["process", "stdio", "unstable_mcp_over_acp"] }
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
@@ -32,13 +34,14 @@ serde.workspace = true
 serde_json.workspace = true
 strip-ansi-escapes.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
-tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-agent-client-protocol-rmcp.workspace = true
+agent-client-protocol = { workspace = true, features = ["schemars"] }
+agent-client-protocol-polyfill.workspace = true
+agent-client-protocol-rmcp = { workspace = true, features = ["unstable_mcp_over_acp"] }
 agent-client-protocol-test.workspace = true
 yopo.workspace = true
 expect-test.workspace = true
@@ -46,12 +49,13 @@ regex.workspace = true
 rmcp = { workspace = true, features = [
     "client",
     "server",
+    "macros",
     "transport-io",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
 ] }
 schemars.workspace = true
-agent-client-protocol-polyfill = { workspace = true, features = ["unstable_protocol_v2"] }
+tokio-util.workspace = true
 
 [lints]
 workspace = true

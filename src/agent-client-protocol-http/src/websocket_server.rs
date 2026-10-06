@@ -235,12 +235,11 @@ where
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{
-        Channel, TransportBatch, TransportBatchEntry, TransportFrame,
-        schema::v1::{RequestId, Response as RpcResponse},
+        Channel, ConnectionDriver, RawJsonRpcResponse as RpcResponse, TransportBatch,
+        TransportBatchEntry, TransportFrame, schema::v1::RequestId,
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};
-    use futures::future::BoxFuture;
     use serde_json::json;
     use tokio::{
         net::TcpListener,
@@ -259,15 +258,10 @@ mod tests {
     }
 
     impl AgentFactory for CapturingAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Channel {
                     rx: mut incoming,
                     tx: outgoing,
@@ -292,7 +286,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -301,15 +295,10 @@ mod tests {
     }
 
     impl AgentFactory for BatchAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (mut agent, transport) = Channel::duplex();
             let forwarded = self.forwarded.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
                     panic!("expected one batch frame");
                 };
@@ -336,7 +325,7 @@ mod tests {
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -345,15 +334,10 @@ mod tests {
     }
 
     impl AgentFactory for FinalFrameThenExitAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 emit.notified().await;
                 agent
                     .tx
@@ -368,7 +352,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 
@@ -377,15 +361,10 @@ mod tests {
     }
 
     impl AgentFactory for FinalFrameAfterInputCloseAgentFactory {
-        fn spawn_agent(
-            &self,
-        ) -> (
-            Channel,
-            BoxFuture<'static, agent_client_protocol::Result<()>>,
-        ) {
+        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (agent, transport) = Channel::duplex();
             let emit = self.emit.clone();
-            let future = Box::pin(async move {
+            let future = ConnectionDriver::new(async move {
                 drop(agent.rx);
                 emit.notified().await;
                 agent
@@ -401,7 +380,7 @@ mod tests {
                 Ok(())
             });
 
-            (transport, future)
+            (transport, Some(future))
         }
     }
 

@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Keep the Tokio/futures compatibility adapter in dev dependencies and omit
+  unused futures executor and JSON logging features from production dependencies.
+- Request JSON Schema generation and rmcp's native MCP-over-ACP attachment
+  support explicitly for integration tests. Enable the polyfill's draft-v2
+  support only with `unstable_protocol_v2`; test utilities no longer implicitly
+  enable unrelated unstable protocol features.
+
+### Fixed
+
+- Trace inner MCP errors separately from outer ACP binding failures and redact
+  HTTP declaration credentials without modifying transport messages.
+- Retain raw JSON-RPC error codes, omitted/null data, and error extension
+  fields in traced response payloads. Trace method and parameter normalization
+  is unchanged.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.1.0...agent-client-protocol-conductor-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v2.0.0...agent-client-protocol-conductor-v2.1.0) - 2026-09-04
+
+### Added
+
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(polyfill)* Support v2 MCP-over-ACP bridge ([#305](https://github.com/agentclientprotocol/rust-sdk/pull/305))
+- *(conductor)* add v2 proxy initialization ([#302](https://github.com/agentclientprotocol/rust-sdk/pull/302))
+
 ### Added
 
 - Add opt-in protocol-v2 initialization for agent and nested proxy chains

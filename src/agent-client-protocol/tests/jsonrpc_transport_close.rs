@@ -12,11 +12,11 @@ use std::{
 };
 
 use agent_client_protocol::{
-    ByteStreams, Channel, ConnectTo, ConnectionTo, Dispatch, Error, Handled, JsonRpcMessage,
-    JsonRpcRequest, Lines, RawJsonRpcMessage, TransportFrame, UntypedMessage,
-    is_incoming_transport_closed,
+    ByteStreams, Channel, ConnectTo, ConnectionDriver, ConnectionTo, Dispatch, DynConnectTo, Error,
+    Handled, JsonRpcMessage, JsonRpcRequest, Lines, RawJsonRpcMessage,
+    RawJsonRpcResponse as Response, TransportFrame, UntypedMessage, is_incoming_transport_closed,
     role::{Role, UntypedRole},
-    schema::v1::{RequestId, Response},
+    schema::v1::RequestId,
 };
 use agent_client_protocol_test::{MyRequest, MyResponse};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, future::join, stream};
@@ -108,7 +108,10 @@ impl ConnectTo<UntypedRole> for QueuedClient {
         drop(self.escaped.send(channel.tx.clone()));
         let _ = self.started.send(());
         drop(channel);
-        transport_future.await
+        if let Some(driver) = transport_future {
+            driver.await?;
+        }
+        Ok(())
     }
 }
 
@@ -166,6 +169,80 @@ impl<R: Role> ConnectTo<R> for ImmediateClient {
         _client: impl ConnectTo<R::Counterpart>,
     ) -> impl Future<Output = Result<(), Error>> + Send {
         future::ready(Ok(()))
+    }
+}
+
+struct CompletingClient(Result<(), Error>);
+
+impl ConnectTo<UntypedRole> for CompletingClient {
+    async fn connect_to(self, transport: impl ConnectTo<UntypedRole>) -> Result<(), Error> {
+        let (channel, driver) = transport.into_channel_and_future();
+        for sequence in 0..3 {
+            channel
+                .tx
+                .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::notification(
+                    "completed".into(),
+                    serde_json::json!({ "sequence": sequence }),
+                )?))
+                .map_err(Error::into_internal_error)?;
+        }
+        drop(channel);
+        if let Some(driver) = driver {
+            driver.await?;
+        }
+        self.0
+    }
+}
+
+struct RequestReplyClient;
+
+impl ConnectTo<UntypedRole> for RequestReplyClient {
+    async fn connect_to(self, transport: impl ConnectTo<UntypedRole>) -> Result<(), Error> {
+        let (mut channel, driver) = transport.into_channel_and_future();
+        channel
+            .tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+                "myRequest".into(),
+                serde_json::json!({}),
+                RequestId::Number(42),
+            )?))
+            .map_err(Error::into_internal_error)?;
+
+        // Completion depends on output being copied while this component is
+        // still running, not only after its driver has completed.
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Response(Response::Result {
+            id,
+            result,
+        }))) = channel.rx.next().await
+        else {
+            panic!("active component lost its response");
+        };
+        assert_eq!(id, RequestId::Number(42));
+        assert_eq!(result, serde_json::json!({ "status": "received" }));
+        drop(channel);
+        if let Some(driver) = driver {
+            driver.await?;
+        }
+        Ok(())
+    }
+}
+
+struct DrivenEndpoint {
+    channel: Channel,
+    driver: ConnectionDriver,
+}
+
+impl ConnectTo<UntypedRole> for DrivenEndpoint {
+    async fn connect_to(self, client: impl ConnectTo<UntypedRole>) -> Result<(), Error> {
+        futures::try_join!(
+            ConnectTo::<UntypedRole>::connect_to(self.channel, client),
+            self.driver,
+        )?;
+        Ok(())
+    }
+
+    fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>) {
+        (self.channel, Some(self.driver))
     }
 }
 
@@ -277,6 +354,233 @@ async fn assert_connect_to_flushes_final_response(
     .expect("clean EOF should succeed after flushing the response");
 }
 
+async fn assert_passive_bridge_preserves_half_close(
+    client: impl ConnectTo<UntypedRole>,
+    mut client_peer: Channel,
+) {
+    let (transport, mut transport_peer) = Channel::duplex();
+    let bridge = ConnectTo::<UntypedRole>::connect_to(transport, client);
+    tokio::pin!(bridge);
+
+    // Poll with both directions open and idle. A passive driver's Ready(Ok)
+    // must not be mistaken for endpoint completion.
+    assert!(
+        bridge.as_mut().now_or_never().is_none(),
+        "passive readiness ended an open bridge"
+    );
+    transport_peer
+        .tx
+        .unbounded_send(TransportFrame::Single(
+            RawJsonRpcMessage::request(
+                "myRequest".into(),
+                serde_json::json!({}),
+                RequestId::Number(43),
+            )
+            .unwrap(),
+        ))
+        .unwrap();
+    transport_peer.tx.close_channel();
+
+    tokio::time::timeout(TIMEOUT, async {
+        let frame = tokio::select! {
+            biased;
+            result = &mut bridge => panic!("bridge ended before forwarding the request: {result:?}"),
+            frame = client_peer.rx.next() => frame,
+        };
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) = frame else {
+            panic!("passive bridge lost the request");
+        };
+        assert_eq!(request.id, RequestId::Number(43));
+        assert_eq!(&*request.method, "myRequest");
+
+        let eof = tokio::select! {
+            biased;
+            result = &mut bridge => panic!("one half-close ended the bridge: {result:?}"),
+            frame = client_peer.rx.next() => frame,
+        };
+        assert!(eof.is_none(), "write half-close was not forwarded");
+        assert!(
+            bridge.as_mut().now_or_never().is_none(),
+            "bridge must wait for its still-open reverse direction"
+        );
+
+        // Only send the final response after observing EOF in the request
+        // direction, so buffering cannot conceal premature bridge shutdown.
+        client_peer
+            .tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                RequestId::Number(43),
+                Ok(serde_json::json!({ "status": "received" })),
+            )))
+            .expect("reverse direction must remain open after the first EOF");
+        client_peer.tx.close_channel();
+
+        let receive_response = async {
+            let Some(TransportFrame::Single(RawJsonRpcMessage::Response(Response::Result {
+                id,
+                result,
+            }))) = transport_peer.rx.next().await
+            else {
+                panic!("passive bridge lost the final reverse-direction response");
+            };
+            assert_eq!(id, RequestId::Number(43));
+            assert_eq!(result, serde_json::json!({ "status": "received" }));
+            assert!(
+                transport_peer.rx.next().await.is_none(),
+                "second half-close was not forwarded"
+            );
+        };
+        let (result, ()) = join(&mut bridge, receive_response).await;
+        result.expect("both closed halves should complete the passive bridge cleanly");
+    })
+    .await
+    .expect("passive bridge hung while forwarding half-closes");
+}
+
+#[test]
+fn channel_and_erased_channel_have_no_driver() {
+    for erased in [false, true] {
+        let (endpoint, _peer) = Channel::duplex();
+        let (_channel, driver) = if erased {
+            DynConnectTo::<UntypedRole>::new(endpoint).into_channel_and_future()
+        } else {
+            ConnectTo::<UntypedRole>::into_channel_and_future(endpoint)
+        };
+        assert!(driver.is_none(), "Channel does not own runnable work");
+    }
+}
+
+#[test]
+fn ready_owned_driver_is_awaitable() {
+    let driver = ConnectionDriver::new(future::ready(Ok(())));
+    driver.now_or_never().unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn passive_channel_bridge_waits_for_both_halves() {
+    let (client, client_peer) = Channel::duplex();
+    assert_passive_bridge_preserves_half_close(client, client_peer).await;
+}
+
+#[tokio::test]
+async fn erased_passive_channel_bridge_waits_for_both_halves() {
+    let (client, client_peer) = Channel::duplex();
+    assert_passive_bridge_preserves_half_close(
+        DynConnectTo::<UntypedRole>::new(client),
+        client_peer,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn active_channel_completion_drains_output_without_remote_eof() {
+    let (transport, mut peer) = Channel::duplex();
+    tokio::time::timeout(
+        TIMEOUT,
+        ConnectTo::<UntypedRole>::connect_to(transport, CompletingClient(Ok(()))),
+    )
+    .await
+    .expect("active completion waited for the unrelated remote sender")
+    .expect("active completion should drain accepted output");
+
+    // The bridge has already returned. Every accepted frame must be available
+    // now, in order, even though the remote sender was held open throughout.
+    for sequence in 0..3 {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(notification))) = peer
+            .rx
+            .next()
+            .now_or_never()
+            .expect("accepted output was not drained before completion")
+        else {
+            panic!("active completion lost an accepted notification");
+        };
+        assert_eq!(&*notification.method, "completed");
+        assert_eq!(
+            serde_json::to_value(notification.params).unwrap(),
+            serde_json::json!({ "sequence": sequence })
+        );
+    }
+    assert!(matches!(peer.rx.next().now_or_never(), Some(None)));
+    assert!(
+        peer.tx.is_closed(),
+        "completed bridge retained the unrelated remote input"
+    );
+}
+
+#[tokio::test]
+async fn active_channel_output_is_copied_before_component_completion() {
+    let (transport, mut peer) = Channel::duplex();
+    let connection = ConnectTo::<UntypedRole>::connect_to(transport, RequestReplyClient);
+    let respond = async move {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+            peer.rx.next().await
+        else {
+            panic!("bridge did not copy the active component's request");
+        };
+        assert_eq!(request.id, RequestId::Number(42));
+        assert_eq!(&*request.method, "myRequest");
+        peer.tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                request.id,
+                Ok(serde_json::json!({ "status": "received" })),
+            )))
+            .unwrap();
+        peer
+    };
+
+    let peer = tokio::time::timeout(TIMEOUT, async {
+        let (result, peer) = join(connection, respond).await;
+        result.expect("request/reply component should complete successfully");
+        peer
+    })
+    .await
+    .expect("outbound copying waited for a component that needed its reply first");
+    assert!(peer.tx.is_closed());
+}
+
+#[tokio::test]
+async fn clean_channel_drain_does_not_hide_ready_driver_error() {
+    let (transport, _remote) = Channel::duplex();
+    let (channel, component_peer) = Channel::duplex();
+    drop(component_peer);
+    let error = tokio::time::timeout(
+        TIMEOUT,
+        ConnectTo::<UntypedRole>::connect_to(
+            transport,
+            DrivenEndpoint {
+                channel,
+                driver: ConnectionDriver::new(future::ready(Err(
+                    Error::internal_error().data("ready driver failed")
+                ))),
+            },
+        ),
+    )
+    .await
+    .expect("ready driver error waited for remote EOF")
+    .expect_err("successful output drain must not mask an active driver error");
+    assert_eq!(error.data, Some(serde_json::json!("ready driver failed")));
+}
+
+#[tokio::test]
+async fn clean_lines_drain_does_not_hide_ready_component_error() {
+    let outgoing = futures::sink::unfold((), |(), _line: String| async { Ok::<_, io::Error>(()) });
+    let incoming = stream::empty::<io::Result<String>>();
+    let error = tokio::time::timeout(
+        TIMEOUT,
+        ConnectTo::<UntypedRole>::connect_to(
+            Lines::new(outgoing, incoming),
+            CompletingClient(Err(Error::internal_error().data("ready component failed"))),
+        ),
+    )
+    .await
+    .expect("ready component error should resolve alongside the clean transport")
+    .expect_err("clean transport completion must not mask the component error");
+    assert_eq!(
+        error.data,
+        Some(serde_json::json!("ready component failed"))
+    );
+}
+
 #[tokio::test]
 async fn connect_to_returns_cleanly_on_incoming_eof_with_spawned_work() {
     let (transport, peer) = Channel::duplex();
@@ -378,6 +682,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
     let (mut peer_outgoing, sdk_incoming) = tokio::io::duplex(1024);
     let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
     let (channel, transport_future) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
+    let transport_future = transport_future.expect("byte streams own a transport driver");
     let Channel { mut rx, tx } = channel;
 
     tx.unbounded_send(TransportFrame::Single(

@@ -254,10 +254,13 @@ impl EchoAgent {
     async fn process_prompt(
         &self,
         request: v2::PromptRequest,
+        user_message: v2::SessionUpdate,
         connection: V2ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id.clone();
-        let result = self.process_prompt_inner(request, &connection).await;
+        let result = self
+            .process_prompt_inner(request, user_message, &connection)
+            .await;
         match result {
             Ok(()) => self.finish_prompt(&session_id, &connection),
             Err(error) => {
@@ -270,15 +273,11 @@ impl EchoAgent {
     async fn process_prompt_inner(
         &self,
         request: v2::PromptRequest,
+        user_message: v2::SessionUpdate,
         connection: &V2ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id;
-        let user_message = v2::SessionUpdate::UserMessage(
-            v2::UserMessage::new(self.next_message_id("user-message"))
-                .content(request.prompt.clone()),
-        );
-        send_update(connection, &session_id, user_message.clone())?;
-        self.record_history(&session_id, user_message);
+        send_update(connection, &session_id, user_message)?;
 
         send_update(
             connection,
@@ -428,13 +427,23 @@ async fn main() -> Result<()> {
                             responder: Responder<v2::PromptResponse>,
                             connection: V2ConnectionTo<Client>| {
                     agent.begin_prompt(&request.session_id)?;
-                    responder.respond(v2::PromptResponse::new())?;
+                    let user_message_id = agent.next_message_id("user-message");
+                    let user_message = v2::SessionUpdate::UserMessage(
+                        v2::UserMessage::new(user_message_id.clone())
+                            .content(request.prompt.clone()),
+                    );
+                    agent.record_history(&request.session_id, user_message.clone());
+                    responder.respond(v2::PromptResponse::new(user_message_id))?;
 
                     let prompt_connection = connection.clone();
                     let session_id = request.session_id.clone();
                     if let Err(error) = connection.spawn({
                         let agent = agent.clone();
-                        async move { agent.process_prompt(request, prompt_connection).await }
+                        async move {
+                            agent
+                                .process_prompt(request, user_message, prompt_connection)
+                                .await
+                        }
                     }) {
                         agent.abandon_prompt(&session_id);
                         return Err(error);

@@ -17,6 +17,8 @@
 //! - [`one_shot_prompt`] - Send a single prompt and get a response (simplest pattern)
 //! - [`v2_one_shot_prompt`] - Send a draft-v2 prompt and wait for the independent idle update
 //! - [`connecting_as_client`] - More details on connection setup and permission handling
+//! - [`ordered_application_dispatch`] - Apply updates, response barriers, and closure on one executor
+//! - [`v2_session_coordination`] - Prototype shared resume/replay/close policy on one executor
 //!
 //! # Building Proxies
 //!
@@ -53,6 +55,22 @@
 //! [`Agent`]: agent_client_protocol::Agent
 //! [`Proxy`]: agent_client_protocol::Proxy
 //! [`ConnectTo`]: agent_client_protocol::ConnectTo
+
+pub mod ordered_application_dispatch;
+
+pub mod v2_session_coordination {
+    //! Pattern: Coordinate shared draft-v2 resume, replay, abandonment, and close.
+    //!
+    //! This is a cookbook prototype for one application's single-threaded
+    //! executor, not a public SDK coordinator. The complete ownership, ordering,
+    //! failure, and limitation policy is documented in the
+    //! [Session Operation Coordination guide][guide]. The runnable
+    //! [`v2_session_coordination` source example][source] is the implementation;
+    //! it is linked rather than duplicated here.
+    //!
+    //! [guide]: https://agentclientprotocol.github.io/rust-sdk/session-operation-coordination.html
+    //! [source]: https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/v2_session_coordination.rs
+}
 
 pub mod one_shot_prompt {
     //! Pattern: You Only Prompt Once.
@@ -316,6 +334,13 @@ pub mod connecting_as_client {
     //! With the core SDK's `unstable_mcp_over_acp` feature, the session builder
     //! also supports adding MCP servers with [`with_mcp_server`].
     //!
+    //! Existing stable-v1 sessions can be reopened with [`load_session`] to
+    //! replay history or [`resume_session`] to continue without replay. Their
+    //! blocking `start_session` returns a [`RestoredSession`] containing the
+    //! active session and complete operation response; `on_session_start`
+    //! delivers the same value to its callback. Use either restore operation
+    //! only after initialization advertises its matching capability.
+    //!
     //! # Handling Permission Requests
     //!
     //! Agents may send [`RequestPermissionRequest`] to ask for user approval
@@ -349,7 +374,10 @@ pub mod connecting_as_client {
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
     //! [`build_session`]: agent_client_protocol::ConnectionTo::build_session
+    //! [`load_session`]: agent_client_protocol::ConnectionTo::load_session
+    //! [`resume_session`]: agent_client_protocol::ConnectionTo::resume_session
     //! [`SessionBuilder`]: agent_client_protocol::SessionBuilder
+    //! [`RestoredSession`]: agent_client_protocol::RestoredSession
     //! [`send_prompt`]: agent_client_protocol::ActiveSession::send_prompt
     //! [`read_update`]: agent_client_protocol::ActiveSession::read_update
     //! [`read_to_string`]: agent_client_protocol::ActiveSession::read_to_string
@@ -692,8 +720,8 @@ pub mod global_mcp_server {
     //!
     //! #[tool_handler]
     //! impl ServerHandler for MyMcpServer {
-    //!     fn get_info(&self) -> ServerInfo {
-    //!         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    //!     fn get_info(&self) -> ServerConfig {
+    //!         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     //!             .with_protocol_version(ProtocolVersion::V_2024_11_05)
     //!             .with_server_info(Implementation::from_build_env())
     //!     }
@@ -703,8 +731,10 @@ pub mod global_mcp_server {
     //! let mcp_server = McpServer::<Conductor, _>::from_rmcp("my-server", MyMcpServer::new);
     //! ```
     //!
-    //! The `from_rmcp` function takes a factory closure that creates a new server
-    //! instance. This allows each MCP connection to get a fresh server instance.
+    //! The `from_rmcp` factory initializes one reusable application service lazily
+    //! for native ACP requests. Standalone MCP connections retain per-connection
+    //! construction. Each native operation has its own logical ID, metadata,
+    //! notifications, and cancellation lifetime.
     //!
     //! # How it works
     //!
@@ -718,7 +748,8 @@ pub mod global_mcp_server {
     //!    `session/new`, `session/resume`, and feature-gated `session/fork`
     //!    while preserving unrelated request fields
     //! 2. Passes the modified request through to the next handler
-    //! 3. Handles `mcp/connect`, `mcp/message`, and `mcp/disconnect` for that server ID
+    //! 3. Handles independent `mcp/message` operations for that server ID, without
+    //!    an initialization prerequisite or connect/disconnect exchange
     //!
     //! [`McpServer::builder`]: agent_client_protocol_rmcp::McpServerExt::builder
     //! [`McpServer::from_rmcp`]: agent_client_protocol_rmcp::McpServerExt::from_rmcp

@@ -20,6 +20,12 @@ cargo build -p agent-client-protocol-test --bin testy --features unstable_protoc
 That binary selects v1 or v2 from the client's `initialize` request. `just prep-tests` already
 builds Testy with all features, so the prebuilt test binary supports both versions.
 
+Run the complete workspace suite with `just test`. Its `prep-tests` dependency builds
+all ordinary workspace binaries and examples in one Cargo invocation, including
+Testy, the conductor, `mcp-echo-server`, and `arrow_proxy`. The subsequent test run
+builds and runs the test harnesses and doctests. CI uses the same recipe rather
+than performing a separate all-target build first.
+
 To build stable-only coverage:
 
 ```bash

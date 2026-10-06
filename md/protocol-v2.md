@@ -132,7 +132,10 @@ rather than waiting for user input inside the dispatch callback.
 V2 deliberately separates prompt submission from session observation:
 
 - `session/prompt` returns a `PromptResponse` as soon as the agent accepts the
-  prompt. `V2Session::send_prompt` returns that request as a
+  prompt. Its `message_id` identifies the inserted user message, and live
+  `UserMessage` updates for that prompt use the same ID; persisting the message
+  in resumable history remains optional. The response does not indicate turn
+  completion. `V2Session::send_prompt` returns that request as a
   `SentRequest<PromptResponse>`; callers must explicitly await it, register a
   response callback, or detach it.
 - `V2SessionBuilder::start_session` likewise returns a mapped `SentRequest`.
@@ -181,6 +184,12 @@ the resume response on the wire, so preinstalled typed handlers observe them in
 order. If a handler forwards updates to another task, the application is
 responsible for any additional projection-drained barrier it needs before
 treating replay as locally applied.
+See [Ordered Application Dispatch](./ordered-application-dispatch.md) for a
+single-consumer queue that carries updates, response results, and closure.
+For an application-owned prototype that additionally coordinates shared resume
+replay, abandonment, and close, see
+[Session Operation Coordination](./session-operation-coordination.md). It is a
+cookbook policy example, not a public SDK coordinator.
 
 Dropping command handles has no network or inbound-routing side effect. For a
 session configured with `V2SessionBuilder::with_mcp_server` or
@@ -437,7 +446,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Draft schema changes in schema 1.5 through 1.7
+## Schema changes in schema 1.5 through 1.8
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors; renamed
@@ -450,14 +459,16 @@ changes. See [Migrating to
 v2.0](./migration_v2.0.md#draft-v2-schema-updates) for concrete source changes.
 
 Schema 1.6 adds `Cancelled` tool-call and plan-entry statuses to draft v2.
-Programmatic tool-call names are available in both protocol versions through
-the separate `unstable_tool_call_name` feature. Draft v2 users must enable both
-`unstable_protocol_v2` and `unstable_tool_call_name`. In v2, an omitted name
-leaves the existing value unchanged, `null` clears it, and a string replaces
-it. V1 cannot express the explicit v2 `null` clear operation.
 
 Schema 1.7 stabilizes elicitation and terminal authentication, so neither
 surface requires its former SDK feature flag. It also adds context compaction
 updates behind `unstable_session_compaction`; the SDK carries them through its
 existing typed `session/update` routing in both protocol versions. V1 clients
 advertise compaction support through `ClientSessionCapabilities::compaction`.
+
+Schema 1.8 stabilizes optional programmatic tool-call names in both protocol
+versions. No tool-name-specific feature is required; draft v2 users only need
+`unstable_protocol_v2`. In v1, an omitted or `null` name leaves the existing
+value unchanged on updates. In v2, omission leaves it unchanged, `null` clears
+it, and a string replaces it. V1 cannot express the explicit v2 `null` clear
+operation.

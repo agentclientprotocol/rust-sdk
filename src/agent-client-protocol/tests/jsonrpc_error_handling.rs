@@ -109,6 +109,69 @@ async fn response_dispatch_handler_error_reaches_the_local_request_awaiter() {
         .unwrap();
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn raw_peer_errors_are_interpreted_only_at_typed_acp_dispatch() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for (code, expected_code) in [
+                (-32000, agent_client_protocol::ErrorCode::AuthRequired),
+                (12345, agent_client_protocol::ErrorCode::Other(12345)),
+            ] {
+                for data in [
+                    None,
+                    Some(serde_json::Value::Null),
+                    Some(serde_json::json!({"detail":"kept"})),
+                ] {
+                    let (transport, mut peer) = Channel::duplex();
+                    let expected_data = data.clone();
+                    let connection =
+                        UntypedRole
+                            .builder()
+                            .connect_with(transport, async move |connection| {
+                                let error = connection
+                                    .send_request(SimpleRequest {
+                                        message: "fail".into(),
+                                    })
+                                    .block_task()
+                                    .await
+                                    .expect_err("raw peer error must fail the typed request");
+                                assert_eq!(error.code, expected_code);
+                                assert_eq!(error.message, "peer error");
+                                assert_eq!(error.data, expected_data);
+                                Ok(())
+                            });
+                    let peer = async move {
+                        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+                            peer.rx.next().await
+                        else {
+                            panic!("expected a request");
+                        };
+                        let mut error = serde_json::json!({
+                            "code":code, "message":"peer error", "extension":{"retry":true}
+                        });
+                        if let Some(data) = data {
+                            error["data"] = data;
+                        }
+                        let wire = serde_json::json!({
+                            "jsonrpc":"2.0", "id":request.id, "error":error
+                        });
+                        let message: RawJsonRpcMessage =
+                            serde_json::from_value(wire.clone()).unwrap();
+                        assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+                        peer.tx
+                            .unbounded_send(TransportFrame::Single(message))
+                            .unwrap();
+                        Ok::<(), agent_client_protocol::Error>(())
+                    };
+                    futures::try_join!(connection, peer)?;
+                }
+            }
+            Ok::<(), agent_client_protocol::Error>(())
+        })
+        .await
+        .unwrap();
+}
+
 // ============================================================================
 // Test types
 // ============================================================================

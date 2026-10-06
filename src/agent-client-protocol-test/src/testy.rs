@@ -1464,14 +1464,25 @@ impl Testy {
         operation: F,
     ) -> Result<T>
     where
-        F: FnOnce(rmcp::service::RunningService<rmcp::RoleClient, ()>) -> Fut,
+        F: FnOnce(
+            rmcp::service::RunningService<rmcp::RoleClient, rmcp::model::ClientConfig>,
+        ) -> Fut,
         Fut: std::future::Future<Output = Result<T>>,
     {
         use rmcp::{
-            ServiceExt,
+            ClientLifecycleMode, ClientServiceExt, ServiceExt,
+            model::{ClientCapabilities, ClientConfig, Implementation, ProtocolVersion},
             transport::{ConfigureCommandExt, TokioChildProcess},
         };
         use tokio::process::Command;
+
+        let client_config = || {
+            ClientConfig::new(
+                ClientCapabilities::default(),
+                Implementation::new("testy", env!("CARGO_PKG_VERSION")),
+            )
+            .with_protocol_version(ProtocolVersion::V_2026_07_28)
+        };
 
         let mcp_servers = self
             .get_mcp_servers(session_id)
@@ -1490,7 +1501,8 @@ impl Testy {
         match mcp_server {
             McpServer::Stdio(stdio) => {
                 self.run_until_session_cancelled(session_id, async move {
-                    let mcp_client = ()
+                    // Standalone stdio retains the ordinary initialize handshake.
+                    let mcp_client = ClientConfig::default()
                         .serve(TokioChildProcess::new(
                             Command::new(&stdio.command).configure(|cmd| {
                                 cmd.args(&stdio.args);
@@ -1516,9 +1528,13 @@ impl Testy {
                         .custom_headers(http_headers(&http.headers)?);
 
                 self.run_until_session_cancelled(session_id, async move {
-                    let mcp_client =
-                        ().serve(StreamableHttpClientTransport::from_config(transport_config))
-                            .await?;
+                    let mcp_client = Box::pin(client_config().serve_with_lifecycle(
+                        StreamableHttpClientTransport::from_config(transport_config),
+                        ClientLifecycleMode::Discover {
+                            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                        },
+                    ))
+                    .await?;
 
                     operation(mcp_client).await
                 })
@@ -1975,7 +1991,9 @@ impl ConnectTo<Client> for Testy {
                         let cx_clone = cx.clone();
                         let spawn_result = cx.spawn({
                             let agent = agent.clone();
-                            async move { agent.process_prompt(request, responder, cx_clone).await }
+                            async move {
+                                Box::pin(agent.process_prompt(request, responder, cx_clone)).await
+                            }
                         });
                         if spawn_result.is_err() {
                             agent.finish_prompt(&session_id, StopReason::EndTurn);

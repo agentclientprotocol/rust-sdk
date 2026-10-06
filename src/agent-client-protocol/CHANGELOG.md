@@ -2,8 +2,159 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking (unstable MCP):** adopt schema 1.10.1's request-scoped
+  `mcp/message(serverId, requestId, method, params)` binding and independent
+  inner MCP result/error carriers. Remove MCP connect/disconnect and connection
+  IDs. Native MCP supports 2026-07-28 without an initialization prerequisite.
+  See the [native binding migration guide](../../md/migration-stateless-mcp.md).
+- **Breaking:** `RawJsonRpcMessage::Response` carries `RawJsonRpcResponse` with
+  a boxed `RawJsonRpcError`, preserving numeric codes, omitted/null data, and
+  error extension fields without ACP interpretation. Raw adapters must use the
+  new response type. Typed ACP consumers still receive `Error`; conversion to
+  ACP is explicit through `RawJsonRpcError::into_acp_error`.
+- **Breaking:** `ConnectTo::into_channel_and_future` now returns
+  `(Channel, Option<ConnectionDriver>)` instead of a boxed future. `Some` owns
+  connection work; a passive endpoint returns `None`. Custom overrides and
+  low-level callers must handle absence explicitly; wrappers should preserve
+  the original optional driver rather than erase its lifecycle metadata.
+  See the [connection-driver migration guide](../../md/migration-connection-drivers.md).
+- **Breaking:** enable no Cargo features by default. JSON Schema generation and
+  typed MCP tool helpers require `schemars`; native subprocess support requires
+  `process`, and the native `Stdio` adapter requires `stdio`. The two native
+  features are independent and expose `LineDirection` with either enabled.
+  Protocol serialization and generic transports remain available by default.
+  See [Cargo Features](../../md/features.md) for migration examples.
+- Request the futures executor only for tests and doctests, not production
+  connections. Internal test utilities no longer implicitly enable unrelated
+  unstable protocol features or JSON Schema generation.
+
 ### Added
 
+- Add reusable native MCP services with request-scoped metadata, notification
+  authority, and cancellation. Supervise owned operation cleanup through ACP
+  shutdown without changing generic frame queues or task limits.
+- Add an owned-only, awaitable `ConnectionDriver`. Passive endpoints have no
+  driver, so absence cannot be mistaken for a successful completed future.
+- Add `ConnectionDriver::with_finish(future, finish)` and `request_finish()` for
+  custom adapters to request graceful shutdown separately from awaiting
+  completion. Requests are idempotent; the one-shot hook signals the adapter
+  once, and its future must drain, flush, and close accepted output before
+  reporting success. Already-requested drivers retain that contract on handoff.
+- Add `ConnectionDriver::map_future` for tracing, error annotation, and
+  completion cleanup without losing finish capability or requested state.
+- Add an opt-in `schemars` feature that forwards JSON Schema support to the
+  schema crate and gates the typed MCP tool helpers. Custom MCP servers and
+  independently enabled unstable protocol features remain available without it.
+
+### Fixed
+
+- Keep recoverable session-local runner failures from cancelling unrelated native
+  MCP registrations or sealing connection-wide operation admission. Scoped sibling
+  runners remain driven through their own cleanup.
+- Destroy and acknowledge cancelled queued mutable-tool calls independently of an
+  active invocation, so cancelling a call or removing its provider does not wait
+  for another registration's unrelated work.
+- Cancel running function-backed MCP tool futures when their result receiver is
+  dropped, skip cancelled queued calls before invoking the tool closure, and keep
+  mutable and concurrent runners usable after a caller leaves or result delivery
+  fails. This drops the user future; it does not join operation-level async cleanup.
+- Preserve both directions of passive channel bridges after a write
+  half-close, allowing a final reverse-direction response.
+- Drain accepted output when an owned component finishes, including through
+  line and byte-stream adapters, without requiring unrelated remote input to
+  close. Ready component and I/O failures remain authoritative during drain.
+- Drain routable queued output on successful `Builder::connect_with`
+  foreground completion and finish cooperative physical transports without
+  starting queued application tasks solely for physical drain. Preserve the
+  inherited underway-close-callback cleanup phase. Fail unresolved
+  request-readiness gates rather than waiting indefinitely or publishing those
+  requests after shutdown.
+- Close and drain the incoming producer boundary when owned transport work
+  completes, including when escaped senders remain alive.
+- Forward physical write-half shutdown through byte-stream adapters so split
+  streams can receive a final reverse response after output EOF. Preserve
+  partial-write, flush, pending-shutdown, and close-error behavior.
+- Discard input to a completed foreground during physical finish, including
+  frames already queued at normalization, without losing genuine I/O errors
+  or cancelling accepted output.
+- Apply one ownership-aware drain rule to protocol connectors and agent/proxy
+  routers. Request cooperative finish after initialization rejection or owned
+  foreground completion; do not indefinitely join opposed opaque work.
+- Do not begin late application delivery or close callbacks after finite
+  foreground success. An underway close callback completes before output is
+  sealed, so clean EOF during physical drain cannot turn a late callback send
+  into a closed-queue failure that cancels accepted output.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.1.0...v2.2.0) - 2026-09-18
+
+### Added
+
+- *(acp)* update schema dependency to 1.9.0 ([#366](https://github.com/agentclientprotocol/rust-sdk/pull/366))
+- *(acp)* update schema to 1.8 ([#360](https://github.com/agentclientprotocol/rust-sdk/pull/360))
+
+### Fixed
+
+- *(acp)* preserve stderr when shutdown drain times out ([#365](https://github.com/agentclientprotocol/rust-sdk/pull/365))
+- *(acp)* support JavaScript-hosted WebAssembly ([#308](https://github.com/agentclientprotocol/rust-sdk/pull/308))
+
+### Other
+
+- *(cookbook)* demonstrate v2 session coordination ([#364](https://github.com/agentclientprotocol/rust-sdk/pull/364))
+- *(acp)* exercise v2 example projection semantics ([#363](https://github.com/agentclientprotocol/rust-sdk/pull/363))
+- *(cookbook)* demonstrate ordered application dispatch ([#362](https://github.com/agentclientprotocol/rust-sdk/pull/362))
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+### Added
+
+- Update `agent-client-protocol-schema` to 1.8.0, stabilizing optional
+  programmatic tool-call names in v1 and draft v2. Remove the
+  `unstable_tool_call_name` feature; v2 still requires `unstable_protocol_v2`.
+
+### Fixed
+
+- Preserve already-captured stderr in nonzero process-exit errors when the
+  bounded shutdown wait expires before stderr EOF. The capture limit and
+  process-group cleanup behavior are unchanged.
+- Support JavaScript-hosted `wasm32-unknown-unknown` builds through the opt-in
+  `wasm_js` feature, which selects Web Crypto through `wasm-bindgen` as the UUID
+  randomness backend. WASI builds continue to work without an additional
+  feature. ([#308](https://github.com/agentclientprotocol/rust-sdk/pull/308))
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.0.0...v2.1.0) - 2026-09-04
+
+### Added
+
+- *(acp)* add stable session restore builders ([#347](https://github.com/agentclientprotocol/rust-sdk/pull/347))
+- *(acp)* update schema to 1.7 ([#331](https://github.com/agentclientprotocol/rust-sdk/pull/331))
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+- *(acp)* Add v2 session MCP attachment ([#303](https://github.com/agentclientprotocol/rust-sdk/pull/303))
+- *(conductor)* add v2 proxy initialization ([#302](https://github.com/agentclientprotocol/rust-sdk/pull/302))
+- *(acp)* expose unstable LLM provider methods ([#298](https://github.com/agentclientprotocol/rust-sdk/pull/298))
+- *(unstable-v2)* Better v2 session builders ([#295](https://github.com/agentclientprotocol/rust-sdk/pull/295))
+- *(acp)* expose unstable plan operations ([#297](https://github.com/agentclientprotocol/rust-sdk/pull/297))
+- *(acp)* expose unstable tool-call names ([#296](https://github.com/agentclientprotocol/rust-sdk/pull/296))
+
+### Fixed
+
+- *(acp)* Preserve session config options ([#332](https://github.com/agentclientprotocol/rust-sdk/pull/332))
+- *(acp)* box handler chain links to bound dispatch stack use ([#306](https://github.com/agentclientprotocol/rust-sdk/pull/306))
+- *(acp)* Allow v2 initialize with future params ([#304](https://github.com/agentclientprotocol/rust-sdk/pull/304))
+- *(acp)* preserve same-version initialize fields ([#299](https://github.com/agentclientprotocol/rust-sdk/pull/299))
+- *(acp)* Support WASI builds ([#294](https://github.com/agentclientprotocol/rust-sdk/pull/294))
+
+### Added
+
+- Add stable-v1 `load_session*` and `resume_session*` builders that produce a
+  `RestoredSession` containing an `ActiveSession` and the exact operation
+  response. Session routing is active before either restore request is
+  published, preserving required `session/load` replay, and provisional routing
+  is removed after failed restores or dropped in-flight blocking starts.
+  ([#323](https://github.com/agentclientprotocol/rust-sdk/issues/323))
 - *(unstable-v2)* Add runnable draft-v2 agent and one-shot client examples. The
   agent implements the complete baseline session lifecycle; the client handles
   permissions, projects chunk and snapshot updates by message ID, and waits for

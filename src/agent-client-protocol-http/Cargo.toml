@@ -1,12 +1,11 @@
 [package]
 name = "agent-client-protocol-http"
-version = "2.0.0"
+version = "2.2.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "HTTP and WebSocket transport for the Agent Client Protocol (ACP)"
 keywords = ["acp", "agent", "protocol", "http", "websocket"]
 categories = ["development-tools", "web-programming::http-server"]
@@ -55,7 +54,7 @@ tracing = { workspace = true, optional = true }
 
 # Server
 async-stream = { workspace = true, optional = true }
-axum = { workspace = true, features = ["ws", "macros"], optional = true }
+axum = { workspace = true, features = ["ws"], optional = true }
 tower-http = { workspace = true, features = ["cors"], optional = true }
 uuid = { workspace = true, optional = true }
 
@@ -66,12 +65,10 @@ reqwest = { workspace = true, features = ["stream"], optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
-agent-client-protocol-test.workspace = true
 async-stream.workspace = true
-axum = { workspace = true, features = ["ws", "macros"] }
+axum = { workspace = true, features = ["ws", "json"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 async-tungstenite.workspace = true
-tracing-subscriber.workspace = true
 tower.workspace = true
 h2.workspace = true
 rcgen.workspace = true

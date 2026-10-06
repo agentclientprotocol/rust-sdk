@@ -1,9 +1,8 @@
-# Build binaries needed for integration tests
+# Build ordinary binaries needed by subprocess tests and check every example.
+# One workspace invocation avoids separate per-package preparation builds.
 prep-tests:
-    cargo build -p agent-client-protocol-conductor --all-features
-    cargo build -p agent-client-protocol-test --bin testy --all-features
-    cargo build -p agent-client-protocol-test --bin mcp-echo-server --example arrow_proxy --all-features
+    cargo build --workspace --bins --examples --all-features --locked
 
-# Run all tests (requires prep-tests first)
+# Prepare subprocess fixtures, then run all tests, including doctests.
 test: prep-tests
-    cargo test --all --workspace --all-features
+    cargo test --workspace --all-features --locked

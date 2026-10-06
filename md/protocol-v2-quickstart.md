@@ -1,7 +1,8 @@
 # Runnable Protocol V2 Quickstart
 
 The core crate includes a small ACP v2 agent and client that run together over
-stdio. Both are compiled examples behind the `unstable_protocol_v2` feature:
+stdio. Both require `unstable_protocol_v2`; the agent also requires `stdio`,
+and the client requires `process`:
 
 - [`simple_agent_v2.rs`](https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/simple_agent_v2.rs)
   implements initialization and the complete baseline session lifecycle.
@@ -15,7 +16,7 @@ Build both examples from the repository root:
 
 ```bash
 cargo build -p agent-client-protocol \
-  --features unstable_protocol_v2 \
+  --features process,stdio,unstable_protocol_v2 \
   --examples
 ```
 
@@ -63,7 +64,14 @@ before the prompt response and are not scoped to a prompt or turn ID.
 Within that projection, message chunks append by `messageId`; a later message
 snapshot with concrete content replaces the accumulated chunks, `null` clears
 them, and omitted content preserves them. Rendering chunks and then rendering a
-snapshot again would duplicate output.
+snapshot again would duplicate output. An empty content array is also a
+replacement. Identical chunks append again; chunk updates are not automatically
+idempotent. The example renders messages in first-seen order, even when the
+first update for a message only carries metadata.
+
+Run `just test` from the repository root to execute the example's unit tests
+alongside the workspace suite. They cover interleaved message IDs, metadata-only
+updates, content replacement and clearing, and repeated chunks.
 
 ## Agent lifecycle
 

@@ -23,22 +23,19 @@ edition = "2024"
 rust-version = "1.88.0"
 license = "Apache-2.0"
 repository = "https://github.com/agentclientprotocol/rust-sdk"
-homepage = "https://github.com/agentclientprotocol/rust-sdk"
 
 [workspace.dependencies]
 # Internal crates
-agent-client-protocol = { path = "src/agent-client-protocol", version = "2.0.0" }
-agent-client-protocol-conductor = { path = "src/agent-client-protocol-conductor", version = "2.0.0" }
-agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "2.0.0" }
-agent-client-protocol-http = { path = "src/agent-client-protocol-http", version = "2.0.0" }
-agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "2.0.0" }
-agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "3.0.0" }
-agent-client-protocol-test = { path = "src/agent-client-protocol-test" }
-agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "2.0.0" }
+agent-client-protocol = { path = "src/agent-client-protocol", version = "2.2.0" }
+agent-client-protocol-derive = { path = "src/agent-client-protocol-derive", version = "2.2.0" }
+agent-client-protocol-polyfill = { path = "src/agent-client-protocol-polyfill", version = "2.2.0" }
+agent-client-protocol-rmcp = { path = "src/agent-client-protocol-rmcp", version = "3.1.1" }
+agent-client-protocol-test = { path = "src/agent-client-protocol-test", default-features = false }
+agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-viewer", version = "2.2.0" }
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=1.7.0", features = ["tracing"] }
+agent-client-protocol-schema = { version = "=1.10.2", default-features = false, features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }
@@ -47,6 +44,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 async-tungstenite = { version = "0.35.0", default-features = false, features = ["tokio-rustls-webpki-roots"] }
 
 # Serialization
+base64 = "0.23"
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 schemars = { version = "1.0", features = ["derive"] }
@@ -58,16 +56,17 @@ uuid = { version = "1.18", features = ["v4"] }
 anyhow = "1.0"
 thiserror = "2.0"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # MCP SDK
-rmcp = { version = "2.1.0", features = ["server", "transport-io", "schemars"] }
+rmcp = { version = "3.4.0", default-features = false, features = ["server", "schemars"] }
 
 # CLI parsing
 clap = { version = "4.5", features = ["derive"] }
 
 # HTTP
-axum = "0.8"
+# Keep serving and observability shared; consumers opt into extractors and WebSockets.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "tracing", "tower-log"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json"] }
 eventsource-stream = "0.2"
 url = "2.5"
@@ -76,7 +75,7 @@ async-process = "2"
 async-stream = "0.3.6"
 blocking = "1"
 chrono = "0.4"
-futures = "0.3.32"
+futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 futures-concurrency = "7.6.3"
 open = "5"
 rustc-hash = "2.1.1"

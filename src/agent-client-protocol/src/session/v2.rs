@@ -16,20 +16,39 @@ use crate::{
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
+use super::{
+    SessionCleanup, close_session_registrations, drive_session_cleanup,
+    run_attached_session_runner, session_cleanup, session_runner_connection, wait_session_cleanup,
+};
+
 async fn run_pending_session_setup<Counterpart, Run>(
     connection: ConnectionTo<Counterpart>,
     run: Run,
     started_tx: oneshot::Sender<Result<(), crate::Error>>,
     promotion_rx: oneshot::Receiver<()>,
+    cleanup: SessionCleanup,
 ) -> Result<(), crate::Error>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
 {
+    let (connection, error_scope) = session_runner_connection(connection, &cleanup);
     let mut run = Box::pin(run.run_with_connection_to(connection));
     let first_poll =
         future::poll_fn(|cx| std::task::Poll::Ready(std::future::Future::poll(run.as_mut(), cx)))
             .await;
+    // A composed runner may have observed an immediate error but remain Pending
+    // while its sibling drives owned cleanup. It still failed before publication.
+    if let Some(error) = error_scope.error() {
+        close_session_registrations(&cleanup);
+        if first_poll.is_pending() {
+            drop(drive_session_cleanup(run, cleanup).await);
+        } else {
+            wait_session_cleanup(cleanup).await;
+        }
+        drop(started_tx.send(Err(error)));
+        return Ok(());
+    }
     let readiness = match &first_poll {
         std::task::Poll::Ready(result) => result.clone(),
         std::task::Poll::Pending => Ok(()),
@@ -38,25 +57,39 @@ where
 
     match first_poll {
         std::task::Poll::Ready(Ok(())) => {
-            let _ = promotion_rx.await;
+            if promotion_rx.await.is_err() {
+                close_session_registrations(&cleanup);
+                wait_session_cleanup(cleanup).await;
+            }
             Ok(())
         }
         // The request has not been published yet, so report an immediate
         // startup failure through its readiness result without failing the
         // whole connection.
-        std::task::Poll::Ready(Err(_)) => Ok(()),
+        std::task::Poll::Ready(Err(_)) => {
+            close_session_registrations(&cleanup);
+            wait_session_cleanup(cleanup).await;
+            Ok(())
+        }
         std::task::Poll::Pending => match future::select(run, promotion_rx).await {
             Either::Left((result, promotion_rx)) => {
                 // A Pending first poll releases session setup for publication.
                 // From that point onward the agent may already be using an
                 // attachment, so runner failures are connection-fatal just as
                 // they are for other connection runners.
-                result?;
-                let _ = promotion_rx.await;
-                Ok(())
+                if result.is_err() || promotion_rx.await.is_err() {
+                    close_session_registrations(&cleanup);
+                    wait_session_cleanup(cleanup).await;
+                }
+                result
             }
-            Either::Right((Ok(()), run)) => run.await,
-            Either::Right((Err(_), _run)) => Ok(()),
+            Either::Right((Ok(()), run)) => {
+                run_attached_session_runner(run, cleanup, error_scope).await
+            }
+            Either::Right((Err(_), run)) => {
+                close_session_registrations(&cleanup);
+                run_attached_session_runner(run, cleanup, error_scope).await
+            }
         },
     }
 }
@@ -86,11 +119,13 @@ where
         let handlers_ready = raw_connection.dynamic_handler_barrier();
         let (runner_started_tx, runner_started_rx) = oneshot::channel();
         let (promotion_tx, promotion_rx) = oneshot::channel();
+        let cleanup = session_cleanup(&dynamic_handler_registrations);
         let runner_started = match raw_connection.spawn(run_pending_session_setup(
             raw_connection.clone(),
             run,
             runner_started_tx,
             promotion_rx,
+            cleanup,
         )) {
             Ok(()) => Either::Left(async move {
                 runner_started_rx.await.map_err(|error| {

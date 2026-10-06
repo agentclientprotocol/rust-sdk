@@ -288,10 +288,14 @@ impl V2Testy {
     async fn process_prompt(
         &self,
         request: acp::PromptRequest,
+        user_update: acp::SessionUpdate,
         connection: V2ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();
-        match self.process_prompt_inner(request, &connection).await {
+        match self
+            .process_prompt_inner(request, user_update, &connection)
+            .await
+        {
             Ok(stop_reason) => self.finish_prompt(&session_id, &connection, stop_reason),
             Err(error) => {
                 self.abandon_prompt(&session_id);
@@ -303,14 +307,11 @@ impl V2Testy {
     async fn process_prompt_inner(
         &self,
         request: acp::PromptRequest,
+        user_update: acp::SessionUpdate,
         connection: &V2ConnectionTo<Client>,
     ) -> Result<acp::StopReason, agent_client_protocol::Error> {
         let session_id = request.session_id;
-        let user_message_id = self.next_message_id("user-message");
-        let user_message = acp::UserMessage::new(user_message_id).content(request.prompt.clone());
-        let user_update = acp::SessionUpdate::UserMessage(user_message);
-        send_update(connection, &session_id, user_update.clone())?;
-        self.record_history(&session_id, user_update);
+        send_update(connection, &session_id, user_update)?;
 
         send_update(
             connection,
@@ -488,11 +489,21 @@ impl ConnectTo<Client> for V2Testy {
                             return responder.respond_with_error(error);
                         }
 
-                        responder.respond(acp::PromptResponse::new())?;
+                        let user_message_id = agent.next_message_id("user-message");
+                        let user_update = acp::SessionUpdate::UserMessage(
+                            acp::UserMessage::new(user_message_id.clone())
+                                .content(request.prompt.clone()),
+                        );
+                        agent.record_history(&session_id, user_update.clone());
+                        responder.respond(acp::PromptResponse::new(user_message_id))?;
                         let prompt_connection = connection.clone();
                         let spawn_result = connection.spawn({
                             let agent = agent.clone();
-                            async move { agent.process_prompt(request, prompt_connection).await }
+                            async move {
+                                agent
+                                    .process_prompt(request, user_update, prompt_connection)
+                                    .await
+                            }
                         });
                         if spawn_result.is_err() {
                             agent.abandon_prompt(&session_id);

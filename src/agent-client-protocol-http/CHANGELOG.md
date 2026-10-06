@@ -18,12 +18,52 @@
   `from_http_client(exact_endpoint, client)` preserves shared reqwest clients for
   HTTP/SSE; its endpoint is exact and does not append `/acp`.
 
+### Changed
+
+- Limit Axum to HTTP1/Tokio, WebSockets, and tracing/tower-log observability.
+  Remove unused Axum macros and extractors; JSON extraction is enabled only for
+  tests. Drop unused test-utility and tracing-subscriber dev dependencies and
+  the unused production futures executor feature.
+- Adapt `HttpClient`'s `ConnectTo` conversion to the core SDK's breaking
+  optional `ConnectionDriver` return type. Channels and HTTP framing remain
+  unchanged; no new resource limits are introduced.
+
 ### Fixed
 
 - Apply custom headers, TLS, proxies, DNS, and timeouts to WebSocket handshakes.
   Enforce HTTP/1.1 and disable redirects for WebSockets without changing HTTP/SSE
   policies. Validate the upgrade response before sending queued ACP data, and
   reject unsupported subprotocols and extensions.
+- Cooperatively finish HTTP client connections created through the public builder:
+  drain accepted ordered POSTs and WebSocket frames before physical cleanup, reject
+  output from escaped transport senders, and report transport failures during shutdown.
+- Preserve raw JSON-RPC error codes, omitted versus null data, and error
+  extension fields across HTTP/SSE and WebSocket transports, using the core
+  SDK's new `RawJsonRpcResponse` representation.
+- Preserve HTTP channel pumps when an agent-factory endpoint has no owned
+  driver; absence is not agent completion while its transport remains open.
+- On active agent completion, reject further output from escaped sender clones
+  and drain accepted frames before removing the connection and closing its
+  streams, without waiting for those clones to be dropped.
+- Keep router cancellation owned while natural cleanup awaits its drain.
+  Explicit shutdown no longer detaches a taken router task or retains the
+  connection through that orphaned task.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.1.0...agent-client-protocol-http-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.0.0...agent-client-protocol-http-v2.1.0) - 2026-09-04
+
+### Added
+
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+
+### Fixed
+
+- *(http)* Preserve outbound messages for slow streams ([#292](https://github.com/agentclientprotocol/rust-sdk/pull/292))
 
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v1.3.0...agent-client-protocol-http-v2.0.0) - 2026-07-23
 

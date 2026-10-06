@@ -21,12 +21,12 @@ use std::time::Duration;
 use agent_client_protocol::DynConnectTo;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    CancelRequestNotification, ConnectMcpRequest, ContentBlock, ContentChunk, InitializeRequest,
-    InitializeResponse, McpServer as SchemaMcpServer, McpServerAcpId, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptRequest, PromptResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionId, SessionNotification, SessionUpdate, StopReason,
-    ToolCallUpdate, ToolCallUpdateFields,
+    CancelRequestNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
+    McpRequestId, McpServer as SchemaMcpServer, McpServerAcpId, MessageMcpNotification,
+    MessageMcpRequest, MessageMcpResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestId, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, StopReason, ToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{
     Agent, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, Error, JsonRpcRequest,
@@ -448,7 +448,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         )
         .on_receive_request(
             async |request: NewSessionRequest, responder, _cx: ConnectionTo<Client>| {
-                assert!(request.mcp_servers.is_empty());
+                assert_eq!(request.mcp_servers, Vec::<SchemaMcpServer>::new());
                 responder.respond(NewSessionResponse::new(SessionId::new("test-session")))
             },
             agent_client_protocol::on_receive_request!(),
@@ -958,8 +958,29 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                     let connection = cx.clone();
                     cx.spawn(async move {
                         connection
-                            .send_request(ConnectMcpRequest::new(stale_server_id))
-                            .on_receiving_result(async |_| Ok(()))?;
+                            .send_request(
+                                MessageMcpRequest::new(
+                                    stale_server_id,
+                                    "stale-server-probe",
+                                    "ping",
+                                )
+                                .params(
+                                    serde_json::Map::from_iter([(
+                                        "_meta".to_owned(),
+                                        serde_json::json!({
+                                            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                            "io.modelcontextprotocol/clientCapabilities": {}
+                                        }),
+                                    )]),
+                                ),
+                            )
+                            .on_receiving_result(async |result| {
+                                assert!(
+                                    result.is_err(),
+                                    "a cancelled session must no longer route its MCP server"
+                                );
+                                Ok(())
+                            })?;
 
                         let barrier = connection
                             .send_request(RequestPermissionRequest::new(
@@ -1053,6 +1074,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
                     let client_request_id = request.id().clone();
+                    let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
                     let error = request
@@ -1070,7 +1092,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                     assert_eq!(session.session_id, SessionId::new("normal-session"));
 
                     let probe_barrier = next_with_timeout(&mut probe_barrier_rx).await;
-                    Ok((client_request_id, probe_barrier))
+                    Ok((client_request_id, parked_id, probe_barrier))
                 },
             )
             .await
@@ -1078,9 +1100,8 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
     .await
     .expect("test timed out")
     .expect("client failed");
-    let (client_request_id, probe_barrier) = client_result;
+    let (client_request_id, parked_id, probe_barrier) = client_result;
 
-    let parked_id = next_with_timeout(&mut parked_id_rx).await;
     assert_ne!(
         parked_id, client_request_id,
         "each hop must re-issue the request under its own ID"
@@ -1096,6 +1117,236 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
     );
     assert_no_event(&mut mcp_connect_rx);
 
+    conductor_handle.abort();
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ParkedMcpServer {
+    started_tx: mpsc::UnboundedSender<RequestId>,
+    stopped_tx: mpsc::UnboundedSender<RequestId>,
+    dropped_tx: mpsc::UnboundedSender<()>,
+    late_tx: mpsc::UnboundedSender<ConnectionTo<role::mcp::Client>>,
+}
+
+impl McpServerConnect<Conductor> for ParkedMcpServer {
+    fn name(&self) -> String {
+        "parked-mcp".into()
+    }
+
+    fn connect(&self, cx: McpConnectionTo<Conductor>) -> DynConnectTo<role::mcp::Client> {
+        assert_eq!(
+            cx.request_id().map(ToString::to_string).as_deref(),
+            Some("logical-mcp-request")
+        );
+        DynConnectTo::new(ParkedMcpComponent(self.clone()))
+    }
+}
+
+struct ParkedMcpComponent(ParkedMcpServer);
+
+struct ProbeOnDrop<T> {
+    sender: mpsc::UnboundedSender<T>,
+    value: Option<T>,
+}
+
+impl<T> Drop for ProbeOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(value) = self.value.take() {
+            drop(self.sender.unbounded_send(value));
+        }
+    }
+}
+
+impl ConnectTo<role::mcp::Client> for ParkedMcpComponent {
+    async fn connect_to(self, client: impl ConnectTo<role::mcp::Server>) -> Result<(), Error> {
+        let started_tx = self.0.started_tx;
+        let stopped_tx = self.0.stopped_tx;
+        let late_tx = self.0.late_tx;
+        let _backend_dropped = ProbeOnDrop {
+            sender: self.0.dropped_tx,
+            value: Some(()),
+        };
+        role::mcp::Server
+            .builder()
+            .on_receive_request(
+                async move |_request: McpParkRequest,
+                            responder: Responder<McpParkResponse>,
+                            cx: ConnectionTo<role::mcp::Client>| {
+                    let id = responder.id().clone();
+                    let stopped = ProbeOnDrop {
+                        sender: stopped_tx.clone(),
+                        value: Some(id.clone()),
+                    };
+                    late_tx.unbounded_send(cx.clone()).unwrap();
+                    started_tx.unbounded_send(id).unwrap();
+                    let cancellation = responder.cancellation();
+                    cx.spawn(async move {
+                        // Request-scoped cancellation drops this whole backend,
+                        // rather than sending a second, inner cancellation RPC.
+                        let _stopped = stopped;
+                        let result = cancellation
+                            .run_until_cancelled(std::future::pending::<
+                                Result<McpParkResponse, Error>,
+                            >())
+                            .await;
+                        responder.respond_with_result(result)
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(client)
+            .await
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "_test/park", response = McpParkResponse)]
+struct McpParkRequest {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct McpParkResponse {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, agent_client_protocol::JsonRpcNotification)]
+#[notification(method = "_test/late")]
+struct LateMcpNotification {}
+
+/// The logical MCP ID survives proxy hops, while outer JSON-RPC IDs are hop-local.
+/// Cancelling the ACP request drops its backend and rejects late notifications.
+#[tokio::test]
+async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Result<(), Error> {
+    let (started_tx, mut started_rx) = mpsc::unbounded();
+    let (stopped_tx, mut stopped_rx) = mpsc::unbounded();
+    let (dropped_tx, mut dropped_rx) = mpsc::unbounded();
+    let (late_tx, mut late_rx) = mpsc::unbounded();
+    let (request_id_tx, mut request_id_rx) = mpsc::unbounded();
+    let (result_tx, mut result_rx) = mpsc::unbounded();
+    let (notification_tx, mut notification_rx) = mpsc::unbounded();
+    let (cancel_gate_tx, cancel_gate_rx) = tokio::sync::oneshot::channel::<()>();
+    let cancel_gate = Arc::new(Mutex::new(Some(cancel_gate_rx)));
+
+    let agent = Agent
+        .builder()
+        .on_receive_request(
+            async |request: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
+                responder.respond(InitializeResponse::new(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: NewSessionRequest,
+                        responder: Responder<NewSessionResponse>,
+                        cx: ConnectionTo<Client>| {
+                let server_id = advertised_mcp_server_id(&request);
+                responder.respond(NewSessionResponse::new(SessionId::new(
+                    "mcp-cancel-session",
+                )))?;
+                let gate = cancel_gate
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one MCP operation");
+                let connection = cx.clone();
+                let request_id_tx = request_id_tx.clone();
+                let result_tx = result_tx.clone();
+                cx.spawn(async move {
+                    let request = connection.send_request(
+                        MessageMcpRequest::new(
+                            server_id,
+                            McpRequestId::new("logical-mcp-request"),
+                            "_test/park",
+                        )
+                        .params(serde_json::Map::from_iter([(
+                            "_meta".into(),
+                            serde_json::json!({
+                                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                                "io.modelcontextprotocol/clientCapabilities": {}
+                            }),
+                        )])),
+                    );
+                    request_id_tx.unbounded_send(request.id().clone()).unwrap();
+                    gate.await.map_err(Error::into_internal_error)?;
+                    request.cancel()?;
+                    let result: Result<MessageMcpResponse, Error> = request.block_task().await;
+                    result_tx
+                        .unbounded_send(result.map(|_| ()).map_err(|error| i32::from(error.code)))
+                        .unwrap();
+                    Ok(())
+                })
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            async move |notification: MessageMcpNotification, _cx: ConnectionTo<Client>| {
+                notification_tx.unbounded_send(notification).unwrap();
+                Ok(())
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+    let proxy = Proxy.builder().with_mcp_server(McpServer::new(
+        ParkedMcpServer {
+            started_tx,
+            stopped_tx,
+            dropped_tx,
+            late_tx,
+        },
+        NullRun,
+    ));
+    let (editor_write, conductor_read) = duplex(8192);
+    let (conductor_write, editor_read) = duplex(8192);
+    let conductor_handle = tokio::spawn(async move {
+        ConductorImpl::new_agent(
+            "mcp-cancel-conductor".to_string(),
+            ProxiesAndAgent::new(agent).proxy(proxy),
+        )
+        .run(ByteStreams::new(
+            conductor_write.compat_write(),
+            conductor_read.compat(),
+        ))
+        .await
+    });
+
+    tokio::time::timeout(Duration::from_secs(30), async move {
+        Client
+            .builder()
+            .connect_with(
+                ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
+                async |cx| {
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
+                        .block_task()
+                        .await?;
+                    cx.send_request(NewSessionRequest::new(
+                        std::env::current_dir().map_err(Error::into_internal_error)?,
+                    ))
+                    .block_task()
+                    .await?;
+                    let outer_id = next_with_timeout(&mut request_id_rx).await;
+                    let backend_id = next_with_timeout(&mut started_rx).await;
+                    assert_ne!(outer_id, backend_id, "JSON-RPC IDs must be hop-local");
+                    assert_eq!(
+                        backend_id,
+                        RequestId::Str("logical-mcp-request".to_owned()),
+                        "the inner MCP ID must survive the proxy unchanged"
+                    );
+                    cancel_gate_tx
+                        .send(())
+                        .expect("agent still waiting to cancel");
+                    assert_eq!(next_with_timeout(&mut result_rx).await, Err(-32800));
+                    assert_eq!(next_with_timeout(&mut stopped_rx).await, backend_id);
+                    next_with_timeout(&mut dropped_rx).await;
+                    let late = next_with_timeout(&mut late_rx).await;
+                    assert!(
+                        late.send_notification(LateMcpNotification {}).is_err(),
+                        "a stopped backend must reject an attempted late notification"
+                    );
+                    assert_no_event(&mut notification_rx);
+                    Ok(())
+                },
+            )
+            .await
+    })
+    .await
+    .expect("MCP cancellation timed out")?;
     conductor_handle.abort();
     Ok(())
 }

@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: "ci-${{ github.ref }}"
@@ -33,18 +31,22 @@ jobs:
           echo "version=$msrv" >> "$GITHUB_OUTPUT"
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
-          target: wasm32-wasip1,wasm32-wasip2
+          target: wasm32-wasip1,wasm32-wasip2,wasm32-unknown-unknown
 
       - name: Check with MSRV
         run: |
           cargo check --workspace --all-targets --all-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --no-default-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --all-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --no-default-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --locked
+          # Keep default checks separate: rmcp enables schemars on the core.
+          # Preview 2 covers defaults; check the full surface on both WASI targets.
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --locked
+          cargo check -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --all-features --locked
+          cargo check -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --all-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --features wasm_js --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --all-features --locked
 
   build:
     name: Build
@@ -55,29 +57,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f
         with:
           toolchain: nightly,stable
           components: rustfmt,clippy
-          target: wasm32-wasip1,wasm32-wasip2
+          target: wasm32-wasip1,wasm32-wasip2,wasm32-unknown-unknown
 
       - name: Check formatting
         run: cargo fmt -- --check
 
       - name: Check for typos
-        uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f
+        uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461
         with:
           config: ./typos.toml
+
+      - name: Check opt-in dependency features
+        shell: bash
+        run: |
+          # Dev dependencies intentionally use native I/O and schemars.
+          # Inspect the library graph without their feature unification.
+          for features in "" "unstable,unstable_protocol_v2"; do
+            dependencies="$(cargo tree -p agent-client-protocol --features "$features" --locked --edges normal,build --prefix none --format '{p}')"
+            if grep -Eq '^(schemars(_derive)?|async-process|async-io|blocking|shell-words|rustix) ' <<< "$dependencies"; then
+              printf '%s\n' "$dependencies" >&2
+              echo "native I/O and schemars must remain opt-in" >&2
+              exit 1
+            fi
+          done
+          dependencies="$(cargo tree -p agent-client-protocol --features schemars --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^schemars ' <<< "$dependencies"; then
+            echo "the schemars feature must enable JSON Schema generation" >&2
+            exit 1
+          fi
+          dependencies="$(cargo tree -p agent-client-protocol --features stdio --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^blocking ' <<< "$dependencies" || grep -Eq '^(async-process|async-io|shell-words|schemars) ' <<< "$dependencies"; then
+            echo "stdio must enable blocking I/O without subprocess or schema support" >&2
+            exit 1
+          fi
+          dependencies="$(cargo tree -p agent-client-protocol --features process --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^async-process ' <<< "$dependencies" || grep -Eq '^(blocking|schemars) ' <<< "$dependencies"; then
+            echo "process must enable subprocess support without stdio or schema support" >&2
+            exit 1
+          fi
 
       - name: Lint
         run: |
           cargo clippy
           cargo clippy --all-targets --all-features
-          cargo clippy -p agent-client-protocol --lib --target wasm32-wasip1 --all-features -- -D warnings
-          cargo clippy -p agent-client-protocol --lib --target wasm32-wasip2 --all-features -- -D warnings
-
-      - name: Build
-        run: cargo build --all-targets --all-features
+          cargo clippy -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --all-features -- -D warnings
+          cargo clippy -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --all-features -- -D warnings
+          cargo clippy -p agent-client-protocol --lib --target wasm32-unknown-unknown --all-features -- -D warnings
 
       - name: Check docs.rs build
         env:
@@ -90,11 +119,13 @@ jobs:
         run: cargo +stable doc -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --no-deps --locked
 
       - name: Install just
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: just
 
       - name: Run tests
+        # prep-tests builds ordinary binaries/examples once; test builds and runs
+        # the remaining library, binary, integration, example, and doc tests.
         run: just test
 
   feature-powerset:
@@ -120,19 +151,20 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f
         with:
           toolchain: stable
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@82cd3e7658a6f96c86c0234aeeda1748937cb0a1
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: cargo-hack
 
       - name: Check feature powerset
-        # `default` is empty and `unstable` is an aggregate alias for the
-        # individual unstable_* features, so excluding both avoids checking
-        # duplicate combinations. Depth 2 covers every individual feature and
-        # pair, while the regular CI all-features build covers their full union
-        # without making this matrix grow exponentially.
-        run: cargo hack check --workspace --feature-powerset --depth 2 --exclude-features default,unstable --no-dev-deps --partition ${{ matrix.partition }}
+        # `default` and `unstable` are aggregate aliases, and `wasm_js` is
+        # covered on its relevant target above. Excluding them avoids duplicate
+        # or host-only combinations; `schemars` is checked independently.
+        # Depth 2 covers every remaining individual feature and pair, while the
+        # regular CI all-features tests cover their full union without making
+        # this matrix grow exponentially.
+        run: cargo hack check --workspace --feature-powerset --depth 2 --exclude-features default,unstable,wasm_js --no-dev-deps --partition ${{ matrix.partition }}

@@ -45,7 +45,7 @@ by the JSON-RPC envelope types from `agent-client-protocol-schema`:
 enum RawJsonRpcMessage {
     Request(Request<RawJsonRpcParams>),
     Notification(Notification<RawJsonRpcParams>),
-    Response(Response<serde_json::Value>),
+    Response(RawJsonRpcResponse),
 }
 ```
 
@@ -262,16 +262,64 @@ Ordering](./conductor.md#routing-and-ordering).
 is the common component and transport abstraction. `connect_to` joins a
 component to its counterpart and drives the connection until completion.
 `into_channel_and_future` exposes the canonical low-level boundary as a
-`Channel` plus the future that drives the component:
+`Channel` plus an explicit connection driver:
 
 ```rust,ignore
-fn into_channel_and_future(self) -> (Channel, BoxFuture<'static, Result<()>>);
+fn into_channel_and_future(self) -> (Channel, Option<ConnectionDriver>);
 ```
 
-The returned future owns transport failures and lifecycle completion. The
-channel carries only `TransportFrame` wire events. Most components implement
-only `connect_to`; direct transports override `into_channel_and_future` to avoid
-an intermediate copy.
+The channel carries only `TransportFrame` wire events. The optional driver
+distinguishes owned work from a passive endpoint:
+
+| Returned work | Lifetime rule |
+| --- | --- |
+| `Some(ConnectionDriver::new(future))` | Poll the owned work alongside traffic; successful completion ends it after accepted output is drained. |
+| `None` | No work is owned here; each channel half determines its own lifetime. |
+
+A `ConnectionDriver` always contains a real future; the optional return value
+cannot itself be awaited. There is no ready-successful passive driver and no
+finish hook in the `None` case. This makes the ownership decision explicit
+rather than requiring callers to recognize a special future.
+
+A raw `Channel` returns `None`. Its bridge preserves both directions
+independently:
+one sender closing must not prevent a final response in the reverse direction.
+Owned completion lets a bridge stop accepting new output, drain frames already
+accepted, and finish without waiting for unrelated remote input to close.
+Outbound forwarding must remain polled while owned work is running; otherwise
+a component waiting for a response to its own request could deadlock.
+
+Buffered adapters are responsible for flushing their accepted output before
+reporting successful completion. The built-in line and byte-stream adapters
+keep the read half moving during write drain and propagate incoming errors;
+their explicit finish handling does not require remote read EOF.
+`ConnectionDriver::with_finish(future, finish)` lets custom adapters declare
+the same cooperative contract. Its one-shot, nonblocking hook requests finish
+after protocol output handoff; the still-polled future performs the drain and
+reports completion or I/O errors. `request_finish()` exposes this request to
+low-level callers and is idempotent: a supported request remains supported
+after it has been issued. The callback still runs at most once. Neither
+requesting finish nor dropping the hook proves a successful flush, and no
+implicit timeout is imposed.
+
+`ConnectionDriver::new(future)` remains appropriate for opaque cancellable
+work. A finite foreground does not wait indefinitely for such work after
+handing off protocol output. Merely wrapping an arbitrary future cannot make
+an opaque custom adapter drain safely.
+
+Most components implement only `connect_to`; default normalization supplies
+`Some(driver)` containing the owned work. Direct transports override
+`into_channel_and_future` to avoid an intermediate copy. Wrappers that expose an
+existing endpoint should forward
+its driver unchanged so absence and cooperative completion handling are
+not lost. Wrappers that decorate execution use `map_future` to transform the
+owned future while preserving its finish capability and requested state.
+Direct custom transport entry points must also request and await cooperative
+finish after a finite peer completes; a bare join does not provide that step.
+
+See [Migrating Connection Drivers](./migration-connection-drivers.md) for custom
+override changes. This lifecycle distinction does not change the existing raw
+channel types or introduce frame-size, queue, or task limits.
 
 ## Transport Implementations
 
@@ -283,12 +331,24 @@ frame, and serializes each outgoing frame to one newline-delimited JSON value.
 Runtime adapters with different I/O traits can instead bridge asynchronous
 lines into `Lines`.
 
-The native `Stdio` and `AcpAgent` transports build on `ByteStreams`. Their
-current implementations depend on process spawning and blocking-thread
-facilities, so they are not exported on `wasm32-wasip1` or `wasm32-wasip2`.
-The runtime-neutral protocol engine and transport abstractions compile for
-both targets, but this crate does not provide a WASI executor or host I/O
-adapter.
+The native `Stdio` and `AcpAgent` transports build on `ByteStreams` and require
+the independent `stdio` and `process` features, respectively. No features are
+enabled by default. Their implementations depend on process spawning and
+blocking-thread facilities, so their dependencies and exports remain excluded
+on WebAssembly even when enabled. The runtime-neutral
+protocol engine and transport abstractions compile for `wasm32-wasip1` and
+`wasm32-wasip2` without additional features. JavaScript-hosted
+`wasm32-unknown-unknown` builds require the opt-in `wasm_js` feature, which
+selects Web Crypto through `wasm-bindgen` as the UUID randomness backend. Since
+the target does not imply a JavaScript host, other OS-less WebAssembly hosts
+must arrange a compatible UUID randomness backend instead. This crate does not
+provide a WebAssembly executor or host I/O adapter.
+
+The rmcp integration library also compiles for WASI with its default features
+or MCP-over-ACP features. It uses Tokio's async I/O utilities and
+single-thread-capable runtime without requiring native stdio or a multithreaded
+executor. Embedders still provide their runtime and host transport. See
+[Cargo Features](./features.md) for configuration and migration examples.
 
 Use cases:
 
@@ -337,12 +397,14 @@ no serialization.
 
 Split the socket and pass compatible read/write halves to `ByteStreams::new`.
 
-### 4. WASI Embedding
+### 4. WebAssembly Embedding
 
 Embedders supply and drive their own runtime and host transport:
 
 - Exchange `TransportFrame` values through an in-component `Channel`. A caller
-  using `ConnectTo::into_channel_and_future` must poll the returned future.
+  using `ConnectTo::into_channel_and_future` polls a present owned driver
+  alongside traffic. When no driver is returned, preserve the channel halves'
+  independent lifetimes; absence is not EOF.
 - Exchange newline-delimited JSON through `Lines`, using a
   `futures::Sink<String>` and
   `futures::Stream<Item = std::io::Result<String>>`.

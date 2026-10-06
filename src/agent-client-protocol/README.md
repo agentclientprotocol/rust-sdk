@@ -18,7 +18,12 @@ enabling features like tool use, permission requests, and streaming responses.
 ## Quick Start: Connecting to an Agent
 
 The most common use case is connecting to an existing ACP agent as a client.
-This quick start uses stable protocol v1:
+This quick start uses stable protocol v1 and the opt-in `process` feature.
+For the upcoming 3.x release, use:
+
+```toml
+agent-client-protocol = { version = "3", features = ["process"] }
+```
 
 ```rust,no_run
 use agent_client_protocol::{AcpAgent, Client, Result};
@@ -60,7 +65,7 @@ through `session/update` notifications.
 
 ```bash
 cargo build -p agent-client-protocol \
-  --features unstable_protocol_v2 \
+  --features process,stdio,unstable_protocol_v2 \
   --examples
 
 ./target/debug/examples/v2_one_shot_client \
@@ -71,13 +76,38 @@ cargo build -p agent-client-protocol \
 See the [Runnable Protocol V2 Quickstart](https://agentclientprotocol.github.io/rust-sdk/protocol-v2-quickstart.html)
 for the lifecycle invariants to preserve when adapting these examples.
 
+## Cargo Features
+
+No features are enabled by default. The protocol engine, serialization,
+clients, agents, proxies, custom MCP servers, and generic `Channel`, `Lines`,
+and `ByteStreams` adapters do not require native I/O or JSON Schema generation.
+
+| Feature | Provides |
+| --- | --- |
+| `process` | Native subprocess support through `AcpAgent` and `AcpAgentConfig` |
+| `stdio` | The native `Stdio` adapter |
+| `schemars` | `JsonSchema` implementations and typed MCP tool helpers |
+| `wasm_js` | UUID randomness for JavaScript-hosted WebAssembly |
+
+`process` and `stdio` are independent. Native `LineDirection` is available
+with either. The `McpTool` trait, `McpToolRegistry` and its metadata types, and
+the `mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require
+`schemars`. Unstable protocol features remain independent opt-ins.
+
+`agent-client-protocol-rmcp` explicitly enables `schemars` for its tool builders.
+See [Cargo Features](https://agentclientprotocol.github.io/rust-sdk/features.html)
+for configuration and migration examples. When upgrading from 2.x, enable the
+features your application uses explicitly; a lean dependency no longer needs
+`default-features = false`.
+
 ## MCP Server Attachment
 
 The runtime-agnostic `mcp_server` module can build and directly serve standalone
 MCP servers without enabling an ACP schema extension. Attaching one to ACP with
 the `with_mcp_server` builder methods requires `unstable_mcp_over_acp`.
 Attached servers are advertised with native `McpServer::Acp` declarations and
-communicate through `mcp/connect`, `mcp/message`, and `mcp/disconnect`. Use
+communicate through request-scoped `mcp/message` operations targeting MCP
+2026-07-28, without connect/disconnect or initialization handshakes. Use
 `agent-client-protocol-polyfill` immediately before an HTTP-capable agent.
 Stable protocol v1 supports per-session and global proxy attachment. Draft
 protocol v2 supports both scopes when both unstable features are enabled:
@@ -86,10 +116,28 @@ requests, `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
 `session/new`, and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one
 to a single `session/resume`. With `unstable_session_fork`,
 `V2ForkSessionBuilder::with_mcp_server(...)` attaches one to a single
-`session/fork`. Successful attachments remain active for the connection
-lifetime. A v2 proxy can forward any of these setup operations with the
+`session/fork`. In v1, `ActiveSession` owns per-session MCP registrations:
+dropping it removes them unless a proxy handoff detaches them
+(`proxy_remaining_messages` or successful `on_proxy_session_start`).
+Successful v2 setup detaches MCP handlers for the connection lifetime, so
+dropping the returned `V2Session` does not unregister them. Global proxy
+attachments are connection-scoped in both versions.
+A v2 proxy can forward any of these setup operations with the
 builder's `on_proxy_session_start`; updates and interactive requests remain
 independent connection traffic.
+
+## WebAssembly
+
+The runtime-neutral protocol engine and transport abstractions compile for
+`wasm32-wasip1` and `wasm32-wasip2` without additional features. For
+JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js`; it selects Web
+Crypto through `wasm-bindgen` as the UUID randomness backend. The target does
+not imply a JavaScript host, so this feature is not enabled by default. Other
+OS-less WebAssembly hosts must arrange a compatible UUID randomness backend.
+
+The native `AcpAgent` and `Stdio` implementations are not available on
+WebAssembly targets. See the [transport architecture](https://agentclientprotocol.github.io/rust-sdk/transport-architecture.html)
+for the runtime-neutral embedding options.
 
 ## Learning More
 

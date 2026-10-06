@@ -2,10 +2,12 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
-use agent_client_protocol::{Channel, Client, ConnectTo, RawJsonRpcMessage, TransportFrame};
+use agent_client_protocol::{
+    Channel, Client, ConnectTo, ConnectionDriver, RawJsonRpcMessage, TransportFrame,
+};
 use agent_client_protocol_http::HttpClient;
 use async_tungstenite::{tokio::accept_hdr_async, tungstenite::handshake::server::Request};
-use futures::{StreamExt, future::BoxFuture};
+use futures::StreamExt;
 use serde_json::json;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -69,12 +71,7 @@ async fn listen() -> TcpListener {
     TcpListener::bind("127.0.0.1:0").await.unwrap()
 }
 
-fn queued(
-    client: HttpClient,
-) -> (
-    Channel,
-    BoxFuture<'static, Result<(), agent_client_protocol::Error>>,
-) {
+fn queued(client: HttpClient) -> (Channel, ConnectionDriver) {
     let (caller, transport) = ConnectTo::<Client>::into_channel_and_future(client);
     caller
         .tx
@@ -82,7 +79,10 @@ fn queued(
             RawJsonRpcMessage::notification("custom/queued".into(), json!({"probe": 333})).unwrap(),
         ))
         .unwrap();
-    (caller, transport)
+    (
+        caller,
+        transport.expect("HttpClient owns its transport driver"),
+    )
 }
 
 async fn headers(socket: &mut (impl AsyncRead + Unpin)) -> String {
@@ -142,6 +142,21 @@ fn successful_exchange(
         .expect("client and fixture must finish");
         result.unwrap();
     }
+}
+
+#[tokio::test]
+async fn websocket_builder_honors_custom_dns_resolution() {
+    let listener = listen().await;
+    let address = listener.local_addr().unwrap();
+    let client = HttpClient::builder(format!("ws://agent.invalid:{}", address.port()))
+        .configure_http(|builder| builder.no_proxy().resolve("agent.invalid", address))
+        .build()
+        .unwrap();
+    successful_exchange(client, async {
+        let (socket, _) = listener.accept().await.unwrap();
+        exchange(socket, "/acp", Duration::ZERO).await;
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -389,12 +404,7 @@ async fn incompatible_preconfigured_alpn_fails_without_acp_frames() {
     drop(caller);
 }
 
-fn initialize(
-    client: HttpClient,
-) -> (
-    Channel,
-    BoxFuture<'static, Result<(), agent_client_protocol::Error>>,
-) {
+fn initialize(client: HttpClient) -> (Channel, ConnectionDriver) {
     let (caller, transport) = ConnectTo::<Client>::into_channel_and_future(client);
     caller
         .tx
@@ -407,7 +417,10 @@ fn initialize(
             .unwrap(),
         ))
         .unwrap();
-    (caller, transport)
+    (
+        caller,
+        transport.expect("HttpClient owns its transport driver"),
+    )
 }
 
 #[tokio::test]

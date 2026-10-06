@@ -106,24 +106,32 @@ fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_prot
 fn native_mcp_over_acp_message_meta_serializes_as_reserved_meta_field()
 -> Result<(), agent_client_protocol::Error> {
     let meta = trace_context_meta();
-    let message = MessageMcpRequest::new("connection-1", "tools/list")
-        .params(serde_json::Map::from_iter([(
-            "cursor".into(),
-            Value::String("abc".into()),
-        )]))
+    let mcp_meta = serde_json::json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "example/inner": "MCP metadata is independent of ACP carrier metadata",
+    });
+    let message = MessageMcpRequest::new("server-1", "request-1", "tools/list")
+        .params(serde_json::Map::from_iter([
+            ("cursor".into(), Value::String("abc".into())),
+            ("_meta".into(), mcp_meta.clone()),
+        ]))
         .meta(meta.clone());
 
     let untyped = message.to_untyped_message()?;
 
     assert_eq!(untyped.method(), "mcp/message");
-    assert_eq!(untyped.params()["connectionId"], "connection-1");
+    assert_eq!(untyped.params()["serverId"], "server-1");
+    assert_eq!(untyped.params()["requestId"], "request-1");
     assert_eq!(untyped.params()["method"], "tools/list");
     assert_eq!(untyped.params()["params"]["cursor"], "abc");
+    assert_eq!(untyped.params()["params"]["_meta"], mcp_meta);
     assert_eq!(untyped.params()["_meta"], Value::Object(meta.clone()));
     assert!(untyped.params().get("meta").is_none());
 
     let parsed = MessageMcpRequest::parse_message(untyped.method(), untyped.params())?;
     assert_eq!(parsed.meta, Some(meta));
+    assert_eq!(parsed.params.expect("inner MCP params")["_meta"], mcp_meta);
 
     Ok(())
 }

@@ -9,12 +9,26 @@ runtime-agnostic MCP server framework from `agent-client-protocol`. It lets you 
 Rust, serve them directly, or attach them to an ACP proxy.
 
 Attached servers are advertised with the opt-in native MCP-over-ACP transport:
-`McpServer::Acp` plus `mcp/connect`, `mcp/message`, and `mcp/disconnect`. This
+`McpServer::Acp` plus request-scoped `mcp/message` for MCP 2026-07-28, without
+an initialization prerequisite or connect/disconnect exchange. This
 crate does not enable the core SDK's `unstable_mcp_over_acp` feature merely to
 build or directly serve a server. Enable this crate's matching
 `unstable_mcp_over_acp` feature when using `with_mcp_server`. Use
 `agent-client-protocol-polyfill` when the final agent accepts HTTP but not
 ACP-transport MCP servers.
+
+`unstable_protocol_v2` and `unstable_mcp_over_acp` are independent passthrough
+features. Enable both when attaching a native MCP server to draft ACP v2.
+
+Native attachments lazily initialize one shared rmcp application service.
+Standalone connections still invoke the factory separately. Each native
+request owns its metadata, notifications, cancellation, and supervised cleanup.
+Run the direct ACP example with:
+
+```sh
+cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
+  --features unstable_protocol_v2,unstable_mcp_over_acp
+```
 
 ## Usage
 
@@ -67,9 +81,22 @@ release of either dependency therefore requires a major release of this crate.
 
 | agent-client-protocol-rmcp | agent-client-protocol | rmcp |
 | -------------------------- | --------------------- | ---- |
+| 4.x (unreleased)           | 3.x                   | 3.x  |
 | 3.x                        | 2.x                   | 2.x  |
 | 2.x                        | 1.x                   | 2.x  |
 | 1.x                        | 1.x                   | 1.x  |
+
+See the [rmcp 4.x integration migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-rmcp-v4.html)
+for migrating both public dependencies in the combined core 3.x / integration
+4.x / rmcp 3.x release. The minimum supported Rust version remains 1.88.
+Native attachments also move to the
+[request-scoped MCP binding](https://agentclientprotocol.github.io/rust-sdk/migration-stateless-mcp.html)
+for MCP 2026-07-28 only; the old connect/disconnect binding is removed.
+Standalone rmcp serving retains protocol negotiation. Custom transports and
+low-level callers should follow the
+[connection-driver migration](https://agentclientprotocol.github.io/rust-sdk/migration-connection-drivers.html),
+and raw response adapters should follow the
+[core 3.x migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-v3.html).
 
 ## Related Crates
 

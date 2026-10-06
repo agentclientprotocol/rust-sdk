@@ -856,7 +856,10 @@ async fn testy_delete_cancels_in_flight_prompt_before_cleanup()
                 .send_request(ListSessionsRequest::new())
                 .block_task()
                 .await?;
-            assert!(list.sessions.is_empty());
+            assert_eq!(
+                list.sessions,
+                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
+            );
             assert!(
                 cx.send_request(PromptRequest::new(
                     session.session_id,
@@ -965,7 +968,10 @@ async fn testy_close_cancels_in_flight_prompt_before_cleanup()
                 .send_request(ListSessionsRequest::new())
                 .block_task()
                 .await?;
-            assert!(list.sessions.is_empty());
+            assert_eq!(
+                list.sessions,
+                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
+            );
             assert!(
                 cx.send_request(PromptRequest::new(
                     session.session_id,

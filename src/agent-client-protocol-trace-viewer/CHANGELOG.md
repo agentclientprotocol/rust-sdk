@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Limit Axum to HTTP1/Tokio and tracing/tower-log observability. The viewer
+  serializes responses directly and does not need JSON, form, or query
+  extractors, matched paths, or original URI extraction.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v2.1.0...agent-client-protocol-trace-viewer-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v2.0.0...agent-client-protocol-trace-viewer-v2.1.0) - 2026-09-04
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [2.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-trace-viewer-v1.3.0...agent-client-protocol-trace-viewer-v2.0.0) - 2026-07-23
 
 ### Changed

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Request rmcp's native MCP-over-ACP attachment feature explicitly for the
+  compiled recipes. Keep subprocess support for the `AcpAgent` recipe, but
+  remove unused core stdio and futures executor features from dev dependencies.
+
+## [2.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.1.0...agent-client-protocol-cookbook-v2.2.0) - 2026-09-18
+
+### Other
+
+- *(cookbook)* demonstrate v2 session coordination ([#364](https://github.com/agentclientprotocol/rust-sdk/pull/364))
+- *(cookbook)* demonstrate ordered application dispatch ([#362](https://github.com/agentclientprotocol/rust-sdk/pull/362))
+- *(deps)* bump actions-rust-lang/setup-rust-toolchain from 1.17.0 to 2.0.0 ([#356](https://github.com/agentclientprotocol/rust-sdk/pull/356))
+
+### Added
+
+- Add an ordered application-dispatch recipe that bridges v2 replay, response
+  results, and connection closure onto one application-owned event queue.
+- Document the single-executor v2 session coordination prototype for shared
+  resume replay, abandonment, and close sequencing.
+
+## [2.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.0.0...agent-client-protocol-cookbook-v2.1.0) - 2026-09-04
+
+### Added
+
+- *(acp)* add stable session restore builders ([#347](https://github.com/agentclientprotocol/rust-sdk/pull/347))
+- *(unstable-v2)* Add runnable v2 quickstart examples ([#330](https://github.com/agentclientprotocol/rust-sdk/pull/330))
+- *(unstable-v2)* add v2 resume session builder ([#329](https://github.com/agentclientprotocol/rust-sdk/pull/329))
+- *(acp)* add proxy protocol router for v2 ([#324](https://github.com/agentclientprotocol/rust-sdk/pull/324))
+- *(acp)* Add v2 proxy MCP attachment ([#314](https://github.com/agentclientprotocol/rust-sdk/pull/314))
+
 ### Added
 
 - Add a compiled draft-v2 one-shot prompt recipe that handles initialization,
