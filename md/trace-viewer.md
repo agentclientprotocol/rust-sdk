@@ -33,6 +33,31 @@ agent-client-protocol-conductor --trace ./trace.jsons --serve agent \
 Starting file capture truncates an existing trace file. Each event is flushed
 as one JSON object followed by a newline.
 
+## Recording Privacy
+
+Explicit recordings intentionally retain prompts, image/file content, and
+other protocol payloads. Treat both files and in-memory viewer data as sensitive.
+They are not the metadata-only [HTTP transport diagnostics](./http-transport.md#diagnostic-privacy).
+
+The conductor redacts credential headers (`Authorization`, `Proxy-Authorization`,
+`Cookie`, `Set-Cookie`, and `X-Api-Key`) and HTTP(S) `url` fields in the trace
+copy only. URL userinfo is removed. Query values are replaced with `[REDACTED]`
+for these recognized keys, case-insensitively after percent decoding, ignoring
+hyphens and underscores:
+
+- `token`, `access_token`, `refresh_token`, `id_token`, `api_key`, `key`
+- `secret`, `client_secret`, `password`, `passwd`, `pwd`
+- `auth`, `authorization`, `bearer`, `signature`, `sig`, `credential`, `credentials`
+
+Repeated and valueless credential parameters follow the same rule. Unparseable
+HTTP(S) URLs are redacted in full. Credential-free URLs remain unchanged;
+redacted URLs may be canonicalized, but non-secret query pair spelling, order,
+and encoding are retained. Redaction never changes the original wire message.
+
+This is not a general-purpose payload sanitizer: arbitrary custom credential
+fields/headers/query keys, URL path or fragment secrets, and secrets embedded
+in prompt text cannot all be detected. Review recordings before sharing them.
+
 ## Event Schema
 
 The `.jsons` file contains exactly three event variants: request, response, and

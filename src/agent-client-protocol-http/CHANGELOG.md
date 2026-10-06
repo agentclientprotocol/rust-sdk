@@ -14,6 +14,9 @@
 
 ### Fixed
 
+- Replace HTTP POST, SSE, and WebSocket payload diagnostics with bounded
+  metadata. Do not log peer-controlled IDs, close reasons, or transport error
+  text (which may include credentials or message content).
 - Cooperatively finish HTTP client connections created through the public builder:
   drain accepted ordered POSTs and WebSocket frames before physical cleanup, reject
   output from escaped transport senders, and report transport failures during shutdown.
