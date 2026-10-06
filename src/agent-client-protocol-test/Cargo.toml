@@ -23,7 +23,7 @@ name = "testy"
 path = "src/bin/testy.rs"
 
 [dependencies]
-agent-client-protocol = { workspace = true, features = ["process", "stdio", "schemars"] }
+agent-client-protocol = { workspace = true, features = ["process", "stdio"] }
 anyhow.workspace = true
 http = "1.4.2"
 rmcp = { workspace = true, features = ["server", "client", "macros", "transport-io", "transport-child-process", "transport-streamable-http-client-reqwest"] }
@@ -31,10 +31,12 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "process", "rt-multi-thread", "sync", "time"] }
-tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+tokio-util.workspace = true
 
 [lints]
 workspace = true

@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Request tokio-util's cancellation-token support explicitly for native MCP
+  attachments. Keep production compatibility adapters and JSON Schema tool
+  builders; remove unused JSON log formatting from example dependencies.
 - Keep Tokio stdio, the multithreaded runtime, and rmcp macros out of production
   dependencies. Native examples and tests enable them separately. The integration
   library now compiles for `wasm32-wasip1` and `wasm32-wasip2` with default or all

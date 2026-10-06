@@ -99,6 +99,7 @@ windows-sys = { workspace = true, features = ["Win32_System_Threading"], optiona
 agent-client-protocol-test.workspace = true
 clap.workspace = true
 expect-test.workspace = true
+futures = { workspace = true, features = ["executor"] }
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 
