@@ -1,7 +1,7 @@
 //! Application-owned resume/replay/close coordination, not a public SDK API.
 //!
 //! Run with an agent that can resume an existing session:
-//! `cargo run -p agent-client-protocol --features unstable_protocol_v2
+//! `cargo run -p agent-client-protocol --features process,unstable_protocol_v2
 //! --example v2_session_coordination -- --command my-agent --session-id ID`
 //!
 //! See md/session-operation-coordination.md for the policies and limitations.

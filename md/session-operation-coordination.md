@@ -75,7 +75,7 @@ in SDK callbacks.
 Run it against an agent with an existing resumable session:
 
 ```sh
-cargo run -p agent-client-protocol --features unstable_protocol_v2 \
+cargo run -p agent-client-protocol --features process,unstable_protocol_v2 \
   --example v2_session_coordination -- \
   --command 'my-agent-command' --session-id 'existing-session-id'
 ```

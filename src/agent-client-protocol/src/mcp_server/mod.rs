@@ -15,7 +15,7 @@
 //!
 //! ## Building MCP servers with tools
 //!
-//! The default-enabled `schemars` feature provides `McpTool`, `McpToolRegistry`
+//! The opt-in `schemars` feature provides `McpTool`, `McpToolRegistry`
 //! and its metadata types, and the `tool_fn` / `tool_fn_mut` functions for
 //! automatically generating JSON Schemas from Rust input and output types.
 //! The `agent-client-protocol-rmcp` crate provides the builder APIs for MCP

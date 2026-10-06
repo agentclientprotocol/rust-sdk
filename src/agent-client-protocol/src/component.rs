@@ -244,7 +244,7 @@ impl Debug for ConnectionDriver {
 /// - **[`Channel`]**: A component communicating via in-process message channels (for testing or direct connections)
 /// - **Custom components**: Proxies, transformers, or any ACP-aware service
 #[cfg_attr(
-    not(target_family = "wasm"),
+    all(feature = "process", not(target_family = "wasm")),
     doc = "- **[`AcpAgent`]**: An external agent running in a separate process with stdio communication"
 )]
 ///
@@ -295,7 +295,10 @@ impl Debug for ConnectionDriver {
 /// [`ByteStreams`]: crate::ByteStreams
 /// [`Lines`]: crate::Lines
 /// [`Builder`]: crate::Builder
-#[cfg_attr(not(target_family = "wasm"), doc = "[`AcpAgent`]: crate::AcpAgent")]
+#[cfg_attr(
+    all(feature = "process", not(target_family = "wasm")),
+    doc = "[`AcpAgent`]: crate::AcpAgent"
+)]
 pub trait ConnectTo<R: Role>: Send + 'static {
     /// Connect this component to another component.
     ///

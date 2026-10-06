@@ -23,10 +23,10 @@ name = "testy"
 path = "src/bin/testy.rs"
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, features = ["process", "stdio", "schemars"] }
 anyhow.workspace = true
 http = "1.4.2"
-rmcp = { workspace = true, features = ["server", "client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { workspace = true, features = ["server", "client", "macros", "transport-io", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -20,6 +20,12 @@
   low-level callers must handle absence explicitly; wrappers should preserve
   the original optional driver rather than erase its lifecycle metadata.
   See the [connection-driver migration guide](../../md/migration-connection-drivers.md).
+- **Breaking:** enable no Cargo features by default. JSON Schema generation and
+  typed MCP tool helpers require `schemars`; native subprocess support requires
+  `process`, and the native `Stdio` adapter requires `stdio`. The two native
+  features are independent and expose `LineDirection` with either enabled.
+  Protocol serialization and generic transports remain available by default.
+  See [Cargo Features](../../md/features.md) for migration examples.
 
 ### Added
 
@@ -35,12 +41,9 @@
   reporting success. Already-requested drivers retain that contract on handoff.
 - Add `ConnectionDriver::map_future` for tracing, error annotation, and
   completion cleanup without losing finish capability or requested state.
-- Add a default-enabled `schemars` feature that forwards JSON Schema support to
-  the schema crate and gates the typed MCP tool helpers. Set
-  `default-features = false` to use the core SDK without `schemars`; custom MCP
-  servers and independently enabled unstable protocol features remain available.
-  Existing users of `default-features = false` who need the previous JSON Schema
-  or typed MCP tool APIs should add `features = ["schemars"]`.
+- Add an opt-in `schemars` feature that forwards JSON Schema support to the
+  schema crate and gates the typed MCP tool helpers. Custom MCP servers and
+  independently enabled unstable protocol features remain available without it.
 
 ### Fixed
 

@@ -18,7 +18,7 @@ name = "yopo"
 path = "src/main.rs"
 
 [dependencies]
-agent-client-protocol.workspace = true
+agent-client-protocol = { workspace = true, features = ["process"] }
 clap.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tracing.workspace = true

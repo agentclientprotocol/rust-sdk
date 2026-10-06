@@ -331,9 +331,11 @@ frame, and serializes each outgoing frame to one newline-delimited JSON value.
 Runtime adapters with different I/O traits can instead bridge asynchronous
 lines into `Lines`.
 
-The native `Stdio` and `AcpAgent` transports build on `ByteStreams`. Their
-current implementations depend on process spawning and blocking-thread
-facilities, so they are not exported on WebAssembly targets. The runtime-neutral
+The native `Stdio` and `AcpAgent` transports build on `ByteStreams` and require
+the independent `stdio` and `process` features, respectively. No features are
+enabled by default. Their implementations depend on process spawning and
+blocking-thread facilities, so their dependencies and exports remain excluded
+on WebAssembly even when enabled. The runtime-neutral
 protocol engine and transport abstractions compile for `wasm32-wasip1` and
 `wasm32-wasip2` without additional features. JavaScript-hosted
 `wasm32-unknown-unknown` builds require the opt-in `wasm_js` feature, which
@@ -341,6 +343,12 @@ selects Web Crypto through `wasm-bindgen` as the UUID randomness backend. Since
 the target does not imply a JavaScript host, other OS-less WebAssembly hosts
 must arrange a compatible UUID randomness backend instead. This crate does not
 provide a WebAssembly executor or host I/O adapter.
+
+The rmcp integration library also compiles for WASI with its default features
+or MCP-over-ACP features. It uses Tokio's async I/O utilities and
+single-thread-capable runtime without requiring native stdio or a multithreaded
+executor. Embedders still provide their runtime and host transport. See
+[Cargo Features](./features.md) for configuration and migration examples.
 
 Use cases:
 

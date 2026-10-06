@@ -8,7 +8,7 @@
 //! # Usage
 //!
 //! ```bash
-//! cargo run --example yolo_one_shot_client -- --command "python my_agent.py" "What is 2+2?"
+//! cargo run --example yolo_one_shot_client --features process -- --command "python my_agent.py" "What is 2+2?"
 //! ```
 
 use agent_client_protocol::schema::ProtocolVersion;

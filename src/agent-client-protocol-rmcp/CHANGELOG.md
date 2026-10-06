@@ -30,6 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   features forward their respective core gates; the v2 native example
   explicitly requires both.
 
+### Changed
+
+- Keep Tokio stdio, the multithreaded runtime, and rmcp macros out of production
+  dependencies. Native examples and tests enable them separately. The integration
+  library now compiles for `wasm32-wasip1` and `wasm32-wasip2` with default or all
+  features; applications still supply a compatible runtime and host transport.
+
 ## [3.1.1](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v3.1.0...agent-client-protocol-rmcp-v3.1.1) - 2026-09-18
 
 ### Other

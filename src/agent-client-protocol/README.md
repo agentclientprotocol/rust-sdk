@@ -18,7 +18,12 @@ enabling features like tool use, permission requests, and streaming responses.
 ## Quick Start: Connecting to an Agent
 
 The most common use case is connecting to an existing ACP agent as a client.
-This quick start uses stable protocol v1:
+This quick start uses stable protocol v1 and the opt-in `process` feature.
+For the upcoming 3.x release, use:
+
+```toml
+agent-client-protocol = { version = "3", features = ["process"] }
+```
 
 ```rust,no_run
 use agent_client_protocol::{AcpAgent, Client, Result};
@@ -60,7 +65,7 @@ through `session/update` notifications.
 
 ```bash
 cargo build -p agent-client-protocol \
-  --features unstable_protocol_v2 \
+  --features process,stdio,unstable_protocol_v2 \
   --examples
 
 ./target/debug/examples/v2_one_shot_client \
@@ -71,24 +76,29 @@ cargo build -p agent-client-protocol \
 See the [Runnable Protocol V2 Quickstart](https://agentclientprotocol.github.io/rust-sdk/protocol-v2-quickstart.html)
 for the lifecycle invariants to preserve when adapting these examples.
 
-## JSON Schema Generation
+## Cargo Features
 
-The `schemars` feature is enabled by default. It enables `JsonSchema`
-implementations on protocol types and the typed MCP tool registry and function
-helpers. To use the SDK without the `schemars` dependency:
+No features are enabled by default. The protocol engine, serialization,
+clients, agents, proxies, custom MCP servers, and generic `Channel`, `Lines`,
+and `ByteStreams` adapters do not require native I/O or JSON Schema generation.
 
-```toml
-agent-client-protocol = { version = "2.2", default-features = false }
-```
+| Feature | Provides |
+| --- | --- |
+| `process` | Native subprocess support through `AcpAgent` and `AcpAgentConfig` |
+| `stdio` | The native `Stdio` adapter |
+| `schemars` | `JsonSchema` implementations and typed MCP tool helpers |
+| `wasm_js` | UUID randomness for JavaScript-hosted WebAssembly |
 
-Protocol serialization, clients, agents, proxies, and custom MCP servers remain
-available. The `McpTool` trait, `McpToolRegistry` and its metadata types, and the
-`mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require `schemars`.
-Unstable protocol features can be enabled independently.
+`process` and `stdio` are independent. Native `LineDirection` is available
+with either. The `McpTool` trait, `McpToolRegistry` and its metadata types, and
+the `mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require
+`schemars`. Unstable protocol features remain independent opt-ins.
 
 `agent-client-protocol-rmcp` explicitly enables `schemars` for its tool builders.
 See [Cargo Features](https://agentclientprotocol.github.io/rust-sdk/features.html)
-for details.
+for configuration and migration examples. When upgrading from 2.x, enable the
+features your application uses explicitly; a lean dependency no longer needs
+`default-features = false`.
 
 ## MCP Server Attachment
 

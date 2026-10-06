@@ -1,24 +1,59 @@
 # Cargo Features
 
-The core `agent-client-protocol` crate enables `schemars` by default. Existing
-dependencies that use the defaults retain JSON Schema generation and typed MCP
-tool support.
-
-## Opting out of JSON Schema generation
-
-To use the core SDK without the `schemars` dependency:
+Starting with the upcoming **3.x** release, the core `agent-client-protocol`
+crate enables **no features by default**. Protocol serialization, connections,
+sessions, custom MCP servers, and the `Channel`, `Lines`, and `ByteStreams`
+adapters remain available without native I/O or JSON Schema generation.
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "2.2", default-features = false }
+agent-client-protocol = "3"
 ```
 
-This disables both the SDK's direct dependency and the `schemars` feature on
-`agent-client-protocol-schema`. Protocol types still support serialization and
-deserialization without JSON Schema generation.
+You do not need `default-features = false` for a lean core dependency.
 
-Clients, agents, proxies, sessions, and custom MCP servers continue to work.
-Within `mcp_server`, the following typed tool APIs require `schemars`:
+## Native transports
+
+| Feature | Provides | Native dependencies |
+| --- | --- | --- |
+| `process` | `AcpAgent` and `AcpAgentConfig` for launching agents | `async-process`, `async-io`, `shell-words`, platform process support |
+| `stdio` | `Stdio` for serving an agent or proxy over standard input/output | `blocking` |
+
+These features are independent. `process` handles the child process's stdio
+itself and does not enable `stdio`; `stdio` does not enable process spawning.
+`LineDirection`, used by native debug callbacks, is exported with either.
+
+For a client that launches an external agent:
+
+```toml
+[dependencies]
+agent-client-protocol = { version = "3", features = ["process"] }
+```
+
+For an agent that uses `Stdio::new()`:
+
+```toml
+[dependencies]
+agent-client-protocol = { version = "3", features = ["stdio"] }
+```
+
+The conductor explicitly enables both native features. Other libraries using
+only generic transports need neither. The native dependencies and exports
+remain excluded on WebAssembly, even when these features are enabled.
+
+## JSON Schema generation and typed tools
+
+Opt into `schemars` to generate JSON Schemas for protocol types and typed tools:
+
+```toml
+[dependencies]
+agent-client-protocol = { version = "3", features = ["schemars"] }
+```
+
+This enables the SDK's direct dependency and the matching
+`agent-client-protocol-schema` feature. Without it, protocol types still support
+serialization and deserialization. Within `mcp_server`, these typed APIs require
+`schemars`:
 
 - `McpTool`
 - `McpToolRegistry`, `RegisteredMcpTool`, and `EnabledTools`
@@ -29,15 +64,61 @@ Within `mcp_server`, the following typed tool APIs require `schemars`:
 remain available without it. MCP-over-ACP attachment still only requires its
 protocol feature, not JSON Schema generation.
 
-The `agent-client-protocol-rmcp` integration enables `schemars` for its tool
-builders.
+The `agent-client-protocol-rmcp` integration explicitly enables `schemars` for
+its tool builders. HTTP and polyfill transports do not enable it themselves.
+Cargo features are additive: another dependency that requests a feature can
+enable it for the same core crate, even if your direct dependency omits it.
 
-Unstable protocol features are independent. For example, to use draft v2 and
-MCP-over-ACP without JSON Schema generation:
+## Draft protocol features
+
+Unstable protocol features are independent of the native and schema features.
+For example, to use draft v2 and MCP-over-ACP without JSON Schema generation:
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "2.2", default-features = false, features = ["unstable_protocol_v2", "unstable_mcp_over_acp"] }
+agent-client-protocol = { version = "3", features = ["unstable_protocol_v2", "unstable_mcp_over_acp"] }
 ```
 
-To opt back in explicitly, add `features = ["schemars"]`.
+The `unstable` aggregate does not select draft v2; enable `unstable_protocol_v2`
+explicitly when using that version.
+
+## WebAssembly and the rmcp integration
+
+The core library compiles for `wasm32-wasip1` and `wasm32-wasip2` with default
+features. No WASI feature or default-feature opt-out is required. For
+JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js`; it selects Web
+Crypto through `wasm-bindgen` for UUID randomness. The target does not imply a
+JavaScript host, so this feature remains opt-in.
+
+The rmcp integration library also compiles for both WASI targets, including
+native MCP-over-ACP attachment support. Its production dependencies use Tokio's
+single-thread-capable runtime and async I/O utilities, not Tokio stdio or the
+multithreaded runtime. Native examples and tests enable those conveniences
+separately. An application using rmcp macros or stdio transports opts into the
+corresponding features on its own `rmcp` dependency.
+
+Neither library provides a WASI executor or host I/O adapter. Supply a compatible
+runtime and transport; see [Transport Architecture](./transport-architecture.md).
+This portability does not extend to the native HTTP server, polyfill, or
+conductor crates.
+
+## Migrating from 2.x defaults
+
+A dependency that previously relied on native transports and typed tools:
+
+```toml
+# Before
+agent-client-protocol = "2.2"
+
+# After: select only the capabilities your application actually uses.
+agent-client-protocol = { version = "3", features = ["process", "stdio", "schemars"] }
+```
+
+A protocol-only application can instead use `agent-client-protocol = "3"`.
+Applications that already disabled defaults must still enable `process` or
+`stdio` if they use those adapters: native I/O used to be unconditional on
+native targets, independently of defaults.
+
+Core examples declare their required features explicitly. For the v2 example
+pair, build with `--features process,stdio,unstable_protocol_v2`. The v1
+`simple_agent` requires `stdio`, while `yolo_one_shot_client` requires `process`.

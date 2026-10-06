@@ -6,7 +6,7 @@
 //! session reports that its foreground work is idle.
 //!
 //! ```text
-//! cargo run -p agent-client-protocol --features unstable_protocol_v2 \
+//! cargo run -p agent-client-protocol --features process,unstable_protocol_v2 \
 //!   --example v2_one_shot_client -- \
 //!   --command ./target/debug/examples/simple_agent_v2 \
 //!   "What should a v2 client wait for?"
