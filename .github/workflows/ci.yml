@@ -41,11 +41,15 @@ jobs:
       - name: Check with MSRV
         run: |
           cargo check --workspace --all-targets --all-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --no-default-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --locked
           cargo check -p agent-client-protocol --lib --target wasm32-wasip1 --all-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --no-default-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --locked
           cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --all-features --locked
-          cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --no-default-features --features wasm_js --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --all-features --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --all-features --locked
+          cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --features wasm_js --locked
           cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --all-features --locked
 
   build:
@@ -71,22 +75,32 @@ jobs:
         with:
           config: ./typos.toml
 
-      - name: Check schemars dependency features
+      - name: Check opt-in dependency features
         shell: bash
         run: |
-          # Dev dependencies intentionally use schemars; inspect only the library's dependency graph.
+          # Dev dependencies intentionally use native I/O and schemars.
+          # Inspect the library graph without their feature unification.
           for features in "" "unstable,unstable_protocol_v2"; do
-            dependencies="$(cargo tree -p agent-client-protocol --no-default-features --features "$features" --locked --edges normal,build --prefix none --format '{p}')"
-            if grep -Eq '^schemars(_derive)? ' <<< "$dependencies"; then
+            dependencies="$(cargo tree -p agent-client-protocol --features "$features" --locked --edges normal,build --prefix none --format '{p}')"
+            if grep -Eq '^(schemars(_derive)?|async-process|async-io|blocking|shell-words|rustix) ' <<< "$dependencies"; then
               printf '%s\n' "$dependencies" >&2
-              echo "schemars must not be enabled when the SDK's default features are disabled" >&2
+              echo "native I/O and schemars must remain opt-in" >&2
               exit 1
             fi
           done
-          # Preserve the default-enabled contract without feature unification from dev dependencies.
-          dependencies="$(cargo tree -p agent-client-protocol --locked --edges normal,build --prefix none --format '{p}')"
+          dependencies="$(cargo tree -p agent-client-protocol --features schemars --locked --edges normal,build --prefix none --format '{p}')"
           if ! grep -Eq '^schemars ' <<< "$dependencies"; then
-            echo "schemars must remain enabled by default" >&2
+            echo "the schemars feature must enable JSON Schema generation" >&2
+            exit 1
+          fi
+          dependencies="$(cargo tree -p agent-client-protocol --features stdio --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^blocking ' <<< "$dependencies" || grep -Eq '^(async-process|async-io|shell-words|schemars) ' <<< "$dependencies"; then
+            echo "stdio must enable blocking I/O without subprocess or schema support" >&2
+            exit 1
+          fi
+          dependencies="$(cargo tree -p agent-client-protocol --features process --locked --edges normal,build --prefix none --format '{p}')"
+          if ! grep -Eq '^async-process ' <<< "$dependencies" || grep -Eq '^(blocking|schemars) ' <<< "$dependencies"; then
+            echo "process must enable subprocess support without stdio or schema support" >&2
             exit 1
           fi
 
@@ -96,6 +110,8 @@ jobs:
           cargo clippy --all-targets --all-features
           cargo clippy -p agent-client-protocol --lib --target wasm32-wasip1 --all-features -- -D warnings
           cargo clippy -p agent-client-protocol --lib --target wasm32-wasip2 --all-features -- -D warnings
+          cargo clippy -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --all-features -- -D warnings
+          cargo clippy -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --all-features -- -D warnings
           cargo clippy -p agent-client-protocol --lib --target wasm32-unknown-unknown --all-features -- -D warnings
 
       - name: Build

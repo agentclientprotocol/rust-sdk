@@ -19,7 +19,7 @@ default = []
 unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [dependencies]
-agent-client-protocol = { workspace = true, features = ["unstable_mcp_over_acp"] }
+agent-client-protocol = { workspace = true, features = ["process", "stdio", "unstable_mcp_over_acp"] }
 agent-client-protocol-trace-viewer.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
@@ -45,6 +45,7 @@ regex.workspace = true
 rmcp = { workspace = true, features = [
     "client",
     "server",
+    "macros",
     "transport-io",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",

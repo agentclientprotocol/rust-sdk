@@ -1,7 +1,8 @@
 # Runnable Protocol V2 Quickstart
 
 The core crate includes a small ACP v2 agent and client that run together over
-stdio. Both are compiled examples behind the `unstable_protocol_v2` feature:
+stdio. Both require `unstable_protocol_v2`; the agent also requires `stdio`,
+and the client requires `process`:
 
 - [`simple_agent_v2.rs`](https://github.com/agentclientprotocol/rust-sdk/blob/main/src/agent-client-protocol/examples/simple_agent_v2.rs)
   implements initialization and the complete baseline session lifecycle.
@@ -15,7 +16,7 @@ Build both examples from the repository root:
 
 ```bash
 cargo build -p agent-client-protocol \
-  --features unstable_protocol_v2 \
+  --features process,stdio,unstable_protocol_v2 \
   --examples
 ```
 

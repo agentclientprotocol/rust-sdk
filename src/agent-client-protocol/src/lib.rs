@@ -80,20 +80,31 @@
 //!
 //! [`agent_client_protocol_cookbook`]: https://docs.rs/agent-client-protocol-cookbook
 //!
-//! ## JSON Schema Generation
+//! ## Cargo Features
 //!
-//! The `schemars` feature is enabled by default. It enables `JsonSchema`
-//! implementations on protocol types and the typed MCP tool helpers in
-//! [`mcp_server`]. To omit the dependency:
+//! No features are enabled by default. Protocol serialization, connections,
+//! sessions, custom MCP servers, and the generic transport adapters remain
+//! available without opting in to native I/O or JSON Schema generation.
+//!
+//! - `process`: native subprocess support through `AcpAgent` and `AcpAgentConfig`.
+//! - `stdio`: the native `Stdio` adapter.
+//! - `schemars`: `JsonSchema` implementations on protocol types and typed MCP
+//!   tool helpers in [`mcp_server`].
+//!
+//! For example, a native client launching an agent opts into `process`:
 //!
 //! ```toml
-//! agent-client-protocol = { version = "2.2", default-features = false }
+//! agent-client-protocol = { version = "3", features = ["process"] }
 //! ```
 //!
-//! Protocol serialization and connection APIs remain available, as do custom
-//! MCP servers and independently enabled unstable protocol features. The
-//! `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its tool
-//! builders.
+//! Enable `stdio` for an agent using `Stdio`, or `schemars` for typed MCP tool
+//! definitions. `LineDirection` is available on native targets with either
+//! `process` or `stdio`; neither feature enables the other.
+//!
+//! The `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its
+//! tool builders. Unstable protocol features remain independent opt-ins.
+//! When upgrading from 2.x, explicitly enable every feature your application
+//! uses; `default-features = false` is no longer needed for a lean dependency.
 //!
 //! ## WebAssembly
 //!
@@ -106,9 +117,9 @@
 //! backend instead.
 //!
 //! This crate does not provide a WebAssembly executor or host I/O adapter. The
-//! native `AcpAgent` and `Stdio` implementations depend on process spawning and
-//! blocking-thread facilities, so they and `LineDirection` are not exported on
-//! WebAssembly targets.
+//! native `process` and `stdio` features depend on process spawning and
+//! blocking-thread facilities, so their dependencies and exports (including
+//! `LineDirection`) remain excluded on WebAssembly even when enabled.
 //!
 //! Embedders provide their own runtime and transport. They can exchange
 //! `TransportFrame` values through `Channel`, newline-delimited JSON through
@@ -187,14 +198,30 @@ pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, Json
 mod session;
 pub use session::*;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "process", not(target_family = "wasm")))]
 mod acp_agent;
-#[cfg(not(target_family = "wasm"))]
-pub use acp_agent::{AcpAgent, AcpAgentConfig, LineDirection};
+#[cfg(all(feature = "process", not(target_family = "wasm")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "process", not(target_family = "wasm"))))
+)]
+pub use acp_agent::{AcpAgent, AcpAgentConfig};
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(
+    any(feature = "process", feature = "stdio"),
+    not(target_family = "wasm")
+))]
+mod line_direction;
+#[cfg(all(
+    any(feature = "process", feature = "stdio"),
+    not(target_family = "wasm")
+))]
+pub use line_direction::LineDirection;
+
+#[cfg(all(feature = "stdio", not(target_family = "wasm")))]
 mod stdio;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(all(feature = "stdio", not(target_family = "wasm")))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "stdio", not(target_family = "wasm")))))]
 pub use stdio::Stdio;
 
 /// This is a hack that must be given as the final argument of

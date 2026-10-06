@@ -982,10 +982,8 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 /// ```no_run
 /// # use agent_client_protocol::UntypedRole;
 /// # use agent_client_protocol::{Builder};
-/// # use agent_client_protocol::Stdio;
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, SessionNotification};
-/// # async fn example() -> Result<(), agent_client_protocol::Error> {
-/// let transport = Stdio::new();
+/// # async fn example(transport: impl agent_client_protocol::ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol::Error> {
 ///
 /// UntypedRole.builder()
 ///     .name("my-agent")  // Optional: for debugging logs
@@ -1786,10 +1784,8 @@ impl<
     /// ```no_run
     /// # use agent_client_protocol::UntypedRole;
     /// # use agent_client_protocol::{Builder};
-    /// # use agent_client_protocol::Stdio;
     /// # use agent_client_protocol_test::*;
-    /// # async fn example() -> Result<(), agent_client_protocol::Error> {
-    /// let transport = Stdio::new();
+    /// # async fn example(transport: impl agent_client_protocol::ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol::Error> {
     ///
     /// UntypedRole.builder()
     ///     .on_receive_request(async |req: MyRequest, responder, cx| {
@@ -1836,10 +1832,8 @@ impl<
     /// # use agent_client_protocol::{Builder};
     /// # use agent_client_protocol::ByteStreams;
     /// # use agent_client_protocol::schema::v1::InitializeRequest;
-    /// # use agent_client_protocol::Stdio;
     /// # use agent_client_protocol_test::*;
-    /// # async fn example() -> Result<(), agent_client_protocol::Error> {
-    /// let transport = Stdio::new();
+    /// # async fn example(transport: impl agent_client_protocol::ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol::Error> {
     ///
     /// UntypedRole.builder()
     ///     .on_receive_request(async |req: MyRequest, responder, cx| {
@@ -6767,7 +6761,13 @@ where
     }
 }
 
-#[cfg(any(not(target_family = "wasm"), test))]
+#[cfg(any(
+    all(
+        any(feature = "process", feature = "stdio"),
+        not(target_family = "wasm")
+    ),
+    test
+))]
 pub(crate) async fn write_line<W>(writer: &mut W, line: String) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin + ?Sized,

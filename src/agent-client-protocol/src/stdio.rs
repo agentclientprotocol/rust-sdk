@@ -1,7 +1,6 @@
 //! Stdio transport for connecting ACP components via standard input/output.
 
-use crate::acp_agent::LineDirection;
-use crate::{ByteStreams, ConnectTo, Role};
+use crate::{ByteStreams, ConnectTo, LineDirection, Role};
 use std::sync::Arc;
 
 /// A transport that connects to an ACP peer via standard input/output.

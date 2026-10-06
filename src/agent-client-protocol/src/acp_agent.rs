@@ -14,7 +14,7 @@ use async_process::Child;
 use serde::{Deserialize, Serialize};
 use std::pin::pin;
 
-use crate::{Client, Conductor, Role};
+use crate::{Client, Conductor, LineDirection, Role};
 
 type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 
@@ -22,17 +22,6 @@ const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
-
-/// Direction of a line being sent or received.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineDirection {
-    /// Line being sent to the agent (stdin)
-    Stdin,
-    /// Line being received from the agent (stdout)
-    Stdout,
-    /// Line being received from the agent (stderr)
-    Stderr,
-}
 
 /// Configuration for launching an ACP agent subprocess.
 ///

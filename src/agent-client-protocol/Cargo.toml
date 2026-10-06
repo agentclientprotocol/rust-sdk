@@ -16,24 +16,36 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[example]]
 name = "simple_agent_v2"
-required-features = ["unstable_protocol_v2"]
+required-features = ["stdio", "unstable_protocol_v2"]
 test = true
 
 [[example]]
 name = "v2_one_shot_client"
-required-features = ["unstable_protocol_v2"]
+required-features = ["process", "unstable_protocol_v2"]
 test = true
 
 [[example]]
 name = "v2_session_coordination"
-required-features = ["unstable_protocol_v2"]
+required-features = ["process", "unstable_protocol_v2"]
 test = true
 
+[[example]]
+name = "simple_agent"
+required-features = ["stdio"]
+
+[[example]]
+name = "yolo_one_shot_client"
+required-features = ["process"]
+
 [features]
-default = ["schemars"]
+default = []
 
 # JSON Schema generation for protocol types and typed MCP tool helpers.
 schemars = ["dep:schemars", "agent-client-protocol-schema/schemars"]
+
+# Native transports. Their dependencies and exports remain excluded on WebAssembly.
+process = ["dep:async-io", "dep:async-process", "dep:shell-words", "dep:rustix", "dep:windows-sys"]
+stdio = ["dep:blocking"]
 
 # Forward unstable features from agent-client-protocol-schema.
 # Enable these to get support for the corresponding unstable ACP surfaces.
@@ -72,16 +84,16 @@ tracing.workspace = true
 uuid.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-async-io.workspace = true
-async-process.workspace = true
-blocking.workspace = true
-shell-words.workspace = true
+async-io = { workspace = true, optional = true }
+async-process = { workspace = true, optional = true }
+blocking = { workspace = true, optional = true }
+shell-words = { workspace = true, optional = true }
 
 [target.'cfg(all(unix, not(target_family = "wasm")))'.dependencies]
-rustix.workspace = true
+rustix = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_System_Threading"] }
+windows-sys = { workspace = true, features = ["Win32_System_Threading"], optional = true }
 
 [dev-dependencies]
 agent-client-protocol-test.workspace = true
