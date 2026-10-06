@@ -13,6 +13,9 @@ For the other transport changes in core 3.x, follow:
   `(Channel, Option<ConnectionDriver>)` and active/passive transport ownership.
 - [Migrating the Native MCP Binding](./migration-stateless-mcp.md) for the
   replacement of connect/disconnect with request-scoped MCP 2026-07-28.
+- [Migrating Custom HTTP Client Construction](./http-transport.md#migrating-custom-client-construction)
+  for WebSocket configuration through the transport builder instead of a prebuilt
+  reqwest client.
 - [Native MCP-over-ACP](./mcp-over-acp.md) for request-scoped provider usage and
   [the MCP HTTP bridge](./mcp-bridge.md) for modern-only HTTP re-export.
 

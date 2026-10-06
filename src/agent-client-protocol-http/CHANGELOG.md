@@ -2,8 +2,34 @@
 
 ## [Unreleased]
 
+### Breaking changes
+
+- WebSocket URLs passed to `HttpClient::with_client` or
+  `with_endpoint_and_client` now return `WebSocketRequiresBuilder` before network
+  I/O. Migrate to `builder(...).configure_http(...).build()` or
+  `builder_with_endpoint(...)` so the transport can enforce connection policies.
+  See the
+  [migration guide](https://agentclientprotocol.github.io/rust-sdk/http-transport.html#migrating-custom-client-construction).
+- Unconfigured WebSockets now share reqwest's proxy discovery and TLS verification
+  defaults, replacing direct connections and bundled WebPKI roots. Environment
+  proxies, enabled system-proxy discovery, and platform certificate verification
+  can change routing and trust. Use `no_proxy()` and explicit `tls_certs_only`
+  roots when those defaults are not appropriate.
+
+### Deprecated
+
+- Retain `HttpClient::with_client` and `with_endpoint_and_client` as deprecated
+  HTTP/SSE compatibility wrappers with unchanged path handling.
+  `from_http_client(exact_endpoint, client)` preserves shared reqwest clients for
+  HTTP/SSE; its endpoint is exact and does not append `/acp`.
+
 ### Changed
 
+- Document the caller constraint against setting reserved WebSocket handshake
+  headers through `reqwest::Proxy::headers`. Plain-WS proxy headers can overwrite
+  SDK request headers after assembly; opaque proxy configuration cannot be
+  inspected or rejected at build time. Cover normal plain-WS proxy headers and
+  fail-closed accept validation after a proxy key override.
 - **Breaking:** make `ServerOptions` and `CorsOptions` non-exhaustive.
   Replace server option literals (including struct update syntax) with
   `ServerOptions::default().with_path(...).with_cors(...).with_health_endpoint(...)`;
@@ -20,6 +46,10 @@
 
 ### Fixed
 
+- Apply custom headers, TLS, proxies, DNS, and timeouts to WebSocket handshakes.
+  Enforce HTTP/1.1 and disable redirects for WebSockets without changing HTTP/SSE
+  policies. Validate the upgrade response before sending queued ACP data, and
+  reject unsupported subprotocols and extensions.
 - Replace HTTP POST, SSE, and WebSocket payload diagnostics with bounded
   metadata. Do not log peer-controlled IDs, close reasons, or transport error
   text (which may include credentials or message content).
