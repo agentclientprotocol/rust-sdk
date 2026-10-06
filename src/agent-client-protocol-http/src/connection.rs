@@ -263,12 +263,9 @@ impl OutboundTransport {
     async fn route_outbound(&self, frame: TransportFrame) -> Result<(), &'static str> {
         match frame {
             TransportFrame::Single(message) => {
-                let serialized = match serde_json::to_string(&message) {
-                    Ok(serialized) => serialized,
-                    Err(error) => {
-                        error!("failed to serialize outbound JSON-RPC message: {error}");
-                        return Err("failed to serialize outbound JSON-RPC message");
-                    }
+                let Ok(serialized) = serde_json::to_string(&message) else {
+                    error!("failed to serialize outbound JSON-RPC message");
+                    return Err("failed to serialize outbound JSON-RPC message");
                 };
                 match self {
                     Self::Http(http) => http.route_outbound(&message, serialized).await,
@@ -280,12 +277,9 @@ impl OutboundTransport {
                 Self::WebSocket(websocket) => websocket.all_outbound.push(raw),
             },
             TransportFrame::Batch(batch) => {
-                let serialized = match serde_json::to_string(&batch) {
-                    Ok(serialized) => serialized,
-                    Err(error) => {
-                        error!("failed to serialize outbound JSON-RPC batch: {error}");
-                        return Err("failed to serialize outbound JSON-RPC batch");
-                    }
+                let Ok(serialized) = serde_json::to_string(&batch) else {
+                    error!("failed to serialize outbound JSON-RPC batch");
+                    return Err("failed to serialize outbound JSON-RPC batch");
                 };
                 match self {
                     Self::Http(http) => http.route_outbound_batch(&batch, serialized).await,
@@ -361,7 +355,7 @@ impl HttpOutbound {
                 self.connection_stream.push(serialized)
             }
             ResponseRoute::Session(sid) => {
-                trace!(target = %sid, "→ session-scoped stream");
+                trace!(target = "session", "→ session-scoped stream");
                 self.session_stream(&sid).await.push(serialized)
             }
         }
@@ -403,7 +397,7 @@ impl HttpOutbound {
                 self.connection_stream.push(serialized)
             }
             ResponseRoute::Session(session_id) => {
-                trace!(target = %session_id, "→ session-scoped batch stream");
+                trace!(target = "session", "→ session-scoped batch stream");
                 self.session_stream(&session_id).await.push(serialized)
             }
         }
@@ -542,8 +536,8 @@ impl ConnectionRegistry {
             let conn_id_for_agent = conn_id_for_task.clone();
             if let Some(agent_future) = agent_future {
                 let agent = async move {
-                    if let Err(e) = agent_future.await {
-                        error!(connection_id = %conn_id_for_agent, "ACP agent task error: {e}");
+                    if agent_future.await.is_err() {
+                        error!(connection_id = %conn_id_for_agent, "ACP agent task failed");
                     }
                 };
                 futures::pin_mut!(agent);
@@ -604,8 +598,8 @@ async fn drain_connection_router(connection: Weak<Connection>) -> Option<Arc<Con
     let router_handle = connection.router_handle.lock().await.take();
     if let Some(handle) = router_handle {
         let _abort_on_drop = AbortTakenRouterOnDrop(handle.abort_handle());
-        if let Err(error) = handle.await {
-            error!("outbound router task failed while draining: {error}");
+        if handle.await.is_err() {
+            error!("outbound router task failed while draining");
         }
     }
     Some(connection)

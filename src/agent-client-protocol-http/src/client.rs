@@ -324,7 +324,7 @@ async fn run_with_finish(
                         }
                     }
                     Err(error) => {
-                        error!("POST failed: {error}");
+                        error!("POST failed");
                         break Err(AcpError::internal_error().data(format!("POST: {error}")));
                     }
                 }
@@ -365,7 +365,7 @@ async fn run_with_finish(
                 }
                 Ok(InitializeOutcome::Rejected) => {}
                 Err(e) => {
-                    error!("initialize failed: {e}");
+                    error!("initialize failed");
                     break Err(AcpError::internal_error().data(format!("initialize: {e}")));
                 }
             }
@@ -403,7 +403,7 @@ async fn run_with_finish(
             Ok(post) if is_response_only => posts.responses.push(post),
             Ok(post) => posts.ordered.push(post),
             Err(e) => {
-                error!("POST failed: {e}");
+                error!("POST failed");
                 break Err(AcpError::internal_error().data(format!("POST: {e}")));
             }
         }
@@ -415,7 +415,10 @@ async fn run_with_finish(
 
 fn sse_failure_error(failure: SseFailure) -> AcpError {
     let scope = failure.session_id.as_deref().unwrap_or("connection");
-    error!(session_id = ?failure.session_id, error = %failure.error, "SSE stream ended");
+    error!(
+        session_scoped = failure.session_id.is_some(),
+        "SSE stream ended"
+    );
     AcpError::internal_error().data(format!("{scope} SSE stream ended: {}", failure.error))
 }
 
@@ -434,7 +437,7 @@ fn handle_completed_post(
     } = completed;
     if let Err(error) = result {
         state.remove_pending_requests(&pending_requests);
-        error!("POST failed: {error}");
+        error!("POST failed");
         Err(AcpError::internal_error().data(format!("POST: {error}")))
     } else {
         Ok(())
@@ -456,7 +459,7 @@ fn queue_response_post(
         }
     }
     .map_err(|error| {
-        error!("POST failed: {error}");
+        error!("POST failed");
         AcpError::internal_error().data(format!("POST: {error}"))
     })?;
     posts.responses.push(post);
@@ -566,20 +569,21 @@ impl HttpConnection {
             Ok(handle) => {
                 drop(handle.spawn(Self::send_close(http, endpoint, connection_id)));
             }
-            Err(e) => {
-                debug!("failed to spawn HTTP DELETE: {e}");
+            Err(_) => {
+                debug!("failed to spawn HTTP DELETE");
             }
         }
     }
 
     async fn send_close(http: reqwest::Client, endpoint: url::Url, connection_id: String) {
-        if let Err(e) = http
+        if http
             .delete(endpoint)
             .header(HEADER_CONNECTION_ID, connection_id)
             .send()
             .await
+            .is_err()
         {
-            debug!("DELETE failed (ignored): {e}");
+            debug!("DELETE failed (ignored)");
         }
     }
 }
@@ -737,7 +741,7 @@ fn run_sse(
             Ok(()) => "SSE stream closed".to_string(),
             Err(e) => e,
         };
-        warn!(session_id = ?label, "SSE stream ended: {error}");
+        warn!(session_scoped = label.is_some(), "SSE stream ended");
         SseFailure {
             session_id: label,
             error,
@@ -1155,7 +1159,7 @@ async fn read_sse(
     if !response.status().is_success() {
         return Err(format!("HTTP {}", response.status()));
     }
-    trace!(session_id = ?session_id, "SSE stream open");
+    trace!(session_scoped = session_id.is_some(), "SSE stream open");
     let _ = established_tx.send(());
 
     let mut events = eventsource_stream::EventStream::new(response.bytes_stream());
@@ -1256,12 +1260,12 @@ where
             let text = match frame.to_json() {
                 Ok(text) => text,
                 Err(error) => {
-                    error!("failed to serialize outbound frame: {error}");
+                    error!("failed to serialize outbound frame");
                     return Err(AcpError::internal_error().data(format!("serialize: {error}")));
                 }
             };
             if let Err(error) = ws_tx.send(WsMessage::Text(text.into())).await {
-                error!("WebSocket send failed: {error}");
+                error!("WebSocket send failed");
                 return Err(AcpError::internal_error().data(format!("ws send: {error}")));
             }
         }
@@ -1294,12 +1298,12 @@ where
                 }
                 Some(Ok(WsMessage::Ping(_) | WsMessage::Pong(_) | WsMessage::Frame(_))) => {}
                 Some(Ok(WsMessage::Close(frame))) => {
-                    debug!("server closed WebSocket: {frame:?}");
+                    debug!("server closed WebSocket");
                     return Err(AcpError::internal_error()
                         .data(format!("WebSocket closed by peer: {frame:?}")));
                 }
                 Some(Err(e)) => {
-                    error!("WebSocket receive error: {e}");
+                    error!("WebSocket receive failed");
                     return Err(AcpError::internal_error().data(format!("ws recv: {e}")));
                 }
                 None => {

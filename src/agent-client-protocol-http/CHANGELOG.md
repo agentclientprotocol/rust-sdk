@@ -4,6 +4,12 @@
 
 ### Changed
 
+- **Breaking:** make `ServerOptions` and `CorsOptions` non-exhaustive.
+  Replace server option literals (including struct update syntax) with
+  `ServerOptions::default().with_path(...).with_cors(...).with_health_endpoint(...)`;
+  existing fields remain public. Downstream CORS matches need a wildcard arm.
+  Defaults and runtime policies are unchanged. See the
+  [config API migration guide](../../md/migration-config-api.md).
 - Limit Axum to HTTP1/Tokio, WebSockets, and tracing/tower-log observability.
   Remove unused Axum macros and extractors; JSON extraction is enabled only for
   tests. Drop unused test-utility and tracing-subscriber dev dependencies and
@@ -14,6 +20,9 @@
 
 ### Fixed
 
+- Replace HTTP POST, SSE, and WebSocket payload diagnostics with bounded
+  metadata. Do not log peer-controlled IDs, close reasons, or transport error
+  text (which may include credentials or message content).
 - Cooperatively finish HTTP client connections created through the public builder:
   drain accepted ordered POSTs and WebSocket frames before physical cleanup, reject
   output from escaped transport senders, and report transport failures during shutdown.
