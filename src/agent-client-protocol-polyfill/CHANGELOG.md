@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- Replace the native MCP HTTP bridge with MCP 2026-07-28-only request-scoped
+  HTTP POSTs, fresh logical request IDs, per-request notifications, and
+  cancellation when the HTTP response stream is dropped. Remove the connection
+  handshake and legacy MCP session/initialization behavior. There is no fallback
+  to older MCP revisions; downstream HTTP clients must support MCP 2026-07-28.
+  See the [bridge guide](https://agentclientprotocol.github.io/rust-sdk/mcp-bridge.html).
+
 ### Changed
 
-- Adapt native MCP servers to request-scoped MCP 2026-07-28 HTTP POSTs, with
-  fresh logical request IDs, per-request notifications, and cancellation when
-  the HTTP response stream is dropped. Remove the connection handshake and
-  legacy MCP session/initialization behavior.
 - Use one loopback listener per ACP connection with server-addressed URLs and
   server-specific HMAC bearer credentials in declaration headers. Validate
   authentication and Origin before reading request bodies.

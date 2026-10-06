@@ -106,8 +106,13 @@ requests, `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
 `session/new`, and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one
 to a single `session/resume`. With `unstable_session_fork`,
 `V2ForkSessionBuilder::with_mcp_server(...)` attaches one to a single
-`session/fork`. Successful attachments remain active for the connection
-lifetime. A v2 proxy can forward any of these setup operations with the
+`session/fork`. In v1, `ActiveSession` owns per-session MCP registrations:
+dropping it removes them unless a proxy handoff detaches them
+(`proxy_remaining_messages` or successful `on_proxy_session_start`).
+Successful v2 setup detaches MCP handlers for the connection lifetime, so
+dropping the returned `V2Session` does not unregister them. Global proxy
+attachments are connection-scoped in both versions.
+A v2 proxy can forward any of these setup operations with the
 builder's `on_proxy_session_start`; updates and interactive requests remain
 independent connection traffic.
 
