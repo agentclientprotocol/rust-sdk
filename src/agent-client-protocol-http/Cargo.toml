@@ -70,6 +70,7 @@ axum = { workspace = true, features = ["ws", "json"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }
 async-tungstenite.workspace = true
 tower.workspace = true
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

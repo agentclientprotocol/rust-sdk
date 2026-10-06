@@ -10,6 +10,19 @@
 
 `POST /acp` request bodies are limited to 16 MiB.
 
+## Diagnostic Privacy
+
+Ordinary transport diagnostics use byte lengths, fixed message kinds, stream
+scope, and fixed failure labels rather than message bodies. They do not format
+raw methods, request/session IDs, WebSocket close reasons, or transport error
+text, which can contain prompts, file/image content, or credential-bearing URLs.
+This does not change messages or errors delivered through the protocol.
+
+Opt-in [conductor recordings](./trace-viewer.md#recording-privacy) are different:
+they intentionally retain protocol payloads and must be treated as sensitive.
+This policy covers diagnostics emitted by the HTTP transport crate, not logs
+from applications or underlying libraries.
+
 ## JSON-RPC Batches
 
 `HttpClient` starts every connection with an individual `initialize` and
