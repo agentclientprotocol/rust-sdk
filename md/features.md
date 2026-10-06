@@ -115,6 +115,13 @@ agent-client-protocol = { version = "3", features = ["unstable_protocol_v2", "un
 The `unstable` aggregate does not select draft v2; enable `unstable_protocol_v2`
 explicitly when using that version.
 
+The `unstable_subagents` feature exposes the schema's subagent capabilities,
+updates, and session-message types. It is also included in `unstable`. The
+existing `session/update` notification route carries subagent updates in v1 and,
+with `unstable_protocol_v2`, draft v2. This is schema support, not a subagent
+scheduler or an implementation of application-level ownership and lifecycle
+policy.
+
 ## WebAssembly and the rmcp integration
 
 The core library compiles for `wasm32-wasip1` and `wasm32-wasip2` with default
