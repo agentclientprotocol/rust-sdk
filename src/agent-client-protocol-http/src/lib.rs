@@ -5,6 +5,8 @@ mod client;
 #[cfg(feature = "server")]
 mod connection;
 #[cfg(feature = "server")]
+mod diagnostics;
+#[cfg(feature = "server")]
 mod http_server;
 #[cfg(any(feature = "client", feature = "server"))]
 mod protocol;

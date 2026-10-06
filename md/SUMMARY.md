@@ -33,6 +33,7 @@
 # Reference
 
 - [Migrating to Core v3](./migration-v3.md)
+- [Migrating the Config API](./migration-config-api.md)
 - [Migrating the Native MCP Binding](./migration-stateless-mcp.md)
 - [Migrating Connection Drivers](./migration-connection-drivers.md)
 - [Migrating the rmcp Integration to v4](./migration-rmcp-v4.md)

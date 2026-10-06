@@ -75,6 +75,7 @@ rcgen.workspace = true
 tokio-rustls.workspace = true
 # Reproduce downstream feature unification, even in client-only test runs.
 reqwest = { workspace = true, features = ["http2"] }
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

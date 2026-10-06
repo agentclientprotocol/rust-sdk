@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Redact HTTP URL userinfo and recognized credential query values in trace
+  copies, including encoded keys and repeated parameters. Preserve explicit
+  message recordings and original transport messages.
 - Trace inner MCP errors separately from outer ACP binding failures and redact
   HTTP declaration credentials without modifying transport messages.
 - Retain raw JSON-RPC error codes, omitted/null data, and error extension
