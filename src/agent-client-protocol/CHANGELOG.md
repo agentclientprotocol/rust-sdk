@@ -32,6 +32,9 @@
 
 ### Added
 
+- Expose the schema's `unstable_subagents` feature, independently and through
+  `unstable`. Subagent updates use the existing v1 and draft-v2 session
+  notification routes; applications remain responsible for subagent behavior.
 - Add reusable native MCP services with request-scoped metadata, notification
   authority, and cancellation. Supervise owned operation cleanup through ACP
   shutdown without changing generic frame queues or task limits.
