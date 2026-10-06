@@ -50,10 +50,20 @@ rmcp service with actual 2026-07-28 requests, without sending `initialize`.
 They cover direct tool calls before discovery, discovery itself, per-request
 version errors, and an MRTR retry with fresh request metadata.
 
-Do not treat the version-string constant or dependency upgrade alone as
-protocol selection. rmcp 3.4's `ProtocolVersion::LATEST` still defaults to
-2025-11-25. A modern client must select 2026-07-28 explicitly and include
-the required request metadata.
+The dependency requirement supports rmcp 3.4 and later compatible 3.x versions;
+the workspace lockfile currently resolves 3.5. Their version constants differ:
+
+- In rmcp 3.4, `ProtocolVersion::LATEST` is 2025-11-25.
+- In rmcp 3.5, `ProtocolVersion::LATEST` is 2026-07-28, which has no initialize
+  handshake. `LATEST_WITH_INITIALIZE` is 2025-11-25.
+
+Do not treat a changing `LATEST` constant or dependency upgrade alone as
+protocol selection. For modern no-initialize requests, explicitly select
+`ProtocolVersion::V_2026_07_28` and include the required request metadata.
+For a legacy initialize handshake, select its supported revision; with rmcp
+3.5, `LATEST_WITH_INITIALIZE` names the latest such revision. The native ACP
+binding below requires modern per-request metadata regardless of the resolved
+rmcp version.
 
 ## Native attachments also migrate in this release
 
