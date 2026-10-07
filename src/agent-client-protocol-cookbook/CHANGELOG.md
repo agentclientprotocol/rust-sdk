@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.0.0...agent-client-protocol-cookbook-v3.1.0) - 2026-10-07
+
+### Added
+
+- *(acp)* add prepared requests with preselected response handling ([#407](https://github.com/agentclientprotocol/rust-sdk/pull/407))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v2.2.0...agent-client-protocol-cookbook-v3.0.0) - 2026-10-06
 
 ### Added
