@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agent-client-protocol"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "agent-client-protocol-derive",
  "agent-client-protocol-schema",
@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-conductor"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-polyfill",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-cookbook"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "agent-client-protocol",
  "agent-client-protocol-rmcp",
@@ -75,7 +75,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-derive"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "quote",
  "syn 3.0.6",
@@ -83,7 +83,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-http"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-polyfill"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "agent-client-protocol",
  "async-stream",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-rmcp"
-version = "4.0.0"
+version = "4.0.1"
 dependencies = [
  "agent-client-protocol",
  "futures",
@@ -175,7 +175,7 @@ dependencies = [
 
 [[package]]
 name = "agent-client-protocol-trace-viewer"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3664,18 +3664,18 @@ dependencies = [
 
 [[package]]
 name = "zerocopy"
-version = "0.8.60"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6400fc4bb7426f6faac3fb07566122bb18622e3022bd2c36426a92ed489b1dbe"
+checksum = "879fb705ce98c32e41ebdb970fbe1204f8492423b314c6ab0354c3e7b5542866"
 dependencies = [
  "zerocopy-derive",
 ]
 
 [[package]]
 name = "zerocopy-derive"
-version = "0.8.60"
+version = "0.8.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99c27cc7525bad4df59a45e073c45b2c2aa820efb588234cc23a547ec69a34db"
+checksum = "708882a28301d604fa039cc7727607a98d04c4b86dc76ec9cc683f805d709759"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3705,9 +3705,9 @@ dependencies = [
 
 [[package]]
 name = "zeroize"
-version = "1.9.0"
+version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+checksum = "e13084392c5e4bc371903e2935a5eaeed24905a7511356b883835e18a78f6879"
 
 [[package]]
 name = "zerotrie"

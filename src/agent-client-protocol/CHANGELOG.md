@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [3.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.0.0...v3.1.0) - 2026-10-07
+
+### Added
+
+- *(acp)* add prepared requests with preselected response handling ([#407](https://github.com/agentclientprotocol/rust-sdk/pull/407))
+
 ### Added
 
 - Add `prepare_request` and `prepare_request_to` on raw and v2 connections.
