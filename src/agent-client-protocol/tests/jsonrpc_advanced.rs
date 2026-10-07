@@ -432,24 +432,40 @@ async fn unconsumed_response_does_not_block_following_message() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn ordered_callback_installs_dynamic_handler_before_later_batch_entry() {
+    assert_callback_installs_handler_before_batch_entry(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_callback_installs_dynamic_handler_before_later_batch_entry() {
+    assert_callback_installs_handler_before_batch_entry(true).await;
+}
+
+async fn assert_callback_installs_handler_before_batch_entry(prepared: bool) {
     let (transport, mut peer) = Channel::duplex();
     let (notification_tx, mut notification_rx) = mpsc::unbounded();
 
     let client = UntypedRole
         .builder()
         .connect_with(transport, async move |connection| {
-            connection
-                .send_request(PingRequest { value: 41 })
-                .on_receiving_result({
-                    let connection = connection.clone();
-                    async move |response| {
-                        assert_eq!(response?.value, 42);
-                        connection
-                            .add_dynamic_handler(AfterResponseCollector { notification_tx })?
-                            .detach();
-                        Ok(())
-                    }
-                })?;
+            let callback = {
+                let connection = connection.clone();
+                async move |response: Result<PongResponse, agent_client_protocol::Error>| {
+                    assert_eq!(response?.value, 42);
+                    connection
+                        .add_dynamic_handler(AfterResponseCollector { notification_tx })?
+                        .detach();
+                    Ok(())
+                }
+            };
+            if prepared {
+                connection
+                    .prepare_request(PingRequest { value: 41 })
+                    .on_receiving_result(callback)?;
+            } else {
+                connection
+                    .send_request(PingRequest { value: 41 })
+                    .on_receiving_result(callback)?;
+            }
 
             let notification = notification_rx
                 .next()

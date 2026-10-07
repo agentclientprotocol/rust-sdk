@@ -19,15 +19,25 @@ enum ApplicationEvent {
 
 #[tokio::test(flavor = "current_thread")]
 async fn application_queue_orders_replay_response_and_eof() {
-    assert_application_order(false).await;
+    assert_application_order(false, false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn application_queue_orders_batched_replay_response_and_eof() {
-    assert_application_order(true).await;
+    assert_application_order(true, false).await;
 }
 
-async fn assert_application_order(batched: bool) {
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_application_queue_orders_replay_response_and_eof() {
+    assert_application_order(false, true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_application_queue_orders_batched_replay_response_and_eof() {
+    assert_application_order(true, true).await;
+}
+
+async fn assert_application_order(batched: bool, prepared: bool) {
     let (transport, mut peer) = Channel::duplex();
     let (events_tx, mut events_rx) = mpsc::unbounded();
     let updates_tx = events_tx.clone();
@@ -66,13 +76,20 @@ async fn assert_application_order(batched: bool) {
                 std::env::current_dir().map_err(Error::into_internal_error)?,
             )
             .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
-            connection
-                .send_request(request)
-                .on_receiving_result(async move |result| {
-                    events_tx
-                        .unbounded_send(ApplicationEvent::ResumeFinished(result))
-                        .map_err(Error::into_internal_error)
-                })?;
+            let callback = async move |result: Result<v2::ResumeSessionResponse, Error>| {
+                events_tx
+                    .unbounded_send(ApplicationEvent::ResumeFinished(result))
+                    .map_err(Error::into_internal_error)
+            };
+            if prepared {
+                connection
+                    .prepare_request(request)
+                    .on_receiving_result(callback)?;
+            } else {
+                connection
+                    .send_request(request)
+                    .on_receiving_result(callback)?;
+            }
 
             // Simulate a stalled UI. Dispatch, the response callback, and EOF
             // must progress without waiting for the application to drain.

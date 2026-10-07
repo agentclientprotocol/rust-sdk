@@ -76,6 +76,28 @@ cargo build -p agent-client-protocol \
 See the [Runnable Protocol V2 Quickstart](https://agentclientprotocol.github.io/rust-sdk/protocol-v2-quickstart.html)
 for the lifecycle invariants to preserve when adapting these examples.
 
+## Choosing request publication
+
+`send_request(request)` sends immediately, with unchanged behavior.
+`prepare_request(request)` waits until a consuming method is called:
+
+```rust,ignore
+connection.prepare_request(request).on_receiving_result(async move |result| {
+    // Enqueue or apply bounded work before later inbound messages.
+    handle_result(result)?;
+    Ok(())
+})?;
+```
+
+Preparation installs callback ordering before publication, avoiding a race with
+fast responses. `block_task()` and `detach()` instead select unordered
+consumption and send during the method call; dropping an unconsumed prepared
+request sends nothing. Both raw and v2 connections also offer
+`prepare_request_to(peer, request)`.
+
+See [Sending Requests](https://agentclientprotocol.github.io/rust-sdk/sending-requests.html)
+for ordering limits, cancellation, errors, and migration guidance.
+
 ## Cargo Features
 
 No features are enabled by default. The protocol engine, serialization,

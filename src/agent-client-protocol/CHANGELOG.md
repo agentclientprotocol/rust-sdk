@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add `prepare_request` and `prepare_request_to` on raw and v2 connections.
+  `PreparedRequest` selects response handling before sending: callbacks and
+  forwarding install ordering before publication, while `block_task` and
+  `detach` send without holding dispatch. Eager `send_request` APIs are unchanged.
+  See [Sending Requests](../../md/sending-requests.md).
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v2.2.0...v3.0.0) - 2026-10-06
 
 ### Added

@@ -27,6 +27,13 @@
 //! without an incoming response, or a response routed later, does not carry
 //! that barrier.
 //!
+//! To select ordering before sending, use [`prepare_request`] followed by
+//! [`PreparedRequest::on_receiving_result`]. The callback task and ordering
+//! marker are registered before publication, so a concurrent connection cannot
+//! route a fast response before ordering has been selected. Eager
+//! `send_request(...).on_receiving_result(...)` retains the conditional guarantee
+//! above.
+//!
 //! Session-start helpers are two-phase: [`on_session_start`] and
 //! [`on_proxy_session_start`] perform framework-owned session setup under this
 //! ordering guarantee, then invoke the user callback in a spawned task so it
@@ -93,16 +100,16 @@
 //!
 //! ## `on_receiving_result()` - A peer response callback can hold the loop
 //!
-//! Use this when you need ordering guarantees:
+//! Use a prepared request when you need race-free selection of ordered handling:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.builder().connect_with(transport, async |cx| {
-//! cx.send_request(MyRequest {})
+//! cx.prepare_request(MyRequest {})
 //!     .on_receiving_result(async |result| {
-//!         // A timely peer response holds dispatch until this completes
+//!         // A peer response routed in its original dispatch holds this barrier
 //!         let response = result?;
 //!         // Do something with response...
 //!         Ok(())
@@ -113,12 +120,17 @@
 //! # }
 //! ```
 //!
-//! Register the callback before a peer response is routed to select this
-//! ordered mode. The dispatch loop then waits for your callback before
-//! processing the next message. A pending-request failure delivered without
-//! an incoming response (such as EOF), a response that was already routed, or
-//! one that an interceptor retains and routes after its original dispatch does
-//! not carry the barrier.
+//! Preparation does not send the request. Calling the callback method installs
+//! ordered handling, then publishes it. The dispatch loop waits for your
+//! callback before processing the next message. A pending-request failure
+//! delivered without an incoming response (such as EOF), or one that an
+//! interceptor retains and routes after its original dispatch, does not carry
+//! the barrier. With eager sending, an already-routed response has no barrier
+//! either.
+//!
+//! `prepare_request(...).block_task()` and `.detach()` send synchronously when
+//! called but do not select ordering. An unconsumed prepared request can be
+//! retained or dropped without sending traffic or holding dispatch.
 //!
 //! An ordered callback must not wait for later inbound traffic on the same
 //! connection. Spawn that follow-up work and return from the callback so the
@@ -191,4 +203,6 @@
 //! [`on_session_start`]: crate::SessionBuilder::on_session_start
 //! [`on_proxy_session_start`]: crate::SessionBuilder::on_proxy_session_start
 //! [`SentRequest`]: crate::SentRequest
+//! [`PreparedRequest::on_receiving_result`]: crate::PreparedRequest::on_receiving_result
+//! [`prepare_request`]: crate::ConnectionTo::prepare_request
 //! [`spawn`]: crate::ConnectionTo::spawn

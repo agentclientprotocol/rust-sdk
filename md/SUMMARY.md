@@ -8,6 +8,7 @@
 - [Cargo Features](./features.md)
 - [Protocol Reference](./protocol.md)
 - [Native MCP-over-ACP](./mcp-over-acp.md)
+- [Sending Requests](./sending-requests.md)
 - [Request Cancellation](./request-cancellation.md)
 - [Ordered Application Dispatch](./ordered-application-dispatch.md)
 - [Configurable LLM Providers](./llm-providers.md)
