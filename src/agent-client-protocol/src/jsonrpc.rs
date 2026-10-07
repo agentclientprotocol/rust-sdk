@@ -30,6 +30,8 @@ mod dynamic_handler;
 pub(crate) mod handlers;
 mod incoming_actor;
 mod outgoing_actor;
+#[cfg(test)]
+mod prepared_request_tests;
 mod protocol_compat;
 mod raw_error;
 pub(crate) mod run;
@@ -2390,24 +2392,25 @@ impl PendingRepliesRegistrar {
 
     /// Register a response destination before the request becomes observable.
     ///
-    /// Returns `false` after failing `reply` when EOF has already made a
+    /// Returns an error after failing `reply` when EOF has already made a
     /// response impossible or the connection driver is no longer running.
     fn subscribe(
         &self,
         id: RequestId,
         reply: PendingReply,
         incoming_closed: &IncomingClosed,
-    ) -> bool {
+    ) -> Result<(), crate::Error> {
         let Some(inner) = self.inner.upgrade() else {
-            if incoming_closed.is_closing() {
-                reply.fail_incoming_closed();
+            let error = if incoming_closed.is_closing() {
+                incoming_transport_closed_error(&reply.method)
             } else {
-                let method = reply.method.clone();
-                reply.fail(crate::util::internal_error(format!(
-                    "failed to send outgoing request `{method}`: connection is no longer running"
-                )));
-            }
-            return false;
+                crate::util::internal_error(format!(
+                    "failed to send outgoing request `{}`: connection is no longer running",
+                    reply.method
+                ))
+            };
+            reply.fail(error.clone());
+            return Err(error);
         };
 
         let result = {
@@ -2421,8 +2424,9 @@ impl PendingRepliesRegistrar {
 
         match result {
             Err(rejected) => {
-                rejected.fail_incoming_closed();
-                false
+                let error = incoming_transport_closed_error(&rejected.method);
+                rejected.fail(error.clone());
+                Err(error)
             }
             Ok(replaced) => {
                 if let Some(replaced) = replaced {
@@ -2431,7 +2435,7 @@ impl PendingRepliesRegistrar {
                             .data("outgoing request ID was reused before its response arrived"),
                     );
                 }
-                true
+                Ok(())
             }
         }
     }
@@ -3466,6 +3470,33 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         self.inner.send_request_to(peer, request)
     }
 
+    /// Prepare a request without sending it until response handling is selected.
+    ///
+    /// See [`ConnectionTo::prepare_request`] for publication and ordering semantics.
+    pub fn prepare_request<Req: JsonRpcRequest>(
+        &self,
+        request: Req,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.inner.prepare_request(request)
+    }
+
+    /// Prepare a request to a specific peer without sending it.
+    ///
+    /// See [`ConnectionTo::prepare_request_to`] for publication and ordering semantics.
+    pub fn prepare_request_to<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.inner.prepare_request_to(peer, request)
+    }
+
     /// Send an outgoing notification to the default counterpart peer.
     pub fn send_notification<N: JsonRpcNotification>(
         &self,
@@ -4218,6 +4249,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// * [`block_task`](SentRequest::block_task) - Wait on the current task until the response
     ///   arrives. This is only safe when that task already runs outside the dispatch loop.
     ///
+    /// For callback ordering selected before publication, use
+    /// [`prepare_request`](Self::prepare_request) instead. Even an immediately
+    /// chained callback can race with a fast response on a concurrent connection.
+    ///
     /// # Anti-Footgun Design
     ///
     /// The API intentionally makes it difficult to block on the result directly to prevent
@@ -4280,6 +4315,58 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         self.send_request_to_with_options(peer, request, false, None, None)
+    }
+
+    /// Prepare a request without sending it until response handling is selected.
+    ///
+    /// Unlike [`send_request`](Self::send_request), this does not register a
+    /// pending reply or enqueue the request. A consuming method on the returned
+    /// [`PreparedRequest`] publishes it synchronously. Callback-style methods
+    /// select ordered consumption before publication, closing the race with a
+    /// fast peer response even when the connection runs on another task.
+    ///
+    /// Dropping the prepared request sends nothing. See [`PreparedRequest`] for
+    /// the available consumption modes and their error and cancellation behavior.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
+    /// # use agent_client_protocol_test::MyRequest;
+    /// # fn example(connection: ConnectionTo<UntypedRole>) -> Result<(), Error> {
+    /// connection.prepare_request(MyRequest {}).on_receiving_result(async |result| {
+    ///     let response = result?;
+    ///     // Apply bounded response work before later inbound messages.
+    ///     Ok(())
+    /// })?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn prepare_request<Req: JsonRpcRequest>(
+        &self,
+        request: Req,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Counterpart>,
+    {
+        self.prepare_request_to(self.counterpart.clone(), request)
+    }
+
+    /// Prepare a request to a specific peer without sending it.
+    ///
+    /// The request is serialized now. A consuming method synchronously registers
+    /// its pending reply and enqueues the request; peer transformation and
+    /// transmission happen later in the connection driver.
+    /// See [`prepare_request`](Self::prepare_request).
+    pub fn prepare_request_to<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
+        self.prepare_request_to_with_options(peer, request, None, None)
     }
 
     /// Send a request and run a synchronous side effect when its valid success
@@ -4398,96 +4485,56 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     where
         Counterpart: HasPeer<Peer>,
     {
+        self.prepare_request_to_with_options(peer, request, readiness, response_route_hook)
+            .into_sent_request(ordered)
+    }
+
+    fn prepare_request_to_with_options<Peer: Role, Req: JsonRpcRequest>(
+        &self,
+        peer: Peer,
+        request: Req,
+        readiness: Option<RequestReadiness>,
+        response_route_hook: Option<ResponseRouteHook>,
+    ) -> PreparedRequest<Req::Response>
+    where
+        Counterpart: HasPeer<Peer>,
+    {
         let method = request.method().to_string();
         let id = RequestId::Str(uuid::Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
         let response_ordering = ResponseOrdering::default();
-        if ordered {
-            response_ordering.mark_ordered();
-        }
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
             SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
-        if self.is_incoming_closing() {
-            cancellation.disarm();
-            drop(response_tx.send(ResponsePayload {
-                result: Err(incoming_transport_closed_error(&method)),
-                ack_tx: None,
-            }));
-            return SentRequest::new(
-                id,
-                method.clone(),
-                self.task_tx.clone(),
-                response_rx,
-                cancellation,
-                response_ordering,
-            )
-            .map(move |json| <Req::Response>::from_value(&method, json));
-        }
-
-        match request.to_untyped_message() {
-            Ok(untyped) => {
-                // Register before enqueueing so incoming EOF can fail every
-                // observable request before close callbacks begin. The
-                // outgoing actor checks that the registration still exists
-                // before sending the request.
-                let pending_reply = PendingReply {
+        cancellation.disarm();
+        let pending_reply = PendingReply {
+            method: method.clone(),
+            role_id,
+            sender: response_tx,
+            cancellation_disarm: cancellation.disarm_handle(),
+            ordering: response_ordering.clone(),
+            response_route_hook,
+        };
+        let message = if self.is_incoming_closing() {
+            Err(incoming_transport_closed_error(&method))
+        } else {
+            request
+                .to_untyped_message()
+                .map(|untyped| OutgoingMessage::Request {
+                    id: id.clone(),
                     method: method.clone(),
-                    role_id,
-                    sender: response_tx,
-                    cancellation_disarm: cancellation.disarm_handle(),
-                    ordering: response_ordering.clone(),
-                    response_route_hook,
-                };
-
-                if self
-                    .pending_replies
-                    .subscribe(id.clone(), pending_reply, &self.incoming_closed)
-                {
-                    let message = OutgoingMessage::Request {
-                        id: id.clone(),
-                        method: method.clone(),
-                        untyped,
-                        remote_style,
-                        readiness,
-                    };
-
-                    if let Err(error) = self.message_tx.unbounded_send(message) {
-                        cancellation.disarm();
-
-                        let OutgoingMessage::Request { id, method, .. } = error.into_inner() else {
-                            unreachable!();
-                        };
-
-                        if let Some(pending_reply) = self.pending_replies.remove(&id) {
-                            if self.is_incoming_closing() {
-                                pending_reply.fail_incoming_closed();
-                            } else {
-                                pending_reply.fail(crate::util::internal_error(format!(
-                                    "failed to send outgoing request `{method}`"
-                                )));
-                            }
-                        }
-                    }
-                }
-            }
-
-            Err(err) => {
-                cancellation.disarm();
-
-                response_tx
-                    .send(ResponsePayload {
-                        result: Err(crate::util::internal_error(format!(
-                            "failed to create untyped request for `{method}`: {err}"
-                        ))),
-                        ack_tx: None,
-                    })
-                    .unwrap();
-            }
-        }
-
-        SentRequest::new(
+                    untyped,
+                    remote_style,
+                    readiness,
+                })
+                .map_err(|error| {
+                    crate::util::internal_error(format!(
+                        "failed to create untyped request for `{method}`: {error}"
+                    ))
+                })
+        };
+        let sent = SentRequest::new(
             id,
             method.clone(),
             self.task_tx.clone(),
@@ -4495,7 +4542,17 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             cancellation,
             response_ordering,
         )
-        .map(move |json| <Req::Response>::from_value(&method, json))
+        .map(move |json| <Req::Response>::from_value(&method, json));
+        PreparedRequest {
+            sent,
+            publication: RequestPublication {
+                message,
+                pending_reply,
+                message_tx: self.message_tx.clone(),
+                pending_replies: self.pending_replies.clone(),
+                incoming_closed: self.incoming_closed.clone(),
+            },
+        }
     }
 
     /// Send an outgoing notification to the default counterpart peer (no reply expected).
@@ -5805,6 +5862,286 @@ pub struct SentRequest<T> {
     cancellation_sources: Vec<RequestCancellation>,
 }
 
+/// A request that has not been published to its connection.
+///
+/// Created by [`ConnectionTo::prepare_request`] or
+/// [`ConnectionTo::prepare_request_to`]. Preparation serializes the request but
+/// does not register a pending reply or enqueue outgoing traffic. Dropping this
+/// value sends neither the request nor a cancellation notification.
+///
+/// A consuming method publishes the request synchronously:
+///
+/// - [`on_receiving_result`](Self::on_receiving_result),
+///   [`on_receiving_ok_result`](Self::on_receiving_ok_result), and
+///   [`forward_response_to`](Self::forward_response_to) register ordered response
+///   handling before publication. When a peer response is routed during its
+///   original dispatch, later inbound messages wait for that handling to finish.
+/// - [`block_task`](Self::block_task) publishes immediately and returns an
+///   unordered response future. Publication does not wait for its first poll.
+/// - [`detach`](Self::detach) publishes immediately and discards the response.
+///
+/// Ordered callbacks must do bounded work and must not await later inbound
+/// traffic on the same connection. EOF failures and responses routed through a
+/// retained [`ResponseRouter`] after their original dispatch have no ordering
+/// barrier. See [`crate::concepts::ordering`].
+///
+/// # Errors
+///
+/// Preparation and publication failures are delivered to the selected response
+/// consumer. Callback-style methods return an error if their task cannot be
+/// registered; in that case the request is not published. [`detach`](Self::detach)
+/// returns preparation or publication errors directly because it has no response
+/// consumer. A callback returning an error terminates the connection.
+#[must_use = "a prepared request is not sent until consumed with `block_task`, \
+              `on_receiving_result`, `forward_response_to`, or `detach`"]
+pub struct PreparedRequest<T> {
+    sent: SentRequest<T>,
+    publication: RequestPublication,
+}
+
+struct RequestPublication {
+    message: Result<OutgoingMessage, crate::Error>,
+    pending_reply: PendingReply,
+    message_tx: OutgoingMessageTx,
+    pending_replies: PendingRepliesRegistrar,
+    incoming_closed: IncomingClosed,
+}
+
+impl RequestPublication {
+    fn publish(self) -> Result<(), crate::Error> {
+        let message = if self.incoming_closed.is_closing() {
+            Err(incoming_transport_closed_error(&self.pending_reply.method))
+        } else {
+            self.message
+        };
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                self.pending_reply.fail(error.clone());
+                return Err(error);
+            }
+        };
+        let OutgoingMessage::Request { id, method, .. } = &message else {
+            unreachable!();
+        };
+        let id = id.clone();
+        let method = method.clone();
+        self.pending_reply.cancellation_disarm.arm();
+        // Register before enqueueing so incoming EOF can fail every observable
+        // request before close callbacks begin. The outgoing actor checks that
+        // the registration still exists before sending the request.
+        self.pending_replies
+            .subscribe(id.clone(), self.pending_reply, &self.incoming_closed)?;
+        if self.message_tx.unbounded_send(message).is_err() {
+            let error = if self.incoming_closed.is_closing() {
+                incoming_transport_closed_error(&method)
+            } else {
+                crate::util::internal_error(format!("failed to send outgoing request `{method}`"))
+            };
+            if let Some(pending_reply) = self.pending_replies.remove(&id) {
+                pending_reply.fail(error.clone());
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+}
+
+impl<T: Debug> Debug for PreparedRequest<T> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedRequest")
+            .field("request", &self.sent)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<T> PreparedRequest<T> {
+    /// The ID reserved for this request, which has not been sent yet.
+    #[must_use]
+    pub fn id(&self) -> &RequestId {
+        self.sent.id()
+    }
+
+    /// The method of the prepared request.
+    #[must_use]
+    pub fn method(&self) -> &str {
+        self.sent.method()
+    }
+
+    /// Map a successful response without publishing the request.
+    ///
+    /// The mapper has the same contract as [`SentRequest::map`].
+    pub fn map<U>(
+        self,
+        map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
+    ) -> PreparedRequest<U>
+    where
+        T: 'static,
+    {
+        PreparedRequest {
+            sent: self.sent.map(map_fn),
+            publication: self.publication,
+        }
+    }
+
+    /// Register a cancellation source without publishing the request.
+    ///
+    /// After publication, cancellation is forwarded while awaiting the response,
+    /// as described by [`SentRequest::forward_cancellation_from`].
+    pub fn forward_cancellation_from(mut self, source: RequestCancellation) -> Self {
+        self.sent = self.sent.forward_cancellation_from(source);
+        self
+    }
+
+    /// Publish now and return an unordered future for the response.
+    ///
+    /// The request is enqueued during this call, not when the future is first
+    /// polled. Dropping that future asks the peer to cancel a still-outstanding
+    /// request. Await it only outside the dispatch loop; awaiting it in an
+    /// incoming handler deadlocks just like [`SentRequest::block_task`].
+    ///
+    /// # Errors
+    ///
+    /// The returned future delivers preparation, publication, and response errors.
+    pub fn block_task(self) -> impl Future<Output = Result<T, crate::Error>> {
+        self.into_sent_request(false).block_task()
+    }
+
+    /// Publish now and discard the eventual response without cancelling.
+    ///
+    /// # Errors
+    ///
+    /// Returns immediate preparation or enqueue failures. Later local
+    /// transformation errors and peer response errors are discarded along with
+    /// successful responses. Transport failures still propagate through the
+    /// connection future.
+    pub fn detach(self) -> Result<(), crate::Error> {
+        let result = self.publication.publish();
+        self.sent.detach();
+        result
+    }
+
+    /// Register an ordered callback, then publish the request.
+    ///
+    /// Ordering is selected before publication, even when the connection runs
+    /// concurrently. See [`PreparedRequest`] for barrier limits and deadlock risks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the callback task cannot be registered, without
+    /// publishing the request. Preparation and publication errors are delivered
+    /// to the callback. Returning an error from the callback ends the connection.
+    #[track_caller]
+    pub fn on_receiving_result<F>(
+        self,
+        task: impl FnOnce(Result<T, crate::Error>) -> F + 'static + Send,
+    ) -> Result<(), crate::Error>
+    where
+        T: 'static,
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+    {
+        self.consume_with(move |response| match response {
+            Ok(result) => Either::Left(task(result)),
+            Err(error) => Either::Right(future::ready(Err(error))),
+        })
+    }
+
+    /// Register an ordered success callback, then publish the request.
+    ///
+    /// Errors are forwarded to `responder`, as with
+    /// [`SentRequest::on_receiving_ok_result`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a task-registration error without publishing the request.
+    /// Preparation, publication, and response errors are forwarded to `responder`.
+    /// Returning an error from the callback ends the connection.
+    #[track_caller]
+    pub fn on_receiving_ok_result<F>(
+        self,
+        responder: Responder<T>,
+        task: impl FnOnce(T, Responder<T>) -> F + 'static + Send,
+    ) -> Result<(), crate::Error>
+    where
+        T: JsonRpcResponse,
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+    {
+        self.on_receiving_result(async move |result| match result {
+            Ok(value) => task(value, responder).await,
+            Err(error) => responder.respond_with_error(error),
+        })
+    }
+
+    /// Register ordered response forwarding, then publish the request.
+    ///
+    /// Cancellation and response errors propagate as with
+    /// [`SentRequest::forward_response_to`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a task-registration error without publishing the request.
+    /// Preparation, publication, and response errors are forwarded to `responder`.
+    #[track_caller]
+    pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
+    where
+        T: JsonRpcResponse,
+    {
+        self.forward_cancellation_from(responder.cancellation())
+            .consume_with(async move |response| {
+                responder.respond_with_result(response.unwrap_or_else(Err))
+            })
+    }
+
+    fn into_sent_request(self, ordered: bool) -> SentRequest<T> {
+        if ordered {
+            self.sent.response_ordering.mark_ordered();
+        }
+        // Publication errors also settle the response channel.
+        drop(self.publication.publish());
+        self.sent
+    }
+
+    #[track_caller]
+    fn consume_with<F>(
+        self,
+        handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
+    ) -> Result<(), crate::Error>
+    where
+        T: 'static,
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+    {
+        let published_tx = self.register_consumer(handle)?;
+        drop(self.publication.publish());
+        // Keep the cancellation guard here until publication completes. Even
+        // destruction of the registered task cannot cancel before enqueueing.
+        drop(published_tx.send(self.sent));
+        Ok(())
+    }
+
+    #[track_caller]
+    fn register_consumer<F>(
+        &self,
+        handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
+    ) -> Result<oneshot::Sender<SentRequest<T>>, crate::Error>
+    where
+        T: 'static,
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+    {
+        self.sent.response_ordering.mark_ordered();
+        let (published_tx, published_rx) = oneshot::channel::<SentRequest<T>>();
+        Task::new(Location::caller(), async move {
+            match published_rx.await {
+                Ok(sent) => sent.handle_response(handle).await,
+                // Publication was abandoned before the consumer took ownership.
+                Err(_) => Ok(()),
+            }
+        })
+        .spawn(&self.sent.task_tx)?;
+        Ok(published_tx)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct SentRequestCancellationDisarm {
     armed: Arc<AtomicBool>,
@@ -5819,6 +6156,10 @@ impl SentRequestCancellationDisarm {
 
     fn disarm(&self) {
         self.armed.store(false, Ordering::Release);
+    }
+
+    fn arm(&self) {
+        self.armed.store(true, Ordering::Release);
     }
 }
 
@@ -6188,14 +6529,23 @@ impl<T> SentRequest<T> {
     {
         self.response_ordering.mark_ordered();
         let task_tx = self.task_tx.clone();
+        Task::new(Location::caller(), self.handle_response(handle)).spawn(&task_tx)
+    }
+
+    fn handle_response<F>(
+        self,
+        handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
+    ) -> impl Future<Output = Result<(), crate::Error>> + Send
+    where
+        T: 'static,
+        F: Future<Output = Result<(), crate::Error>> + 'static + Send,
+    {
         let method = self.method;
         let response_rx = self.response_rx;
         let to_result = self.to_result;
         let cancellation = self.cancellation;
         let cancellation_sources = self.cancellation_sources;
-        let location = Location::caller();
-
-        Task::new(location, async move {
+        async move {
             let response = await_response_forwarding_cancellation(
                 response_rx,
                 &cancellation,
@@ -6229,8 +6579,7 @@ impl<T> SentRequest<T> {
                     .await
                 }
             }
-        })
-        .spawn(&task_tx)
+        }
     }
 
     /// Block the current task until the response is received.

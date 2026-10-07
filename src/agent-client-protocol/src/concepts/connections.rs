@@ -131,14 +131,15 @@
 //!
 //! ## Option 2: Schedule a callback
 //!
-//! Use `on_receiving_result()` when you want to handle the response asynchronously:
+//! Use `prepare_request(...).on_receiving_result(...)` to register an ordered
+//! response callback before sending:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.builder().connect_with(transport, async |cx| {
-//! cx.send_request(MyRequest {})
+//! cx.prepare_request(MyRequest {})
 //!     .on_receiving_result(async |result| {
 //!         match result {
 //!             Ok(response) => { /* handle success */ }
@@ -154,6 +155,11 @@
 //! ```
 //!
 //! See [Ordering](super::ordering) for important details about how these differ.
+//! Eager `send_request(...).on_receiving_result(...)` remains available, but can
+//! race with a fast response when called outside the connection future.
+//! `prepare_request(...).block_task()` and `.detach()` publish during their
+//! method calls without selecting ordered consumption. Dropping an unconsumed
+//! [`PreparedRequest`](crate::PreparedRequest) sends nothing.
 //!
 //! ## Dropping a `SentRequest`
 //!

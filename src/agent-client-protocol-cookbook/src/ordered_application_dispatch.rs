@@ -9,9 +9,9 @@
 //! This is useful for v2 resume: replay precedes the response on the wire, but
 //! awaiting `block_task()` separately from an update queue does not drain that
 //! queue. An [`on_receiving_result`] callback can enqueue a response marker
-//! behind the replay and before later inbound traffic. Register it immediately,
-//! before yielding or handing the request to another task: a response already
-//! routed without a barrier cannot acquire one retroactively.
+//! behind the replay and before later inbound traffic. Use `prepare_request`
+//! to select ordered handling before sending, even when calling from outside
+//! the connection future.
 //!
 //! # Example
 //!
@@ -70,7 +70,7 @@
 //!
 //!             let resume = v2::ResumeSessionRequest::new(session_id.clone(), cwd)
 //!                 .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
-//!             connection.send_request(resume).on_receiving_result(async move |result| {
+//!             connection.prepare_request(resume).on_receiving_result(async move |result| {
 //!                 drop(events_tx.unbounded_send(ApplicationEvent::ResumeFinished(result)));
 //!                 // Do not wait for the consumer or for another inbound response here.
 //!                 Ok(())
@@ -114,9 +114,10 @@
 //!   after `Closed`. Treat `Closed` as terminal for application operations and
 //!   tolerate late completions rather than waiting for one callback per request.
 //!   Transport or handler failures still propagate from `connect_with`.
-//! - A callback registered after its response was routed, or a response routed
-//!   later through a retained `ResponseRouter`, does not impose a barrier on
-//!   subsequent wire traffic. See the SDK's [ordering contract].
+//! - Eager `send_request(...).on_receiving_result(...)` can race with response
+//!   routing. Preparation closes that race, but a response routed later through
+//!   a retained `ResponseRouter` still does not impose a barrier on subsequent
+//!   wire traffic. See the SDK's [ordering contract].
 //! - This unbounded queue keeps dispatch nonblocking for clarity. Production
 //!   integrations need an explicit memory/backpressure policy. A bounded queue
 //!   must not wait on a consumer that is itself awaiting later inbound traffic.
@@ -125,7 +126,7 @@
 //!   the next `Idle` to a particular prompt or invent a turn boundary; v2 updates
 //!   do not carry a prompt ID.
 //!
-//! [`on_receiving_result`]: agent_client_protocol::SentRequest::on_receiving_result
+//! [`on_receiving_result`]: agent_client_protocol::PreparedRequest::on_receiving_result
 //! [`on_close`]: agent_client_protocol::Builder::on_close
 //! [`ConnectionTo::spawn`]: agent_client_protocol::ConnectionTo::spawn
 //! [ordering contract]: agent_client_protocol::concepts::ordering
