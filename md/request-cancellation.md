@@ -68,14 +68,34 @@ The handle shares once-only cancellation and settlement state with
 `SentRequest::cancel`, forwarded cancellation, and automatic request-drop
 cancellation. It uses the same peer and proxy wrapping. Dropping the handle
 neither sends cancellation nor disables automatic request-drop cancellation.
+To cancel when a caller is abandoned, its application-owned guard or abandonment
+handler must explicitly call `cancel()` and handle any immediate error.
 
 Calling it before a prepared request is published does nothing and is not
 remembered for later publication. A call racing publication may also do nothing;
-call after the publishing method returns to target a pending request. Once the
-SDK routes a response, fails the request, or the request is detached, retained
-handles also do nothing—even if the application has not consumed the result yet.
-Cancellation is cooperative; it does not guarantee that the peer stops work or
-responds successfully.
+hand control to independent cancellers after the publishing method returns.
+Once the SDK routes a response or fails the request, new cancellation calls do
+nothing—even if the application has not consumed the result yet. An attempt begun
+before settlement may still enqueue afterward.
+
+Detachment is separate from settlement: `detach()` discards the response and
+suppresses automatic cancellation on drop, but does not revoke retained explicit
+handles. They can still cancel the detached request while it remains pending.
+
+`Ok(())` means the call encountered no immediate error, not that a notification
+was sent or the peer stopped work. Cancellation is cooperative; it does not
+guarantee transmission, peer cooperation, or a successful response. A handle does
+not abort local callback work or keep the connection driver/response consumer alive.
+
+## Request Cancellation Is Not Session Cancellation
+
+`$/cancel_request` targets one pending JSON-RPC request, not the lifetime of the
+session work it may start. In ACP v2, `session/prompt` succeeds once the user
+message is inserted and returns its `messageId`. After insertion the Agent must
+return success, not `-32800`, even if cancellation races the response. Stopping
+active session work uses `session/cancel`. See the
+[v2 cancellation specification](https://agentclientprotocol.com/protocol/v2/cancellation)
+and [prompt lifecycle](https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#2-prompt-accepted).
 
 ## Proxy Chains
 

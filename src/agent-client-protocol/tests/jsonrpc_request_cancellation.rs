@@ -843,22 +843,23 @@ async fn detached_sent_request_does_not_send_cancellation() {
                         message: "detached".into(),
                     });
                     let cancellation = request.cancellation_handle();
+                    let cloned_cancellation = cancellation.clone();
                     request.detach();
-                    cancellation.cancel()?;
-                    cancellation.clone().cancel()?;
+                    drop(cloned_cancellation);
                     drop(cancellation);
 
                     let prepared = cx.prepare_request(SimpleRequest {
                         message: "prepared detached".into(),
                     });
                     let cancellation = prepared.cancellation_handle();
+                    let cloned_cancellation = cancellation.clone();
                     prepared.detach()?;
-                    cancellation.cancel()?;
+                    drop(cloned_cancellation);
                     drop(cancellation);
 
-                    // Barrier round trip: a cancellation sent by dropping the
-                    // detached handle would reach the server before this
-                    // request.
+                    // Barrier round trip: any automatic cancellation from
+                    // detaching or dropping retained handles would reach the
+                    // server before this request.
                     let barrier = cx
                         .send_request(SimpleRequest {
                             message: "barrier".into(),

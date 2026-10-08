@@ -74,19 +74,82 @@ fn blocking_maps_the_response_without_holding_dispatch() {
 }
 
 #[test]
-fn detach_publishes_without_ordering_or_cancellation() {
+fn detach_publishes_without_ordering_or_automatic_cancellation() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
     let id = prepared.id().clone();
     let handle = prepared.cancellation_handle();
     prepared.detach().unwrap();
     fixture.next_message();
-    handle.cancel().unwrap();
+    assert!(fixture.message_rx.next().now_or_never().is_none());
     assert!(
         fixture
             .route(id, Err(crate::Error::invalid_params()))
             .is_none()
     );
+    handle.cancel().unwrap();
+    assert!(fixture.message_rx.next().now_or_never().is_none());
+    assert!(fixture.task_rx.next().now_or_never().is_none());
+}
+
+#[test]
+fn detached_handles_preserve_once_only_control_until_response_routing() {
+    for eager in [false, true] {
+        for result in [
+            Ok(json!({"value": 42})),
+            Err(crate::Error::request_cancelled()),
+        ] {
+            let mut fixture = Fixture::new();
+            let (id, handle) = if eager {
+                let sent = fixture.connection.send_request(request());
+                let id = sent.id().clone();
+                let handle = sent.cancellation_handle();
+                sent.detach();
+                (id, handle)
+            } else {
+                let prepared = fixture.connection.prepare_request(request());
+                let id = prepared.id().clone();
+                let handle = prepared.cancellation_handle();
+                prepared.detach().unwrap();
+                (id, handle)
+            };
+            assert!(matches!(
+                fixture.next_message(),
+                OutgoingMessage::Request { id: sent_id, .. } if sent_id == id
+            ));
+            assert!(fixture.message_rx.next().now_or_never().is_none());
+            handle.cancel().unwrap();
+            handle.clone().cancel().unwrap();
+            let OutgoingMessage::Notification { untyped } = fixture.next_message() else {
+                panic!("a detached pending request must retain explicit cancellation");
+            };
+            assert_eq!(untyped.method(), "$/cancel_request");
+            assert_eq!(
+                untyped.params()["requestId"],
+                serde_json::to_value(&id).unwrap()
+            );
+            assert!(fixture.message_rx.next().now_or_never().is_none());
+            assert!(fixture.route(id, result).is_none());
+            handle.cancel().unwrap();
+            drop(handle);
+            assert!(fixture.message_rx.next().now_or_never().is_none());
+            assert!(fixture.task_rx.next().now_or_never().is_none());
+        }
+    }
+}
+
+#[test]
+fn detached_handles_disarm_on_eof_without_a_response_consumer() {
+    let mut fixture = Fixture::new();
+    let prepared = fixture.connection.prepare_request(request());
+    let handle = prepared.cancellation_handle();
+    prepared.detach().unwrap();
+    fixture.next_message();
+    fixture.connection.incoming_closed.begin_close();
+    assert_eq!(fixture.pending_replies.close_incoming(), 1);
+    handle.cancel().unwrap();
+    handle.clone().cancel().unwrap();
+    drop(handle);
     assert!(fixture.message_rx.next().now_or_never().is_none());
     assert!(fixture.task_rx.next().now_or_never().is_none());
 }

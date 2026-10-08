@@ -78,15 +78,22 @@ prepared.on_receiving_result(async move |result| {
     application_queue.enqueue(result)?;
     Ok(())
 })?;
-cancellation.cancel()?;
+caller.on_abandoned(move || cancellation.cancel());
 ```
+
+Hand cancellation control to the caller's abandonment handler only after
+publication returns, and have that handler deal with any immediate error.
+Merely dropping the public handle does not cancel. The callback owns eventual
+completion and any late-resource cleanup independently of the caller.
 
 Cancelling does not discard the eventual result. The cloneable handle shares
 SDK settlement and once-only cancellation state, rather than sending an
 unconditional notification for a saved request ID. Dropping the handle does
-nothing. Calls before publication, after a response or local failure, or after
-detaching the request do nothing. See [Request Cancellation](./request-cancellation.md)
-for the full contract, including publication races and peer wrapping.
+nothing. Calls before publication or after a response/local failure do nothing.
+Detachment suppresses automatic cancellation but preserves retained explicit
+control until settlement. `Ok(())` is not acknowledgment that cancellation was
+sent or took effect. See [Request Cancellation](./request-cancellation.md) for
+the full contract, including publication races and peer wrapping.
 
 ## Drop and errors
 

@@ -7,7 +7,8 @@
 - Add `RequestCancellationHandle` and `cancellation_handle()` on prepared and
   sent requests. Retain explicit cancellation control while an ordered callback
   or future consumes the response, sharing SDK publication/settlement state and
-  once-only cancellation without a separate cancel-on-drop policy.
+  once-only cancellation. Handle drop is inert; detaching a request suppresses
+  automatic cancellation without revoking retained explicit control.
 
 ## [3.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.0.0...v3.1.0) - 2026-10-07
 

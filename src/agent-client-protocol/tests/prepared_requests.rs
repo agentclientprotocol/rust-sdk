@@ -17,7 +17,11 @@ use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_prepared_callback_holds_following_batch_entry_and_eof() {
-    for result in [Ok(json!({"value": 42})), Err(Error::invalid_params())] {
+    for result in [
+        Ok(json!({"value": 42})),
+        Err(Error::invalid_params()),
+        Err(Error::request_cancelled()),
+    ] {
         let ExternalConnection {
             driver,
             connection_rx,
@@ -118,7 +122,11 @@ async fn prepared_cancellation_handle_survives_publication_and_preserves_callbac
     fn assert_handle_traits<T: Clone + std::fmt::Debug + Send + Sync>() {}
     assert_handle_traits::<RequestCancellationHandle>();
 
-    for result in [Ok(json!({"value": 42})), Err(Error::invalid_params())] {
+    for result in [
+        Ok(json!({"value": 42})),
+        Err(Error::invalid_params()),
+        Err(Error::request_cancelled()),
+    ] {
         let ExternalConnection {
             driver,
             connection_rx,
@@ -216,6 +224,155 @@ async fn prepared_cancellation_handle_survives_publication_and_preserves_callbac
         })
         .await
         .expect("retained cancellation handle lost the ordered callback result");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn detached_requests_retain_explicit_cancellation_control() {
+    for prepare in [false, true] {
+        for result in [Ok(json!({"value": 42})), Err(Error::request_cancelled())] {
+            let ExternalConnection {
+                driver,
+                connection_rx,
+                stop_tx,
+                mut notifications,
+                mut peer,
+            } = external_connection();
+            let (detached_tx, detached_rx) = oneshot::channel();
+            let caller = async move {
+                let connection = connection_rx.await.unwrap();
+                let application_owner = std::sync::Arc::new(());
+                let application_owner_weak = std::sync::Arc::downgrade(&application_owner);
+                let (request_id, cancellation) = if prepare {
+                    let request = connection
+                        .prepare_request(UntypedMessage::new("detached", json!({})).unwrap())
+                        .map(move |response| {
+                            drop(application_owner);
+                            Ok(response)
+                        });
+                    let request_id = request.id().clone();
+                    let cancellation = request.cancellation_handle();
+                    request.detach().unwrap();
+                    (request_id, cancellation)
+                } else {
+                    let request = connection
+                        .send_request(UntypedMessage::new("detached", json!({})).unwrap())
+                        .map(move |response| {
+                            drop(application_owner);
+                            Ok(response)
+                        });
+                    let request_id = request.id().clone();
+                    let cancellation = request.cancellation_handle();
+                    request.detach();
+                    (request_id, cancellation)
+                };
+                assert!(
+                    application_owner_weak.upgrade().is_none(),
+                    "a retained cancellation handle must not retain the detached response consumer"
+                );
+                connection
+                    .send_notification(UntypedMessage::new("after-detach", json!({})).unwrap())
+                    .unwrap();
+                assert_eq!(detached_rx.await.unwrap(), request_id);
+                let cloned_cancellation = cancellation.clone();
+                cancellation.cancel().unwrap();
+                cloned_cancellation.cancel().unwrap();
+                connection
+                    .send_notification(
+                        UntypedMessage::new("after-cancellation", json!({})).unwrap(),
+                    )
+                    .unwrap();
+
+                // The following notification is dispatched after routing the
+                // response, even though detach discarded its consumer.
+                assert_eq!(notifications.next().await.unwrap().method(), "following");
+                cancellation.cancel().unwrap();
+                cloned_cancellation.cancel().unwrap();
+                drop(cloned_cancellation);
+                drop(cancellation);
+                connection
+                    .send_notification(
+                        UntypedMessage::new("after-routed-response", json!({})).unwrap(),
+                    )
+                    .unwrap();
+                connection.incoming_closed().await;
+                stop_tx.send(()).unwrap();
+            };
+            let peer = async move {
+                let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+                    peer.rx.next().await
+                else {
+                    panic!("expected the detached request");
+                };
+                assert_eq!(request.method.as_ref(), "detached");
+                let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
+                    peer.rx.next().await
+                else {
+                    panic!("expected the detach barrier");
+                };
+                assert_eq!(
+                    boundary.method.as_ref(),
+                    "after-detach",
+                    "detach must not emit automatic cancellation"
+                );
+                detached_tx.send(request.id.clone()).unwrap();
+                let Some(TransportFrame::Single(message)) = peer.rx.next().await else {
+                    panic!("expected explicit cancellation after detach");
+                };
+                assert!(
+                    serde_json::to_value(&message).unwrap().get("id").is_none(),
+                    "cancellation must have no outer request id"
+                );
+                let RawJsonRpcMessage::Notification(cancellation) = message else {
+                    panic!("cancellation must be a notification");
+                };
+                assert_eq!(cancellation.method.as_ref(), "$/cancel_request");
+                assert_eq!(
+                    serde_json::to_value(cancellation.params).unwrap(),
+                    json!({"requestId": request.id})
+                );
+                let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
+                    peer.rx.next().await
+                else {
+                    panic!("expected the cancellation barrier");
+                };
+                assert_eq!(
+                    boundary.method.as_ref(),
+                    "after-cancellation",
+                    "cloned handles must emit exactly one cancellation"
+                );
+                peer.tx
+                    .unbounded_send(TransportFrame::Batch(
+                        TransportBatch::from_messages([
+                            RawJsonRpcMessage::response(request.id, result),
+                            RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
+                        ])
+                        .unwrap(),
+                    ))
+                    .unwrap();
+                let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
+                    peer.rx.next().await
+                else {
+                    panic!("expected the routed-response barrier");
+                };
+                assert_eq!(
+                    boundary.method.as_ref(),
+                    "after-routed-response",
+                    "cancelling after response routing must not emit another cancellation"
+                );
+                drop(peer.tx);
+                assert!(
+                    peer.rx.next().await.is_none(),
+                    "detached request or retained handles emitted another message"
+                );
+            };
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let ((), (), driver) = futures::join!(caller, peer, driver);
+                driver.unwrap().unwrap();
+            })
+            .await
+            .expect("detached request lost independent cancellation control");
+        }
     }
 }
 

@@ -6028,7 +6028,8 @@ impl<T> PreparedRequest<T> {
     /// Returns immediate preparation or enqueue failures. Later local
     /// transformation errors and peer response errors are discarded along with
     /// successful responses. Transport failures still propagate through the
-    /// connection future.
+    /// connection future. Retained [`RequestCancellationHandle`] values can
+    /// still explicitly cancel the request while it remains pending.
     pub fn detach(self) -> Result<(), crate::Error> {
         let result = self.publication.publish();
         self.sent.detach();
@@ -6211,7 +6212,8 @@ impl SentRequestCancellationDisarm {
 /// Obtain this handle from [`PreparedRequest::cancellation_handle`] or
 /// [`SentRequest::cancellation_handle`] before consuming the request. It retains
 /// neither the response consumer nor application callback, so cancellation can
-/// be requested independently while the eventual response is still delivered.
+/// be requested without discarding the eventual response. It does not keep the
+/// connection driver or response consumer alive, or abort local callback work.
 ///
 /// Clones share the request's cancellation state with [`SentRequest::cancel`],
 /// forwarded cancellation, and request-drop automatic cancellation. At most one
@@ -6222,8 +6224,9 @@ impl SentRequestCancellationDisarm {
 /// Cancellation before publication is a no-op and is not remembered for later
 /// publication. A call racing publication may also be a no-op; call after the
 /// publishing method returns to target a pending request. Once the SDK routes a
-/// response or fails the request, or the request is detached, cancellation is
-/// also a no-op, even if its callback has not yet run.
+/// response or fails the request, subsequent cancellation calls are no-ops,
+/// even if its callback has not yet run. Detaching the request suppresses only
+/// automatic cancellation; retained handles can still explicitly cancel it.
 ///
 /// This controls outgoing requests, unlike [`RequestCancellation`], which
 /// observes a peer's cancellation of an incoming request.
@@ -6242,6 +6245,11 @@ impl RequestCancellationHandle {
     /// cancellation error. Repeated calls, including calls through other clones
     /// or the original request, return `Ok(())` without sending another
     /// notification. Calls before publication or after settlement are no-ops.
+    /// An attempt begun before settlement may still enqueue afterward.
+    ///
+    /// `Ok(())` means this call encountered no immediate error, not that a
+    /// notification was sent or the peer stopped work. This method does not
+    /// wait for transmission or acknowledgment.
     ///
     /// # Errors
     ///
@@ -6276,6 +6284,7 @@ impl Debug for RequestCancellationHandle {
 #[derive(Debug)]
 struct SentRequestCancellation {
     handle: RequestCancellationHandle,
+    cancel_on_drop: bool,
 }
 
 impl SentRequestCancellation {
@@ -6291,6 +6300,7 @@ impl SentRequestCancellation {
                 request_id,
                 disarm: SentRequestCancellationDisarm::new(),
             },
+            cancel_on_drop: true,
         }
     }
 
@@ -6309,6 +6319,9 @@ impl SentRequestCancellation {
 
 impl Drop for SentRequestCancellation {
     fn drop(&mut self) {
+        if !self.cancel_on_drop {
+            return;
+        }
         if let Err(error) = self.send() {
             tracing::debug!(?error, "failed to auto-cancel dropped request");
         }
@@ -6402,7 +6415,7 @@ impl SentRequest<serde_json::Value> {
 impl<T> SentRequest<T> {
     /// Detach this request handle without waiting for its response.
     ///
-    /// The response will be discarded when it arrives. This also disarms the
+    /// The response will be discarded when it arrives. This also disables the
     /// drop-time automatic cancellation described in
     /// [Drop Behavior](Self#drop-behavior), so use it for requests whose
     /// eventual response should be ignored, but which should keep running on
@@ -6411,9 +6424,11 @@ impl<T> SentRequest<T> {
     /// all.
     ///
     /// To ask the peer to stop the request, call `cancel` instead, or drop the
-    /// handle while automatic cancellation is armed.
-    pub fn detach(self) {
-        self.cancellation.disarm();
+    /// handle while automatic cancellation is enabled. A retained
+    /// [`RequestCancellationHandle`] can still explicitly cancel the detached
+    /// request until the SDK receives its response or fails it.
+    pub fn detach(mut self) {
+        self.cancellation.cancel_on_drop = false;
     }
 
     /// Send a `$/cancel_request` notification for this outgoing request.
@@ -6422,12 +6437,15 @@ impl<T> SentRequest<T> {
     /// original request, so it is the preferred way to cancel a [`SentRequest`]
     /// when the request handle is still available.
     ///
-    /// At most one `$/cancel_request` is ever sent per request: the first
-    /// `cancel` call sends it (and also prevents the drop-time automatic
-    /// cancellation described in [Drop Behavior](Self#drop-behavior)), while
-    /// later calls return `Ok(())` without sending anything. Likewise, once
-    /// the SDK has routed the response to this handle, `cancel` becomes a
-    /// no-op: there is nothing left to cancel.
+    /// At most one cancellation attempt is made per request, shared with
+    /// retained handles, forwarded cancellation, and automatic cancellation
+    /// described in [Drop Behavior](Self#drop-behavior). Later calls return
+    /// `Ok(())` without another attempt, including when the first attempt failed.
+    /// Once the SDK has routed the response, a new call is a no-op; an attempt
+    /// begun before settlement may still enqueue afterward.
+    ///
+    /// `Ok(())` means this call encountered no immediate error, not that a
+    /// notification was sent or the peer stopped work.
     ///
     /// Errors are only reported by the call that attempts to send the
     /// notification.
@@ -6435,7 +6453,7 @@ impl<T> SentRequest<T> {
         self.cancellation.send()
     }
 
-    /// Retain explicit cancellation control after consuming this request.
+    /// Obtain a handle that remains usable after this request is consumed.
     ///
     /// The handle shares the once-only cancellation state used by
     /// [`cancel`](Self::cancel), response routing, and automatic request-drop
