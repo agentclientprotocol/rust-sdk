@@ -14,9 +14,13 @@ fn preparation_configuration_and_drop_send_nothing() {
         .map(|response| Ok(response.to_string()));
     assert_eq!(request.method(), "prepared");
     assert!(!fixture.pending_replies.contains(request.id()));
+    let handle = request.cancellation_handle();
+    handle.cancel().unwrap();
+    drop(handle.clone());
     assert!(fixture.message_rx.next().now_or_never().is_none());
     assert!(fixture.task_rx.next().now_or_never().is_none());
     drop(request);
+    handle.cancel().unwrap();
     assert!(fixture.message_rx.next().now_or_never().is_none());
 }
 
@@ -74,8 +78,10 @@ fn detach_publishes_without_ordering_or_cancellation() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
     let id = prepared.id().clone();
+    let handle = prepared.cancellation_handle();
     prepared.detach().unwrap();
     fixture.next_message();
+    handle.cancel().unwrap();
     assert!(
         fixture
             .route(id, Err(crate::Error::invalid_params()))
@@ -94,6 +100,7 @@ fn callback_ordering_is_installed_before_publication_and_task_polling() {
         let mut fixture = Fixture::new();
         let prepared = fixture.connection.prepare_request(request());
         let id = prepared.id().clone();
+        let handle = prepared.cancellation_handle();
         let expected = result.clone();
         prepared
             .on_receiving_result(async move |actual| {
@@ -104,6 +111,8 @@ fn callback_ordering_is_installed_before_publication_and_task_polling() {
         fixture.next_message();
         let mut acknowledgment = fixture.route(id, result).unwrap();
         assert_eq!(acknowledgment.try_recv().unwrap(), None);
+        handle.cancel().unwrap();
+        assert!(fixture.message_rx.next().now_or_never().is_none());
         let task = fixture.next_task();
         futures::executor::block_on(task.run_for_test()).unwrap();
         futures::executor::block_on(acknowledgment).unwrap();
@@ -130,8 +139,10 @@ fn task_registration_failure_does_not_publish_or_cancel() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
     let id = prepared.id().clone();
+    let handle = prepared.cancellation_handle();
     fixture.task_rx.close();
     assert!(prepared.on_receiving_result(async |_| Ok(())).is_err());
+    handle.cancel().unwrap();
     assert!(!fixture.pending_replies.contains(&id));
     assert!(fixture.message_rx.next().now_or_never().is_none());
 }
@@ -152,6 +163,7 @@ fn publication_failures_reach_each_consumer_without_cancellation() {
                 fixture.connection.prepare_request(request())
             };
             let id = prepared.id().clone();
+            let handle = prepared.cancellation_handle();
             match failure {
                 Failure::Serialization => {}
                 Failure::OutgoingClosed => fixture.message_rx.close(),
@@ -193,6 +205,7 @@ fn publication_failures_reach_each_consumer_without_cancellation() {
                 }
                 _ => unreachable!(),
             }
+            handle.cancel().unwrap();
             assert!(!fixture.pending_replies.contains(&id));
             assert!(!matches!(
                 fixture.message_rx.next().now_or_never(),
@@ -205,9 +218,9 @@ fn publication_failures_reach_each_consumer_without_cancellation() {
 #[test]
 fn eof_after_publication_runs_the_callback_without_a_response_barrier() {
     let mut fixture = Fixture::new();
-    fixture
-        .connection
-        .prepare_request(request())
+    let prepared = fixture.connection.prepare_request(request());
+    let handle = prepared.cancellation_handle();
+    prepared
         .on_receiving_result(async |result| {
             assert!(is_incoming_transport_closed(&result.unwrap_err()));
             Ok(())
@@ -216,6 +229,7 @@ fn eof_after_publication_runs_the_callback_without_a_response_barrier() {
     fixture.next_message();
     fixture.connection.incoming_closed.begin_close();
     assert_eq!(fixture.pending_replies.close_incoming(), 1);
+    handle.cancel().unwrap();
     futures::executor::block_on(fixture.next_task().run_for_test()).unwrap();
     assert!(fixture.message_rx.next().now_or_never().is_none());
 }
@@ -270,6 +284,7 @@ fn consumer_waits_for_publication_before_forwarding_cancellation() {
         .prepare_request(request())
         .forward_cancellation_from(cancellation);
     let id = prepared.id().clone();
+    let handle = prepared.cancellation_handle();
     let published_tx = prepared.register_consumer(async |_| Ok(())).unwrap();
     let mut task = Box::pin(fixture.next_task().run_for_test());
     assert!(task.as_mut().now_or_never().is_none());
@@ -290,6 +305,8 @@ fn consumer_waits_for_publication_before_forwarding_cancellation() {
         untyped.params()["requestId"],
         serde_json::to_value(&id).unwrap()
     );
+    handle.cancel().unwrap();
+    assert!(fixture.message_rx.next().now_or_never().is_none());
     let acknowledgment = fixture
         .route(id, Err(crate::Error::request_cancelled()))
         .unwrap();
@@ -348,6 +365,110 @@ fn response_before_consumer_handoff_keeps_cancellation_disarmed() {
     drop(published_tx.send(prepared.sent));
     assert!(futures::executor::block_on(acknowledgment).is_err());
     assert!(fixture.message_rx.next().now_or_never().is_none());
+}
+
+#[test]
+fn publication_activation_preserves_cancellation_and_settlement() {
+    #[derive(Clone, Copy)]
+    enum Outcome {
+        Pending,
+        Response,
+        Eof,
+    }
+
+    for outcome in [Outcome::Pending, Outcome::Response, Outcome::Eof] {
+        let mut fixture = Fixture::new();
+        let prepared = fixture.connection.prepare_request(request());
+        let id = prepared.id().clone();
+        let handle = prepared.cancellation_handle();
+        let PreparedRequest { sent, publication } = prepared;
+        let RequestPublication {
+            message,
+            pending_reply,
+            message_tx,
+            pending_replies,
+            incoming_closed,
+        } = publication;
+        let cancellation_disarm = pending_reply.cancellation_disarm.clone();
+        pending_replies
+            .subscribe(id.clone(), pending_reply, &incoming_closed)
+            .unwrap();
+        handle.cancel().unwrap();
+        assert!(fixture.message_rx.next().now_or_never().is_none());
+        message_tx.unbounded_send(message.unwrap()).unwrap();
+        assert!(matches!(
+            fixture.next_message(),
+            OutgoingMessage::Request { id: sent_id, .. } if sent_id == id
+        ));
+
+        handle.cancel().unwrap();
+        assert!(fixture.message_rx.next().now_or_never().is_none());
+        // Force each outcome in the enqueue-to-activation interval of publication.
+        match outcome {
+            Outcome::Pending => {
+                assert!(cancellation_disarm.arm());
+                handle.cancel().unwrap();
+                handle.clone().cancel().unwrap();
+                let OutgoingMessage::Notification { untyped } = fixture.next_message() else {
+                    panic!("activation must preserve later cancellation");
+                };
+                assert_eq!(untyped.method(), "$/cancel_request");
+                assert_eq!(
+                    untyped.params()["requestId"],
+                    serde_json::to_value(&id).unwrap()
+                );
+                assert!(fixture.route(id, Ok(json!({"value": 42}))).is_none());
+            }
+            Outcome::Response => {
+                assert!(fixture.route(id, Ok(json!({"value": 42}))).is_none());
+                assert!(!cancellation_disarm.arm());
+            }
+            Outcome::Eof => {
+                incoming_closed.begin_close();
+                assert_eq!(fixture.pending_replies.close_incoming(), 1);
+                assert!(!cancellation_disarm.arm());
+            }
+        }
+        handle.cancel().unwrap();
+        let response = futures::executor::block_on(sent.block_task());
+        if matches!(outcome, Outcome::Eof) {
+            assert!(is_incoming_transport_closed(&response.unwrap_err()));
+        } else {
+            assert_eq!(response.unwrap(), json!({"value": 42}));
+        }
+        assert!(fixture.message_rx.next().now_or_never().is_none());
+    }
+}
+
+#[test]
+fn only_the_first_cancellation_attempt_reports_send_failure() {
+    let mut fixture = Fixture::new();
+    let prepared = fixture.connection.prepare_request(request());
+    let handle = prepared.cancellation_handle();
+    let response = prepared.block_task();
+    fixture.next_message();
+    fixture.message_rx.close();
+    assert!(handle.cancel().is_err());
+    handle.clone().cancel().unwrap();
+    drop(response);
+    assert!(!matches!(
+        fixture.message_rx.next().now_or_never(),
+        Some(Some(_))
+    ));
+}
+
+#[test]
+fn cancellation_handle_traits_do_not_depend_on_the_response_type() {
+    fn assert_traits<T: Clone + Debug + Send + Sync>() {}
+    assert_traits::<crate::RequestCancellationHandle>();
+    let fixture = Fixture::new();
+    let prepared = fixture
+        .connection
+        .prepare_request(request())
+        .map(|_| Ok(std::rc::Rc::new(())));
+    let handle: crate::RequestCancellationHandle = prepared.cancellation_handle();
+    drop(prepared);
+    handle.cancel().unwrap();
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

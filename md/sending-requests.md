@@ -66,6 +66,28 @@ without cancelling. It does not select ordered consumption.
 Outgoing order follows publication, not preparation. A notification sent
 between preparation and consumption enters the queue before the request.
 
+## Cancellation after selecting a consumer
+
+Obtain `cancellation_handle()` before consuming a prepared or sent request to
+retain explicit cancellation control alongside its callback or response future:
+
+```rust
+let prepared = connection.prepare_request(request);
+let cancellation = prepared.cancellation_handle();
+prepared.on_receiving_result(async move |result| {
+    application_queue.enqueue(result)?;
+    Ok(())
+})?;
+cancellation.cancel()?;
+```
+
+Cancelling does not discard the eventual result. The cloneable handle shares
+SDK settlement and once-only cancellation state, rather than sending an
+unconditional notification for a saved request ID. Dropping the handle does
+nothing. Calls before publication, after a response or local failure, or after
+detaching the request do nothing. See [Request Cancellation](./request-cancellation.md)
+for the full contract, including publication races and peer wrapping.
+
 ## Drop and errors
 
 Dropping an unconsumed `PreparedRequest` sends nothing. Dropping the response

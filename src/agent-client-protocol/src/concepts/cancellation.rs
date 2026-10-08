@@ -35,6 +35,33 @@
 //! original request, so this also works for requests sent through
 //! [`ConnectionTo::send_request_to`].
 //!
+//! When another task needs to request cancellation after the request is consumed,
+//! retain a [`RequestCancellationHandle`] first:
+//!
+//! ```
+//! # use agent_client_protocol::{ConnectionTo, Error, UntypedRole};
+//! # use agent_client_protocol_test::{MyRequest, MyResponse};
+//! # fn apply_result(_result: Result<MyResponse, Error>) {}
+//! # async fn example(cx: ConnectionTo<UntypedRole>) -> Result<(), Error> {
+//! let request = cx.prepare_request(MyRequest {});
+//! let cancellation = request.cancellation_handle();
+//! request.on_receiving_result(async |result| {
+//!     apply_result(result);
+//!     Ok(())
+//! })?;
+//! cancellation.cancel()?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! The response is still delivered to the selected callback or future. Cloned
+//! handles share the same once-only cancellation state as [`SentRequest::cancel`]
+//! and automatic request-drop cancellation, and remember the original peer and
+//! proxy wrapping. Dropping a cancellation handle does nothing. Cancelling a
+//! prepared request before publication is also a no-op; it is not remembered for
+//! later publication. Responses and local failures disarm cancellation before
+//! application callbacks run. Detaching a request disarms retained handles too.
+//!
 //! Dropping a [`SentRequest`] before the SDK receives a response also sends
 //! `$/cancel_request`. This covers abandoned request handles and futures. For a
 //! request whose eventual response should be ignored, but which should continue
@@ -164,8 +191,9 @@
 //! If you are implementing custom routing and already know the JSON-RPC request
 //! ID on the peer connection you are targeting, use
 //! [`ConnectionTo::send_cancel_request_to`]. Most code should use
-//! [`SentRequest::cancel`] instead, because the request handle already knows the
-//! correct peer, request ID, and proxy wrapping.
+//! [`SentRequest::cancel`] or [`RequestCancellationHandle::cancel`] instead,
+//! because they share SDK settlement state and already know the correct peer,
+//! request ID, and proxy wrapping.
 //!
 //! [`block_task`]: crate::SentRequest::block_task
 //! [`on_receiving_result`]: crate::SentRequest::on_receiving_result
@@ -180,6 +208,8 @@
 //! [`ConnectionTo::spawn`]: crate::ConnectionTo::spawn
 //! [`SentRequest`]: crate::SentRequest
 //! [`SentRequest::cancel`]: crate::SentRequest::cancel
+//! [`RequestCancellationHandle`]: crate::RequestCancellationHandle
+//! [`RequestCancellationHandle::cancel`]: crate::RequestCancellationHandle::cancel
 //! [`SentRequest::detach`]: crate::SentRequest::detach
 //! [`forward_cancellation_from`]: crate::SentRequest::forward_cancellation_from
 //! [`ConnectionTo::send_cancel_request_to`]: crate::ConnectionTo::send_cancel_request_to

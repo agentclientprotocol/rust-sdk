@@ -4,7 +4,8 @@ This chapter documents the `$/cancel_request` protocol-level notification and
 how the SDK implements it.
 
 For API usage (cancelling a `SentRequest`, observing cancellation from a
-`Responder`), see the `concepts::cancellation` chapter in the
+`Responder`, or retaining a `RequestCancellationHandle` alongside a callback),
+see the `concepts::cancellation` chapter in the
 [agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol).
 
 ## The `$/cancel_request` Notification
@@ -55,6 +56,26 @@ Dropping an unconsumed `SentRequest` asks the peer to cancel it. Use
 but which should continue running on the peer. The peer is still expected to
 answer the JSON-RPC request eventually; use a notification instead when no
 response is expected at all.
+
+## Retaining Cancellation Control
+
+Before consuming a `PreparedRequest` or `SentRequest`, call
+`cancellation_handle()` to retain a cloneable `RequestCancellationHandle`.
+Its `cancel()` method requests cancellation independently of response consumption:
+an ordered callback or response future still receives the eventual result.
+
+The handle shares once-only cancellation and settlement state with
+`SentRequest::cancel`, forwarded cancellation, and automatic request-drop
+cancellation. It uses the same peer and proxy wrapping. Dropping the handle
+neither sends cancellation nor disables automatic request-drop cancellation.
+
+Calling it before a prepared request is published does nothing and is not
+remembered for later publication. A call racing publication may also do nothing;
+call after the publishing method returns to target a pending request. Once the
+SDK routes a response, fails the request, or the request is detached, retained
+handles also do nothing—even if the application has not consumed the result yet.
+Cancellation is cooperative; it does not guarantee that the peer stops work or
+responds successfully.
 
 ## Proxy Chains
 
