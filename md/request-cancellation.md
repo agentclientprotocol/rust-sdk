@@ -4,7 +4,8 @@ This chapter documents the `$/cancel_request` protocol-level notification and
 how the SDK implements it.
 
 For API usage (cancelling a `SentRequest`, observing cancellation from a
-`Responder`), see the `concepts::cancellation` chapter in the
+`Responder`, or retaining a `RequestCancellationHandle` alongside a callback),
+see the `concepts::cancellation` chapter in the
 [agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol).
 
 ## The `$/cancel_request` Notification
@@ -55,6 +56,46 @@ Dropping an unconsumed `SentRequest` asks the peer to cancel it. Use
 but which should continue running on the peer. The peer is still expected to
 answer the JSON-RPC request eventually; use a notification instead when no
 response is expected at all.
+
+## Retaining Cancellation Control
+
+Before consuming a `PreparedRequest` or `SentRequest`, call
+`cancellation_handle()` to retain a cloneable `RequestCancellationHandle`.
+Its `cancel()` method requests cancellation independently of response consumption:
+an ordered callback or response future still receives the eventual result.
+
+The handle shares once-only cancellation and settlement state with
+`SentRequest::cancel`, forwarded cancellation, and automatic request-drop
+cancellation. It uses the same peer and proxy wrapping. Dropping the handle
+neither sends cancellation nor disables automatic request-drop cancellation.
+To cancel when a caller is abandoned, its application-owned guard or abandonment
+handler must explicitly call `cancel()` and handle any immediate error.
+
+Calling it before a prepared request is published does nothing and is not
+remembered for later publication. A call racing publication may also do nothing;
+hand control to independent cancellers after the publishing method returns.
+Once the SDK routes a response or fails the request, new cancellation calls do
+nothing—even if the application has not consumed the result yet. An attempt begun
+before settlement may still enqueue afterward.
+
+Detachment is separate from settlement: `detach()` discards the response and
+suppresses automatic cancellation on drop, but does not revoke retained explicit
+handles. They can still cancel the detached request while it remains pending.
+
+`Ok(())` means the call encountered no immediate error, not that a notification
+was sent or the peer stopped work. Cancellation is cooperative; it does not
+guarantee transmission, peer cooperation, or a successful response. A handle does
+not abort local callback work or keep the connection driver/response consumer alive.
+
+## Request Cancellation Is Not Session Cancellation
+
+`$/cancel_request` targets one pending JSON-RPC request, not the lifetime of the
+session work it may start. In ACP v2, `session/prompt` succeeds once the user
+message is inserted and returns its `messageId`. After insertion the Agent must
+return success, not `-32800`, even if cancellation races the response. Stopping
+active session work uses `session/cancel`. See the
+[v2 cancellation specification](https://agentclientprotocol.com/protocol/v2/cancellation)
+and [prompt lifecycle](https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#2-prompt-accepted).
 
 ## Proxy Chains
 

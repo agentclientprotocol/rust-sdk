@@ -422,6 +422,91 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_delivers_callback() {
+    use agent_client_protocol::{RawJsonRpcMessage, TransportFrame, UntypedMessage};
+    use futures::channel::oneshot;
+    use serde_json::json;
+
+    let (transport, mut peer) = Channel::duplex();
+    let (published_tx, published_rx) = oneshot::channel();
+    let client = WrappedCounterpart
+        .builder()
+        .connect_with(transport, async move |connection| {
+            let prepared = connection.prepare_request_to(
+                WrappedSuccessor,
+                SimpleRequest {
+                    message: "wrapped cancel".into(),
+                },
+            );
+            let expected_id = prepared.id().clone();
+            let cancellation = prepared.cancellation_handle();
+            let (callback_tx, callback_rx) = oneshot::channel();
+            prepared.on_receiving_result(async move |response| {
+                callback_tx
+                    .send(response)
+                    .map_err(|_| agent_client_protocol::Error::internal_error())
+            })?;
+            assert_eq!(published_rx.await.unwrap(), expected_id);
+            cancellation.cancel()?;
+            cancellation.clone().cancel()?;
+            connection
+                .send_notification(UntypedMessage::new("after-cancellation", json!({})).unwrap())?;
+            assert_eq!(
+                callback_rx.await.unwrap().unwrap().result,
+                "completed despite cancellation"
+            );
+            connection.incoming_closed().await;
+            Ok(())
+        });
+    let peer = async move {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+            peer.rx.next().await
+        else {
+            panic!("expected the successor-wrapped request");
+        };
+        assert_eq!(request.method.as_ref(), "_proxy/successor");
+        assert_eq!(
+            serde_json::to_value(request.params).unwrap(),
+            json!({"method": "simple_method", "params": {"message": "wrapped cancel"}})
+        );
+        published_tx.send(request.id.clone()).unwrap();
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(cancellation))) =
+            peer.rx.next().await
+        else {
+            panic!("expected the successor-wrapped cancellation");
+        };
+        assert_eq!(cancellation.method.as_ref(), "_proxy/successor");
+        assert_eq!(
+            serde_json::to_value(cancellation.params).unwrap(),
+            json!({"method": "$/cancel_request", "params": {"requestId": request.id}})
+        );
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
+            peer.rx.next().await
+        else {
+            panic!("expected the cancellation barrier");
+        };
+        assert_eq!(boundary.method.as_ref(), "after-cancellation");
+        peer.tx
+            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                request.id,
+                Ok(json!({"result": "completed despite cancellation"})),
+            )))
+            .unwrap();
+        drop(peer.tx);
+        assert!(
+            peer.rx.next().await.is_none(),
+            "callback completion or cloned handles emitted another cancellation"
+        );
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let (client, ()) = futures::join!(client, peer);
+        client.unwrap();
+    })
+    .await
+    .expect("wrapped cancellation prevented callback delivery");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
     use tokio::task::LocalSet;
@@ -754,14 +839,27 @@ async fn detached_sent_request_does_not_send_cancellation() {
             UntypedRole
                 .builder()
                 .connect_with(client_transport, async |cx| {
-                    cx.send_request(SimpleRequest {
+                    let request = cx.send_request(SimpleRequest {
                         message: "detached".into(),
-                    })
-                    .detach();
+                    });
+                    let cancellation = request.cancellation_handle();
+                    let cloned_cancellation = cancellation.clone();
+                    request.detach();
+                    drop(cloned_cancellation);
+                    drop(cancellation);
 
-                    // Barrier round trip: a cancellation sent by dropping the
-                    // detached handle would reach the server before this
-                    // request.
+                    let prepared = cx.prepare_request(SimpleRequest {
+                        message: "prepared detached".into(),
+                    });
+                    let cancellation = prepared.cancellation_handle();
+                    let cloned_cancellation = cancellation.clone();
+                    prepared.detach()?;
+                    drop(cloned_cancellation);
+                    drop(cancellation);
+
+                    // Barrier round trip: any automatic cancellation from
+                    // detaching or dropping retained handles would reach the
+                    // server before this request.
                     let barrier = cx
                         .send_request(SimpleRequest {
                             message: "barrier".into(),

@@ -16,7 +16,7 @@ use std::panic::Location;
 use std::pin::pin;
 use std::sync::{
     Arc, Mutex, Weak,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 use uuid::Uuid;
 
@@ -4507,7 +4507,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
             SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
-        cancellation.disarm();
         let pending_reply = PendingReply {
             method: method.clone(),
             role_id,
@@ -5926,7 +5925,7 @@ impl RequestPublication {
         };
         let id = id.clone();
         let method = method.clone();
-        self.pending_reply.cancellation_disarm.arm();
+        let cancellation_disarm = self.pending_reply.cancellation_disarm.clone();
         // Register before enqueueing so incoming EOF can fail every observable
         // request before close callbacks begin. The outgoing actor checks that
         // the registration still exists before sending the request.
@@ -5943,6 +5942,9 @@ impl RequestPublication {
             }
             return Err(error);
         }
+        // An escaped cancellation handle must not enqueue cancellation before
+        // the request. A fast response or EOF may already have disarmed it.
+        cancellation_disarm.arm();
         Ok(())
     }
 }
@@ -5967,6 +5969,17 @@ impl<T> PreparedRequest<T> {
     #[must_use]
     pub fn method(&self) -> &str {
         self.sent.method()
+    }
+
+    /// Retain explicit cancellation control without publishing this request.
+    ///
+    /// The handle can outlive consumption of this request by an ordered callback
+    /// or response future. Calling it before publication is a no-op, not a
+    /// cancellation to apply when the request is later published. Dropping the
+    /// handle does not cancel. See [`RequestCancellationHandle`].
+    #[must_use]
+    pub fn cancellation_handle(&self) -> RequestCancellationHandle {
+        self.sent.cancellation_handle()
     }
 
     /// Map a successful response without publishing the request.
@@ -6015,7 +6028,8 @@ impl<T> PreparedRequest<T> {
     /// Returns immediate preparation or enqueue failures. Later local
     /// transformation errors and peer response errors are discarded along with
     /// successful responses. Transport failures still propagate through the
-    /// connection future.
+    /// connection future. Retained [`RequestCancellationHandle`] values can
+    /// still explicitly cancel the request while it remains pending.
     pub fn detach(self) -> Result<(), crate::Error> {
         let result = self.publication.publish();
         self.sent.detach();
@@ -6144,56 +6158,105 @@ impl<T> PreparedRequest<T> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SentRequestCancellationDisarm {
-    armed: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
+}
+
+#[repr(u8)]
+enum OutgoingCancellationState {
+    Unpublished,
+    Armed,
+    Disarmed,
 }
 
 impl SentRequestCancellationDisarm {
     fn new() -> Self {
         Self {
-            armed: Arc::new(AtomicBool::new(true)),
+            state: Arc::new(AtomicU8::new(OutgoingCancellationState::Unpublished as u8)),
         }
     }
 
     fn disarm(&self) {
-        self.armed.store(false, Ordering::Release);
+        self.state
+            .store(OutgoingCancellationState::Disarmed as u8, Ordering::Release);
     }
 
-    fn arm(&self) {
-        self.armed.store(true, Ordering::Release);
+    fn arm(&self) -> bool {
+        self.state
+            .compare_exchange(
+                OutgoingCancellationState::Unpublished as u8,
+                OutgoingCancellationState::Armed as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn take_armed(&self) -> bool {
+        self.state
+            .compare_exchange(
+                OutgoingCancellationState::Armed as u8,
+                OutgoingCancellationState::Disarmed as u8,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn is_armed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == OutgoingCancellationState::Armed as u8
     }
 }
 
-struct SentRequestCancellation {
+/// Explicit cancellation control for one outgoing request.
+///
+/// Obtain this handle from [`PreparedRequest::cancellation_handle`] or
+/// [`SentRequest::cancellation_handle`] before consuming the request. It retains
+/// neither the response consumer nor application callback, so cancellation can
+/// be requested without discarding the eventual response. It does not keep the
+/// connection driver or response consumer alive, or abort local callback work.
+///
+/// Clones share the request's cancellation state with [`SentRequest::cancel`],
+/// forwarded cancellation, and request-drop automatic cancellation. At most one
+/// cancellation notification is attempted, with the original peer and proxy
+/// wrapping. Dropping this handle neither cancels the request nor disables its
+/// automatic cancellation.
+///
+/// Cancellation before publication is a no-op and is not remembered for later
+/// publication. A call racing publication may also be a no-op; call after the
+/// publishing method returns to target a pending request. Once the SDK routes a
+/// response or fails the request, subsequent cancellation calls are no-ops,
+/// even if its callback has not yet run. Detaching the request suppresses only
+/// automatic cancellation; retained handles can still explicitly cancel it.
+///
+/// This controls outgoing requests, unlike [`RequestCancellation`], which
+/// observes a peer's cancellation of an incoming request.
+#[derive(Clone)]
+pub struct RequestCancellationHandle {
     message_tx: OutgoingMessageTx,
     remote_style: crate::role::RemoteStyle,
     request_id: RequestId,
     disarm: SentRequestCancellationDisarm,
 }
 
-impl SentRequestCancellation {
-    fn new(
-        message_tx: OutgoingMessageTx,
-        remote_style: crate::role::RemoteStyle,
-        request_id: RequestId,
-    ) -> Self {
-        Self {
-            message_tx,
-            remote_style,
-            request_id,
-            disarm: SentRequestCancellationDisarm::new(),
-        }
-    }
-
-    fn disarm(&self) {
-        self.disarm.disarm();
-    }
-
-    fn disarm_handle(&self) -> SentRequestCancellationDisarm {
-        self.disarm.clone()
-    }
-
-    fn send(&self) -> Result<(), crate::Error> {
-        if !self.disarm.armed.swap(false, Ordering::AcqRel) {
+impl RequestCancellationHandle {
+    /// Ask the peer to cancel this request without discarding its response.
+    ///
+    /// Cancellation is cooperative: the peer may respond normally or with a
+    /// cancellation error. Repeated calls, including calls through other clones
+    /// or the original request, return `Ok(())` without sending another
+    /// notification. Calls before publication or after settlement are no-ops.
+    /// An attempt begun before settlement may still enqueue afterward.
+    ///
+    /// `Ok(())` means this call encountered no immediate error, not that a
+    /// notification was sent or the peer stopped work. This method does not
+    /// wait for transmission or acknowledgment.
+    ///
+    /// # Errors
+    ///
+    /// Only the call that attempts to send reports serialization or enqueue
+    /// failure. A failed send is not retried by later cancellation calls.
+    pub fn cancel(&self) -> Result<(), crate::Error> {
+        if !self.disarm.take_armed() {
             return Ok(());
         }
 
@@ -6207,21 +6270,61 @@ impl SentRequestCancellation {
     }
 }
 
-impl Drop for SentRequestCancellation {
-    fn drop(&mut self) {
-        if let Err(error) = self.send() {
-            tracing::debug!(?error, "failed to auto-cancel dropped request");
-        }
+impl Debug for RequestCancellationHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RequestCancellationHandle")
+            .field("request_id", &self.request_id)
+            .field("remote_style", &self.remote_style)
+            .field("armed", &self.disarm.is_armed())
+            .finish_non_exhaustive()
     }
 }
 
-impl Debug for SentRequestCancellation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SentRequestCancellation")
-            .field("request_id", &self.request_id)
-            .field("remote_style", &self.remote_style)
-            .field("armed", &self.disarm.armed.load(Ordering::Acquire))
-            .finish_non_exhaustive()
+#[derive(Debug)]
+struct SentRequestCancellation {
+    handle: RequestCancellationHandle,
+    cancel_on_drop: bool,
+}
+
+impl SentRequestCancellation {
+    fn new(
+        message_tx: OutgoingMessageTx,
+        remote_style: crate::role::RemoteStyle,
+        request_id: RequestId,
+    ) -> Self {
+        Self {
+            handle: RequestCancellationHandle {
+                message_tx,
+                remote_style,
+                request_id,
+                disarm: SentRequestCancellationDisarm::new(),
+            },
+            cancel_on_drop: true,
+        }
+    }
+
+    fn disarm(&self) {
+        self.handle.disarm.disarm();
+    }
+
+    fn disarm_handle(&self) -> SentRequestCancellationDisarm {
+        self.handle.disarm.clone()
+    }
+
+    fn send(&self) -> Result<(), crate::Error> {
+        self.handle.cancel()
+    }
+}
+
+impl Drop for SentRequestCancellation {
+    fn drop(&mut self) {
+        if !self.cancel_on_drop {
+            return;
+        }
+        if let Err(error) = self.send() {
+            tracing::debug!(?error, "failed to auto-cancel dropped request");
+        }
     }
 }
 
@@ -6312,7 +6415,7 @@ impl SentRequest<serde_json::Value> {
 impl<T> SentRequest<T> {
     /// Detach this request handle without waiting for its response.
     ///
-    /// The response will be discarded when it arrives. This also disarms the
+    /// The response will be discarded when it arrives. This also disables the
     /// drop-time automatic cancellation described in
     /// [Drop Behavior](Self#drop-behavior), so use it for requests whose
     /// eventual response should be ignored, but which should keep running on
@@ -6321,9 +6424,11 @@ impl<T> SentRequest<T> {
     /// all.
     ///
     /// To ask the peer to stop the request, call `cancel` instead, or drop the
-    /// handle while automatic cancellation is armed.
-    pub fn detach(self) {
-        self.cancellation.disarm();
+    /// handle while automatic cancellation is enabled. A retained
+    /// [`RequestCancellationHandle`] can still explicitly cancel the detached
+    /// request until the SDK receives its response or fails it.
+    pub fn detach(mut self) {
+        self.cancellation.cancel_on_drop = false;
     }
 
     /// Send a `$/cancel_request` notification for this outgoing request.
@@ -6332,17 +6437,30 @@ impl<T> SentRequest<T> {
     /// original request, so it is the preferred way to cancel a [`SentRequest`]
     /// when the request handle is still available.
     ///
-    /// At most one `$/cancel_request` is ever sent per request: the first
-    /// `cancel` call sends it (and also prevents the drop-time automatic
-    /// cancellation described in [Drop Behavior](Self#drop-behavior)), while
-    /// later calls return `Ok(())` without sending anything. Likewise, once
-    /// the SDK has routed the response to this handle, `cancel` becomes a
-    /// no-op: there is nothing left to cancel.
+    /// At most one cancellation attempt is made per request, shared with
+    /// retained handles, forwarded cancellation, and automatic cancellation
+    /// described in [Drop Behavior](Self#drop-behavior). Later calls return
+    /// `Ok(())` without another attempt, including when the first attempt failed.
+    /// Once the SDK has routed the response, a new call is a no-op; an attempt
+    /// begun before settlement may still enqueue afterward.
+    ///
+    /// `Ok(())` means this call encountered no immediate error, not that a
+    /// notification was sent or the peer stopped work.
     ///
     /// Errors are only reported by the call that attempts to send the
     /// notification.
     pub fn cancel(&self) -> Result<(), crate::Error> {
         self.cancellation.send()
+    }
+
+    /// Obtain a handle that remains usable after this request is consumed.
+    ///
+    /// The handle shares the once-only cancellation state used by
+    /// [`cancel`](Self::cancel), response routing, and automatic request-drop
+    /// cancellation, but has no cancel-on-drop behavior of its own.
+    #[must_use]
+    pub fn cancellation_handle(&self) -> RequestCancellationHandle {
+        self.cancellation.handle.clone()
     }
 
     /// Forward cancellation of another request to this one.
