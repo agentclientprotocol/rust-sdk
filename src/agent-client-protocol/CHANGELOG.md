@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [3.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.1.0...v3.2.0) - 2026-10-08
+
+### Added
+
+- *(acp)* Add retained outgoing request cancellation handles ([#409](https://github.com/agentclientprotocol/rust-sdk/pull/409))
+
 ### Added
 
 - Add `RequestCancellationHandle` and `cancellation_handle()` on prepared and
