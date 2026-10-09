@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.2.0...agent-client-protocol-cookbook-v3.3.0) - 2026-10-09
+
+### Other
+
+- release ([#410](https://github.com/agentclientprotocol/rust-sdk/pull/410))
+
 ## [3.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.0.0...agent-client-protocol-cookbook-v3.1.0) - 2026-10-07
 
 ### Added
