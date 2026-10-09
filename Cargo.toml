@@ -36,7 +36,7 @@ agent-client-protocol-trace-viewer = { path = "src/agent-client-protocol-trace-v
 yopo = { package = "agent-client-protocol-yopo", path = "src/yopo" }
 
 # Protocol
-agent-client-protocol-schema = { version = "=1.10.2", default-features = false, features = ["tracing"] }
+agent-client-protocol-schema = { version = "=1.11.0", default-features = false, features = ["tracing"] }
 
 # Core async runtime
 tokio = { version = "1.52", default-features = false }

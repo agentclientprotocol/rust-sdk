@@ -1,5 +1,3 @@
-#![cfg(feature = "unstable_session_compaction")]
-
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::schema::v1::{
     AgentNotification, ClientCapabilities, ClientSessionCapabilities, CompactionCapabilities,

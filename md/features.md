@@ -115,6 +115,12 @@ agent-client-protocol = { version = "3", features = ["unstable_protocol_v2", "un
 The `unstable` aggregate does not select draft v2; enable `unstable_protocol_v2`
 explicitly when using that version.
 
+Session notices and context compaction are stable in schema 1.11 and available
+without feature flags in v1. Draft v2 only needs `unstable_protocol_v2` for these
+surfaces. The former `unstable_session_notices` and `unstable_session_compaction`
+SDK features have been removed. Applications still negotiate support through
+the corresponding protocol capabilities.
+
 The `unstable_subagents` feature exposes the schema's subagent capabilities,
 updates, and session-message types. It is also included in `unstable`. The
 existing `session/update` notification route carries subagent updates in v1 and,
