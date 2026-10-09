@@ -446,7 +446,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.8
+## Schema changes in schema 1.5 through 1.11
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors; renamed
@@ -462,7 +462,7 @@ Schema 1.6 adds `Cancelled` tool-call and plan-entry statuses to draft v2.
 
 Schema 1.7 stabilizes elicitation and terminal authentication, so neither
 surface requires its former SDK feature flag. It also adds context compaction
-updates behind `unstable_session_compaction`; the SDK carries them through its
+updates (stable since schema 1.11); the SDK carries them through its
 existing typed `session/update` routing in both protocol versions. V1 clients
 advertise compaction support through `ClientSessionCapabilities::compaction`.
 
@@ -472,3 +472,23 @@ versions. No tool-name-specific feature is required; draft v2 users only need
 value unchanged on updates. In v2, omission leaves it unchanged, `null` clears
 it, and a string replaces it. V1 cannot express the explicit v2 `null` clear
 operation.
+
+Schema 1.11 stabilizes session notices and compaction. No surface-specific
+feature is required; draft v2 users still need `unstable_protocol_v2`.
+
+In draft v2, failures after a prompt's user message is inserted end active work
+with `StopReason::Error(ErrorStopReason)` on the idle state update, optionally
+including a JSON-RPC error object. Failures before insertion remain error
+responses to `session/prompt`. `StopReason` now serializes as an object tagged
+by `stopReason`, flattened into `IdleStateUpdate`; its `Other` variant takes
+`OtherStopReason` rather than a string and preserves unknown payload fields.
+V1 prompt responses are unchanged and do not accept an `error` stop reason.
+
+Schema 1.11 also rejects malformed payloads that receivers act on rather than
+silently dropping invalid entries or substituting defaults. This includes
+session setup's MCP servers and additional directories, terminal launch
+arguments and environment, and v2 replay cursors. Typed request decoding
+reports invalid parameters (`-32602`) without invoking the handler. `null`
+still means empty for the defaultable acted-on lists; omission is accepted
+only where the field is optional. Capability and display metadata retain their
+lenient decoding.
