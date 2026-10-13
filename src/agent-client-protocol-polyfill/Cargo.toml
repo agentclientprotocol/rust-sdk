@@ -22,7 +22,7 @@ async-stream.workspace = true
 axum = { workspace = true, features = ["json"] }
 base64.workspace = true
 futures.workspace = true
-hmac = "0.12"
+hmac = "0.13"
 serde_json.workspace = true
 sha2 = "0.10"
 tokio = { workspace = true, features = ["net"] }
