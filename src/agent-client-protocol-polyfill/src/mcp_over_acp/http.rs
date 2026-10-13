@@ -19,7 +19,7 @@ use axum::{
 };
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt, channel::mpsc};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Map, Value};
 use sha2::Sha256;
 use tokio::{
