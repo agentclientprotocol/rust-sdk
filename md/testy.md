@@ -75,6 +75,13 @@ The `full` scenario sends every stable agent-to-client callback request:
 It also emits the stable session update variants, including message chunks, tool calls, plans,
 available commands, mode/config/session info, and usage.
 
+Every path a scenario sends is rooted in the session's `cwd`: the `testy-write.txt` file that
+`fs/write_text_file` writes and `fs/read_text_file` reads back, the working directory of each
+`terminal/create`, the tool-call locations and diff (`testy-input.txt`, `testy-output.txt`), and
+the `file:` URIs of the image, resource link, and embedded resource. A client that confines file
+and terminal access to the session's directories can run the scenarios in a project directory,
+and sessions rooted in different directories never share a file.
+
 `elicitations`, `callbacks`, and `full` cover `elicitation/create` form mode,
 URL mode, session scope, request scope, accept, decline, cancel, and `elicitation/complete`.
 If the client does not advertise form elicitation, the scenario returns a deterministic
