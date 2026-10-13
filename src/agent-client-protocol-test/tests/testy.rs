@@ -19,16 +19,16 @@ use agent_client_protocol::{
         v1::{
             AuthenticateRequest, CancelNotification, ClientCapabilities, CloseSessionRequest,
             ContentBlock, CreateTerminalRequest, CreateTerminalResponse, DeleteSessionRequest,
-            FileSystemCapabilities, InitializeRequest, KillTerminalRequest, KillTerminalResponse,
-            ListSessionsRequest, LoadSessionRequest, LogoutRequest, McpServer, McpServerStdio,
-            NewSessionRequest, PermissionOptionId, PromptRequest, ReadTextFileRequest,
-            ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-            RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-            ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification,
-            SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
-            TerminalExitStatus, TerminalOutputRequest, TerminalOutputResponse, ToolCallContent,
-            ToolCallStatus, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
-            WriteTextFileRequest, WriteTextFileResponse,
+            EmbeddedResourceResource, FileSystemCapabilities, InitializeRequest,
+            KillTerminalRequest, KillTerminalResponse, ListSessionsRequest, LoadSessionRequest,
+            LogoutRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionId,
+            PromptRequest, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
+            ReleaseTerminalResponse, RequestPermissionOutcome, RequestPermissionRequest,
+            RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
+            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+            SetSessionModeRequest, StopReason, TerminalExitStatus, TerminalOutputRequest,
+            TerminalOutputResponse, ToolCallContent, ToolCallStatus, WaitForTerminalExitRequest,
+            WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
         },
     },
 };
@@ -1635,6 +1635,194 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
             "terminal content terminal was not released: {terminal_id}"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn testy_full_scenario_roots_paths_in_the_session_cwd()
+-> Result<(), agent_client_protocol::Error> {
+    // Absolute on every platform and not `/tmp`. The client answers every
+    // callback itself, so nothing is created here.
+    let cwd = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testy-project");
+    let resource_uris = Arc::new(Mutex::new(Vec::<String>::new()));
+    let tool_call_paths = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let file_paths = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
+    let terminal_cwds = Arc::new(Mutex::new(Vec::<Option<PathBuf>>::new()));
+
+    Client
+        .builder()
+        .on_receive_notification(
+            {
+                let resource_uris = Arc::clone(&resource_uris);
+                let tool_call_paths = Arc::clone(&tool_call_paths);
+                async move |notification: SessionNotification, _cx| {
+                    match notification.update {
+                        SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+                            ContentBlock::Image(image) => {
+                                resource_uris.lock().unwrap().extend(image.uri);
+                            }
+                            ContentBlock::ResourceLink(link) => {
+                                resource_uris.lock().unwrap().push(link.uri);
+                            }
+                            ContentBlock::Resource(resource) => {
+                                if let EmbeddedResourceResource::TextResourceContents(text) =
+                                    resource.resource
+                                {
+                                    resource_uris.lock().unwrap().push(text.uri);
+                                }
+                            }
+                            _ => {}
+                        },
+                        SessionUpdate::ToolCall(tool_call) => {
+                            tool_call_paths.lock().unwrap().extend(
+                                tool_call
+                                    .locations
+                                    .into_iter()
+                                    .map(|location| location.path),
+                            );
+                        }
+                        SessionUpdate::ToolCallUpdate(update) => {
+                            for content in update.fields.content.into_iter().flatten() {
+                                if let ToolCallContent::Diff(diff) = content {
+                                    tool_call_paths.lock().unwrap().push(diff.path);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            {
+                let file_paths = Arc::clone(&file_paths);
+                async move |request: WriteTextFileRequest, responder, _cx| {
+                    file_paths.lock().unwrap().push(request.path);
+                    responder.respond(WriteTextFileResponse::new())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let file_paths = Arc::clone(&file_paths);
+                async move |request: ReadTextFileRequest, responder, _cx| {
+                    file_paths.lock().unwrap().push(request.path);
+                    responder.respond(ReadTextFileResponse::new("written by testy\n"))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let terminal_cwds = Arc::clone(&terminal_cwds);
+                async move |request: CreateTerminalRequest, responder, _cx| {
+                    terminal_cwds.lock().unwrap().push(request.cwd);
+                    responder.respond(CreateTerminalResponse::new("testy-terminal-client"))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: RequestPermissionRequest, responder, _cx| {
+                let option_id = request.options[0].option_id.clone();
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: TerminalOutputRequest, responder, _cx| {
+                responder.respond(TerminalOutputResponse::new("testy terminal\n", false))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: WaitForTerminalExitRequest, responder, _cx| {
+                responder.respond(WaitForTerminalExitResponse::new(
+                    TerminalExitStatus::new().exit_code(0),
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: KillTerminalRequest, responder, _cx| {
+                responder.respond(KillTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: ReleaseTerminalRequest, responder, _cx| {
+                responder.respond(ReleaseTerminalResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |_request: CreateElicitationRequest, responder, _cx| {
+                responder.respond(CreateElicitationResponse::new(ElicitationAction::Cancel))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(Testy::new(), async |cx| {
+            let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+                ClientCapabilities::new().elicitation(
+                    ElicitationCapabilities::new()
+                        .form(ElicitationFormCapabilities::new())
+                        .url(ElicitationUrlCapabilities::new()),
+                ),
+            );
+            cx.send_request(initialize).block_task().await?;
+            let session = cx
+                .send_request(NewSessionRequest::new(cwd.clone()))
+                .block_task()
+                .await?;
+            let response = cx
+                .send_request(PromptRequest::new(
+                    session.session_id,
+                    vec![
+                        TestyCommand::RunScenario {
+                            scenario: TestyScenario::Full,
+                        }
+                        .to_prompt()
+                        .into(),
+                    ],
+                ))
+                .block_task()
+                .await?;
+            assert_eq!(response.stop_reason, StopReason::EndTurn);
+            Ok(())
+        })
+        .await?;
+
+    let file_uri = |name: &str| {
+        url::Url::from_file_path(cwd.join(name))
+            .expect("the manifest directory is absolute")
+            .to_string()
+    };
+    assert_eq!(
+        resource_uris.lock().unwrap().as_slice(),
+        [
+            file_uri("testy-pixel.png"),
+            file_uri("testy-reference.txt"),
+            file_uri("testy-embedded.txt"),
+        ]
+    );
+    assert_eq!(
+        tool_call_paths.lock().unwrap().as_slice(),
+        [cwd.join("testy-input.txt"), cwd.join("testy-output.txt")]
+    );
+    assert_eq!(
+        file_paths.lock().unwrap().as_slice(),
+        [cwd.join("testy-write.txt"), cwd.join("testy-write.txt")]
+    );
+    assert_eq!(
+        terminal_cwds.lock().unwrap().as_slice(),
+        [Some(cwd.clone()), Some(cwd.clone())]
+    );
 
     Ok(())
 }

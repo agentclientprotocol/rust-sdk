@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Internal consumers disable this crate's unstable defaults and request their
   own protocol features explicitly. The crate's `unstable` and
   `unstable_protocol_v2` features remain available.
+- `testy` roots its scenario paths in the session `cwd` instead of `/tmp`: the
+  `fs/*` callback file, `terminal/create` working directories, tool-call
+  locations and diffs, and content `file:` URIs. Sessions in different
+  directories no longer share files; a session whose `cwd` is `/tmp` sees the
+  same paths as before.
 
 ### Added
 

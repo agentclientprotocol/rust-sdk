@@ -44,7 +44,7 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
@@ -854,6 +854,7 @@ impl Testy {
         prompt: &[ContentBlock],
         connection: &ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
+        let cwd = self.get_session(session_id)?.cwd;
         let prompt_summary = format!("received {} prompt content block(s)", prompt.len());
         send_session_update(
             connection,
@@ -888,7 +889,7 @@ impl Testy {
                         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
                         "image/png",
                     )
-                    .uri("file:///tmp/testy-pixel.png"),
+                    .uri(file_uri(&cwd.join("testy-pixel.png"))),
                 ))
                 .message_id(self.next_message_id("testy-content-image")),
             ),
@@ -909,9 +910,12 @@ impl Testy {
             session_id,
             SessionUpdate::AgentMessageChunk(
                 ContentChunk::new(ContentBlock::ResourceLink(
-                    ResourceLink::new("Testy reference", "file:///tmp/testy-reference.txt")
-                        .description("A deterministic resource link emitted by Testy")
-                        .mime_type("text/plain"),
+                    ResourceLink::new(
+                        "Testy reference",
+                        file_uri(&cwd.join("testy-reference.txt")),
+                    )
+                    .description("A deterministic resource link emitted by Testy")
+                    .mime_type("text/plain"),
                 ))
                 .message_id(self.next_message_id("testy-resource-message")),
             ),
@@ -924,7 +928,7 @@ impl Testy {
                     EmbeddedResourceResource::TextResourceContents(
                         TextResourceContents::new(
                             "embedded resource text from testy",
-                            "file:///tmp/testy-embedded.txt",
+                            file_uri(&cwd.join("testy-embedded.txt")),
                         )
                         .mime_type("text/plain"),
                     ),
@@ -940,20 +944,26 @@ impl Testy {
         connection: &ConnectionTo<Client>,
         terminal_id: Option<&str>,
     ) -> Result<(), agent_client_protocol::Error> {
+        let cwd = self.get_session(session_id)?.cwd;
+        let input_path = cwd.join("testy-input.txt");
+        let output_path = cwd.join("testy-output.txt");
         let read_tool_call_id = self.next_tool_call_id("testy-tool-read");
         let edit_tool_call_id = self.next_tool_call_id("testy-tool-edit");
         let initial = ToolCall::new(read_tool_call_id.clone(), "Read deterministic fixture")
             .kind(ToolKind::Read)
             .status(ToolCallStatus::Pending)
-            .locations(vec![ToolCallLocation::new("/tmp/testy-input.txt").line(1)])
-            .raw_input(serde_json::json!({ "path": "/tmp/testy-input.txt" }));
+            .locations(vec![ToolCallLocation::new(input_path.clone()).line(1)])
+            .raw_input(serde_json::json!({ "path": input_path.display().to_string() }));
         send_session_update(connection, session_id, SessionUpdate::ToolCall(initial))?;
 
         let in_progress = ToolCallUpdate::new(
             read_tool_call_id.clone(),
             ToolCallUpdateFields::new()
                 .status(ToolCallStatus::InProgress)
-                .content(vec![ToolCallContent::from("reading /tmp/testy-input.txt")]),
+                .content(vec![ToolCallContent::from(format!(
+                    "reading {}",
+                    input_path.display()
+                ))]),
         );
         send_session_update(
             connection,
@@ -965,7 +975,10 @@ impl Testy {
             read_tool_call_id,
             ToolCallUpdateFields::new()
                 .status(ToolCallStatus::Completed)
-                .content(vec![ToolCallContent::from("read /tmp/testy-input.txt")])
+                .content(vec![ToolCallContent::from(format!(
+                    "read {}",
+                    input_path.display()
+                ))])
                 .raw_output(serde_json::json!({ "bytes": 12 })),
         );
         send_session_update(
@@ -977,7 +990,7 @@ impl Testy {
         let edit_initial = ToolCall::new(edit_tool_call_id.clone(), "Apply deterministic edit")
             .kind(ToolKind::Edit)
             .status(ToolCallStatus::Pending)
-            .raw_input(serde_json::json!({ "path": "/tmp/testy-output.txt" }));
+            .raw_input(serde_json::json!({ "path": output_path.display().to_string() }));
         send_session_update(
             connection,
             session_id,
@@ -991,7 +1004,7 @@ impl Testy {
                 .kind(ToolKind::Edit)
                 .status(ToolCallStatus::Completed)
                 .content(vec![ToolCallContent::Diff(
-                    Diff::new("/tmp/testy-output.txt", "after\n").old_text("before\n"),
+                    Diff::new(output_path, "after\n").old_text("before\n"),
                 )])
                 .raw_output(serde_json::json!({ "changed": true })),
         );
@@ -1060,7 +1073,7 @@ impl Testy {
     ) -> Result<Option<TerminalId>, agent_client_protocol::Error> {
         let request = CreateTerminalRequest::new(session_id.clone(), "printf")
             .args(vec!["testy terminal content\n".to_string()])
-            .cwd(PathBuf::from("/tmp"))
+            .cwd(self.get_session(session_id)?.cwd)
             .output_byte_limit(1024);
         match self
             .request_result_until_cancelled(session_id, connection, request)
@@ -1337,7 +1350,8 @@ impl Testy {
             return Ok(());
         }
 
-        let write_path = PathBuf::from("/tmp/testy-write.txt");
+        let cwd = self.get_session(session_id)?.cwd;
+        let write_path = cwd.join("testy-write.txt");
         report.push(
             self.request_report_until_cancelled(
                 session_id,
@@ -1375,7 +1389,7 @@ impl Testy {
                 connection,
                 CreateTerminalRequest::new(session_id.clone(), "printf")
                     .args(vec!["testy terminal\n".to_string()])
-                    .cwd(PathBuf::from("/tmp"))
+                    .cwd(cwd)
                     .output_byte_limit(1024),
             )
             .await;
@@ -1793,6 +1807,16 @@ fn send_session_update(
     update: SessionUpdate,
 ) -> Result<(), agent_client_protocol::Error> {
     connection.send_notification(SessionNotification::new(session_id.clone(), update))
+}
+
+/// The `file:` URI of a scenario path under the session `cwd`, percent-encoded
+/// and with its drive letter on Windows.
+///
+/// ACP requires an absolute `cwd`. A client that sends a relative one still
+/// gets a URI, not a failed scenario.
+fn file_uri(path: &Path) -> String {
+    url::Url::from_file_path(path)
+        .map_or_else(|()| format!("file://{}", path.display()), String::from)
 }
 
 fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
