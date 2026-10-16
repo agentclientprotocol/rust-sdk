@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v3.3.0...agent-client-protocol-polyfill-v3.4.0) - 2026-10-16
+
+### Fixed
+
+- *(deps)* upgrade hmac and sha2 together ([#422](https://github.com/agentclientprotocol/rust-sdk/pull/422))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v2.2.0...agent-client-protocol-polyfill-v3.0.0) - 2026-10-06
 
 ### Added

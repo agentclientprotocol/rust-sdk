@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.3.0...v3.4.0) - 2026-10-16
+
+### Added
+
+- *(acp)* update schema to 1.12.0 and align v2 lifecycle ([#423](https://github.com/agentclientprotocol/rust-sdk/pull/423))
+
+### Fixed
+
+- *(acp)* align protocol version negotiation ([#424](https://github.com/agentclientprotocol/rust-sdk/pull/424))
+
 ## [3.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.2.0...v3.3.0) - 2026-10-09
 
 ### Added
