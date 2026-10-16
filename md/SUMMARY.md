@@ -6,7 +6,7 @@
 
 - [Design Overview](./design.md)
 - [Cargo Features](./features.md)
-- [Protocol Reference](./protocol.md)
+- [Protocol Reference and System Prompts](./protocol.md)
 - [Native MCP-over-ACP](./mcp-over-acp.md)
 - [Sending Requests](./sending-requests.md)
 - [Request Cancellation](./request-cancellation.md)

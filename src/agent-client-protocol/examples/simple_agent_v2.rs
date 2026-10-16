@@ -395,6 +395,16 @@ async fn main() -> Result<()> {
                     for update in history {
                         send_update(&connection, &request.session_id, update)?;
                     }
+                    // This example only resumes sessions without foreground work.
+                    // Every successful resume synchronizes current state, with or
+                    // without history replay, before its response.
+                    send_update(
+                        &connection,
+                        &request.session_id,
+                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
+                            v2::IdleStateUpdate::new(),
+                        )),
+                    )?;
                     responder.respond(v2::ResumeSessionResponse::new())
                 }
             },

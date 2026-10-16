@@ -1,9 +1,48 @@
 # SDK Protocol Reference
 
-This chapter documents the proxy extension implemented by the Rust SDK's
-conductor and the opt-in native MCP-over-ACP transport exposed by the shared ACP
-schema. The proxy methods are provisional SDK extensions. MCP-over-ACP is also
+This chapter documents shared schema features, the proxy extension implemented
+by the Rust SDK's conductor, and the opt-in native MCP-over-ACP transport.
+The proxy methods are provisional SDK extensions. MCP-over-ACP is also
 unstable and is available only with the `unstable_mcp_over_acp` feature.
+
+## Client-provided system prompts
+
+Schema 1.12 exposes draft client-authored instructions with the
+`unstable_session_system_prompt` feature. In v1, check
+`agentCapabilities.sessionCapabilities.systemPrompt`; in v2, check
+`capabilities.session.systemPrompt`. Omitted or `null` means unsupported.
+An object advertises support for text content in `append` mode. Only request
+`override` if the agent also advertises `systemPrompt.mode.override`.
+
+Use the version's `SystemPrompt::new` builder and pass the complete request
+through the SDK's `_from` session helpers:
+
+```rust
+use agent_client_protocol::schema::v1;
+
+let instructions = v1::SystemPrompt::new(vec![
+    "Review changes without modifying files.".into(),
+]);
+let request = v1::NewSessionRequest::new("/workspace/project")
+    .system_prompt(instructions);
+// After checking the agent's advertised capability:
+// connection.build_session_from(request).block_task().start_session().await?;
+# let _ = request;
+```
+
+This snippet requires `unstable_session_system_prompt`; v2 additionally
+requires `unstable_protocol_v2` and uses the equivalent `v2` types.
+`SystemPrompt::new` defaults to `append` in Rust, but both `mode` and `content`
+are required on the wire. Omitted or `null` `systemPrompt` supplies no client
+instructions. Malformed values fail typed request decoding with `-32602`;
+unknown modes are preserved for forwarding, not treated as append.
+
+Clients should re-send the prompt on load (v1), resume, and fork. Agents that
+advertise support must apply a supplied prompt or reject the lifecycle
+operation, not silently create or restore a session without it. Override
+replaces agent-authored default instructions, not tools, permissions, or
+workspace instructions. Only supply content trusted at system-instruction
+precedence. Enabling the local Cargo feature does not advertise peer support.
 
 ## Method Summary
 

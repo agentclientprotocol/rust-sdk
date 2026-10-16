@@ -50,11 +50,11 @@ example cancels them explicitly. It then follows this sequence:
 2. Send `session/new` and retain the returned command handle and session ID.
 3. Send `session/prompt` and await its response. This only confirms acceptance.
 4. Ignore queued updates for that new session until its foreground state becomes
-   `running`. The running update may already be queued when prompt acceptance
-   arrives.
+   `running` or `requires_action`. Work may start blocked and end without ever
+   running. The active update may already be queued when prompt acceptance arrives.
 5. Project subsequent message updates, and treat the next matching
    `state_update` with `idle` as completion of foreground work. An idle update
-   queued before running is only the session's earlier ready state. Background
+   queued before active work is only the session's earlier ready state. Background
    updates may still arrive afterward.
 6. Send `session/close` when the client no longer needs the active session.
 
@@ -92,10 +92,12 @@ the connection can continue dispatching cancellation and other traffic. That
 task sends the accepted user message, a running update, output, and finally an
 idle update with a stop reason.
 
-The example keeps history in memory and supports replay from the start before
-the `session/resume` response. A production agent should replace this with
-durable session storage, define its supported replay cursors, and make resource
-cleanup and cancellation robust across process failure.
+The example keeps history in memory and supports replay from the start. Every
+successful resume sends a current idle-state snapshot after any replay and
+before the response, even without replay. A production agent should replace
+this with durable session storage, synchronize its actual foreground state,
+define its supported replay cursors, and make resource cleanup and
+cancellation robust across process failure.
 
 For the connection APIs, proxy routing, and compatibility details surrounding
 these examples, continue with [Protocol V2](./protocol-v2.md).

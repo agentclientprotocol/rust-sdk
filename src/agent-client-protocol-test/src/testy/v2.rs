@@ -449,6 +449,15 @@ impl ConnectTo<Client> for V2Testy {
                         for update in replay {
                             send_update(&connection, &request.session_id, update)?;
                         }
+                        // Testy only resumes sessions without foreground work.
+                        // This is a live snapshot, not replayed turn completion.
+                        send_update(
+                            &connection,
+                            &request.session_id,
+                            acp::SessionUpdate::StateUpdate(acp::StateUpdate::Idle(
+                                acp::IdleStateUpdate::new(),
+                            )),
+                        )?;
                         responder.respond(acp::ResumeSessionResponse::new())
                     }
                 },
