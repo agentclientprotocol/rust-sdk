@@ -128,6 +128,15 @@ with `unstable_protocol_v2`, draft v2. This is schema support, not a subagent
 scheduler or an implementation of application-level ownership and lifecycle
 policy.
 
+Schema 1.12 adds `unstable_session_system_prompt`, also included in `unstable`.
+It exposes `SystemPrompt` and the session system-prompt capability types in v1
+and, with `unstable_protocol_v2`, v2. Send it on the complete lifecycle request
+through `build_session_from`, `load_session_from` (v1), `resume_session_from`,
+or `fork_session_from` (v2, with `unstable_session_fork`). Local feature flags
+do not negotiate peer support: only send `systemPrompt` when the agent
+advertises it, and only use `override` when `mode.override` is advertised.
+See [Client-provided system prompts](./protocol.md#client-provided-system-prompts).
+
 ## WebAssembly and the rmcp integration
 
 The core library compiles for `wasm32-wasip1` and `wasm32-wasip2` with default

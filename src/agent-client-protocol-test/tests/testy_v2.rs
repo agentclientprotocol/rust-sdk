@@ -198,6 +198,11 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                         && only_text(&message.content) == Some("hello from v2")
             ));
             assert!(matches!(
+                next_update(&mut event_rx).await.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
+                    if idle.stop_reason.is_none()
+            ));
+            assert!(matches!(
                 next_event(&mut event_rx).await,
                 TestEvent::ResumeResponded
             ));
@@ -219,9 +224,14 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                             .map_err(Error::into_internal_error)
                     }
                 })?;
+            assert!(matches!(
+                next_update(&mut event_rx).await.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
+                    if idle.stop_reason.is_none()
+            ));
             assert!(
                 matches!(next_event(&mut event_rx).await, TestEvent::ResumeResponded),
-                "resume without replayFrom must respond without replay updates"
+                "resume without replayFrom must synchronize state before responding"
             );
 
             connection

@@ -258,22 +258,24 @@ pub mod v2_one_shot_prompt {
     //!             session.send_prompt(prompt).block_task().await?;
     //!
     //!             let mut projection = AgentTextProjection::default();
-    //!             let mut observed_running = false;
+    //!             let mut observed_active = false;
     //!             while let Some(notification) = update_rx.next().await {
     //!                 if &notification.session_id != session.session_id() {
     //!                     continue;
     //!                 }
     //!                 match notification.update {
-    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_)) => {
-    //!                         observed_running = true;
+    //!                     v2::SessionUpdate::StateUpdate(
+    //!                         v2::StateUpdate::Running(_) | v2::StateUpdate::RequiresAction(_),
+    //!                     ) => {
+    //!                         observed_active = true;
     //!                     }
     //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
-    //!                         if observed_running =>
+    //!                         if observed_active =>
     //!                     {
     //!                         session.close().block_task().await?;
     //!                         return Ok(projection.text());
     //!                     }
-    //!                     update if observed_running => projection.apply(update),
+    //!                     update if observed_active => projection.apply(update),
     //!                     _ => {}
     //!                 }
     //!             }

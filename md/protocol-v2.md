@@ -168,11 +168,17 @@ V2 deliberately separates prompt submission from session observation:
   boundary assigning previous events to one prompt, and background updates may
   continue while idle.
 - `cancel_active_work` sends session-wide `session/cancel`. Cancellation
-  completes after the required `idle` update with stop reason `cancelled`. The
+  of active foreground work completes after the required `idle` update with
+  stop reason `cancelled`; cancelling an idle session need not emit another
+  completion. The
   client should immediately mark unfinished tool calls for the active work as
-  cancelled and must resolve every pending permission request with the
-  cancelled outcome. Cancelling or dropping the prompt's `SentRequest` is the
-  separate JSON-RPC request-cancellation mechanism.
+  cancelled and must resolve every pending permission request in that session
+  with the cancelled outcome, without answering twice or affecting other
+  sessions. Elicitations are not all cancelled implicitly: agents should use
+  individual `$/cancel_request` for interactions made irrelevant by the
+  cancelled work. Cancelling or dropping the prompt's `SentRequest` is the
+  separate JSON-RPC request-cancellation mechanism; insertion still requires a
+  successful prompt response with its message ID.
 - `set_config_option` returns the authoritative replacement option set, and
   `close` returns the complete close response. Mutable configuration is not
   cached on the command handle.
@@ -446,7 +452,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.11
+## Schema changes in schema 1.5 through 1.12
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors; renamed
@@ -492,3 +498,75 @@ reports invalid parameters (`-32602`) without invoking the handler. `null`
 still means empty for the defaultable acted-on lists; omission is accepted
 only where the field is optional. Capability and display metadata retain their
 lenient decoding.
+
+### Schema 1.12
+
+Client-provided system prompts are available through the independent
+`unstable_session_system_prompt` feature. Use the complete lifecycle request
+with `_from` helpers and negotiate the agent's capability first; see
+[Client-provided system prompts](./protocol.md#client-provided-system-prompts).
+Next Edit Suggestions, their document events, and their position-encoding
+capabilities have been removed from both protocol versions.
+
+Foreground states are aggregate snapshots, not per-prompt events:
+
+- Report `running` when work starts, or `requires_action` if it starts blocked
+  on user action. Agent-initiated workflows and local commands use the same
+  lifecycle without needing a model call or a synthetic user prompt.
+- `requires_action` means the foreground workflow as a whole is blocked.
+  A pending permission or elicitation does not imply this state while other
+  foreground work can progress or when it belongs to background activity.
+  Once reported, send `running` when progress resumes or `idle` when work ends.
+- When no foreground work remains, report `idle`; normally include a stop
+  reason. Repeated snapshots, including an old stop reason, are idempotent,
+  not additional completions, cancellations, or token usage.
+- New sessions default to idle, but updates can precede the new-session
+  response. Do not overwrite them with idle when that response arrives.
+- Every successful resume must send a current-state snapshot after any replay
+  and before its response, even without a replay cursor. Do not replay
+  historical states as live activity or reset state to idle on the response.
+  Testy and the echo example only resume sessions without foreground work, so
+  their snapshot is idle without a new stop reason.
+
+Prompt acceptance means logical user-message insertion with an ID and a
+position, not receipt or queueing. Running may precede insertion. Rejection
+before insertion requires an error response and no user-message updates for
+that submission; it does not alone end foreground work. A pre-insertion
+foreground failure can also require an error idle update. After insertion,
+the response stays successful and failure is reported on idle instead.
+This includes authentication failures: after insertion, `auth_required`
+(`-32000`) belongs in the error stop reason, not an error prompt response.
+Authenticating again does not restart ended work, and automatically retrying
+an inserted prompt would insert another message and could repeat side effects.
+When closing cancels active work, final updates and idle with `cancelled`
+precede the close response. An uninserted prompt cancelled by close gets
+`-32800`; an inserted one still gets its successful message ID.
+
+Agents reject unsupported replay cursor types with `-32602`, rather than
+substituting another cursor. Retained user messages preserve the prompt
+response's ID across replay. Agent and thought message IDs may change across
+reconnections: rebuild that history on full replay instead of deduplicating
+only by ID. A chunk replay's empty-content primer clears only its replay ID.
+
+Top-level `_meta` on upsert updates patches stored metadata by key: omission
+leaves it unchanged, `null` clears it, and an object preserves omitted keys,
+removes keys whose values are `null`, and replaces each other value whole.
+Nested objects are not merged; nested nulls are ordinary data. An empty object
+does not clear metadata. Replay uses the same rules and never implicitly resets
+metadata. `ToolCallUpdate::apply_update` and `TerminalUpdate::apply_update`
+apply this rule; use `schema::v2::apply_meta_update` for application-owned
+message, session, compaction, or subagent projections. Metadata on chunks,
+content, snapshots, and `plan_update` is not an entity patch.
+
+Protocol v2 negotiation does not select every experimental feature. Operations
+such as provider configuration require their advertised capabilities.
+Informational notices, compaction, draft plan representations, subagent
+updates, and idle token usage can use their documented capability-free
+fallbacks; accepting an unknown variant is not a support advertisement.
+Unknown capability fields are ignored, while malformed known discriminators
+must not fall through to an unknown-variant fallback.
+
+For v2 `git_patch` diffs, every path must be absolute and have no `a/` or `b/`
+prefix, including rename/copy header paths. Git quoting and `/dev/null` for
+an added/deleted file's missing side still apply. The SDK carries patch text;
+it does not rewrite paths or compute diffs from snippets.

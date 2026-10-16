@@ -101,7 +101,7 @@ async fn wait_until_idle(
     session_id: &v2::SessionId,
 ) -> Result<(String, Option<v2::StopReason>), Error> {
     let mut projection = AgentTextProjection::default();
-    let mut observed_running = false;
+    let mut observed_active = false;
     loop {
         let notification = updates.recv().await.ok_or_else(|| {
             Error::internal_error().data("agent disconnected before the prompt ran to completion")
@@ -111,13 +111,15 @@ async fn wait_until_idle(
         }
 
         match notification.update {
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_)) => {
-                observed_running = true;
+            v2::SessionUpdate::StateUpdate(
+                v2::StateUpdate::Running(_) | v2::StateUpdate::RequiresAction(_),
+            ) => {
+                observed_active = true;
             }
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) if observed_running => {
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) if observed_active => {
                 return Ok((projection.text(), idle.stop_reason));
             }
-            update if observed_running => projection.apply(update),
+            update if observed_active => projection.apply(update),
             _ => {}
         }
     }
@@ -363,5 +365,30 @@ mod tests {
         let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
         assert_eq!(text, "current");
         assert_eq!(stop_reason, Some(v2::StopReason::EndTurn));
+    }
+
+    #[tokio::test]
+    async fn foreground_work_can_start_blocked_and_end_without_running() {
+        let session_id = v2::SessionId::new("session-1");
+        let (update_tx, mut update_rx) = unbounded_channel();
+        for state in [
+            v2::StateUpdate::Idle(v2::IdleStateUpdate::new()),
+            v2::StateUpdate::RequiresAction(v2::RequiresActionStateUpdate::new()),
+            v2::StateUpdate::Idle(
+                v2::IdleStateUpdate::new().stop_reason(v2::StopReason::Cancelled),
+            ),
+        ] {
+            update_tx
+                .send(v2::UpdateSessionNotification::new(
+                    session_id.clone(),
+                    v2::SessionUpdate::StateUpdate(state),
+                ))
+                .unwrap();
+        }
+        drop(update_tx);
+
+        let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
+        assert_eq!(text, "");
+        assert_eq!(stop_reason, Some(v2::StopReason::Cancelled));
     }
 }
