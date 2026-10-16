@@ -207,9 +207,22 @@ deny = [
 #exact = true
 
 # Certain crates/versions that will be skipped when doing duplicate detection.
+# Keep these exact-version exceptions narrow: dependency upgrades should prompt
+# a review, not silently expand the exceptions. These do not ignore advisories.
 skip = [
-    #"ansi_term@0.11.0",
-    #{ crate = "ansi_term@0.11.0", reason = "you can specify a reason why it can't be updated/removed" },
+    { name = "base64", version = "=0.22.1", reason = "Axum 0.8 uses base64 0.22; the workspace uses 0.23." },
+    { name = "block-buffer", version = "=0.10.4", reason = "Axum and tungstenite 0.29 use sha1 0.10's digest stack; tungstenite 0.30 uses the newer stack." },
+    { name = "cpufeatures", version = "=0.2.17", reason = "Axum and tungstenite 0.29 use sha1 0.10; tungstenite 0.30 uses sha1 0.11." },
+    { name = "crypto-common", version = "=0.1.7", reason = "Axum and tungstenite 0.29 use sha1 0.10's digest stack; tungstenite 0.30 uses the newer stack." },
+    { name = "digest", version = "=0.10.7", reason = "Axum and tungstenite 0.29 use sha1 0.10; tungstenite 0.30 uses sha1 0.11." },
+    { name = "getrandom", version = "=0.3.4", reason = "Tungstenite 0.29 uses rand 0.9's getrandom stack; tungstenite 0.30 uses rand 0.10." },
+    { name = "r-efi", version = "=5.3.0", reason = "Tungstenite 0.29 uses getrandom 0.3's UEFI bindings; getrandom 0.4 uses r-efi 6." },
+    { name = "rand", version = "=0.9.5", reason = "Axum's tokio-tungstenite 0.29 uses rand 0.9; async-tungstenite's tungstenite 0.30 uses rand 0.10." },
+    { name = "rand_core", version = "=0.9.5", reason = "Tungstenite 0.29 uses rand 0.9's rand_core; tungstenite 0.30 uses rand 0.10's rand_core." },
+    { name = "sha1", version = "=0.10.7", reason = "Axum and tungstenite 0.29 use sha1 0.10; tungstenite 0.30 uses sha1 0.11." },
+    { name = "syn", version = "=2.0.119", reason = "Transitive proc macros, including tracing-attributes, still require syn 2; the workspace uses syn 3." },
+    { name = "tower-http", version = "=0.6.11", reason = "Reqwest 0.13 uses tower-http 0.6; the workspace uses 0.7." },
+    { name = "tungstenite", version = "=0.29.0", reason = "Axum 0.8 uses tokio-tungstenite 0.29; async-tungstenite 0.35 uses tungstenite 0.30." },
 ]
 # Similarly to `skip` allows you to skip certain crates during duplicate
 # detection. Unlike skip, it also includes the entire tree of transitive
