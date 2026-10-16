@@ -67,6 +67,19 @@ pub fn parse_error(message: impl ToString) -> crate::Error {
     crate::Error::parse_error().data(message.to_string())
 }
 
+/// No version supported by a v2 endpoint is at or below the requested version.
+///
+/// Uses the protocol wire code so legacy v1 error models can carry the v2
+/// diagnostic as an unknown error code without changing the v1 contract.
+#[must_use]
+pub fn unsupported_protocol_version(
+    requested: crate::schema::ProtocolVersion,
+    supported: &[crate::schema::ProtocolVersion],
+) -> crate::Error {
+    crate::Error::new(-32022, "Unsupported protocol version")
+        .data(serde_json::json!({ "requested": requested, "supported": supported }))
+}
+
 pub(crate) fn instrumented_with_connection_name<F>(
     name: String,
     task: F,

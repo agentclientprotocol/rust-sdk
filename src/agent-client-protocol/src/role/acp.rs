@@ -343,8 +343,9 @@ impl Agent {
 
     /// Create an agent builder that uses the ACP protocol v2 API.
     ///
-    /// This builder requires clients to negotiate protocol v2 during
-    /// initialization. Use a v1 builder for v1 clients.
+    /// This builder selects protocol v2 for clients requesting v2 or a newer
+    /// version with compatible initialization parameters. Use
+    /// [`Self::protocol_router`] with a v1 implementation for v1 clients.
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
@@ -357,10 +358,10 @@ impl Agent {
     /// Add implementations with [`AgentProtocolRouter::with_v1`] and
     /// [`AgentProtocolRouter::with_v2`].
     /// The resulting router reads the initial
-    /// `initialize` request, selects the highest configured implementation
-    /// compatible with the client's requested protocol version, then forwards
-    /// the connection to that implementation. It does not convert traffic
-    /// between protocol versions after routing.
+    /// `initialize` request and selects a version-specific implementation. An
+    /// endpoint exposing v2 selects the highest configured version at or below
+    /// the requested version. A v1-only endpoint retains v1's fallback-to-latest
+    /// rule. The router does not convert traffic after initialization.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
@@ -491,7 +492,11 @@ struct SupportedProtocols {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl SupportedProtocols {
-    fn highest_compatible(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
+    fn select_for_agent(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
+        if self.v1 && !self.v2 {
+            // A v1-only endpoint retains the legacy fallback-to-latest rule.
+            return Some(SelectedProtocol::V1);
+        }
         if self.v2 && requested >= ProtocolVersion::V2 {
             return Some(SelectedProtocol::V2);
         }
@@ -511,6 +516,16 @@ impl SupportedProtocols {
         } else {
             None
         }
+    }
+
+    fn versions(self) -> Vec<ProtocolVersion> {
+        [
+            self.v1.then_some(ProtocolVersion::V1),
+            self.v2.then_some(ProtocolVersion::V2),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     fn description(self) -> String {
@@ -547,7 +562,7 @@ fn select_agent_protocol(
 
     let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
         .map_err(|_| invalid_initialize_protocol_version())?;
-    let selected = highest_compatible_agent_protocol(requested, supported)?;
+    let selected = select_configured_agent_protocol(requested, supported)?;
     rewrite_initialize_params(params, requested, selected)?;
 
     Ok(selected)
@@ -628,8 +643,13 @@ fn rewrite_initialize_params(
 
     match selected {
         SelectedProtocol::V1 => {
-            debug_assert!(requested >= ProtocolVersion::V2);
-            *params = normalize_v2_initialize_params_for_v1(params, false)?;
+            if requested > ProtocolVersion::V1 {
+                *params = normalize_v2_initialize_params_for_v1(params, false)?;
+            } else {
+                let mut initialize = parse_initialize_params::<InitializeRequest>(params)?;
+                initialize.protocol_version = ProtocolVersion::V1;
+                *params = serialize_initialize_params(initialize)?;
+            }
             Ok(())
         }
         SelectedProtocol::V2 => {
@@ -646,10 +666,14 @@ fn normalize_v2_initialize_params_for_v1(
     params: &serde_json::Map<String, serde_json::Value>,
     require_lossless: bool,
 ) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
-    // Canonicalize through v2 first so tolerant field semantics are applied.
-    // A lossless result is only required by the connection-reuse probe. Normal
-    // v1 routing may discard fields that have no meaning in the selected
-    // protocol version.
+    if !require_lossless {
+        return crate::jsonrpc::normalize_v1_initialize_request(&serde_json::Value::Object(
+            params.clone(),
+        ));
+    }
+    // The connection-reuse probe additionally requires lossless v2
+    // canonicalization. Normal v1 routing above uses the same bootstrap as a
+    // standalone v1 agent, even when the v2 schema is not compiled in.
     let initialize = parse_initialize_params::<v2::InitializeRequest>(params)?;
     let mut target = serialize_initialize_params(initialize)?;
     if require_lossless && target != *params {
@@ -864,16 +888,13 @@ fn json_object_contains(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn highest_compatible_agent_protocol(
+fn select_configured_agent_protocol(
     requested: ProtocolVersion,
     supported: SupportedProtocols,
 ) -> Result<SelectedProtocol, crate::Error> {
-    supported.highest_compatible(requested).ok_or_else(|| {
-        crate::Error::invalid_request().data(format!(
-            "unsupported ACP protocol version {requested}; this endpoint supports {}",
-            supported.description()
-        ))
-    })
+    supported
+        .select_for_agent(requested)
+        .ok_or_else(|| crate::util::unsupported_protocol_version(requested, &supported.versions()))
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -974,8 +995,8 @@ async fn reject_initialize(
 
     let drain_incoming = async move {
         // Later input has no protocol meaning once initialization is rejected.
-        // Keep draining it only so the transport can flush the queued rejection;
-        // treating a malformed trailing frame as fatal would cancel that flush.
+        // Keep draining it only so the transport can flush the queued rejection.
+        // Treating a malformed trailing frame as fatal would cancel that flush.
         while rx.next().await.is_some() {}
         Ok::<_, crate::Error>(())
     };

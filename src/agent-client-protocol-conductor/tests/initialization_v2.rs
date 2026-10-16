@@ -321,8 +321,10 @@ async fn assert_invalid_final_agent_initialize_response(
 async fn assert_raw_initialize_rejected(
     params: serde_json::Value,
     expected_error: &str,
+    expected_code: i32,
 ) -> Result<(), Error> {
     run_raw_client_with_conductor(ProxiesAndAgent::new(Agent.v2()), async move |cx| {
+        let requested = params.get("protocolVersion").cloned();
         let request = UntypedMessage {
             method: "initialize".to_string(),
             params,
@@ -334,6 +336,16 @@ async fn assert_raw_initialize_rejected(
         .await
         .expect("invalid initialize request should not hang")
         .expect_err("invalid initialize request must be rejected");
+        assert_eq!(i32::from(error.code), expected_code);
+        if expected_code == -32022 {
+            assert_eq!(
+                error.data,
+                Some(serde_json::json!({
+                    "requested": requested.expect("a version mismatch has a requested version"),
+                    "supported": [1, 2],
+                }))
+            );
+        }
         assert!(
             error.to_string().contains(expected_error),
             "unexpected initialize rejection: {error:?}"
@@ -473,16 +485,19 @@ async fn v2_conductor_rejects_invalid_protocol_versions_with_responses() -> Resu
     assert_raw_initialize_rejected(
         serde_json::json!({}),
         "protocolVersion must be a valid ACP protocol version",
+        -32602,
     )
     .await?;
     assert_raw_initialize_rejected(
         serde_json::json!({ "protocolVersion": "2" }),
         "protocolVersion must be a valid ACP protocol version",
+        -32602,
     )
     .await?;
     assert_raw_initialize_rejected(
         serde_json::json!({ "protocolVersion": 0 }),
-        "unsupported ACP protocol version 0",
+        "Unsupported protocol version",
+        -32022,
     )
     .await
 }

@@ -162,8 +162,10 @@ impl InitializeProtocol {
         } else if requested == ProtocolVersion::V1 {
             Self::V1
         } else {
-            return Err(Error::invalid_request()
-                .data(format!("unsupported ACP protocol version {requested}")));
+            return Err(agent_client_protocol::util::unsupported_protocol_version(
+                requested,
+                &[ProtocolVersion::V1, ProtocolVersion::V2],
+            ));
         };
 
         Ok(InitializeProtocolSelection {
