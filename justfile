@@ -6,3 +6,4 @@ prep-tests:
 # Prepare subprocess fixtures, then run all tests, including doctests.
 test: prep-tests
     cargo test --workspace --all-features --locked
+    cargo test -p agent-client-protocol --no-default-features --locked

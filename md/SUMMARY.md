@@ -12,7 +12,7 @@
 - [Request Cancellation](./request-cancellation.md)
 - [Ordered Application Dispatch](./ordered-application-dispatch.md)
 - [Configurable LLM Providers](./llm-providers.md)
-- [Protocol V2](./protocol-v2.md)
+- [Protocol V2 and Version Routing](./protocol-v2.md)
 - [Runnable V2 Quickstart](./protocol-v2-quickstart.md)
 - [Session Operation Coordination](./session-operation-coordination.md)
 
