@@ -8,7 +8,42 @@ use futures::{
 mod typed;
 pub use typed::{MatchDispatch, MatchDispatchFrom, TypeNotification};
 
+/// Format only code-derived metadata at ordinary log levels.
+///
+/// Error messages, data, and even Serde parse reasons can contain private input.
+/// Do not add fields from the original error here, including purported paths
+/// extracted from its text. Full diagnostics belong in opt-in protocol tracing.
+pub(crate) fn redacted_error(code: impl Into<i32>) -> impl std::fmt::Debug {
+    struct RedactedError {
+        code: i32,
+        reason: &'static str,
+    }
+
+    impl std::fmt::Debug for RedactedError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Error")
+                .field("code", &self.code)
+                .field("reason", &self.reason)
+                .finish()
+        }
+    }
+
+    let code = code.into();
+    let reason = match code {
+        -32700 => "Parse error",
+        -32600 => "Invalid request",
+        -32601 => "Method not found",
+        -32602 => "Invalid params",
+        -32603 => "Internal error",
+        _ => "Protocol or application error",
+    };
+    RedactedError { code, reason }
+}
+
 /// Cast from `N` to `M` by serializing/deserialization to/from JSON.
+///
+/// Returned diagnostics can contain the input JSON and payload-bearing parse
+/// reasons. Treat them as sensitive, as with [`json_cast_params`].
 pub fn json_cast<N, M>(params: N) -> Result<M, crate::Error>
 where
     N: serde::Serialize,
@@ -36,6 +71,9 @@ where
 /// [`Error::invalid_params`](`crate::Error::invalid_params`) (`-32602`)
 /// instead of a parse error, which is the correct JSON-RPC error code for
 /// malformed method parameters.
+///
+/// Returned diagnostics include the input JSON and may include input values in
+/// the parse reason. Treat them as sensitive; the SDK redacts errors at WARN.
 pub fn json_cast_params<N, M>(params: N) -> Result<M, crate::Error>
 where
     N: serde::Serialize,

@@ -72,7 +72,7 @@ where
     ) -> Result<(), crate::Error> {
         let result = (self.callback)(connection_context::from_raw::<Context, _>(connection)).await;
         if let Err(error) = &result {
-            tracing::warn!(?error, "Connection close callback failed");
+            tracing::warn!(error = ?crate::util::redacted_error(error.code), "Connection close callback failed");
         }
         result
     }

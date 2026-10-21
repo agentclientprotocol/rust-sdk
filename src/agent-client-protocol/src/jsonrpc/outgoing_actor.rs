@@ -121,7 +121,7 @@ pub(super) async fn outgoing_protocol_actor(
                         tracing::warn!(
                             ?id,
                             %method,
-                            ?error,
+                            error = ?crate::util::redacted_error(error.code),
                             "Outgoing request readiness failed"
                         );
                         if let Some(pending_reply) = pending_replies.remove(&id) {
@@ -142,7 +142,7 @@ pub(super) async fn outgoing_protocol_actor(
                 {
                     Ok(request) => request,
                     Err(error) => {
-                        tracing::warn!(?id, %method, ?error, "Failed to prepare outgoing request");
+                        tracing::warn!(?id, %method, error = ?crate::util::redacted_error(error.code), "Failed to prepare outgoing request");
                         if let Some(pending_reply) = pending_replies.remove(&id) {
                             pending_reply.fail(error);
                         }
@@ -168,7 +168,7 @@ pub(super) async fn outgoing_protocol_actor(
                     Ok(messages) => messages,
                     Err(error) => {
                         tracing::warn!(
-                            ?error,
+                            error = ?crate::util::redacted_error(error.code),
                             "Dropping outgoing notification after preparation failed"
                         );
                         continue;
@@ -180,7 +180,7 @@ pub(super) async fn outgoing_protocol_actor(
                         Ok(message) => message,
                         Err(error) => {
                             tracing::warn!(
-                                ?error,
+                                error = ?crate::util::redacted_error(error.code),
                                 "Dropping outgoing notification after serialization failed"
                             );
                             continue;
@@ -203,7 +203,7 @@ pub(super) async fn outgoing_protocol_actor(
                     (RawJsonRpcMessage::response(id, Ok(value)), destination)
                 }
                 Err(error) => {
-                    tracing::warn!(?id, %method, ?error, "Sending error response");
+                    tracing::warn!(?id, %method, error = ?crate::util::redacted_error(error.code), "Sending error response");
                     (RawJsonRpcMessage::response(id, Err(error)), destination)
                 }
             },

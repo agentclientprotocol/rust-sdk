@@ -891,7 +891,7 @@ impl TypeNotification {
                         Ok(request) => TypeNotificationState::Handled(op(request).await),
                         Err(error) => {
                             tracing::warn!(
-                                ?error,
+                                error = ?crate::util::redacted_error(error.code),
                                 method,
                                 "Invalid notification params; ignoring notification without replying"
                             );
@@ -923,7 +923,7 @@ impl TypeNotification {
                     Ok(m) => op(m).await,
                     Err(error) => {
                         tracing::warn!(
-                            ?error,
+                            error = ?crate::util::redacted_error(error.code),
                             method,
                             "Invalid untyped notification; ignoring notification without replying"
                         );

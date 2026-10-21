@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Redact error messages and data in ordinary protocol warning logs, including
+  malformed notification parameters, handler failures, and outgoing error
+  responses. Preserve detailed returned errors and opt-in protocol tracing.
+  See [Logging and Diagnostic Privacy](../../md/logging-privacy.md).
+
 ## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.3.0...v3.4.0) - 2026-10-16
 
 ### Added

@@ -294,7 +294,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                         }
                         Err(error) => {
                             tracing::warn!(
-                                ?error,
+                                error = ?crate::util::redacted_error(error.code),
                                 "Invalid transport input, sending error response"
                             );
                             let destination = destination.expect(
@@ -352,7 +352,7 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
                         new_pending_messages.push(m);
                     }
                     Err(err) => {
-                        tracing::warn!(?err, handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
+                        tracing::warn!(%method, err = ?crate::util::redacted_error(err.code), handler = ?handler.dyn_describe_chain(), "Dynamic handler errored on pending message");
                         handle_handler_error(connection, reply_target, method, err)?;
                     }
                 }
@@ -534,7 +534,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
             tracing::warn!(
                 ?method,
                 ?id,
-                ?err,
+                err = ?crate::util::redacted_error(err.code),
                 "Request cancellation notification errored"
             );
             return handle_handler_error(connection, error_target, method, err);
@@ -559,7 +559,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
         }
 
         Err(err) => {
-            tracing::warn!(?method, ?id, ?err, handler = ?handler.describe_chain(), "Handler errored");
+            tracing::warn!(?method, ?id, err = ?crate::util::redacted_error(err.code), handler = ?handler.describe_chain(), "Handler errored");
             return handle_handler_error(connection, error_target, method, err);
         }
     }
@@ -583,7 +583,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
             }
 
             Err(err) => {
-                tracing::warn!(?method, ?id, ?err, handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
+                tracing::warn!(?method, ?id, err = ?crate::util::redacted_error(err.code), handler = ?dynamic_handler.dyn_describe_chain(), "Dynamic handler errored");
                 return handle_handler_error(connection, error_target, method, err);
             }
         }
@@ -608,7 +608,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
             tracing::warn!(
                 ?method,
                 ?id,
-                ?err,
+                err = ?crate::util::redacted_error(err.code),
                 handler = "default",
                 "Default handler errored"
             );
@@ -682,7 +682,7 @@ fn handle_handler_error<Counterpart: Role>(
         None => {
             tracing::warn!(
                 %method,
-                ?error,
+                error = ?crate::util::redacted_error(error.code),
                 "Ignoring message-processing error because there is no request to answer"
             );
             Ok(())

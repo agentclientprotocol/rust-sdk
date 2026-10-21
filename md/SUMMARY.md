@@ -10,6 +10,7 @@
 - [Native MCP-over-ACP](./mcp-over-acp.md)
 - [Sending Requests](./sending-requests.md)
 - [Request Cancellation](./request-cancellation.md)
+- [Logging and Diagnostic Privacy](./logging-privacy.md)
 - [Ordered Application Dispatch](./ordered-application-dispatch.md)
 - [Configurable LLM Providers](./llm-providers.md)
 - [Protocol V2 and Version Routing](./protocol-v2.md)
