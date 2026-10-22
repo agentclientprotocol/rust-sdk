@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [3.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.4.0...v3.5.0) - 2026-10-22
+
+### Added
+
+- *(acp)* add send_initialize with typed lower-version outcome for v2 clients ([#435](https://github.com/agentclientprotocol/rust-sdk/pull/435))
+- *(acp)* add ConnectionTo::terminated for every connection end ([#434](https://github.com/agentclientprotocol/rust-sdk/pull/434))
+
+### Fixed
+
+- *(acp)* redact payload-bearing errors in warning logs ([#433](https://github.com/agentclientprotocol/rust-sdk/pull/433))
+
 ### Fixed
 
 - Redact error messages and data in ordinary protocol warning logs, including

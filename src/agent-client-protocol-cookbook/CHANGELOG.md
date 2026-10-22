@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.4.0...agent-client-protocol-cookbook-v3.5.0) - 2026-10-22
+
+### Added
+
+- *(acp)* add ConnectionTo::terminated for every connection end ([#434](https://github.com/agentclientprotocol/rust-sdk/pull/434))
+
 ## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.3.0...agent-client-protocol-cookbook-v3.4.0) - 2026-10-16
 
 ### Added
