@@ -13,9 +13,10 @@ use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
     ConnectTo, ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
-    HandleDispatchFrom, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    NullHandler, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, RunWithConnectionTo,
-    TransportFrame, UntypedMessage, UntypedRole, V2Builder, V2ConnectionTo,
+    HandleDispatchFrom, InitializeOutcome, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
+    JsonRpcResponse, NullHandler, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role,
+    RunWithConnectionTo, SelectedInitializeResponse, TransportFrame, UntypedMessage, UntypedRole,
+    V2Builder, V2ConnectionTo,
 };
 use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
@@ -3046,6 +3047,60 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
                 .await
                 .expect_err("request should be cancelled");
             assert_eq!(i32::from(error.code), -32800);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn send_initialize_reports_v1_selection_as_outcome() -> Result<(), Error> {
+    // The outcome leaves `connect_with`, where a caller decides to start v1.
+    let outcome = Client
+        .v2()
+        .connect_with(v1_agent_with_session("unused"), async |cx| {
+            let outcome = cx
+                .send_initialize(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            // The v2 connection did not switch to v1.
+            cx.send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await
+                .expect_err("v2 traffic requires a v2 handshake");
+            Ok(outcome)
+        })
+        .await?;
+
+    let InitializeOutcome::LowerVersion(mismatch) = outcome else {
+        panic!("expected a lower-version outcome: {outcome:?}");
+    };
+    assert_eq!(mismatch.requested, ProtocolVersion::V2);
+    assert_eq!(mismatch.selected, ProtocolVersion::V1);
+    assert!(matches!(
+        mismatch.response,
+        SelectedInitializeResponse::V1(v1::InitializeResponse { protocol_version, .. })
+            if protocol_version == ProtocolVersion::V1
+    ));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn send_initialize_reports_v2_selection_as_initialized() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(v2_agent_with_session("v2-session"), async |cx| {
+            let outcome = cx
+                .send_initialize(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            let InitializeOutcome::Initialized(response) = outcome else {
+                panic!("expected a v2 handshake: {outcome:?}");
+            };
+            assert_eq!(response.protocol_version, ProtocolVersion::V2);
+            // The connection is ready for v2 traffic.
+            cx.send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await?;
             Ok(())
         })
         .await

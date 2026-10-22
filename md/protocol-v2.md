@@ -343,9 +343,16 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   uninitialized so the client can retry, while a second initialization after a
   successful handshake is rejected.
 - A v2 client advertises protocol v2 as its latest supported version.
-- A v2 client requires a v2 agent. If the agent responds with v1, the
-  `initialize` request resolves with an error and the caller must explicitly
-  fall back to a v1 client implementation if that is acceptable.
+- A v2 client requires a v2 agent. Send initialization with
+  `send_initialize` to learn how the agent negotiated: it resolves with
+  `InitializeOutcome::Initialized` for a v2 selection, or
+  `InitializeOutcome::LowerVersion` with the agent's validated response for the
+  selected version (`SelectedInitializeResponse::V1`). After a lower
+  selection the connection stays uninitialized, and the caller can explicitly
+  fall back to a v1 client implementation if that is acceptable. Errors
+  returned by the agent, including `-32022`, malformed responses, and transport
+  failures still resolve with errors. A plain `send_request` of the initialize
+  request instead resolves a v1 selection with a local error.
 - A native v1 agent selects v1 for requests advertising v1 or a newer version,
   with or without `unstable_protocol_v2` enabled. Newer initialization metadata
   is normalized into v1 identity and shared capabilities. The SDK never enables

@@ -52,6 +52,183 @@ pub(crate) fn normalize_v1_initialize_request(
     Ok(normalized)
 }
 
+/// The outcome of a v2 client's [`send_initialize`](crate::V2ConnectionTo::send_initialize).
+///
+/// A v1-only agent may legitimately answer a v2 initialization attempt with a
+/// v1 response. That is a successful reply, not an error, so it is reported as
+/// [`InitializeOutcome::LowerVersion`]. Errors from the agent, malformed
+/// responses, and transport failures still resolve the request with an error.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum InitializeOutcome {
+    /// The agent selected v2 and the connection is ready for v2 traffic.
+    Initialized(crate::schema::v2::InitializeResponse),
+    /// The agent selected a lower protocol version.
+    ///
+    /// The connection stays uninitialized: a v2 connection cannot carry the
+    /// selected version's traffic, and the SDK never converts it. Fall back to
+    /// an implementation of the selected version if that is acceptable.
+    LowerVersion(InitializationVersionMismatch),
+}
+
+/// A successful `initialize` response that selected a lower protocol version
+/// than the local API requires.
+///
+/// Reported by [`InitializeOutcome::LowerVersion`]. This is not the `-32022`
+/// (`Unsupported protocol version`) error an agent returns when it supports no
+/// version at or below the requested one.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InitializationVersionMismatch {
+    /// The protocol version the local connection requested.
+    pub requested: crate::schema::ProtocolVersion,
+    /// The lower protocol version the peer selected.
+    pub selected: crate::schema::ProtocolVersion,
+    /// The peer's validated initialization response for the selected version.
+    pub response: SelectedInitializeResponse,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl InitializationVersionMismatch {
+    /// Describe a peer that answered a request for `requested` with
+    /// `response`, selecting the response's protocol version.
+    ///
+    /// Useful for exercising fallback paths in tests.
+    #[must_use]
+    pub fn new(
+        requested: crate::schema::ProtocolVersion,
+        response: SelectedInitializeResponse,
+    ) -> Self {
+        Self {
+            requested,
+            selected: response.protocol_version(),
+            response,
+        }
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl std::fmt::Display for InitializationVersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "requested ACP protocol version {} but peer selected {}",
+            self.requested, self.selected,
+        )
+    }
+}
+
+/// A peer's initialization response, typed by the protocol version it selected.
+///
+/// New variants are added as later protocol versions make more versions
+/// selectable below the one a client requests.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SelectedInitializeResponse {
+    /// The peer selected ACP protocol v1.
+    V1(crate::schema::v1::InitializeResponse),
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl SelectedInitializeResponse {
+    /// The protocol version the response selects.
+    #[must_use]
+    pub fn protocol_version(&self) -> crate::schema::ProtocolVersion {
+        match self {
+            Self::V1(response) => response.protocol_version,
+        }
+    }
+
+    /// Parse `value` as the initialization response for `version`, or return
+    /// `None` if the SDK has no response type for that version.
+    fn from_value(
+        version: crate::schema::ProtocolVersion,
+        value: serde_json::Value,
+    ) -> Option<Result<Self, crate::Error>> {
+        (version == crate::schema::ProtocolVersion::V1).then(|| {
+            <crate::schema::v1::InitializeResponse as crate::JsonRpcResponse>::from_value(
+                "initialize",
+                value,
+            )
+            .map(Self::V1)
+        })
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl crate::JsonRpcResponse for InitializeOutcome {
+    fn into_json(self, method: &str) -> Result<serde_json::Value, crate::Error> {
+        match self {
+            Self::Initialized(response) => response.into_json(method),
+            Self::LowerVersion(mismatch) => match mismatch.response {
+                SelectedInitializeResponse::V1(response) => response.into_json(method),
+            },
+        }
+    }
+
+    fn from_value(method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+        let selected: crate::schema::ProtocolVersion = value
+            .get("protocolVersion")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                crate::Error::invalid_params()
+                    .data("initialize.protocolVersion must be a valid ACP protocol version")
+            })?;
+        let requested = crate::schema::ProtocolVersion::V2;
+        if selected == requested {
+            return crate::schema::v2::InitializeResponse::from_value(method, value)
+                .map(Self::Initialized);
+        }
+        match SelectedInitializeResponse::from_value(selected, value) {
+            Some(response) if selected < requested => Ok(Self::LowerVersion(
+                InitializationVersionMismatch::new(requested, response?),
+            )),
+            _ => Err(crate::Error::invalid_request().data(format!(
+                "unsupported ACP protocol version {selected} in initialize response",
+            ))),
+        }
+    }
+}
+
+/// The request sent by [`send_initialize`](crate::V2ConnectionTo::send_initialize).
+///
+/// Its pending reply opts into receiving a lower-version response as a
+/// successful [`InitializeOutcome`] instead of the connection's local error.
+#[cfg(feature = "unstable_protocol_v2")]
+#[derive(Debug, Clone)]
+pub(crate) struct InitializeNegotiation(pub(crate) crate::schema::v2::InitializeRequest);
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl crate::JsonRpcMessage for InitializeNegotiation {
+    fn matches_method(method: &str) -> bool {
+        crate::schema::v2::InitializeRequest::matches_method(method)
+    }
+
+    fn method(&self) -> &str {
+        self.0.method()
+    }
+
+    fn to_untyped_message(&self) -> Result<crate::UntypedMessage, crate::Error> {
+        self.0.to_untyped_message()
+    }
+
+    fn parse_message(method: &str, params: &impl serde::Serialize) -> Result<Self, crate::Error> {
+        crate::schema::v2::InitializeRequest::parse_message(method, params).map(Self)
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl crate::JsonRpcRequest for InitializeNegotiation {
+    type Response = InitializeOutcome;
+}
+
 mod imp {
     use std::sync::{Arc, Mutex};
 
@@ -224,6 +401,15 @@ mod imp {
         Ready,
     }
 
+    /// How an initialize response that passed validation completes the
+    /// handshake.
+    enum InitializeResponseCheck {
+        Negotiated(ProtocolVersionKind),
+        /// A validated lower selection for a `send_initialize` request.
+        #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(dead_code))]
+        LowerVersion,
+    }
+
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum ProtocolVersionKind {
         V1,
@@ -368,9 +554,15 @@ mod imp {
             Ok(vec![message])
         }
 
+        /// Check an incoming response against the protocol state.
+        ///
+        /// `accepts_lower_version` marks a pending
+        /// [`super::InitializeNegotiation`], which receives a validated
+        /// lower-version initialize response as a success.
         pub(crate) fn incoming_response(
             &self,
             method: &str,
+            accepts_lower_version: bool,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
             let Some(mode) = self.mode else {
@@ -378,7 +570,7 @@ mod imp {
             };
 
             if AcpProtocolMode::is_incoming_initialize_response(method) {
-                return self.incoming_initialize_response(mode, result);
+                return self.incoming_initialize_response(mode, accepts_lower_version, result);
             }
 
             let value = result?;
@@ -487,6 +679,7 @@ mod imp {
         fn incoming_initialize_response(
             &self,
             mode: AcpProtocolMode,
+            accepts_lower_version: bool,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
             let mut value = match result {
@@ -505,18 +698,42 @@ mod imp {
                 let response_version = required_protocol_version_from_value(&value)?;
                 let wire_version = ProtocolVersionKind::from_protocol_version(response_version)
                     .ok_or_else(|| unsupported_protocol_version(response_version, mode.api))?;
+                // Only a client's own handshake, sent by `send_initialize`,
+                // has a caller that can fall back. A proxy relays its
+                // successor's outcome, and the conductor has already fixed
+                // that wire version.
+                #[cfg(feature = "unstable_protocol_v2")]
+                if accepts_lower_version
+                    && mode.initialization_role == InitializationRole::Initiator
+                    && wire_version < mode.api
+                    && let Some(response) = super::SelectedInitializeResponse::from_value(
+                        wire_version.as_protocol_version(),
+                        value.clone(),
+                    )
+                {
+                    response?;
+                    return Ok(InitializeResponseCheck::LowerVersion);
+                }
+                #[cfg(not(feature = "unstable_protocol_v2"))]
+                let _ = accepts_lower_version;
                 if wire_version != mode.api {
                     return Err(required_protocol_version(mode.api, wire_version));
                 }
                 ensure_matching_protocol_version("initialize", pending, wire_version)?;
                 set_protocol_version(&mut value, wire_version)?;
                 validate_native_v2_initialize_response(mode, &value)?;
-                Ok(wire_version)
+                Ok(InitializeResponseCheck::Negotiated(wire_version))
             })();
 
             match response {
-                Ok(wire_version) => {
+                Ok(InitializeResponseCheck::Negotiated(wire_version)) => {
                     self.complete_initialize(wire_version)?;
+                    Ok(value)
+                }
+                // The caller sees the response, but this connection cannot
+                // use it.
+                Ok(InitializeResponseCheck::LowerVersion) => {
+                    self.fail_initialize();
                     Ok(value)
                 }
                 Err(error) => {
@@ -957,6 +1174,7 @@ mod imp {
 
             compat.incoming_response(
                 "initialize",
+                false,
                 Ok(serde_json::to_value(v2_initialize_response(
                     ProtocolVersion::V2,
                 ))?),
@@ -984,6 +1202,7 @@ mod imp {
 
             let result = compat.incoming_response(
                 "initialize",
+                false,
                 Err(crate::Error::invalid_request().data("initialize failed")),
             );
 
@@ -1018,7 +1237,7 @@ mod imp {
                 )?;
 
                 let error = compat
-                    .incoming_response("initialize", Ok(value))
+                    .incoming_response("initialize", false, Ok(value))
                     .expect_err("initialize responses must declare an ACP protocol version");
                 let data = error
                     .data
@@ -1034,6 +1253,158 @@ mod imp {
                 );
             }
 
+            Ok(())
+        }
+
+        /// Send a v2 client's initialize, then deliver `response` to it.
+        /// `negotiation` marks the request as sent by `send_initialize`.
+        fn v2_client_receiving(
+            negotiation: bool,
+            response: Result<serde_json::Value, crate::Error>,
+        ) -> Result<(ProtocolCompat, Result<serde_json::Value, crate::Error>), crate::Error>
+        {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_client());
+            compat.outgoing_message(
+                UntypedMessage::new("initialize", v2_initialize_request(ProtocolVersion::V2))?,
+                RemoteStyle::Counterpart,
+            )?;
+            let result = compat.incoming_response("initialize", negotiation, response);
+            Ok((compat, result))
+        }
+
+        fn v1_initialize_response() -> crate::schema::v1::InitializeResponse {
+            crate::schema::v1::InitializeResponse::new(ProtocolVersion::V1)
+                .agent_info(crate::schema::v1::Implementation::new("v1-agent", "1.0.0"))
+        }
+
+        #[test]
+        fn plain_initialize_request_rejects_lower_version() -> Result<(), crate::Error> {
+            let (compat, result) =
+                v2_client_receiving(false, Ok(serde_json::to_value(v1_initialize_response())?))?;
+            let error = result.expect_err("send_request keeps the local version guard");
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(data.contains("peer negotiated 1"), "{error:?}");
+            assert_eq!(
+                initialization_state(&compat),
+                InitializationState::Uninitialized
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn initialize_negotiation_receives_lower_version_as_success() -> Result<(), crate::Error> {
+            let v1_response = serde_json::to_value(v1_initialize_response())?;
+            let (compat, result) = v2_client_receiving(true, Ok(v1_response.clone()))?;
+            assert_eq!(result?, v1_response);
+
+            // The connection stays uninitialized rather than switching to v1.
+            assert_eq!(
+                initialization_state(&compat),
+                InitializationState::Uninitialized
+            );
+            assert_eq!(compat.active_wire_version(), ProtocolVersionKind::V2);
+            compat
+                .outgoing_message(
+                    UntypedMessage::new("session/new", serde_json::json!({}))?,
+                    RemoteStyle::Counterpart,
+                )
+                .expect_err("v2 traffic still requires a v2 handshake");
+            compat.outgoing_message(
+                UntypedMessage::new("initialize", v2_initialize_request(ProtocolVersion::V2))?,
+                RemoteStyle::Counterpart,
+            )?;
+            Ok(())
+        }
+
+        #[test]
+        fn initialize_negotiation_keeps_failures_as_errors() -> Result<(), crate::Error> {
+            let remote = crate::util::unsupported_protocol_version(
+                ProtocolVersion::V2,
+                &[ProtocolVersion::V1],
+            );
+            let (compat, result) = v2_client_receiving(true, Err(remote.clone()))?;
+            assert_eq!(result, Err(remote));
+            assert_eq!(
+                initialization_state(&compat),
+                InitializationState::Uninitialized
+            );
+
+            for malformed in [
+                serde_json::json!({}),
+                serde_json::json!({ "protocolVersion": "one" }),
+                serde_json::json!({ "protocolVersion": 0 }),
+            ] {
+                let (compat, result) = v2_client_receiving(true, Ok(malformed))?;
+                result.expect_err("malformed initialize responses are errors");
+                assert_eq!(
+                    initialization_state(&compat),
+                    InitializationState::Uninitialized
+                );
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn initialize_negotiation_does_not_change_proxies() -> Result<(), crate::Error> {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_proxy());
+            compat.outgoing_message(
+                UntypedMessage::new("initialize", v2_initialize_request(ProtocolVersion::V2))?,
+                RemoteStyle::Successor,
+            )?;
+            compat
+                .incoming_response(
+                    "initialize",
+                    true,
+                    Ok(serde_json::to_value(v1_initialize_response())?),
+                )
+                .expect_err("only a client's own handshake can report a lower version");
+            Ok(())
+        }
+
+        #[test]
+        fn initialize_outcome_parses_by_selected_version() -> Result<(), crate::Error> {
+            use crate::JsonRpcResponse as _;
+
+            let v2_response = v2_initialize_response(ProtocolVersion::V2);
+            assert_eq!(
+                super::super::InitializeOutcome::from_value(
+                    "initialize",
+                    serde_json::to_value(&v2_response)?
+                )?,
+                super::super::InitializeOutcome::Initialized(v2_response)
+            );
+
+            let v1_response = v1_initialize_response();
+            let outcome = super::super::InitializeOutcome::from_value(
+                "initialize",
+                serde_json::to_value(&v1_response)?,
+            )?;
+            assert_eq!(
+                outcome,
+                super::super::InitializeOutcome::LowerVersion(
+                    super::super::InitializationVersionMismatch::new(
+                        ProtocolVersion::V2,
+                        super::super::SelectedInitializeResponse::V1(v1_response),
+                    )
+                )
+            );
+            let super::super::InitializeOutcome::LowerVersion(mismatch) = &outcome else {
+                unreachable!();
+            };
+            assert_eq!(mismatch.requested, ProtocolVersion::V2);
+            assert_eq!(mismatch.selected, ProtocolVersion::V1);
+
+            for value in [
+                serde_json::json!({}),
+                serde_json::json!({ "protocolVersion": 3 }),
+            ] {
+                super::super::InitializeOutcome::from_value("initialize", value)
+                    .expect_err("only v2 and lower known versions are outcomes");
+            }
             Ok(())
         }
 
@@ -1092,6 +1463,7 @@ mod imp {
             compat
                 .incoming_response(
                     "initialize",
+                    false,
                     Ok(serde_json::json!({ "protocolVersion": ProtocolVersion::V2 })),
                 )
                 .expect_err("initialize success must contain the complete v2 response shape");
@@ -1176,7 +1548,7 @@ mod imp {
                         )?)
                         .expect_err("outgoing notifications must wait for initialization"),
                     compat
-                        .incoming_response("session/new", Ok(serde_json::json!({})))
+                        .incoming_response("session/new", false, Ok(serde_json::json!({})))
                         .expect_err("incoming responses must wait for initialization"),
                     compat
                         .outgoing_response("session/new", Ok(serde_json::json!({})))
@@ -1305,6 +1677,7 @@ mod imp {
             )?;
             client.incoming_response(
                 "initialize",
+                false,
                 Ok(serde_json::to_value(v2_initialize_response(
                     ProtocolVersion::V2,
                 ))?),
@@ -1397,6 +1770,7 @@ mod imp {
 
             compat.incoming_response(
                 "initialize",
+                false,
                 Ok(serde_json::to_value(v2_initialize_response(
                     ProtocolVersion::V2,
                 ))?),
@@ -1704,6 +2078,7 @@ mod imp {
                 let error = compat
                     .incoming_response(
                         "initialize",
+                        false,
                         Ok(serde_json::json!({ "protocolVersion": unsupported })),
                     )
                     .expect_err("proxy initialization must reject a mismatched response version");
