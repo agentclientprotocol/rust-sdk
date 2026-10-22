@@ -12,9 +12,10 @@ use std::{
 };
 
 use agent_client_protocol::{
-    ByteStreams, Channel, ConnectTo, ConnectionDriver, ConnectionTo, Dispatch, DynConnectTo, Error,
-    Handled, JsonRpcMessage, JsonRpcRequest, Lines, RawJsonRpcMessage,
-    RawJsonRpcResponse as Response, TransportFrame, UntypedMessage, is_incoming_transport_closed,
+    ByteStreams, Channel, ConnectTo, ConnectionDriver, ConnectionTermination, ConnectionTo,
+    Dispatch, DynConnectTo, Error, Handled, JsonRpcMessage, JsonRpcRequest, Lines,
+    RawJsonRpcMessage, RawJsonRpcResponse as Response, TransportFrame, UntypedMessage,
+    is_connection_terminated, is_incoming_transport_closed,
     role::{Role, UntypedRole},
     schema::v1::RequestId,
 };
@@ -964,8 +965,12 @@ async fn escaped_connection_handle_does_not_retain_the_transport() {
         .await
         .expect("escaped handle retained the pending-reply registry")
         .expect_err("request should fail when its connection driver stops");
-    assert_response_channel_lost(&error);
-    drop(escaped);
+    assert!(is_connection_terminated(&error), "{error:?}");
+    assert!(!is_incoming_transport_closed(&error));
+    assert_eq!(
+        escaped.termination(),
+        Some(ConnectionTermination::LocalShutdown)
+    );
 }
 
 #[tokio::test]

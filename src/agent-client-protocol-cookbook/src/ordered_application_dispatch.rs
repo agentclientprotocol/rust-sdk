@@ -113,7 +113,9 @@
 //!   those synthetic errors have no response barrier; their callbacks can run
 //!   after `Closed`. Treat `Closed` as terminal for application operations and
 //!   tolerate late completions rather than waiting for one callback per request.
-//!   Transport or handler failures still propagate from `connect_with`.
+//!   Transport or handler failures still propagate from `connect_with`;
+//!   [`ConnectionTo::terminated`] reports every termination reason, but is not
+//!   a projection barrier.
 //! - Eager `send_request(...).on_receiving_result(...)` can race with response
 //!   routing. Preparation closes that race, but a response routed later through
 //!   a retained `ResponseRouter` still does not impose a barrier on subsequent
@@ -129,4 +131,5 @@
 //! [`on_receiving_result`]: agent_client_protocol::PreparedRequest::on_receiving_result
 //! [`on_close`]: agent_client_protocol::Builder::on_close
 //! [`ConnectionTo::spawn`]: agent_client_protocol::ConnectionTo::spawn
+//! [`ConnectionTo::terminated`]: agent_client_protocol::ConnectionTo::terminated
 //! [ordering contract]: agent_client_protocol::concepts::ordering

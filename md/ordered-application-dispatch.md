@@ -61,7 +61,10 @@ enqueue results after the closure event. The application should settle its
 outstanding operations at `Closed` and tolerate late completions, rather than
 waiting for every callback before accepting closure. Transport and handler
 errors still propagate from the connection future; this pattern does not turn
-all failures into clean EOF.
+all failures into clean EOF. To run shared disconnect cleanup for every
+outcome, also observe `ConnectionTo::terminated()`. It reports why the driver
+stopped, but is not ordered with the application queue, so keep `on_close` as
+the projection barrier for clean EOF.
 
 ## Do not add prompt attribution
 

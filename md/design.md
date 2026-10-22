@@ -162,6 +162,27 @@ Incoming EOF is a connection event and a request-liveness boundary:
 
 This keeps request correctness separate from async cancellation policy. Applications can finish cleanup or notify a central dispatcher without having an arbitrary foreground future dropped at an await point. Pending requests are failed before close callbacks begin; the close signal is published after callbacks finish, so a callback must not await `incoming_closed()` itself.
 
+### Connection Termination
+
+Clean EOF is only one way a driven connection ends. `ConnectionTo::terminated()` resolves, and `termination()` returns, a `ConnectionTermination` for every way the `connect_to`/`connect_with` driver can stop:
+
+| Variant           | Cause                                                                         |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `IncomingClosed`  | Clean incoming EOF, including a `connect_with` foreground returning `Ok` after EOF |
+| `LocalShutdown`   | The `connect_with` foreground returned `Ok` before EOF                        |
+| `ForegroundError` | The `connect_with` foreground returned an error                               |
+| `TransportError`  | The transport driver failed to read, write, or drain                          |
+| `HandlerError`    | A message handler, close callback, runner, or spawned task failed             |
+| `Dropped`         | The driver future was dropped before completing                               |
+
+The termination is published once, synchronously, as the driver future returns or is dropped:
+
+- No further handler, close callback, runner, or `spawn`ed task of the connection runs afterwards; each has completed or been dropped. `on_close` callbacks run only for clean EOF.
+- Requests pending at clean EOF were already failed with `incoming_transport_closed`. Every request still pending at termination, and every request sent afterwards, fails with an error whose `data.reason` is `connection_terminated` (`is_connection_terminated()`), with `data.termination` naming the variant.
+- Dropping the driver performs only this synchronous bookkeeping. The SDK does not promise asynchronous cleanup, close callbacks, or output draining after an arbitrary drop.
+
+Termination is not child-process reaping or application-queue drain; applications that own those remain responsible for them.
+
 ## Key Source Files
 
 | File                                         | Purpose                               |
