@@ -640,8 +640,7 @@ impl Testy {
                     tool,
                     params,
                 } => Ok(
-                    match self
-                        .execute_tool_call(&session_id, &server, &tool, params)
+                    match Box::pin(self.execute_tool_call(&session_id, &server, &tool, params))
                         .await
                     {
                         Ok(result) => (format!("OK: {result}"), StopReason::EndTurn),
