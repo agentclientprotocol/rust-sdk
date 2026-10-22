@@ -36,6 +36,7 @@ mod protocol_compat;
 mod raw_error;
 pub(crate) mod run;
 mod task_actor;
+mod termination;
 mod transport_actor;
 
 use crate::jsonrpc::close::{ChainedClose, CloseCallback};
@@ -52,6 +53,12 @@ pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
 use crate::jsonrpc::task_actor::{Task, TaskTx};
+pub use crate::jsonrpc::termination::{
+    CONNECTION_TERMINATED_REASON, ConnectionTermination, is_connection_terminated,
+};
+use crate::jsonrpc::termination::{
+    TerminationSource, TerminationSources, connection_terminated_error,
+};
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
@@ -1345,6 +1352,10 @@ impl<
     /// callback can notify application-owned tasks and return `Ok(())` for
     /// graceful cleanup, or return an error to stop them immediately.
     ///
+    /// Close callbacks do not run for transport or handler errors, foreground
+    /// completion, or a dropped driver. Use [`ConnectionTo::terminated`] to
+    /// observe every way the connection can end.
+    ///
     /// ```
     /// # use agent_client_protocol::{Client, ConnectTo, Error};
     /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
@@ -1912,6 +1923,7 @@ impl<
         let (foreground_succeeded_tx, foreground_succeeded) = completion_signal();
         let (foreground_done_tx, foreground_done) = completion_signal();
         let pending_replies = PendingReplies::default();
+        let termination_sources = TerminationSources::default();
 
         // Normalize the transport without losing ownership or finish metadata.
         let transport_component = crate::DynConnectTo::new(transport);
@@ -1946,8 +1958,10 @@ impl<
         // Application tasks remain cancellable. The inherited close-callback
         // phase still polls them for cleanup, but physical drain alone does not.
         let transport_driver = if let Some(driver) = transport_future {
+            let termination_sources = termination_sources.clone();
             async move {
                 let result = driver.await;
+                termination_sources.record(TerminationSource::Transport, &result);
                 drop(transport_completion_tx.send(result.clone()));
                 result
             }
@@ -1986,128 +2000,163 @@ impl<
 
         let protocol_compat = ProtocolCompat::new(protocol_mode);
 
+        // Constructed outside the driver so dropping it unpolled still
+        // publishes a termination.
+        let termination_guard = TerminationGuard {
+            incoming_closed: connection.incoming_closed.clone(),
+            pending_replies: pending_replies.clone(),
+        };
+
         let future = crate::util::instrument_with_connection_name(name, {
             let connection = connection.clone();
             async move {
-                let background = async {
-                    let incoming = {
-                        let pending_replies = pending_replies.clone();
-                        let protocol_compat = protocol_compat.clone();
-                        async {
-                            let mut transport_incoming = std::pin::pin!(transport_incoming);
-                            let incoming = incoming_actor::incoming_protocol_actor(
-                                me.counterpart(),
-                                &connection,
-                                transport_incoming.as_mut(),
-                                dynamic_handler_rx,
-                                pending_replies,
-                                incoming_actor::IncomingHandlers::new(
-                                    handler,
-                                    on_close,
-                                    foreground_succeeded.clone(),
+                let sources = &termination_sources;
+                let driver = async {
+                    let background = async {
+                        let incoming = {
+                            let pending_replies = pending_replies.clone();
+                            let protocol_compat = protocol_compat.clone();
+                            async {
+                                let mut transport_incoming = std::pin::pin!(transport_incoming);
+                                let incoming = incoming_actor::incoming_protocol_actor(
+                                    me.counterpart(),
+                                    &connection,
+                                    transport_incoming.as_mut(),
+                                    dynamic_handler_rx,
+                                    pending_replies,
+                                    incoming_actor::IncomingHandlers::new(
+                                        handler,
+                                        on_close,
+                                        foreground_succeeded.clone(),
+                                    ),
+                                    protocol_compat,
+                                );
+                                // Success stops delivery, not physical I/O. An
+                                // underway close callback finishes before sealing.
+                                let result = run_incoming_until_foreground_succeeds(
+                                    incoming,
+                                    foreground_succeeded,
+                                    connection.incoming_closed.clone(),
+                                )
+                                .await;
+                                sources.record(TerminationSource::Handler, &result);
+                                if result.is_err() {
+                                    connection.request_shutdown();
+                                }
+                                result?;
+                                // Keep the raw producer boundary alive while the
+                                // physical driver drains. Discard without application
+                                // delivery, rather than fail a late read-side send.
+                                while transport_incoming.next().await.is_some() {}
+                                Ok(())
+                            }
+                        };
+                        let other_actors = async {
+                            let result = futures::try_join!(
+                                // A ready driver error is authoritative even if its
+                                // closed channel would also make output forwarding fail.
+                                transport_driver,
+                                // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
+                                outgoing_actor::outgoing_protocol_actor(
+                                    outgoing_rx,
+                                    pending_replies,
+                                    transport_outgoing_tx,
+                                    protocol_compat,
+                                    foreground_done,
+                                )
+                                .inspect(
+                                    |result| sources.record(TerminationSource::Transport, result)
                                 ),
-                                protocol_compat,
                             );
-                            // Success stops delivery, not physical I/O. An
-                            // underway close callback finishes before sealing.
-                            let result = run_incoming_until_foreground_succeeds(
-                                incoming,
-                                foreground_succeeded,
-                                connection.incoming_closed.clone(),
-                            )
-                            .await;
+                            // Signal before awaiting an underway close callback.
                             if result.is_err() {
                                 connection.request_shutdown();
                             }
                             result?;
-                            // Keep the raw producer boundary alive while the
-                            // physical driver drains. Discard without application
-                            // delivery, rather than fail a late read-side send.
-                            while transport_incoming.next().await.is_some() {}
                             Ok(())
-                        }
-                    };
-                    let other_actors = async {
-                        let result = futures::try_join!(
-                            // A ready driver error is authoritative even if its
-                            // closed channel would also make output forwarding fail.
-                            transport_driver,
-                            // Protocol layer: OutgoingMessage -> RawJsonRpcMessage
-                            outgoing_actor::outgoing_protocol_actor(
-                                outgoing_rx,
-                                pending_replies,
-                                transport_outgoing_tx,
-                                protocol_compat,
-                                foreground_done,
-                            ),
-                        );
-                        // Signal before awaiting an underway close callback.
-                        if result.is_err() {
-                            connection.request_shutdown();
-                        }
-                        result?;
-                        Ok(())
+                        };
+
+                        // Keep close callbacks alive when another core actor fails.
+                        // The outer coordination provides the same protection when
+                        // EOF wakes an application task or the foreground.
+                        run_until_connection_close(
+                            incoming,
+                            other_actors,
+                            connection.incoming_closed.clone(),
+                        )
+                        .await
                     };
 
-                    // Keep close callbacks alive when another core actor fails.
-                    // The outer coordination provides the same protection when
-                    // EOF wakes an application task or the foreground.
                     run_until_connection_close(
-                        incoming,
-                        other_actors,
+                        finish_actor_error(background, &connection),
+                        async {
+                            let application = async {
+                                futures::try_join!(
+                                    finish_actor_error(
+                                        task_actor::task_actor(new_task_rx, &connection)
+                                            .inspect(|result| sources
+                                                .record(TerminationSource::Handler, result),),
+                                        &connection,
+                                    ),
+                                    finish_actor_error(
+                                        runner
+                                            .run_with_connection_to(connection.clone())
+                                            .inspect(|result| sources
+                                                .record(TerminationSource::Handler, result),),
+                                        &connection,
+                                    ),
+                                )?;
+                                Ok(())
+                            };
+                            let result = run_until_connection_close(
+                                application,
+                                async {
+                                    let result = main_fn(connection.clone()).await;
+                                    sources.record(TerminationSource::Foreground, &result);
+                                    connection.request_shutdown();
+                                    if result.is_ok() {
+                                        // Stop new incoming delivery immediately,
+                                        // including during the callback cleanup phase.
+                                        let _ = foreground_succeeded_tx.send(());
+                                    }
+                                    // Shutdown cancels local consumers, not remote
+                                    // requests. Do not add cancellation traffic while
+                                    // dropping those consumers before the drain.
+                                    connection.pending_replies.disarm_cancellations();
+                                    // The application actor (including actual scoped
+                                    // runners) remains polled while supervisors finish.
+                                    // Only then may ordinary application tasks drop.
+                                    connection.wait_protected_operations().await;
+                                    result
+                                },
+                                connection.incoming_closed.clone(),
+                            )
+                            .await?;
+                            let _ = foreground_done_tx.send(());
+                            let drained = connection
+                                .drain_outgoing(transport_finish, wait_owned_transport)
+                                .await;
+                            sources.record(TerminationSource::Transport, &drained);
+                            drained?;
+                            Ok(result)
+                        },
                         connection.incoming_closed.clone(),
                     )
                     .await
                 };
-
-                run_until_connection_close(
-                    finish_actor_error(background, &connection),
-                    async {
-                        let application = async {
-                            futures::try_join!(
-                                finish_actor_error(
-                                    task_actor::task_actor(new_task_rx, &connection),
-                                    &connection,
-                                ),
-                                finish_actor_error(
-                                    runner.run_with_connection_to(connection.clone()),
-                                    &connection,
-                                ),
-                            )?;
-                            Ok(())
-                        };
-                        let result = run_until_connection_close(
-                            application,
-                            async {
-                                let result = main_fn(connection.clone()).await;
-                                connection.request_shutdown();
-                                if result.is_ok() {
-                                    // Stop new incoming delivery immediately,
-                                    // including during the callback cleanup phase.
-                                    let _ = foreground_succeeded_tx.send(());
-                                }
-                                // Shutdown cancels local consumers, not remote
-                                // requests. Do not add cancellation traffic while
-                                // dropping those consumers before the drain.
-                                connection.pending_replies.disarm_cancellations();
-                                // The application actor (including actual scoped
-                                // runners) remains polled while supervisors finish.
-                                // Only then may ordinary application tasks drop.
-                                connection.wait_protected_operations().await;
-                                result
-                            },
-                            connection.incoming_closed.clone(),
-                        )
-                        .await?;
-                        let _ = foreground_done_tx.send(());
-                        connection
-                            .drain_outgoing(transport_finish, wait_owned_transport)
-                            .await?;
-                        Ok(result)
-                    },
-                    connection.incoming_closed.clone(),
-                )
-                .await
+                // Every actor, handler, and task has completed or been
+                // dropped by the time `driver` resolves.
+                let result = driver.await;
+                termination_guard.finish(match &result {
+                    // A foreground that finishes after observing EOF still
+                    // ended at a clean EOF boundary.
+                    Ok(_) if connection.incoming_closed.is_closing() => {
+                        ConnectionTermination::IncomingClosed
+                    }
+                    Ok(_) => ConnectionTermination::LocalShutdown,
+                    Err(error) => sources.classify(error.clone()),
+                });
+                result
             }
         });
 
@@ -2328,6 +2377,7 @@ impl PendingReply {
 #[derive(Default)]
 struct PendingRepliesInner {
     incoming_closed: bool,
+    termination: Option<ConnectionTermination>,
     replies: HashMap<RequestId, PendingReply>,
 }
 
@@ -2372,6 +2422,22 @@ impl PendingReplies {
         }
         count
     }
+
+    /// Atomically reject new subscriptions and fail every remaining one
+    /// because the driver has terminated.
+    fn terminate(&self, termination: &ConnectionTermination) -> usize {
+        let replies = {
+            let mut inner = self.inner.lock().expect("pending replies mutex poisoned");
+            inner.termination = Some(termination.clone());
+            std::mem::take(&mut inner.replies)
+        };
+        let count = replies.len();
+        for (_, reply) in replies {
+            let error = connection_terminated_error(&reply.method, termination);
+            reply.fail(error);
+        }
+        count
+    }
 }
 
 /// A non-owning handle used to register a request before it enters the
@@ -2405,6 +2471,8 @@ impl PendingRepliesRegistrar {
         let Some(inner) = self.inner.upgrade() else {
             let error = if incoming_closed.is_closing() {
                 incoming_transport_closed_error(&reply.method)
+            } else if let Some(termination) = incoming_closed.termination() {
+                connection_terminated_error(&reply.method, &termination)
             } else {
                 crate::util::internal_error(format!(
                     "failed to send outgoing request `{}`: connection is no longer running",
@@ -2418,15 +2486,22 @@ impl PendingRepliesRegistrar {
         let result = {
             let mut inner = inner.lock().expect("pending replies mutex poisoned");
             if inner.incoming_closed {
-                Err(reply)
+                Err((reply, None))
+            } else if let Some(termination) = &inner.termination {
+                Err((reply, Some(termination.clone())))
             } else {
                 Ok(inner.replies.insert(id, reply))
             }
         };
 
         match result {
-            Err(rejected) => {
-                let error = incoming_transport_closed_error(&rejected.method);
+            Err((rejected, termination)) => {
+                let error = match termination {
+                    Some(termination) => {
+                        connection_terminated_error(&rejected.method, &termination)
+                    }
+                    None => incoming_transport_closed_error(&rejected.method),
+                };
                 rejected.fail(error.clone());
                 Err(error)
             }
@@ -3381,6 +3456,19 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         self.inner.is_incoming_closed()
     }
 
+    /// Wait until the connection driver has terminated, for any reason.
+    ///
+    /// See [`ConnectionTo::terminated`].
+    pub async fn terminated(&self) -> ConnectionTermination {
+        self.inner.terminated().await
+    }
+
+    /// Return the termination reason if the connection driver has terminated.
+    #[must_use]
+    pub fn termination(&self) -> Option<ConnectionTermination> {
+        self.inner.termination()
+    }
+
     /// Spawn a task that runs for as long as the JSON-RPC connection is served.
     #[track_caller]
     pub fn spawn(
@@ -3666,6 +3754,9 @@ struct IncomingClosedState {
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     #[cfg(any(feature = "unstable_mcp_over_acp", test))]
     shutdown_rx: SharedCompletionSignal,
+    termination: Mutex<Option<ConnectionTermination>>,
+    terminated_tx: Mutex<Option<oneshot::Sender<()>>>,
+    terminated_rx: SharedCompletionSignal,
 }
 
 impl IncomingClosed {
@@ -3674,6 +3765,7 @@ impl IncomingClosed {
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         #[cfg(not(any(feature = "unstable_mcp_over_acp", test)))]
         drop(shutdown_rx);
+        let (terminated_tx, terminated_rx) = oneshot::channel();
         Self {
             state: Arc::new(IncomingClosedState {
                 closing: AtomicBool::new(false),
@@ -3683,6 +3775,9 @@ impl IncomingClosed {
                 shutdown_tx: Mutex::new(Some(shutdown_tx)),
                 #[cfg(any(feature = "unstable_mcp_over_acp", test))]
                 shutdown_rx: shutdown_rx.map(|_| ()).boxed().shared(),
+                termination: Mutex::new(None),
+                terminated_tx: Mutex::new(Some(terminated_tx)),
+                terminated_rx: terminated_rx.map(|_| ()).boxed().shared(),
             }),
         }
     }
@@ -3728,6 +3823,82 @@ impl IncomingClosed {
 
     fn is_closing(&self) -> bool {
         self.state.closing.load(Ordering::Acquire)
+    }
+
+    /// Record the termination reason. Returns `false` if one was already set.
+    fn set_termination(&self, termination: ConnectionTermination) -> bool {
+        let mut slot = self
+            .state
+            .termination
+            .lock()
+            .expect("termination mutex poisoned");
+        if slot.is_some() {
+            return false;
+        }
+        *slot = Some(termination);
+        true
+    }
+
+    fn signal_terminated(&self) {
+        if let Some(tx) = self
+            .state
+            .terminated_tx
+            .lock()
+            .expect("terminated signal mutex poisoned")
+            .take()
+        {
+            let _ = tx.send(());
+        }
+    }
+
+    fn termination(&self) -> Option<ConnectionTermination> {
+        self.state
+            .termination
+            .lock()
+            .expect("termination mutex poisoned")
+            .clone()
+    }
+
+    async fn terminated(&self) -> ConnectionTermination {
+        self.state.terminated_rx.clone().await;
+        self.termination()
+            .expect("termination is recorded before it is signalled")
+    }
+}
+
+/// Publishes the connection's termination exactly once: when the driver
+/// completes via [`Self::finish`], or synchronously when the driver future is
+/// dropped first.
+struct TerminationGuard {
+    incoming_closed: IncomingClosed,
+    pending_replies: PendingReplies,
+}
+
+impl TerminationGuard {
+    fn finish(self, termination: ConnectionTermination) {
+        self.publish(termination);
+    }
+
+    fn publish(&self, termination: ConnectionTermination) {
+        if !self.incoming_closed.set_termination(termination.clone()) {
+            return;
+        }
+        // Record first, so a requester woken by its failure observes the
+        // termination; then fail requests before waking `terminated()`.
+        let pending_reply_count = self.pending_replies.terminate(&termination);
+        tracing::debug!(
+            termination = termination.kind(),
+            pending_reply_count,
+            "Connection terminated"
+        );
+        self.incoming_closed.signal_terminated();
+    }
+}
+
+impl Drop for TerminationGuard {
+    fn drop(&mut self) {
+        // No-op after `finish`.
+        self.publish(ConnectionTermination::Dropped);
     }
 }
 
@@ -3951,6 +4122,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// It does not automatically cancel the future passed to
     /// [`Builder::connect_with`]; use [`Builder::on_close`] when the connection
     /// should run application-specific cleanup or terminate that future.
+    ///
+    /// This never completes if the connection ends some other way; use
+    /// [`terminated`](Self::terminated) to observe every termination.
     pub async fn incoming_closed(&self) {
         self.incoming_closed.closed().await;
     }
@@ -3961,6 +4135,43 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     #[must_use]
     pub fn is_incoming_closed(&self) -> bool {
         self.incoming_closed.is_closed()
+    }
+
+    /// Wait until the connection driver has terminated, for any reason.
+    ///
+    /// This is the universal terminal event for a connection driven by
+    /// [`Builder::connect_to`] or [`Builder::connect_with`]. Unlike
+    /// [`incoming_closed`](Self::incoming_closed), it also completes after
+    /// transport errors, handler or close-callback errors, foreground
+    /// completion, and a dropped driver future.
+    ///
+    /// The termination is published once, synchronously, as the driver future
+    /// returns (or is dropped). At that point:
+    ///
+    /// - No further handler, close callback, runner, or
+    ///   [`spawn`](Self::spawn)ed task of this connection will run; each has
+    ///   completed or been dropped.
+    /// - Every request still awaiting a response has been failed. Requests
+    ///   failed earlier by clean incoming EOF satisfy
+    ///   [`is_incoming_transport_closed`](crate::is_incoming_transport_closed);
+    ///   the rest satisfy [`is_connection_terminated`](crate::is_connection_terminated),
+    ///   as do requests sent afterwards.
+    ///
+    /// Do not await this from inside the connection's own handlers, close
+    /// callbacks, or tasks: termination happens only after they finish.
+    ///
+    /// Termination does not reap child processes owned by the transport, nor
+    /// drain application-owned queues.
+    pub async fn terminated(&self) -> ConnectionTermination {
+        self.incoming_closed.terminated().await
+    }
+
+    /// Return the termination reason if the connection driver has terminated.
+    ///
+    /// See [`terminated`](Self::terminated).
+    #[must_use]
+    pub fn termination(&self) -> Option<ConnectionTermination> {
+        self.incoming_closed.termination()
     }
 
     /// Stop accepting outgoing messages, drain routable output through the

@@ -158,12 +158,13 @@ pub mod util;
 pub use capabilities::*;
 
 pub use jsonrpc::{
-    Builder, ByteStreams, Channel, ConnectionContext, ConnectionTo, Dispatch, DynamicHandlerGuard,
-    HandleConnectionClose, HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON,
-    IntoHandled, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines,
-    NullClose, NullHandler, PreparedRequest, RawConnectionContext, RawJsonRpcError,
-    RawJsonRpcMessage, RawJsonRpcParams, RawJsonRpcResponse, Responder, ResponseRouter,
-    SentRequest, TransportBatch, TransportBatchEntry, TransportFrame, UntypedMessage,
+    Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionContext,
+    ConnectionTermination, ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose,
+    HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage,
+    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler,
+    PreparedRequest, RawConnectionContext, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
+    RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportBatch,
+    TransportBatchEntry, TransportFrame, UntypedMessage, is_connection_terminated,
     is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
