@@ -48,6 +48,10 @@ use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandl
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use crate::jsonrpc::protocol_compat::{
+    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
+};
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
@@ -2351,6 +2355,9 @@ struct PendingReply {
     cancellation_disarm: SentRequestCancellationDisarm,
     ordering: ResponseOrdering,
     response_route_hook: Option<ResponseRouteHook>,
+    /// Set only by `V2ConnectionTo::send_initialize`, whose typed outcome
+    /// reports a lower-version initialize response as a success.
+    accepts_lower_initialize_version: bool,
 }
 
 impl PendingReply {
@@ -3431,6 +3438,70 @@ impl<T> IntoHandled<T> for Handled<T> {
 #[derive(Clone, Debug)]
 pub struct V2ConnectionTo<Counterpart: Role> {
     inner: ConnectionTo<Counterpart>,
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl V2ConnectionTo<Agent> {
+    /// Send the client's `initialize` request and report how the agent
+    /// negotiated.
+    ///
+    /// Unlike [`send_request`](Self::send_request), a v1-only agent's valid v1
+    /// response resolves successfully as [`InitializeOutcome::LowerVersion`]
+    /// with the agent's typed response, so the caller can decide whether to
+    /// fall back to a v1 client implementation. The connection stays
+    /// uninitialized in that case; the SDK never converts it to v1.
+    ///
+    /// The request still resolves with an error for errors returned by the
+    /// agent (including the `-32022` version mismatch), malformed responses,
+    /// and transport failures.
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::schema::{ProtocolVersion, v2};
+    /// # use agent_client_protocol::{
+    /// #     Client, ConnectTo, InitializeOutcome, SelectedInitializeResponse,
+    /// # };
+    /// # async fn example(agent: impl ConnectTo<Client>) -> agent_client_protocol::Result<()> {
+    /// let outcome = Client
+    ///     .v2()
+    ///     .connect_with(agent, async |cx| {
+    ///         let request = v2::InitializeRequest::new(
+    ///             ProtocolVersion::V2,
+    ///             v2::Implementation::new("example", "0.1.0"),
+    ///         );
+    ///         match cx.send_initialize(request).block_task().await? {
+    ///             InitializeOutcome::Initialized(_response) => {
+    ///                 // Continue with v2 traffic.
+    ///                 Ok(None)
+    ///             }
+    ///             InitializeOutcome::LowerVersion(mismatch) => Ok(Some(mismatch)),
+    ///             _ => Err(agent_client_protocol::util::internal_error("unexpected outcome")),
+    ///         }
+    ///     })
+    ///     .await?;
+    /// if let Some(mismatch) = outcome
+    ///     && let SelectedInitializeResponse::V1(_v1_response) = mismatch.response
+    /// {
+    ///     // Reconnect with a v1 client implementation.
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn send_initialize(
+        &self,
+        request: crate::schema::v2::InitializeRequest,
+    ) -> SentRequest<InitializeOutcome> {
+        let mut prepared = self.inner.prepare_request_to_with_options(
+            self.inner.counterpart(),
+            protocol_compat::InitializeNegotiation(request),
+            None,
+            None,
+        );
+        prepared
+            .publication
+            .pending_reply
+            .accepts_lower_initialize_version = true;
+        prepared.into_sent_request(false)
+    }
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -4727,6 +4798,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             cancellation_disarm: cancellation.disarm_handle(),
             ordering: response_ordering.clone(),
             response_route_hook,
+            accepts_lower_initialize_version: false,
         };
         let message = if self.is_incoming_closing() {
             Err(incoming_transport_closed_error(&method))
@@ -5352,6 +5424,7 @@ impl ResponseRouter<serde_json::Value> {
             cancellation_disarm,
             ordering,
             response_route_hook,
+            accepts_lower_initialize_version: _,
         } = pending_reply;
         let reply_target = ResponseReplyTarget {
             id: id.clone(),

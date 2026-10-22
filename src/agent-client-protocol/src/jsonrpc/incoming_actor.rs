@@ -233,8 +233,11 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
 
                             tracing::trace!(?id, "Handling response");
                             if let Some(pending_reply) = pending_replies.remove(&id) {
-                                let result = protocol_compat
-                                    .incoming_response(&pending_reply.method, result);
+                                let result = protocol_compat.incoming_response(
+                                    &pending_reply.method,
+                                    pending_reply.accepts_lower_initialize_version,
+                                    result,
+                                );
                                 let (dispatch, response_dispatch) =
                                     dispatch_from_response(id, pending_reply, result);
                                 dispatch_dispatch(

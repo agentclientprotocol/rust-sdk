@@ -168,9 +168,12 @@ pub use jsonrpc::{
     is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
-pub use jsonrpc::{RequestCancellation, RequestCancellationHandle, is_cancel_request_notification};
 #[cfg(feature = "unstable_protocol_v2")]
-pub use jsonrpc::{V2Builder, V2ConnectionContext, V2ConnectionTo};
+pub use jsonrpc::{
+    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse, V2Builder,
+    V2ConnectionContext, V2ConnectionTo,
+};
+pub use jsonrpc::{RequestCancellation, RequestCancellationHandle, is_cancel_request_notification};
 
 #[cfg(feature = "unstable_protocol_v2")]
 pub use role::acp::{AgentProtocolRouter, ClientProtocolConnector, ProxyProtocolRouter};
