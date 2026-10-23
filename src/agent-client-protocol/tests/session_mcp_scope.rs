@@ -345,6 +345,136 @@ async fn rejected_setup_joins_borrowed_runner_cleanup() {
     isolated_scope(ScopeExit::SetupFailed).await;
 }
 
+async fn failed_start_session(cancel: bool) {
+    use futures::future::{self, Either};
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (transport, mut peer) = Channel::duplex();
+        let CleanupProbe {
+            service,
+            request: runner_request,
+            ack,
+            started,
+            cleaning,
+            release,
+            completed,
+            dropped,
+        } = cleanup_probe();
+        let runner_completed = completed.clone();
+        let runner_dropped = dropped.clone();
+        let (live_tx, live_rx) = oneshot::channel();
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let (drop_tx, drop_rx) = oneshot::channel();
+        let (finish_tx, finish_rx) = oneshot::channel();
+        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+            let _live = cx
+                .build_session_cwd()?
+                .with_mcp_server(McpServer::new_service(
+                    "live",
+                    LiveService(Mutex::new(Some(live_tx))),
+                    NullRun,
+                ))?
+                .block_task()
+                .start_session()
+                .await?;
+            let pending = Box::pin(
+                cx.build_session_cwd()?
+                    .with_mcp_server(McpServer::new_service(
+                        "pending",
+                        service,
+                        CleanupRunner {
+                            request: Some(runner_request),
+                            ack: Some(ack),
+                            completed: runner_completed,
+                            dropped: runner_dropped,
+                            borrowed: "borrowed runner",
+                            drop_tx: Some(drop_tx),
+                        },
+                    ))?
+                    .block_task()
+                    .start_session(),
+            );
+            if cancel {
+                match future::select(pending, cancel_rx).await {
+                    Either::Right((cancelled, pending)) => {
+                        cancelled.unwrap();
+                        drop(pending);
+                    }
+                    Either::Left((result, _)) => {
+                        panic!("setup completed before cancellation: {result:?}")
+                    }
+                }
+            } else {
+                assert_eq!(
+                    pending.await.unwrap_err().code,
+                    Error::invalid_params().code
+                );
+            }
+            finish_rx.await.unwrap();
+            Ok(())
+        }));
+
+        let live_setup = raw(&mut peer).await;
+        let live_server = live_setup["params"]["mcpServers"][0]["serverId"].clone();
+        send(
+            &peer,
+            json!({"jsonrpc":"2.0","id":live_setup["id"],"result":{"sessionId":"live"}}),
+        );
+        let pending_setup = raw(&mut peer).await;
+        let pending_server = pending_setup["params"]["mcpServers"][0]["serverId"].clone();
+        request(&peer, &live_server, "subscription", "_test/subscribe");
+        let live_context = live_rx.await.unwrap();
+        request(&peer, &pending_server, "pending-operation", "tools/list");
+        started.await.unwrap();
+        if cancel {
+            let _ = cancel_tx.send(());
+            // Cancellation still requires the peer's terminal response.
+            let cancellation = raw(&mut peer).await;
+            assert_eq!(cancellation["method"], "$/cancel_request");
+            send(
+                &peer,
+                json!({"jsonrpc":"2.0","id":pending_setup["id"],
+                "error":{"code":-32800,"message":"setup cancelled"}}),
+            );
+        } else {
+            send(
+                &peer,
+                json!({"jsonrpc":"2.0","id":pending_setup["id"],
+                "error":{"code":-32602,"message":"setup rejected"}}),
+            );
+        }
+        cleaning.await.unwrap();
+        assert!(!dropped.load(Ordering::Acquire));
+        assert!(!completed.load(Ordering::Acquire));
+        request(&peer, &live_server, "during-cleanup", "tools/list");
+        assert_eq!(
+            response(&mut peer, "during-cleanup").await["result"]["result"]["live"],
+            true
+        );
+        release.send(()).unwrap();
+        drop_rx.await.unwrap();
+        assert!(completed.load(Ordering::Acquire));
+        assert!(dropped.load(Ordering::Acquire));
+        assert!(!live_context.operation_cancellation().is_cancelled());
+        request(&peer, &live_server, "after-cleanup", "tools/list");
+        assert_eq!(
+            response(&mut peer, "after-cleanup").await["result"]["result"]["live"],
+            true
+        );
+        let _ = finish_tx.send(());
+        client.await.unwrap().unwrap();
+    })
+    .await
+    .expect("pending start_session cleanup timed out");
+}
+
+#[tokio::test]
+async fn start_session_failure_and_cancellation_keep_runner_until_cleanup() {
+    for cancel in [false, true] {
+        failed_start_session(cancel).await;
+    }
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_setup {
     use super::*;

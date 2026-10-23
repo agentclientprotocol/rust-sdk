@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use agent_client_protocol::{
     ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
@@ -344,6 +344,115 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
         .await
         .expect("same-batch session update was not routed")
         .expect("session connection failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn start_session_installs_routing_before_later_batch_entry() {
+    let session_id = SessionId::new("same-batch-blocking-session");
+    let response_session_id = session_id.clone();
+    let notification_session_id = session_id.clone();
+    let (transport, mut peer) = Channel::duplex();
+
+    let client = Client
+        .builder()
+        .connect_with(transport, async move |connection| {
+            let mut session = connection
+                .build_session_cwd()?
+                .block_task()
+                .start_session()
+                .await?;
+            let update = session.read_update().await?;
+            assert!(matches!(update, SessionMessage::SessionMessage(_)));
+            Ok(())
+        });
+
+    let peer = async move {
+        let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+            peer.rx.next().await
+        else {
+            panic!("expected a session/new request");
+        };
+        assert_eq!(request.method.as_ref(), "session/new");
+
+        let response = RawJsonRpcMessage::response(
+            request.id,
+            Ok(
+                serde_json::to_value(NewSessionResponse::new(response_session_id))
+                    .expect("session response should serialize"),
+            ),
+        );
+        let notification = RawJsonRpcMessage::notification(
+            "session/update".into(),
+            serde_json::to_value(SessionNotification::new(
+                notification_session_id,
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new("same batch"),
+                ))),
+            ))
+            .expect("session notification should serialize"),
+        )
+        .expect("session notification should form valid JSON-RPC parameters");
+        let batch = TransportBatch::from_messages([response, notification])
+            .expect("test batch should be non-empty");
+        peer.tx
+            .unbounded_send(TransportFrame::Batch(batch))
+            .expect("client should accept the response batch");
+
+        while peer.rx.next().await.is_some() {}
+        Ok::<(), agent_client_protocol::Error>(())
+    };
+
+    tokio::time::timeout(TIMEOUT, async { futures::try_join!(client, peer) })
+        .await
+        .expect("same-batch session update was not routed")
+        .expect("session connection failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn start_session_returns_session_new_error_without_closing_connection() {
+    let agent = Agent.builder().on_receive_request(
+        async |request: NewSessionRequest,
+               responder: Responder<NewSessionResponse>,
+               _connection: ConnectionTo<Client>| {
+            if request.cwd == Path::new("/rejected") {
+                responder.respond_with_error(
+                    agent_client_protocol::Error::invalid_params().data("session rejected"),
+                )
+            } else {
+                responder.respond(NewSessionResponse::new("accepted-session"))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let client = Client
+        .builder()
+        .connect_with(agent, async move |connection| {
+            let error = connection
+                .build_session("/rejected")
+                .block_task()
+                .start_session()
+                .await
+                .expect_err("the session/new error must reach the caller");
+            assert_eq!(
+                error,
+                agent_client_protocol::Error::invalid_params().data("session rejected"),
+                "the helper must preserve the peer's JSON-RPC error"
+            );
+
+            let session = connection
+                .build_session("/accepted")
+                .block_task()
+                .start_session()
+                .await?;
+            assert_eq!(session.session_id(), &SessionId::new("accepted-session"));
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("session/new error test timed out")
+        .expect("session/new error closed the connection");
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
