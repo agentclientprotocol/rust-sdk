@@ -47,12 +47,14 @@ use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 #[cfg(feature = "unstable_protocol_v2")]
-pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
-#[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol_compat::{
     InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
 };
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
+#[cfg(feature = "unstable_protocol_v2")]
+pub(crate) use crate::jsonrpc::protocol_compat::{
+    normalize_newer_v2_initialize_request, normalize_v1_initialize_request,
+};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
@@ -3454,6 +3456,11 @@ impl V2ConnectionTo<Agent> {
     /// The request still resolves with an error for errors returned by the
     /// agent (including the `-32022` version mismatch), malformed responses,
     /// and transport failures.
+    ///
+    /// After an initialization completes, `initialize` may be sent again
+    /// before any other request; the agent treats the latest one as
+    /// authoritative. Once another request has been sent, a repeat resolves
+    /// with an `-32600` error without being sent.
     ///
     /// ```no_run
     /// # use agent_client_protocol::schema::{ProtocolVersion, v2};

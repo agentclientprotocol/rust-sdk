@@ -1268,14 +1268,17 @@ async fn v2_agent_rejects_session_requests_before_initialization() -> Result<(),
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_rejects_reinitialization_without_losing_ready_state() -> Result<(), Error> {
-    let initialize_count = Arc::new(AtomicUsize::new(0));
-    let initialize_counter = Arc::clone(&initialize_count);
+async fn v2_agent_accepts_repeated_initialize_until_another_request() -> Result<(), Error> {
+    let initialized = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&initialized);
     let agent = Agent
         .v2()
         .on_receive_request(
             async move |initialize: v2::InitializeRequest, responder, _cx| {
-                initialize_counter.fetch_add(1, Ordering::SeqCst);
+                recorder
+                    .lock()
+                    .expect("initialize recorder poisoned")
+                    .push(initialize.info.name.clone());
                 responder.respond(v2_initialize_response_with_session(
                     initialize.protocol_version,
                 ))
@@ -1295,32 +1298,356 @@ async fn v2_agent_rejects_reinitialization_without_losing_ready_state() -> Resul
         .builder()
         .without_acp_version_guard()
         .connect_with(agent, async |cx| {
-            cx.send_request(v2_initialize_request(ProtocolVersion::V2))
+            for name in ["first", "second"] {
+                cx.send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    v2::Implementation::new(name, "1.0.0"),
+                ))
                 .block_task()
                 .await?;
-
-            let error = cx
-                .send_request(v2_initialize_request(ProtocolVersion::V2))
-                .block_task()
-                .await
-                .expect_err("v2 agents must reject reinitialization");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(|data| data.as_str())
-                .unwrap_or_default();
-            assert!(data.contains("only be initialized once"), "{error:?}");
+            }
 
             let session = cx
                 .send_request(v2::NewSessionRequest::new(cwd()?))
                 .block_task()
                 .await?;
             assert_eq!(session.session_id.0.as_ref(), "ready-session");
+
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("initialize must not be repeated after another request");
+            assert_eq!(i32::from(error.code), -32600);
+            let data = error
+                .data
+                .as_ref()
+                .and_then(|data| data.as_str())
+                .unwrap_or_default();
+            assert!(
+                data.contains("cannot be repeated after any other request"),
+                "{error:?}"
+            );
+
+            // The rejected repeat leaves the connection ready.
+            cx.send_request(v2::NewSessionRequest::new(cwd()?))
+                .block_task()
+                .await?;
             Ok(())
         })
         .await?;
 
-    assert_eq!(initialize_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *initialized.lock().expect("initialize recorder poisoned"),
+        ["first", "second"]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_client_and_agent_repeat_initialize() -> Result<(), Error> {
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent.v2().on_receive_request(
+        async move |initialize: v2::InitializeRequest, responder, _cx| {
+            initialize_counter.fetch_add(1, Ordering::SeqCst);
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    Client
+        .v2()
+        .connect_with(agent, async |cx: V2ConnectionTo<Agent>| {
+            for _ in 0..2 {
+                let outcome = cx
+                    .send_initialize(v2_initialize_request(ProtocolVersion::V2))
+                    .block_task()
+                    .await?;
+                assert!(
+                    matches!(outcome, InitializeOutcome::Initialized(_)),
+                    "{outcome:?}"
+                );
+            }
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+async fn raw_v2_response(
+    channel: &mut agent_client_protocol::Channel,
+    id: v1::RequestId,
+    method: &str,
+    params: Value,
+) -> Result<Value, Error> {
+    channel
+        .tx
+        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
+            method.into(),
+            params,
+            id,
+        )?))
+        .map_err(Error::into_internal_error)?;
+    let frame = tokio::time::timeout(tokio::time::Duration::from_secs(10), channel.rx.next())
+        .await
+        .map_err(Error::into_internal_error)?
+        .ok_or_else(|| Error::internal_error().data("peer closed before responding"))?;
+    let TransportFrame::Single(message) = frame else {
+        return Err(Error::internal_error().data(format!("expected one response, got {frame:?}")));
+    };
+    serde_json::to_value(message).map_err(Error::into_internal_error)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_rejects_null_request_ids() -> Result<(), Error> {
+    let agent = Agent.v2().on_receive_request(
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("v2 agent owns a connection driver"));
+
+    let initialize = json_value(v2_initialize_request(ProtocolVersion::V2))?;
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Null,
+        "initialize",
+        initialize.clone(),
+    )
+    .await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+
+    // The rejection does not begin initialization.
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(1),
+        "initialize",
+        initialize,
+    )
+    .await?;
+    assert_eq!(response["id"], 1, "{response}");
+    assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
+
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_rejects_invalid_request_ids_on_the_wire() -> Result<(), Error> {
+    let agent = Agent.v2().on_receive_request(
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let (client_writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(server_transport));
+    let mut writer = client_writer;
+    let mut reader = tokio::io::BufReader::new(client_reader);
+
+    let params = json_value(v2_initialize_request(ProtocolVersion::V2))?;
+    for id in [Value::Null, serde_json::json!(1.5), serde_json::json!(true)] {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0", "id": id, "method": "initialize", "params": params,
+        });
+        write_wire_json(&mut writer, &request).await?;
+        let response = read_wire_json(&mut reader).await?;
+        assert_eq!(response["id"], Value::Null, "{response}");
+        assert_eq!(response["error"]["code"], -32600, "{response}");
+
+        // The same id inside a batch is rejected per entry.
+        write_wire_json(&mut writer, &Value::Array(vec![request])).await?;
+        let response = read_wire_json(&mut reader).await?;
+        assert_eq!(response[0]["id"], Value::Null, "{response}");
+        assert_eq!(response[0]["error"]["code"], -32600, "{response}");
+    }
+
+    // None of the rejections began initialization.
+    write_wire_json(
+        &mut writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params,
+        }),
+    )
+    .await?;
+    let response = read_wire_json(&mut reader).await?;
+    assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
+
+    agent_task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_rejects_null_request_id_on_v2_route() -> Result<(), Error> {
+    let started = Arc::new(AtomicBool::new(false));
+    let started_flag = Arc::clone(&started);
+    let agent = Agent
+        .protocol_router()
+        .with_v1(v1_agent_with_session("v1-session"))
+        .with_v2(Agent.v2().on_receive_request(
+            async move |initialize: v2::InitializeRequest, responder, _cx| {
+                started_flag.store(true, Ordering::SeqCst);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("router owns a connection driver"));
+
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Null,
+        "initialize",
+        json_value(v2_initialize_request(ProtocolVersion::V2))?,
+    )
+    .await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+    assert!(!started.load(Ordering::SeqCst));
+    task.abort();
+
+    // V1 routes keep accepting null ids.
+    let agent = Agent
+        .protocol_router()
+        .with_v1(v1_agent_with_session("v1-session"))
+        .with_v2(v2_agent_with_session("v2-session"));
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("router owns a connection driver"));
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Null,
+        "initialize",
+        json_value(v1_initialize_request(ProtocolVersion::V1))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_forwards_repeated_initialize_to_selected_implementation()
+-> Result<(), Error> {
+    // A v2 route accepts a repeat for v2 and rejects one for v1 with -32600:
+    // the selected implementation owns the connection and the router does
+    // not re-route.
+    let agent = Agent
+        .protocol_router()
+        .with_v1(v1_agent_with_session("v1-session"))
+        .with_v2(v2_agent_with_session("v2-session"));
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("router owns a connection driver"));
+    for id in [1, 2] {
+        let response = raw_v2_response(
+            &mut channel,
+            v1::RequestId::Number(id),
+            "initialize",
+            json_value(v2_initialize_request(ProtocolVersion::V2))?,
+        )
+        .await?;
+        assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
+    }
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(3),
+        "initialize",
+        json_value(v1_initialize_request(ProtocolVersion::V1))?,
+    )
+    .await?;
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(4),
+        "session/new",
+        json_value(v2::NewSessionRequest::new(cwd()?))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["sessionId"], "v2-session", "{response}");
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(5),
+        "initialize",
+        json_value(v2_initialize_request(ProtocolVersion::V2))?,
+    )
+    .await?;
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+    task.abort();
+
+    // A v1-only route selects v1 for a v2 client, which then repeats with v1.
+    let agent = Agent
+        .protocol_router()
+        .with_v1(v1_agent_with_session("v1-session"));
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("router owns a connection driver"));
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(1),
+        "initialize",
+        json_value(v2_initialize_request(ProtocolVersion::V2))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(2),
+        "initialize",
+        json_value(v1_initialize_request(ProtocolVersion::V1))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_ignores_unparsable_newer_initialize_params() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(Agent.v2().on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                assert_eq!(
+                    initialize.info,
+                    v2::Implementation::new("unknown", "unknown")
+                );
+                assert_eq!(initialize.meta, None);
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        ));
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("router owns a connection driver"));
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(1),
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": 3,
+            "info": { "name": 3 },
+            "capabilities": "malformed",
+            "_meta": []
+        }),
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
+    task.abort();
     Ok(())
 }
 

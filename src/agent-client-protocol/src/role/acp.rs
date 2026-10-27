@@ -344,8 +344,20 @@ impl Agent {
     /// Create an agent builder that uses the ACP protocol v2 API.
     ///
     /// This builder selects protocol v2 for clients requesting v2 or a newer
-    /// version with compatible initialization parameters. Use
-    /// [`Self::protocol_router`] with a v1 implementation for v1 clients.
+    /// version. A request for exactly v2 must be a valid v2 initialize
+    /// request. A request for a newer version is accepted with what parses
+    /// under v2: unparsable capabilities and `_meta` are dropped, and a missing
+    /// or malformed `info` is replaced by an implementation named `unknown`
+    /// with version `unknown`. Use [`Self::protocol_router`] with a v1
+    /// implementation for v1 clients.
+    ///
+    /// The client may repeat `initialize` after the previous one completed
+    /// and before it sends any other request. Each repeat is dispatched to
+    /// the initialize handler and the latest one is authoritative. A repeat
+    /// after any other request, while an initialize is in flight, or
+    /// requesting a version below v2 is rejected with `-32600`. A repeat that
+    /// fails keeps the previous initialization in place. Requests with a
+    /// `null` id are rejected with `-32600`.
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
@@ -362,6 +374,14 @@ impl Agent {
     /// endpoint exposing v2 selects the highest configured version at or below
     /// the requested version. A v1-only endpoint retains v1's fallback-to-latest
     /// rule. The router does not convert traffic after initialization.
+    ///
+    /// The selected implementation owns the connection. A repeated
+    /// `initialize` is forwarded to it and is never re-routed, so it is
+    /// evaluated against the selected version: a v2 implementation rejects a
+    /// repeat requesting v1 with `-32600`, and a v1 implementation selects v1
+    /// for a repeat requesting a newer version. A first `initialize` with a
+    /// `null` id that would select v2 is rejected with `-32600`, like any
+    /// other invalid first request.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
@@ -563,6 +583,11 @@ fn select_agent_protocol(
     let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
         .map_err(|_| invalid_initialize_protocol_version())?;
     let selected = select_configured_agent_protocol(requested, supported)?;
+    // V2 request ids must be strings or integers; v1 still accepts null.
+    if selected == SelectedProtocol::V2 && request.id == RequestId::Null {
+        return Err(crate::Error::invalid_request()
+            .data("ACP protocol v2 request ids must be a string or an integer, not null"));
+    }
     rewrite_initialize_params(params, requested, selected)?;
 
     Ok(selected)
@@ -653,9 +678,9 @@ fn rewrite_initialize_params(
             Ok(())
         }
         SelectedProtocol::V2 => {
-            let mut initialize = parse_initialize_params::<v2::InitializeRequest>(params)?;
-            initialize.protocol_version = ProtocolVersion::V2;
-            *params = serialize_initialize_params(initialize)?;
+            // The request was written for a newer version. Keep what parses
+            // under v2 instead of rejecting it, as a standalone v2 agent does.
+            *params = crate::jsonrpc::normalize_newer_v2_initialize_request(params)?;
             Ok(())
         }
     }

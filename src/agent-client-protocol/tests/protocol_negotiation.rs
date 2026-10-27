@@ -167,8 +167,6 @@ async fn standalone_v1_rejects_malformed_initialization_before_dispatch() -> Res
         json!({ "protocolVersion": -1 }),
         json!({ "protocolVersion": 1.5 }),
         json!({ "protocolVersion": 65536 }),
-        json!({ "protocolVersion": 2 }),
-        json!({ "protocolVersion": 2, "info": { "name": 123, "version": "1" } }),
     ] {
         let agent = Agent.builder().on_receive_request(
             async |_initialize: v1::InitializeRequest, responder, _cx| {
@@ -181,6 +179,31 @@ async fn standalone_v1_rejects_malformed_initialization_before_dispatch() -> Res
         let task = tokio::spawn(driver.expect("agent owns a driver"));
         let response = request(&mut channel, 1, "initialize", params).await?;
         assert_eq!(response["error"]["code"], -32602, "{response}");
+        task.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn standalone_v1_ignores_unparsable_newer_initialization_params() -> Result<(), Error> {
+    for params in [
+        json!({ "protocolVersion": 2 }),
+        json!({ "protocolVersion": 2, "info": { "name": 123, "version": "1" } }),
+        json!({ "protocolVersion": 2, "info": "malformed", "_meta": 1, "capabilities": [] }),
+    ] {
+        let agent = Agent.builder().on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                assert_eq!(initialize.client_info, None);
+                assert_eq!(initialize.meta, None);
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+        let task = tokio::spawn(driver.expect("agent owns a driver"));
+        let response = request(&mut channel, 1, "initialize", params).await?;
+        assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
         task.abort();
     }
     Ok(())
