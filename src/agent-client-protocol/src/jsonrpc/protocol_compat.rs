@@ -346,6 +346,11 @@ mod imp {
         api: ProtocolVersionKind,
         initialize_surface: InitializeSurface,
         initialization_role: InitializationRole,
+        /// Reject incoming requests other than `initialize` until an
+        /// initialization has completed, without the rest of the peer
+        /// lifecycle. V1 agents with an initialize handler set this; v2
+        /// responders get it from [`InitializationRole::Responder`].
+        requires_initialize: bool,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -399,7 +404,26 @@ mod imp {
                 api: ProtocolVersionKind::V1,
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Unchecked,
+                requires_initialize: false,
             })
+        }
+
+        /// Reject incoming requests other than `initialize` until an
+        /// initialization completes. Only applies to v1 peer modes; v2
+        /// responders already enforce the full lifecycle.
+        pub(crate) fn require_initialize(self) -> Self {
+            match self {
+                Self::Acp(mode)
+                    if mode.api == ProtocolVersionKind::V1
+                        && mode.initialize_surface == InitializeSurface::Peer =>
+                {
+                    Self::Acp(AcpProtocolMode {
+                        requires_initialize: true,
+                        ..mode
+                    })
+                }
+                mode => mode,
+            }
         }
 
         pub(crate) fn v1_client() -> Self {
@@ -407,6 +431,7 @@ mod imp {
                 api: ProtocolVersionKind::V1,
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Unchecked,
+                requires_initialize: false,
             })
         }
 
@@ -415,6 +440,7 @@ mod imp {
                 api: ProtocolVersionKind::V1,
                 initialize_surface: InitializeSurface::Proxy,
                 initialization_role: InitializationRole::Unchecked,
+                requires_initialize: false,
             })
         }
 
@@ -424,6 +450,7 @@ mod imp {
                 api: ProtocolVersionKind::V2,
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Responder,
+                requires_initialize: false,
             })
         }
 
@@ -433,6 +460,7 @@ mod imp {
                 api: ProtocolVersionKind::V2,
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Initiator,
+                requires_initialize: false,
             })
         }
 
@@ -442,6 +470,7 @@ mod imp {
                 api: ProtocolVersionKind::V2,
                 initialize_surface: InitializeSurface::Proxy,
                 initialization_role: InitializationRole::Unchecked,
+                requires_initialize: false,
             })
         }
 
@@ -465,7 +494,10 @@ mod imp {
                         "cannot merge ACP builders with different initialization roles; \
                          handler chains share one connection lifecycle",
                     );
-                    Self::Acp(this)
+                    Self::Acp(AcpProtocolMode {
+                        requires_initialize: this.requires_initialize || other.requires_initialize,
+                        ..this
+                    })
                 }
             }
         }
@@ -604,6 +636,9 @@ mod imp {
                 return Err(invalid_proxy_initialize_direction());
             }
 
+            if mode.requires_initialize && !self.has_initialized() {
+                return Err(initialization_required(message.method()));
+            }
             self.ensure_initialized(message.method())?;
             ensure_matching_protocol_version(
                 message.method(),
@@ -956,9 +991,7 @@ mod imp {
             match state {
                 InitializationState::Unchecked | InitializationState::Ready => Ok(()),
                 InitializationState::Uninitialized | InitializationState::Initializing => {
-                    Err(crate::Error::invalid_request().data(format!(
-                        "ACP initialization must complete before `{method}` can be used",
-                    )))
+                    Err(initialization_required(method))
                 }
             }
         }
@@ -1046,6 +1079,13 @@ mod imp {
                 )));
             }
             Ok(())
+        }
+
+        fn has_initialized(&self) -> bool {
+            self.state
+                .lock()
+                .expect("protocol compatibility state mutex poisoned")
+                .initialized
         }
 
         fn is_pending_incoming_initialize(&self, id: &RequestId) -> bool {
@@ -1137,6 +1177,12 @@ mod imp {
     fn invalid_initialize_protocol_version() -> crate::Error {
         crate::Error::invalid_params()
             .data("initialize.protocolVersion must be a valid ACP protocol version")
+    }
+
+    fn initialization_required(method: &str) -> crate::Error {
+        crate::Error::invalid_request().data(format!(
+            "ACP initialization must complete before `{method}` can be used",
+        ))
     }
 
     fn null_request_id() -> crate::Error {

@@ -373,6 +373,11 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   v1 file-system or terminal-execution capabilities from unknown newer fields.
   V1's original fallback-to-latest rule is retained, including a v1 selection
   when the client requests an unsupported older version.
+- A v1 agent that registers a typed `initialize` request handler rejects any
+  other request that arrives before initialization completes with `-32600`.
+  Agents without one, including those with only catch-all handlers, keep
+  serving requests without initialization. V1 agents still accept a repeated
+  `initialize` at any time.
 - A standalone v2 agent accepts a request for v2 or a newer version and
   selects v2. The request delivered to the handler has `protocol_version`
   normalized to v2, and the response selects v2. A request for exactly v2 must
