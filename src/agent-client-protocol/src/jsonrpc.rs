@@ -2912,7 +2912,7 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
         }
         Err(error) => {
             tracing::debug!(
-                ?error,
+                error = ?crate::util::redacted_error(error.code),
                 "failed to inspect successor-wrapped notification for cancellation"
             );
             false
@@ -3211,7 +3211,10 @@ impl Drop for ResponderHandlerAttempt {
                 destination: self.destination.clone(),
             },
         ) {
-            tracing::debug!(?error, "could not complete JSON-RPC batch handler attempt");
+            tracing::debug!(
+                error = ?crate::util::redacted_error(error.code),
+                "could not complete JSON-RPC batch handler attempt"
+            );
         }
     }
 }
@@ -3373,6 +3376,27 @@ enum OutgoingMessage {
         error: crate::Error,
         destination: ResponseDestination,
     },
+}
+
+impl OutgoingMessage {
+    /// Kind, method, and ID only; params, results, and errors can carry
+    /// credentials and must not appear in ordinary logs.
+    fn log_summary(&self) -> (&'static str, Option<&str>, Option<&RequestId>) {
+        match self {
+            Self::CloseAfterDraining { .. } => ("close_after_draining", None, None),
+            Self::BatchDispatchComplete { .. } => ("batch_dispatch_complete", None, None),
+            Self::BatchHandlerAttemptComplete { .. } => {
+                ("batch_handler_attempt_complete", None, None)
+            }
+            Self::AbandonedBatchResponse { id, method, .. } => {
+                ("abandoned_batch_response", Some(method), Some(id))
+            }
+            Self::Request { id, method, .. } => ("request", Some(method), Some(id)),
+            Self::Notification { untyped } => ("notification", Some(&untyped.method), None),
+            Self::Response { id, method, .. } => ("response", Some(method), Some(id)),
+            Self::UncorrelatedErrorResponse { .. } => ("uncorrelated_error_response", None, None),
+        }
+    }
 }
 
 /// Return type from JrHandler; indicates whether the request was handled or not.
@@ -5191,7 +5215,7 @@ impl Drop for ResponderDropGuard {
             tracing::debug!(
                 id = ?self.id,
                 method = %self.method,
-                ?error,
+                error = ?crate::util::redacted_error(error.code),
                 "could not complete abandoned JSON-RPC batch response slot"
             );
         }
@@ -5351,7 +5375,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 
     /// Respond to the JSON-RPC request with an error.
     pub fn respond_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, ?error, "respond_with_error called");
+        tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "respond_with_error called");
         self.respond_with_result(Err(error))
     }
 
@@ -5537,7 +5561,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route an error response to the waiting task.
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, ?error, "error routed to awaiter");
+        tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
         self.route_with_result(Err(error))
     }
 }
@@ -5776,7 +5800,8 @@ impl Dispatch {
         self,
     ) -> Result<Result<Dispatch<Req, Notif>, Dispatch>, crate::Error> {
         tracing::debug!(
-            message = ?self,
+            method = self.method(),
+            id = ?self.id(),
             "into_typed_dispatch"
         );
         match self {
@@ -5784,11 +5809,11 @@ impl Dispatch {
                 if Req::matches_method(&message.method) {
                     match Req::parse_message(&message.method, &message.params) {
                         Ok(req) => {
-                            tracing::trace!(?req, "parsed ok");
+                            tracing::trace!("parsed ok");
                             Ok(Ok(Dispatch::Request(req, responder.cast())))
                         }
                         Err(err) => {
-                            tracing::trace!(?err, "parse error");
+                            tracing::trace!(err = ?crate::util::redacted_error(err.code), "parse error");
                             Err(err)
                         }
                     }
@@ -5802,11 +5827,11 @@ impl Dispatch {
                 if Notif::matches_method(&message.method) {
                     match Notif::parse_message(&message.method, &message.params) {
                         Ok(notif) => {
-                            tracing::trace!(?notif, "parse ok");
+                            tracing::trace!("parse ok");
                             Ok(Ok(Dispatch::Notification(notif)))
                         }
                         Err(err) => {
-                            tracing::trace!(?err, "parse error");
+                            tracing::trace!(err = ?crate::util::redacted_error(err.code), "parse error");
                             Err(err)
                         }
                     }
@@ -5824,11 +5849,11 @@ impl Dispatch {
                         Ok(value) => {
                             match <Req::Response as JsonRpcResponse>::from_value(method, value) {
                                 Ok(parsed) => {
-                                    tracing::trace!(?parsed, "parse ok");
+                                    tracing::trace!("parse ok");
                                     Ok(parsed)
                                 }
                                 Err(err) => {
-                                    tracing::trace!(?err, "parse error");
+                                    tracing::trace!(err = ?crate::util::redacted_error(err.code), "parse error");
                                     return Err(err);
                                 }
                             }
@@ -6609,7 +6634,10 @@ impl Drop for SentRequestCancellation {
             return;
         }
         if let Err(error) = self.send() {
-            tracing::debug!(?error, "failed to auto-cancel dropped request");
+            tracing::debug!(
+                error = ?crate::util::redacted_error(error.code),
+                "failed to auto-cancel dropped request"
+            );
         }
     }
 }
@@ -6635,7 +6663,7 @@ async fn await_response_forwarding_cancellation(
     let forward_cancellation = || {
         if let Err(error) = cancellation.send() {
             tracing::debug!(
-                ?error,
+                error = ?crate::util::redacted_error(error.code),
                 "failed to forward cancellation to downstream request"
             );
         }

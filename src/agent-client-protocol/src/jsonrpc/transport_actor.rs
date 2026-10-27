@@ -17,7 +17,13 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
     let value = match serde_json::from_str::<serde_json::Value>(line) {
         Ok(value) => value,
         Err(error) => {
-            tracing::debug!(?error, "Failed to parse incoming JSON-RPC JSON");
+            // Serde reasons can quote input, so log only the category and position.
+            tracing::debug!(
+                category = ?error.classify(),
+                line = error.line(),
+                column = error.column(),
+                "Failed to parse incoming JSON-RPC JSON"
+            );
             return ParsedIncomingLine::Malformed {
                 raw: line.to_owned(),
                 error: crate::Error::parse_error().data(serde_json::json!({ "line": line })),
@@ -36,7 +42,10 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
                 .map(|entry| match RawJsonRpcMessage::deserialize(&entry) {
                     Ok(message) => TransportBatchEntry::message(message),
                     Err(error) => {
-                        tracing::debug!(?error, "Invalid JSON-RPC batch entry");
+                        tracing::debug!(
+                            category = ?error.classify(),
+                            "Invalid JSON-RPC batch entry"
+                        );
                         TransportBatchEntry::malformed(entry, crate::Error::invalid_request())
                     }
                 })
@@ -50,7 +59,7 @@ fn parse_incoming_line(line: &str) -> ParsedIncomingLine {
         value => match serde_json::from_value(value) {
             Ok(message) => ParsedIncomingLine::Single(message),
             Err(error) => {
-                tracing::debug!(?error, "Invalid JSON-RPC message");
+                tracing::debug!(category = ?error.classify(), "Invalid JSON-RPC message");
                 ParsedIncomingLine::Malformed {
                     raw: line.to_owned(),
                     error: crate::Error::invalid_request(),
@@ -122,7 +131,10 @@ async fn transport_outgoing_frames_actor(
             TransportFrame::Single(message) => message,
             TransportFrame::Malformed { raw, .. } => {
                 let raw = malformed_line_value(raw)?;
-                tracing::trace!(message = ?raw, "Relaying invalid JSON-RPC value");
+                tracing::trace!(
+                    message = %crate::util::redacted_json_line(&raw),
+                    "Relaying invalid JSON-RPC value"
+                );
                 outgoing_lines
                     .send(raw)
                     .await
@@ -132,7 +144,7 @@ async fn transport_outgoing_frames_actor(
             TransportFrame::Batch(batch) => {
                 let line =
                     serde_json::to_string(&batch).map_err(crate::Error::into_internal_error)?;
-                tracing::trace!(message = %line, "Sending JSON-RPC batch");
+                tracing::trace!(message = %crate::util::redacted_json_line(&line), "Sending JSON-RPC batch");
                 outgoing_lines
                     .send(line)
                     .await
@@ -142,7 +154,7 @@ async fn transport_outgoing_frames_actor(
         };
         match serde_json::to_string(&json_rpc_message) {
             Ok(line) => {
-                tracing::trace!(message = %line, "Sending JSON-RPC message");
+                tracing::trace!(message = %crate::util::redacted_json_line(&line), "Sending JSON-RPC message");
                 outgoing_lines
                     .send(line)
                     .await
@@ -301,7 +313,7 @@ pub(super) async fn transport_incoming_lines_actor(
     let mut incoming_lines = pin!(incoming_lines);
     while let Some(line_result) = incoming_lines.next().await {
         let line = line_result.map_err(crate::Error::into_internal_error)?;
-        tracing::trace!(message = %line, "Received JSON-RPC message");
+        tracing::trace!(message = %crate::util::redacted_json_line(&line), "Received JSON-RPC message");
 
         match parse_incoming_line(&line) {
             ParsedIncomingLine::Single(message) => {
