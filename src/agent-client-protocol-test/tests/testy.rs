@@ -249,34 +249,54 @@ async fn testy_reserves_loaded_session_ids_and_rejects_after_close()
                 .await?;
             assert_eq!(listed.sessions.len(), 3);
 
+            let invalid_cursor = cx
+                .send_request(ListSessionsRequest::new().cursor("not-a-testy-cursor"))
+                .block_task()
+                .await
+                .expect_err("Testy never issues cursors, so any cursor is invalid");
+            assert_eq!(invalid_cursor.code, ErrorCode::InvalidParams);
+
             cx.send_request(CloseSessionRequest::new(loaded_id.clone()))
                 .block_task()
                 .await?;
-            assert!(
-                cx.send_request(PromptRequest::new(
+            let session_not_found = ErrorCode::ResourceNotFound;
+            let expected_data = Some(serde_json::json!({ "sessionId": "testy-session-1" }));
+            let prompt_error = cx
+                .send_request(PromptRequest::new(
                     loaded_id.clone(),
                     vec![TestyCommand::Greet.to_prompt().into()],
                 ))
                 .block_task()
                 .await
-                .is_err()
-            );
-            assert!(
-                cx.send_request(SetSessionModeRequest::new(loaded_id.clone(), "chat"))
-                    .block_task()
-                    .await
-                    .is_err()
-            );
-            assert!(
-                cx.send_request(SetSessionConfigOptionRequest::new(
+                .expect_err("closed sessions should reject prompts");
+            assert_eq!(prompt_error.code, session_not_found);
+            assert_eq!(prompt_error.data, expected_data);
+            let set_mode_error = cx
+                .send_request(SetSessionModeRequest::new(loaded_id.clone(), "chat"))
+                .block_task()
+                .await
+                .expect_err("closed sessions should reject set_mode");
+            assert_eq!(set_mode_error.code, session_not_found);
+            let set_config_error = cx
+                .send_request(SetSessionConfigOptionRequest::new(
                     loaded_id.clone(),
                     "verbosity",
                     "brief",
                 ))
                 .block_task()
                 .await
-                .is_err()
-            );
+                .expect_err("closed sessions should reject set_config_option");
+            assert_eq!(set_config_error.code, session_not_found);
+            let close_error = cx
+                .send_request(CloseSessionRequest::new(loaded_id.clone()))
+                .block_task()
+                .await
+                .expect_err("closing an unknown session should fail");
+            assert_eq!(close_error.code, session_not_found);
+            assert_eq!(close_error.data, expected_data);
+            cx.send_request(DeleteSessionRequest::new(loaded_id.clone()))
+                .block_task()
+                .await?;
 
             let listed = cx
                 .send_request(ListSessionsRequest::new())

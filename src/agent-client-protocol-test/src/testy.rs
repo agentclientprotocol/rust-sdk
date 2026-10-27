@@ -297,7 +297,7 @@ impl Testy {
             .sessions
             .get(session_id)
             .cloned()
-            .ok_or_else(|| invalid_params(format!("unknown session `{session_id}`")))
+            .ok_or_else(|| session_not_found(session_id))
     }
 
     fn begin_prompt(&self, session_id: &SessionId) -> Result<(), agent_client_protocol::Error> {
@@ -305,10 +305,8 @@ impl Testy {
         let session = state
             .sessions
             .get_mut(session_id)
-            .ok_or_else(|| invalid_params(format!("unknown session `{session_id}`")))?;
-        if session.closed {
-            return Err(invalid_params(format!("closed session `{session_id}`")));
-        }
+            .filter(|session| !session.closed)
+            .ok_or_else(|| session_not_found(session_id))?;
         session.active_prompts += 1;
         Ok(())
     }
@@ -476,6 +474,13 @@ impl Testy {
         request: ListSessionsRequest,
         responder: Responder<ListSessionsResponse>,
     ) -> Result<(), agent_client_protocol::Error> {
+        // Testy returns every session in one page and never issues a
+        // `nextCursor`, so any cursor a client sends is invalid.
+        if let Some(cursor) = &request.cursor {
+            return responder.respond_with_error(invalid_params(format!(
+                "invalid session/list cursor `{cursor}`"
+            )));
+        }
         let mut sessions = self
             .lock_state()
             .sessions
@@ -524,8 +529,12 @@ impl Testy {
     ) -> Result<(), agent_client_protocol::Error> {
         let (remove_session, did_cancel) = {
             let mut state = self.lock_state();
-            let Some(session) = state.sessions.get_mut(&request.session_id) else {
-                return responder.respond(CloseSessionResponse::new());
+            let Some(session) = state
+                .sessions
+                .get_mut(&request.session_id)
+                .filter(|session| !session.closed)
+            else {
+                return responder.respond_with_error(session_not_found(&request.session_id));
             };
             session.cancelled = true;
             session.closed = true;
@@ -553,18 +562,13 @@ impl Testy {
         }
 
         let mut state = self.lock_state();
-        let Some(session) = state.sessions.get_mut(&request.session_id) else {
-            return responder.respond_with_error(invalid_params(format!(
-                "unknown session `{}`",
-                request.session_id
-            )));
+        let Some(session) = state
+            .sessions
+            .get_mut(&request.session_id)
+            .filter(|session| !session.closed)
+        else {
+            return responder.respond_with_error(session_not_found(&request.session_id));
         };
-        if session.closed {
-            return responder.respond_with_error(invalid_params(format!(
-                "closed session `{}`",
-                request.session_id
-            )));
-        }
         session.current_mode_id = request.mode_id;
         responder.respond(SetSessionModeResponse::new())
     }
@@ -593,18 +597,13 @@ impl Testy {
 
         let config_options = {
             let mut state = self.lock_state();
-            let Some(session) = state.sessions.get_mut(&request.session_id) else {
-                return responder.respond_with_error(invalid_params(format!(
-                    "unknown session `{}`",
-                    request.session_id
-                )));
+            let Some(session) = state
+                .sessions
+                .get_mut(&request.session_id)
+                .filter(|session| !session.closed)
+            else {
+                return responder.respond_with_error(session_not_found(&request.session_id));
             };
-            if session.closed {
-                return responder.respond_with_error(invalid_params(format!(
-                    "closed session `{}`",
-                    request.session_id
-                )));
-            }
             session.current_config_value = selected_value;
             session.config_options()
         };
@@ -1820,6 +1819,11 @@ fn file_uri(path: &Path) -> String {
 
 fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
     agent_client_protocol::Error::invalid_params().data(message.to_string())
+}
+
+/// `-32002` for a session that does not exist or is not active on this connection.
+fn session_not_found(session_id: &SessionId) -> agent_client_protocol::Error {
+    agent_client_protocol::Error::session_not_found(session_id.clone())
 }
 
 fn is_supported_mode_id(mode_id: &SessionModeId) -> bool {
