@@ -17,7 +17,7 @@ use agent_client_protocol::{JsonRpcMessage, JsonRpcRequest, JsonRpcResponse};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
-#[request(method = "_example/hello", response = HelloResponse)]
+#[request(method = "_com.example/hello", response = HelloResponse)]
 struct HelloRequest {
     name: String,
 }
@@ -29,7 +29,7 @@ struct HelloResponse {
 
 fn main() {
     let request = HelloRequest { name: "Ada".into() };
-    assert_eq!(request.method(), "_example/hello");
+    assert_eq!(request.method(), "_com.example/hello");
 }
 ```
 

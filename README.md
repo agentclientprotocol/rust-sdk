@@ -64,8 +64,8 @@ infrastructure can use `without_acp_version_guard`.
 ## Integrations
 
 - [Protocol schema and documentation](https://agentclientprotocol.com/)
-- [Agents](https://agentclientprotocol.com/overview/agents)
-- [Clients](https://agentclientprotocol.com/overview/clients)
+- [Agents](https://agentclientprotocol.com/get-started/agents)
+- [Clients](https://agentclientprotocol.com/get-started/clients)
 - Official Libraries
   - **Kotlin**: [`acp-kotlin`](https://github.com/agentclientprotocol/kotlin-sdk) – supports JVM, other targets are in progress
   - **Rust**: [`agent-client-protocol`](https://crates.io/crates/agent-client-protocol) - See the stable-v1 [agent](./src/agent-client-protocol/examples/simple_agent.rs) and [client](./src/agent-client-protocol/examples/yolo_one_shot_client.rs), or the draft-v2 [agent](./src/agent-client-protocol/examples/simple_agent_v2.rs) and [client](./src/agent-client-protocol/examples/v2_one_shot_client.rs) examples

@@ -167,11 +167,16 @@ V2 deliberately separates prompt submission from session observation:
   session can accept ordinary new foreground work. It is not a wire-level
   boundary assigning previous events to one prompt, and background updates may
   continue while idle.
-- `cancel_active_work` sends session-wide `session/cancel`. Cancellation
-  of active foreground work completes after the required `idle` update with
-  stop reason `cancelled`; cancelling an idle session need not emit another
-  completion. The
-  client should immediately mark unfinished tool calls for the active work as
+- `cancel_active_work` sends session-wide `session/cancel`. It covers the
+  session's foreground work and any prompts the agent has not yet inserted;
+  those prompt requests fail with `-32800` (request cancelled), while a prompt
+  whose user message was already inserted still succeeds with its message ID.
+  Background activity is not covered, although the agent may stop it too.
+  Cancellation of active foreground work completes after the required `idle`
+  update with stop reason `cancelled`; cancelling an idle session need not
+  emit another completion. `cancelled` is reserved for work the client
+  cancelled with `session/cancel` or by closing the session; work the agent
+  stops on its own uses another reason, such as `error`. The client should immediately mark unfinished tool calls for the active work as
   cancelled and must resolve every pending permission request in that session
   with the cancelled outcome, without answering twice or affecting other
   sessions. Elicitations are not all cancelled implicitly: agents should use
@@ -179,9 +184,13 @@ V2 deliberately separates prompt submission from session observation:
   cancelled work. Cancelling or dropping the prompt's `SentRequest` is the
   separate JSON-RPC request-cancellation mechanism; insertion still requires a
   successful prompt response with its message ID.
-- `set_config_option` returns the authoritative replacement option set, and
-  `close` returns the complete close response. Mutable configuration is not
-  cached on the command handle.
+- `set_config_option` must only name a `configId` the agent advertised for
+  the session. An unknown `configId` or invalid value fails with `-32602` and
+  leaves the configuration unchanged. A successful response is the
+  authoritative replacement option set for the requesting client, even though
+  a duplicate `config_option_update` notification for the same change may
+  arrive before it. `close` returns the complete close response. Mutable
+  configuration is not cached on the command handle.
 
 Install connection handlers before `session/new`, `session/resume`, and
 feature-gated `session/fork` requests. This is especially important before
@@ -583,6 +592,10 @@ Foreground states are aggregate snapshots, not per-prompt events:
   historical states as live activity or reset state to idle on the response.
   Testy and the echo example only resume sessions without foreground work, so
   their snapshot is idle without a new stop reason.
+- A resume should also return the current `configOptions` in its response and
+  send current session info through `session_info_update` after any replay and
+  before responding. Like the state snapshot, this synchronizes current state
+  rather than replaying historical configuration or metadata changes.
 
 Prompt acceptance means logical user-message insertion with an ID and a
 position, not receipt or queueing. Running may precede insertion. Rejection
@@ -622,7 +635,32 @@ fallbacks; accepting an unknown variant is not a support advertisement.
 Unknown capability fields are ignored, while malformed known discriminators
 must not fall through to an unknown-variant fallback.
 
+Client projections of tool calls and terminals should follow these rules:
+
+- `tool_call_update` is an upsert keyed by `toolCallId`. On an existing tool
+  call, omission leaves a field unchanged and `null` resets it to its default.
+  A new ID starts from the defaults: `kind` is `other`, `status` is `pending`,
+  `content` and `locations` are empty, and `title`, `name`, `rawInput`, and
+  `rawOutput` are unset. Show a generic title while `title` is unset.
+- Treat a tool call whose `status` is unrecognized as still in progress.
+- A `tool_call_content_chunk` for a `toolCallId` the client has not seen
+  creates the tool call with those defaults and then appends. Likewise a
+  `terminal_output_chunk` for an unseen `terminalId` creates the terminal with
+  unknown fields and empty output, then appends.
+- Decode each terminal chunk independently and append the bytes in order.
+  Ignore a chunk or `output` snapshot whose `data` is not valid base64,
+  keeping the bytes already held. Agents should send all output before a
+  concrete `exitStatus`, but clients still append output that arrives after
+  it. Clients may cap how much output they retain, for example by dropping the
+  oldest bytes; a later `output` snapshot replaces whatever they kept.
+- In a diff, `changes` is authoritative for affected paths and operations.
+  Follow `changes` when `patch` disagrees with it, and handle diffs without a
+  `patch`.
+
 For v2 `git_patch` diffs, every path must be absolute and have no `a/` or `b/`
 prefix, including rename/copy header paths. Git quoting and `/dev/null` for
-an added/deleted file's missing side still apply. The SDK carries patch text;
-it does not rewrite paths or compute diffs from snippets.
+an added/deleted file's missing side still apply. Configure diff parsers not to
+strip a leading path component, since that would drop part of an absolute
+path, and take paths from `changes` or from the `---`, `+++`, rename, and copy
+lines rather than by splitting the `diff --git` header. The SDK carries patch
+text; it does not rewrite paths or compute diffs from snippets.

@@ -75,7 +75,7 @@ This demonstrates P/ACP's core value: adding capabilities through composition ra
 
 > What are you proposing to improve the situation?
 
-We will develop an [extension to ACP](https://agentclientprotocol.com/protocol/extensibility) called **P/ACP** (Proxying ACP).
+We will develop an [extension to ACP](https://agentclientprotocol.com/protocol/v1/extensibility) called **P/ACP** (Proxying ACP).
 
 The heart of P/ACP is a proxy chain where each component adds specific capabilities:
 

@@ -196,4 +196,4 @@ and connect/disconnect methods are removed.
 - [Conductor Design](./conductor.md)
 - [MCP Bridge](./mcp-bridge.md)
 - [Original P/ACP Design Proposal](./proxying-acp.md) (historical)
-- [ACP extensibility](https://agentclientprotocol.com/protocol/extensibility)
+- [ACP extensibility](https://agentclientprotocol.com/protocol/v1/extensibility)

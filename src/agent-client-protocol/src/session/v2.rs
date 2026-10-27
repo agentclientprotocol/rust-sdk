@@ -847,11 +847,22 @@ where
     /// Ask the agent to cancel the session's current foreground work.
     ///
     /// This is independent from cancelling a prompt's [`SentRequest`].
-    /// Cancellation completes when the agent reports an `idle` state update
-    /// with [`v2::StopReason::Cancelled`]. The client should immediately mark
-    /// unfinished tool calls for the active work as cancelled and remains
-    /// responsible for resolving every pending [`v2::RequestPermissionRequest`]
-    /// with the cancelled outcome.
+    /// `session/cancel` covers the session's foreground work and any prompts
+    /// the agent has not yet inserted; those prompt requests fail with
+    /// `-32800` (request cancelled). A prompt whose user message was already
+    /// inserted still succeeds with its `messageId`. Background activity is
+    /// not covered, although the agent may stop it too.
+    ///
+    /// If foreground work was active, cancellation completes when the agent
+    /// reports an `idle` state update with [`v2::StopReason::Cancelled`]; no
+    /// completion update is required when nothing was running. `cancelled` is only
+    /// reported for work the client cancelled, through this notification or
+    /// by closing the session. The client should immediately mark unfinished
+    /// tool calls for the active work as cancelled and must resolve every
+    /// pending [`v2::RequestPermissionRequest`] in the session with the
+    /// cancelled outcome.
+    ///
+    /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#cancellation>.
     pub fn cancel_active_work(&self) -> Result<(), crate::Error> {
         self.connection.send_notification_to(
             Agent,
@@ -861,8 +872,16 @@ where
 
     /// Set a session configuration option.
     ///
-    /// The response contains the full current option set. It is not cached on
-    /// this command handle.
+    /// Only send a `config_id` the agent advertised for this session, with a
+    /// value from that option. The agent rejects an unknown `config_id` or an
+    /// invalid value with `-32602` and leaves the configuration unchanged.
+    ///
+    /// The response contains the full current option set and is authoritative
+    /// for the requesting client. A duplicate `config_option_update`
+    /// notification for the same change may arrive before the response. The
+    /// response is not cached on this command handle.
+    ///
+    /// See <https://agentclientprotocol.com/protocol/v2/session-config-options>.
     pub fn set_config_option(
         &self,
         config_id: impl Into<v2::SessionConfigId>,
