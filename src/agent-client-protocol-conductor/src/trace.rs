@@ -235,7 +235,7 @@ impl TraceWriter {
         session: Option<String>,
         mut params: serde_json::Value,
     ) {
-        redact_http_credentials(&mut params);
+        redact_credentials(&mut params);
         self.request_details.insert(
             id.clone(),
             RequestDetails {
@@ -265,7 +265,7 @@ impl TraceWriter {
         error_domain: Option<Protocol>,
         mut payload: serde_json::Value,
     ) {
-        redact_http_credentials(&mut payload);
+        redact_credentials(&mut payload);
         self.write_event(&TraceEvent::Response(ResponseEvent {
             ts: self.elapsed(),
             from: format!("{from:?}"),
@@ -287,7 +287,7 @@ impl TraceWriter {
         session: Option<String>,
         mut params: serde_json::Value,
     ) {
-        redact_http_credentials(&mut params);
+        redact_credentials(&mut params);
         self.write_event(&TraceEvent::Notification(NotificationEvent {
             ts: self.elapsed(),
             protocol,
@@ -555,21 +555,19 @@ fn response_outcome(
     (None, payload)
 }
 
-/// Redact only the trace copy; transport declarations keep their credentials.
-/// This is deliberately not a general-purpose sanitizer for protocol payloads.
-fn redact_http_credentials(value: &mut serde_json::Value) {
-    fn is_credential(name: &str) -> bool {
-        [
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "set-cookie",
-            "x-api-key",
-        ]
-        .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
-    }
+/// Replacement for credential values in trace copies.
+const REDACTED: &str = "[REDACTED]";
 
+/// Redact only the trace copy; transport declarations keep their credentials.
+///
+/// Every `env` and `headers` value is replaced, keeping only the names: ACP
+/// uses these fields for MCP server declarations (`session/new`, `session/load`,
+/// `session/resume`, `session/fork`, and their v2 equivalents), terminal auth
+/// methods, terminal creation, and provider configuration, and any of their
+/// values may be a credential. HTTP URLs lose userinfo and credential-like
+/// query values. Other payload fields, such as prompts and file contents, are
+/// recorded as-is: this is not a general-purpose sanitizer.
+pub(crate) fn redact_credentials(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
             if let Some(serde_json::Value::String(url)) = object.get_mut("url")
@@ -577,35 +575,34 @@ fn redact_http_credentials(value: &mut serde_json::Value) {
             {
                 *url = redacted;
             }
-            match object.get_mut("headers") {
-                Some(serde_json::Value::Array(headers)) => {
-                    for header in headers {
-                        if header
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(is_credential)
-                            && let Some(value) = header.get_mut("value")
-                        {
-                            *value = serde_json::Value::String("[REDACTED]".to_owned());
-                        }
-                    }
+            for (key, field) in object.iter_mut() {
+                if key == "env" || key == "headers" {
+                    redact_name_value_pairs(field);
                 }
-                Some(serde_json::Value::Object(headers)) => {
-                    for (name, value) in headers {
-                        if is_credential(name) {
-                            *value = serde_json::Value::String("[REDACTED]".to_owned());
-                        }
-                    }
-                }
-                _ => {}
-            }
-            for value in object.values_mut() {
-                redact_http_credentials(value);
+                redact_credentials(field);
             }
         }
         serde_json::Value::Array(values) => {
-            for value in values {
-                redact_http_credentials(value);
+            values.iter_mut().for_each(redact_credentials);
+        }
+        _ => {}
+    }
+}
+
+/// Redact the values of `[{ "name", "value" }]` lists and `{ name: value }` maps.
+fn redact_name_value_pairs(field: &mut serde_json::Value) {
+    let redacted = || serde_json::Value::String(REDACTED.to_owned());
+    match field {
+        serde_json::Value::Array(entries) => {
+            for entry in entries {
+                if let Some(value) = entry.get_mut("value") {
+                    *value = redacted();
+                }
+            }
+        }
+        serde_json::Value::Object(entries) => {
+            for value in entries.values_mut() {
+                *value = redacted();
             }
         }
         _ => {}
@@ -660,7 +657,7 @@ fn redact_http_url(value: &str) -> Option<String> {
                 .filter(|c| !matches!(c, '\t' | '\n' | '\r'))
                 .collect();
             return (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
-                .then(|| "[REDACTED]".to_owned());
+                .then(|| REDACTED.to_owned());
         }
     };
     let mut changed = false;
@@ -820,20 +817,20 @@ mod tests {
     use agent_client_protocol::RawJsonRpcMessage;
     use serde_json::json;
 
-    use super::{MessageInfo, Protocol, ResponseEvent, redact_http_credentials, response_outcome};
+    use super::{MessageInfo, Protocol, ResponseEvent, redact_credentials, response_outcome};
 
     #[test]
     fn http_url_redaction_handles_encoded_keys_duplicates_and_userinfo() {
         let mut value = json!({
             "url":"HTTPS://user:p%40ss@example.test:8443/mcp?mode=a%20b&%61ccess_TOKEN=one&api-key=two&token&token=three&&count=2#section"
         });
-        redact_http_credentials(&mut value);
+        redact_credentials(&mut value);
         assert_eq!(
             value["url"],
             "https://example.test:8443/mcp?mode=a%20b&%61ccess_TOKEN=[REDACTED]&api-key=[REDACTED]&token=[REDACTED]&token=[REDACTED]&&count=2#section"
         );
         let once = value.clone();
-        redact_http_credentials(&mut value);
+        redact_credentials(&mut value);
         assert_eq!(value, once, "redaction must be idempotent");
 
         for key in [
@@ -857,7 +854,7 @@ mod tests {
             "credentials",
         ] {
             let mut value = json!({"url":format!("http://example.test/mcp?{key}=private&mode=ok")});
-            redact_http_credentials(&mut value);
+            redact_credentials(&mut value);
             assert_eq!(
                 value["url"],
                 format!("http://example.test/mcp?{key}=[REDACTED]&mode=ok")
@@ -869,7 +866,7 @@ mod tests {
             "https://u%40ser:p%40ss@example.test/mcp",
         ] {
             let mut value = json!({"url":url});
-            redact_http_credentials(&mut value);
+            redact_credentials(&mut value);
             assert_eq!(value["url"], "https://example.test/mcp");
         }
         for scheme in [
@@ -883,7 +880,7 @@ mod tests {
             let mut invalid = json!({
                 "url":format!("{scheme}://user:private@[bad-host]/?token=private")
             });
-            redact_http_credentials(&mut invalid);
+            redact_credentials(&mut invalid);
             assert_eq!(invalid["url"], "[REDACTED]");
         }
     }
@@ -899,7 +896,7 @@ mod tests {
             "customSecret":"not a recognized credential field"
         });
         let mut trace_copy = original.clone();
-        redact_http_credentials(&mut trace_copy);
+        redact_credentials(&mut trace_copy);
         assert_eq!(trace_copy, original);
     }
 
@@ -951,6 +948,7 @@ mod tests {
             expected["mcpServers"][0]["url"] =
                 json!("https://example.test/mcp?token=[REDACTED]&mode=ok");
             expected["mcpServers"][0]["headers"][0]["value"] = json!("[REDACTED]");
+            expected["mcpServers"][0]["headers"][1]["value"] = json!("[REDACTED]");
             let mut count = 0;
             while let Some(event) = events_rx.next().await {
                 let recorded = match event {
@@ -1003,24 +1001,62 @@ mod tests {
     #[test]
     fn declaration_credentials_are_redacted_without_changing_transport_payload() {
         let original = json!({"mcpServers":[
-            {"headers":[{"name":"Authorization","value":"Bearer private"},{"name":"visible","value":"ok"}]},
-            {"headers":{"COOKIE":"private","visible":"ok"}}
+            {"headers":[{"name":"Authorization","value":"Bearer private"},{"name":"X-Custom","value":"private"}]},
+            {"headers":{"COOKIE":"private","X-Custom":"private"}}
         ]});
         let mut trace_copy = original.clone();
-        redact_http_credentials(&mut trace_copy);
+        redact_credentials(&mut trace_copy);
         assert_eq!(
-            trace_copy["mcpServers"][0]["headers"][0]["value"],
-            "[REDACTED]"
+            trace_copy,
+            json!({"mcpServers":[
+                {"headers":[{"name":"Authorization","value":"[REDACTED]"},{"name":"X-Custom","value":"[REDACTED]"}]},
+                {"headers":{"COOKIE":"[REDACTED]","X-Custom":"[REDACTED]"}}
+            ]})
         );
-        assert_eq!(
-            trace_copy["mcpServers"][1]["headers"]["COOKIE"],
-            "[REDACTED]"
-        );
-        assert_eq!(trace_copy["mcpServers"][0]["headers"][1]["value"], "ok");
         assert_eq!(
             original["mcpServers"][0]["headers"][0]["value"],
             "Bearer private"
         );
+    }
+
+    #[test]
+    fn session_setup_env_and_header_values_are_redacted() {
+        const SECRET: &str = "SYNTHETIC_PRIVATE_CREDENTIAL";
+        let mcp_servers = json!([
+            {"name":"stdio","command":"/bin/server","args":["--flag"],
+             "env":[{"name":"API_KEY","value":SECRET},{"name":"PLAIN","value":SECRET}]},
+            {"type":"http","name":"http","url":"https://example.test/mcp",
+             "headers":[{"name":"X-Api-Token","value":SECRET}]},
+            {"type":"sse","name":"sse","url":"https://example.test/sse",
+             "headers":[{"name":"Authorization","value":SECRET}]}
+        ]);
+        // session/new, session/load, session/resume, session/fork (v1 and v2)
+        // all declare MCP servers the same way.
+        for mut params in [
+            json!({"cwd":"/work","mcpServers":mcp_servers}),
+            json!({"sessionId":"s","cwd":"/work","mcpServers":mcp_servers}),
+            json!({"sessionId":"s","cwd":"/work","mcpServers":mcp_servers,"_meta":{"x":1}}),
+            // Terminal auth methods in an initialize response (v1 map, v2 list).
+            json!({"authMethods":[{"type":"terminal","id":"t","name":"T","env":{"TOKEN":SECRET}}]}),
+            json!({"authMethods":[{"type":"terminal","id":"t","name":"T","env":[{"name":"TOKEN","value":SECRET}]}]}),
+            // terminal/create.
+            json!({"sessionId":"s","command":"/bin/sh","env":[{"name":"TOKEN","value":SECRET}]}),
+        ] {
+            redact_credentials(&mut params);
+            let recorded = params.to_string();
+            assert!(!recorded.contains(SECRET), "{recorded}");
+            assert!(recorded.contains("[REDACTED]"), "{recorded}");
+        }
+
+        let mut params = json!({"cwd":"/work","mcpServers":mcp_servers});
+        redact_credentials(&mut params);
+        assert_eq!(
+            params["mcpServers"][0]["env"],
+            json!([{"name":"API_KEY","value":"[REDACTED]"},{"name":"PLAIN","value":"[REDACTED]"}])
+        );
+        assert_eq!(params["mcpServers"][0]["args"], json!(["--flag"]));
+        assert_eq!(params["mcpServers"][1]["headers"][0]["name"], "X-Api-Token");
+        assert_eq!(params["cwd"], "/work");
     }
 
     #[test]
