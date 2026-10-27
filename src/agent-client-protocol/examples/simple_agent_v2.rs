@@ -40,7 +40,8 @@ struct Session {
 }
 
 impl EchoAgent {
-    fn create_session(&self, request: v2::NewSessionRequest) -> v2::SessionId {
+    fn create_session(&self, request: v2::NewSessionRequest) -> Result<v2::SessionId> {
+        reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_session_id += 1;
         let session_id = v2::SessionId::new(format!("echo-session-{}", state.next_session_id));
@@ -55,7 +56,7 @@ impl EchoAgent {
                 history: Vec::new(),
             },
         );
-        session_id
+        Ok(session_id)
     }
 
     fn list_sessions(&self, request: &v2::ListSessionsRequest) -> Vec<v2::SessionInfo> {
@@ -79,11 +80,12 @@ impl EchoAgent {
     }
 
     fn resume_session(&self, request: &v2::ResumeSessionRequest) -> Result<Vec<v2::SessionUpdate>> {
+        reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         let session = state
             .sessions
             .get_mut(&request.session_id)
-            .ok_or_else(|| invalid_params(format!("unknown session `{}`", request.session_id)))?;
+            .ok_or_else(|| session_not_found(&request.session_id))?;
         if session.foreground_work {
             return Err(invalid_params(format!(
                 "session `{}` still has foreground work",
@@ -115,10 +117,8 @@ impl EchoAgent {
         let session = state
             .sessions
             .get_mut(session_id)
-            .ok_or_else(|| invalid_params(format!("unknown session `{session_id}`")))?;
-        if !session.active {
-            return Err(invalid_params(format!("closed session `{session_id}`")));
-        }
+            .filter(|session| session.active)
+            .ok_or_else(|| session_not_found(session_id))?;
         if session.foreground_work {
             return Err(invalid_params(format!(
                 "session `{session_id}` already has foreground work"
@@ -138,7 +138,7 @@ impl EchoAgent {
         let session = state
             .sessions
             .get_mut(session_id)
-            .ok_or_else(|| invalid_params(format!("unknown session `{session_id}`")))?;
+            .ok_or_else(|| session_not_found(session_id))?;
         let stop_reason = if session.cancelled || !session.active {
             v2::StopReason::Cancelled
         } else {
@@ -218,7 +218,8 @@ impl EchoAgent {
         let session = state
             .sessions
             .get_mut(session_id)
-            .ok_or_else(|| invalid_params(format!("unknown session `{session_id}`")))?;
+            .filter(|session| session.active)
+            .ok_or_else(|| session_not_found(session_id))?;
         session.active = false;
         if session.foreground_work {
             session.cancelled = true;
@@ -355,7 +356,10 @@ async fn main() -> Result<()> {
                 async move |request: v2::NewSessionRequest,
                             responder: Responder<v2::NewSessionResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    let session_id = agent.create_session(request);
+                    let session_id = match agent.create_session(request) {
+                        Ok(session_id) => session_id,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
                     responder.respond(v2::NewSessionResponse::new(session_id.clone()))?;
                     // A client can already have this ready-state update queued
                     // when a later prompt response arrives. Prompt completion
@@ -416,7 +420,11 @@ async fn main() -> Result<()> {
                 async move |request: v2::CloseSessionRequest,
                             responder: Responder<v2::CloseSessionResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    if !agent.close(&request.session_id)? {
+                    let has_foreground_work = match agent.close(&request.session_id) {
+                        Ok(has_foreground_work) => has_foreground_work,
+                        Err(error) => return responder.respond_with_error(error),
+                    };
+                    if !has_foreground_work {
                         return responder.respond(v2::CloseSessionResponse::new());
                     }
                     let waiting_agent = agent.clone();
@@ -436,7 +444,9 @@ async fn main() -> Result<()> {
                 async move |request: v2::PromptRequest,
                             responder: Responder<v2::PromptResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    agent.begin_prompt(&request.session_id)?;
+                    if let Err(error) = agent.begin_prompt(&request.session_id) {
+                        return responder.respond_with_error(error);
+                    }
                     let user_message_id = agent.next_message_id("user-message");
                     let user_message = v2::SessionUpdate::UserMessage(
                         v2::UserMessage::new(user_message_id.clone())
@@ -488,4 +498,22 @@ fn send_update(
 
 fn invalid_params(message: impl ToString) -> Error {
     Error::invalid_params().data(message.to_string())
+}
+
+/// Requests naming a session that does not exist or is not active on this
+/// connection fail with `-32002` and `data.sessionId`.
+fn session_not_found(session_id: &v2::SessionId) -> Error {
+    Error::session_not_found(session_id.0.clone())
+}
+
+/// This agent advertises no `session.mcp` transports, so it must reject every
+/// MCP server with `-32602` rather than silently ignoring it.
+fn reject_mcp_servers(mcp_servers: &[v2::McpServer]) -> Result<()> {
+    if mcp_servers.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid_params(
+            "this agent does not advertise any MCP server transports",
+        ))
+    }
 }
