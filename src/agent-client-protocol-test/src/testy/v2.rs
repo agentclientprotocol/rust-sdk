@@ -435,6 +435,13 @@ impl ConnectTo<Client> for V2Testy {
                     async move |request: acp::ListSessionsRequest,
                                 responder: Responder<acp::ListSessionsResponse>,
                                 _connection: V2ConnectionTo<Client>| {
+                        // Testy returns every session in one page and never issues a
+                        // `nextCursor`, so any cursor a client sends is invalid.
+                        if let Some(cursor) = &request.cursor {
+                            return responder.respond_with_error(invalid_params(format!(
+                                "invalid session/list cursor `{cursor}`"
+                            )));
+                        }
                         responder.respond(acp::ListSessionsResponse::new(
                             agent.list_sessions(&request),
                         ))

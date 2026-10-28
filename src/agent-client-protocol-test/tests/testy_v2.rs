@@ -463,7 +463,7 @@ async fn testy_router_keeps_the_v1_implementation_available() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
+async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cursors() {
     Client
         .v2()
         .connect_with(Testy::new().v2(), async |connection| {
@@ -547,6 +547,16 @@ async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
                     .sessions
                     .is_empty(),
                 "a rejected session/new must not create a session"
+            );
+
+            let cursor_error = connection
+                .send_request(v2::ListSessionsRequest::new().cursor("never-issued"))
+                .block_task()
+                .await
+                .expect_err("Testy v2 never issues a nextCursor, so every cursor is invalid");
+            assert_eq!(
+                cursor_error.code,
+                agent_client_protocol::ErrorCode::InvalidParams
             );
             Ok(())
         })

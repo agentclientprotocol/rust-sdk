@@ -393,6 +393,13 @@ async fn main() -> Result<()> {
                 async move |request: v2::ListSessionsRequest,
                             responder: Responder<v2::ListSessionsResponse>,
                             _connection: V2ConnectionTo<Client>| {
+                    // Every session fits in one page and no `nextCursor` is ever
+                    // issued, so any cursor a client sends is invalid.
+                    if let Some(cursor) = &request.cursor {
+                        return responder.respond_with_error(invalid_params(format!(
+                            "invalid session/list cursor `{cursor}`"
+                        )));
+                    }
                     responder.respond(v2::ListSessionsResponse::new(agent.list_sessions(&request)))
                 }
             },
