@@ -386,8 +386,11 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   request instead resolves a v1 selection with a local error.
 - A native v1 agent selects v1 for requests advertising v1 or a newer version,
   with or without `unstable_protocol_v2` enabled. Newer initialization metadata
-  is normalized into v1 identity and shared capabilities. The SDK never enables
-  v1 file-system or terminal-execution capabilities from unknown newer fields.
+  is normalized into v1 identity and shared capabilities. Terminal
+  authentication is kept: an object-valued `auth.terminal` becomes v1's
+  `auth.terminal: true`. Elicitation capabilities and an object `_meta` are
+  kept when they parse under v1. The SDK never enables v1 file-system or
+  terminal-execution capabilities from unknown newer fields.
   V1's original fallback-to-latest rule is retained, including a v1 selection
   when the client requests an unsupported older version.
 - A v1 agent that registers a typed `initialize` request handler rejects any
@@ -725,7 +728,18 @@ Draft v2 type changes:
 - `RequestPermissionOutcome::Cancelled` carries a `CancelledPermissionOutcome`
   with optional `_meta`; `{"outcome": "cancelled"}` still parses.
   `AuthCapabilities` is now `ClientAuthCapabilities`.
+- `DiffPatch`, `ToolCallPermissionSubject`, and `Icon` gain a `_meta` field
+  (`meta`).
 - Unknown variants keep their optional fields verbatim in `fields`.
+
+`V2SessionBuilder::with_mcp_server`, `V2ResumeSessionBuilder::with_mcp_server`,
+`V2ForkSessionBuilder::with_mcp_server`, and `Proxy.v2().with_mcp_server`
+declare an `McpServer::Acp` server. The agent must advertise
+`session.mcp.acp` to accept it; otherwise a conforming agent rejects the setup
+request with `-32602`. When the downstream agent only supports another MCP
+transport, place a compatibility proxy such as `McpOverAcpPolyfill` in front of
+it. The SDK does not check the agent's capability before sending the
+declaration.
 
 Client projections should also follow these rules:
 

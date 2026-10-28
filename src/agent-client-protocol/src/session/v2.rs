@@ -298,6 +298,12 @@ where
     /// runner tasks receive an initial poll before `session/new` is published,
     /// allowing the agent to connect while handling session setup. A
     /// successful attachment remains active for the lifetime of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -466,6 +472,12 @@ where
     /// before `session/fork` is published, allowing the agent to connect while
     /// handling session setup. A successful attachment remains active for the
     /// lifetime of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -632,6 +644,12 @@ where
     /// published, allowing the agent to use the server during replay and
     /// session setup. A successful attachment remains active for the lifetime
     /// of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,

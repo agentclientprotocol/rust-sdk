@@ -2256,6 +2256,12 @@ impl<
     /// Unrelated request fields are preserved exactly.
     ///
     /// Only applicable to proxies.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The downstream
+    /// agent must advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit between this proxy and the agent;
+    /// otherwise a conforming agent rejects the setup request with `-32602`.
+    /// This method does not check the agent's capabilities.
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
