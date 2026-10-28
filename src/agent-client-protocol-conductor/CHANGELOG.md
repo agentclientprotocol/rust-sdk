@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.5.0...agent-client-protocol-conductor-v3.6.0) - 2026-10-28
+
+### Fixed
+
+- stop logging MCP env and header values ([#445](https://github.com/agentclientprotocol/rust-sdk/pull/445))
+
 ## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.3.0...agent-client-protocol-conductor-v3.4.0) - 2026-10-16
 
 ### Fixed

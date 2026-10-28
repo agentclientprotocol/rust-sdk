@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.5.0...v3.6.0) - 2026-10-28
+
+### Added
+
+- *(acp)* update agent-client-protocol-schema to 1.13.0 ([#443](https://github.com/agentclientprotocol/rust-sdk/pull/443))
+
+### Fixed
+
+- stop logging MCP env and header values ([#445](https://github.com/agentclientprotocol/rust-sdk/pull/445))
+- *(acp)* follow v2 initialize negotiation rules and reject null request IDs ([#446](https://github.com/agentclientprotocol/rust-sdk/pull/446))
+- align examples, Testy and docs with ACP schema 1.13 ([#444](https://github.com/agentclientprotocol/rust-sdk/pull/444))
+
 ## [3.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.4.0...v3.5.0) - 2026-10-22
 
 ### Added

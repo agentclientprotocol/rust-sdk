@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v3.5.0...agent-client-protocol-derive-v3.6.0) - 2026-10-28
+
+### Fixed
+
+- align examples, Testy and docs with ACP schema 1.13 ([#444](https://github.com/agentclientprotocol/rust-sdk/pull/444))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v2.2.0...agent-client-protocol-derive-v3.0.0) - 2026-10-06
 
 ### Other
