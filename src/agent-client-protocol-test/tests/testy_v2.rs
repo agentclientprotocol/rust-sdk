@@ -44,6 +44,18 @@ async fn next_update(events: &mut UnboundedReceiver<TestEvent>) -> v2::UpdateSes
     }
 }
 
+fn assert_session_info_snapshot(notification: v2::UpdateSessionNotification) {
+    match notification.update {
+        v2::SessionUpdate::SessionInfoUpdate(info) => {
+            assert_eq!(
+                info.title.value().map(String::as_str),
+                Some("Testy v2 session")
+            );
+        }
+        other => panic!("expected a session info snapshot, got {other:?}"),
+    }
+}
+
 fn only_text(
     content: &agent_client_protocol::schema::MaybeUndefined<Vec<v2::ContentBlock>>,
 ) -> Option<&str> {
@@ -210,6 +222,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                     if message.message_id == agent_message_id
                         && only_text(&message.content) == Some("hello from v2")
             ));
+            assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
                 v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
@@ -237,6 +250,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                             .map_err(Error::into_internal_error)
                     }
                 })?;
+            assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
                 v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
@@ -244,7 +258,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
             ));
             assert!(
                 matches!(next_event(&mut event_rx).await, TestEvent::ResumeResponded),
-                "resume without replayFrom must synchronize state before responding"
+                "resume without replayFrom must synchronize session info and state before responding"
             );
 
             connection
