@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.5.0...agent-client-protocol-cookbook-v3.6.0) - 2026-10-28
+
+### Added
+
+- *(acp)* update agent-client-protocol-schema to 1.13.0 ([#443](https://github.com/agentclientprotocol/rust-sdk/pull/443))
+
+### Fixed
+
+- align examples, Testy and docs with ACP schema 1.13 ([#444](https://github.com/agentclientprotocol/rust-sdk/pull/444))
+
 ## [3.5.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-cookbook-v3.4.0...agent-client-protocol-cookbook-v3.5.0) - 2026-10-22
 
 ### Added
