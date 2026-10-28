@@ -133,10 +133,17 @@
 //! [`run_until_cancelled`] is the simple path for handlers that should stop
 //! work and reply with the standard cancellation error as soon as cancellation
 //! is requested; it drops the work future when cancellation wins. If the
-//! handler needs cleanup, partial results, or custom cancellation behavior,
-//! use [`cancelled`][`RequestCancellation::cancelled`] or
+//! handler needs cleanup or a method-defined cancellation result, use
+//! [`cancelled`][`RequestCancellation::cancelled`] or
 //! [`is_cancelled`][`RequestCancellation::is_cancelled`] directly inside the
 //! request work instead.
+//!
+//! A cancelled request still gets exactly one response. It may succeed only
+//! where the method defines a successful response for cancellation, such as a
+//! permission request's `cancelled` outcome, an elicitation's `cancel`
+//! action, a v1 prompt's `cancelled` stop reason, or a v2 prompt whose user
+//! message was already inserted. Otherwise respond with
+//! [`Error::request_cancelled`] (`-32800`), not partial results.
 //!
 //! Cancellation markers are only updated when the connection can process the
 //! incoming `$/cancel_request` notification. Long-running handlers and ordered

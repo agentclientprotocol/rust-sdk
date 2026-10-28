@@ -100,6 +100,11 @@
 //! - `schema::v2::Error::unsupported_protocol_version()` - `-32022`, the agent
 //!   supports no protocol version at or below the requested one (protocol v2)
 //!
+//! Codes from `-32768` to `-32000` and from `-32899` to `-32800` are reserved
+//! for JSON-RPC and ACP. Implementation-specific errors should use codes
+//! outside both ranges, and receivers treat an unrecognized code as a generic
+//! failure.
+//!
 //! See the protocol's error pages for when each code applies:
 //! [v1](https://agentclientprotocol.com/protocol/v1/error) and
 //! [v2](https://agentclientprotocol.com/protocol/v2/error).
