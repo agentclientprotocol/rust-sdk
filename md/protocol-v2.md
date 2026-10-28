@@ -365,6 +365,14 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 - V2 request ids must be strings or integers. A v2 connection answers a request
   with a `null` id with `-32600` and `id: null`. V1 connections still accept
   `null` ids.
+- Since schema 1.13, v2 has its own `schema::v2::RequestId` without a `Null`
+  variant. The `id()` accessors on `PreparedRequest`, `SentRequest`,
+  `Responder`, `ResponseRouter`, and `Dispatch` keep returning the
+  version-neutral `schema::v1::RequestId`. Use `v2_id()` for the v2 form, for
+  example to match an elicitation's `requestId`. It returns the ID directly for
+  requests the SDK sends, since the SDK never assigns `null`. For `Responder`
+  and `Dispatch` it returns an `Option` that is `None` only for a `null` ID,
+  which can only reach a handler on a v1 connection.
 - A v2 client advertises protocol v2 as its latest supported version.
 - A v2 client requires a v2 agent. Send initialization with
   `send_initialize` to learn how the agent negotiated: it resolves with

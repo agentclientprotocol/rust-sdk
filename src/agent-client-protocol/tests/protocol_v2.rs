@@ -3433,3 +3433,157 @@ async fn send_initialize_reports_v2_selection_as_initialized() -> Result<(), Err
         })
         .await
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_request_ids_match_between_prepared_requests_and_responders() -> Result<(), Error> {
+    let received_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |initialize: v2::InitializeRequest, responder, _cx| {
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let received_ids = received_ids.clone();
+                async move |_request: v2::NewSessionRequest, responder, _cx| {
+                    received_ids
+                        .lock()
+                        .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+                        .push((responder.id().clone(), responder.v2_id()));
+                    responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                        "v2-request-id-session",
+                    )))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let prepared_id = Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            cx.send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+
+            let prepared = cx.prepare_request(v2::NewSessionRequest::new(cwd()?));
+            let prepared_id: v2::RequestId = prepared.v2_id().clone();
+            assert_eq!(
+                json_value(&prepared_id)?,
+                json_value(prepared.id())?,
+                "the v2 id is the same id as the v1-typed accessor"
+            );
+            prepared.block_task().await?;
+            Ok(prepared_id)
+        })
+        .await?;
+
+    let received_ids = received_ids
+        .lock()
+        .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+        .clone();
+    let [(wire_id, responder_v2_id)] = received_ids.as_slice() else {
+        return Err(Error::internal_error().data(format!(
+            "expected exactly one session/new request, got {received_ids:?}"
+        )));
+    };
+    assert_eq!(json_value(&prepared_id)?, json_value(wire_id)?);
+    assert_eq!(responder_v2_id.as_ref(), Some(&prepared_id));
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
+    let received_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent.v2().on_receive_request(
+        {
+            let received_ids = received_ids.clone();
+            async move |initialize: v2::InitializeRequest, responder, _cx| {
+                received_ids
+                    .lock()
+                    .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+                    .push(responder.v2_id());
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("v2 agent owns a connection driver"));
+
+    let initialize = json_value(v2_initialize_request(ProtocolVersion::V2))?;
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Number(7),
+        "initialize",
+        initialize.clone(),
+    )
+    .await?;
+    assert_eq!(response["id"], 7, "{response}");
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Str("initialize-again".into()),
+        "initialize",
+        initialize,
+    )
+    .await?;
+    assert_eq!(response["id"], "initialize-again", "{response}");
+    task.abort();
+
+    let received_ids = received_ids
+        .lock()
+        .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+        .clone();
+    assert_eq!(
+        received_ids,
+        vec![
+            Some(v2::RequestId::Number(7)),
+            Some(v2::RequestId::Str("initialize-again".into())),
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
+    let received_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent.builder().on_receive_request(
+        {
+            let received_ids = received_ids.clone();
+            async move |initialize: v1::InitializeRequest, responder, _cx| {
+                received_ids
+                    .lock()
+                    .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+                    .push((responder.id().clone(), responder.v2_id()));
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("v1 agent owns a connection driver"));
+
+    let response = raw_v2_response(
+        &mut channel,
+        v1::RequestId::Null,
+        "initialize",
+        json_value(v1_initialize_request(ProtocolVersion::V1))?,
+    )
+    .await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    task.abort();
+
+    let received_ids = received_ids
+        .lock()
+        .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
+        .clone();
+    assert_eq!(received_ids, vec![(v1::RequestId::Null, None)]);
+    Ok(())
+}

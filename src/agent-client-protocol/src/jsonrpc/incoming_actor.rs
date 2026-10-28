@@ -245,7 +245,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                     result,
                                 );
                                 let (dispatch, response_dispatch) =
-                                    dispatch_from_response(id, pending_reply, result);
+                                    dispatch_from_response(pending_reply, result);
                                 dispatch_dispatch(
                                     counterpart.clone(),
                                     connection,
@@ -498,14 +498,13 @@ fn dispatch_from_message<Counterpart: Role>(
 /// the awaiting code. The default behavior is to forward the response to the
 /// local awaiter via the oneshot channel.
 pub(super) fn dispatch_from_response(
-    id: RequestId,
     pending_reply: PendingReply,
     result: Result<serde_json::Value, crate::Error>,
 ) -> (Dispatch, ResponseDispatch) {
     let response_dispatch = ResponseDispatch::default();
 
     // Create a Dispatch::Response with a ResponseRouter that routes to the oneshot
-    let router = ResponseRouter::new(id.clone(), pending_reply, response_dispatch.clone());
+    let router = ResponseRouter::new(pending_reply, response_dispatch.clone());
     (Dispatch::Response(result, router), response_dispatch)
 }
 
