@@ -11,6 +11,9 @@ use std::{
 };
 use tokio::sync::Notify;
 
+const SESSION_TITLE: &str = "Testy v2 session";
+const SESSION_UPDATED_AT: &str = "2026-01-01T00:00:00Z";
+
 /// The native draft protocol v2 Testy agent.
 ///
 /// Construct this with [`super::Testy::v2`]. Unlike the v1 fixture, prompt
@@ -97,8 +100,8 @@ impl V2Testy {
             .map(|(session_id, session)| {
                 acp::SessionInfo::new(session_id.clone(), session.cwd.clone())
                     .additional_directories(session.additional_directories.clone())
-                    .title("Testy v2 session")
-                    .updated_at("2026-01-01T00:00:00Z")
+                    .title(SESSION_TITLE)
+                    .updated_at(SESSION_UPDATED_AT)
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
@@ -435,6 +438,13 @@ impl ConnectTo<Client> for V2Testy {
                     async move |request: acp::ListSessionsRequest,
                                 responder: Responder<acp::ListSessionsResponse>,
                                 _connection: V2ConnectionTo<Client>| {
+                        // Testy returns every session in one page and never issues a
+                        // `nextCursor`, so any cursor a client sends is invalid.
+                        if let Some(cursor) = &request.cursor {
+                            return responder.respond_with_error(invalid_params(format!(
+                                "invalid session/list cursor `{cursor}`"
+                            )));
+                        }
                         responder.respond(acp::ListSessionsResponse::new(
                             agent.list_sessions(&request),
                         ))
@@ -455,6 +465,17 @@ impl ConnectTo<Client> for V2Testy {
                         for update in replay {
                             send_update(&connection, &request.session_id, update)?;
                         }
+                        // Synchronize current metadata rather than replaying
+                        // historical changes.
+                        send_update(
+                            &connection,
+                            &request.session_id,
+                            acp::SessionUpdate::SessionInfoUpdate(
+                                acp::SessionInfoUpdate::new()
+                                    .title(SESSION_TITLE)
+                                    .updated_at(SESSION_UPDATED_AT),
+                            ),
+                        )?;
                         // Testy only resumes sessions without foreground work.
                         // This is a live snapshot, not replayed turn completion.
                         send_update(

@@ -224,13 +224,27 @@ pub mod v2_one_shot_prompt {
     //!             agent_client_protocol::on_receive_notification!(),
     //!         )
     //!         .on_receive_request(
-    //!             async move |_request: v2::RequestPermissionRequest,
+    //!             async move |request: v2::RequestPermissionRequest,
     //!                         responder: Responder<v2::RequestPermissionResponse>,
-    //!                         _connection: V2ConnectionTo<Agent>| {
+    //!                         connection: V2ConnectionTo<Agent>| {
     //!                 // This non-interactive recipe rejects permission requests.
-    //!                 responder.respond(v2::RequestPermissionResponse::new(
-    //!                     v2::CancelledPermissionOutcome::new().into(),
-    //!                 ))
+    //!                 let reject_once = request
+    //!                     .options
+    //!                     .iter()
+    //!                     .find(|option| option.kind == v2::PermissionOptionKind::RejectOnce);
+    //!                 let outcome = match reject_once {
+    //!                     Some(option) => v2::RequestPermissionOutcome::Selected(
+    //!                         v2::SelectedPermissionOutcome::new(option.option_id.clone()),
+    //!                     ),
+    //!                     // `cancelled` is only valid after cancelling the work.
+    //!                     None => {
+    //!                         connection.send_notification(v2::CancelSessionNotification::new(
+    //!                             request.session_id.clone(),
+    //!                         ))?;
+    //!                         v2::CancelledPermissionOutcome::new().into()
+    //!                     }
+    //!                 };
+    //!                 responder.respond(v2::RequestPermissionResponse::new(outcome))
     //!             },
     //!             agent_client_protocol::on_receive_request!(),
     //!         )
@@ -264,17 +278,15 @@ pub mod v2_one_shot_prompt {
     //!                     continue;
     //!                 }
     //!                 match notification.update {
-    //!                     v2::SessionUpdate::StateUpdate(
-    //!                         v2::StateUpdate::Running(_) | v2::StateUpdate::RequiresAction(_),
-    //!                     ) => {
-    //!                         observed_active = true;
+    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_)) => {
+    //!                         if observed_active {
+    //!                             session.close().block_task().await?;
+    //!                             return Ok(projection.text());
+    //!                         }
     //!                     }
-    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
-    //!                         if observed_active =>
-    //!                     {
-    //!                         session.close().block_task().await?;
-    //!                         return Ok(projection.text());
-    //!                     }
+    //!                     // Running, requires_action, and unrecognized states all
+    //!                     // mean foreground work is active, never idle.
+    //!                     v2::SessionUpdate::StateUpdate(_) => observed_active = true,
     //!                     update if observed_active => projection.apply(update),
     //!                     _ => {}
     //!                 }

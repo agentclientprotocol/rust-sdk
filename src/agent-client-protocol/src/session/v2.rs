@@ -298,6 +298,12 @@ where
     /// runner tasks receive an initial poll before `session/new` is published,
     /// allowing the agent to connect while handling session setup. A
     /// successful attachment remains active for the lifetime of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -466,6 +472,12 @@ where
     /// before `session/fork` is published, allowing the agent to connect while
     /// handling session setup. A successful attachment remains active for the
     /// lifetime of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -632,6 +644,12 @@ where
     /// published, allowing the agent to use the server during replay and
     /// session setup. A successful attachment remains active for the lifetime
     /// of the connection.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit in front of it; otherwise a conforming
+    /// agent rejects the setup request with `-32602`. This method does not
+    /// check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -895,8 +913,19 @@ where
 
     /// Close the remote session and release its resources.
     ///
+    /// The agent cancels the session's ongoing work as if `session/cancel` had
+    /// been sent. When that cancels active foreground work, the agent sends the
+    /// work's final updates and an `idle` state update with stop reason
+    /// `cancelled` before it responds to `session/close`. A pending prompt
+    /// whose user message closing kept from being inserted fails with `-32800`
+    /// (request cancelled); one already inserted still succeeds with its
+    /// message ID. Prompt responses need not precede the close response.
+    ///
     /// Existing clones of this local command handle are not invalidated, but
-    /// the agent should reject subsequent commands for the closed session.
+    /// the session is no longer active: the agent rejects later commands for it,
+    /// and a repeated close, with `-32002` (resource not found).
+    ///
+    /// See <https://agentclientprotocol.com/protocol/v2/session-setup#closing-active-sessions>.
     pub fn close(&self) -> SentRequest<v2::CloseSessionResponse> {
         self.connection
             .send_request_to(Agent, v2::CloseSessionRequest::new(self.session_id.clone()))

@@ -2256,6 +2256,12 @@ impl<
     /// Unrelated request fields are preserved exactly.
     ///
     /// Only applicable to proxies.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The downstream
+    /// agent must advertise `session.mcp.acp`, or a compatibility proxy such as
+    /// `McpOverAcpPolyfill` must sit between this proxy and the agent;
+    /// otherwise a conforming agent rejects the setup request with `-32602`.
+    /// This method does not check the agent's capabilities.
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
@@ -5384,8 +5390,10 @@ impl<T: JsonRpcResponse> Responder<T> {
     ///
     /// The marker is set when the peer sends `$/cancel_request` for this
     /// request's JSON-RPC ID. Cancellation is cooperative: handlers should use
-    /// the marker to stop long-running work and then decide whether to respond
-    /// with [`Error::request_cancelled`] or partial data.
+    /// the marker to stop long-running work and then respond. Unless the
+    /// method defines a successful response for cancellation (for example a
+    /// permission request's `cancelled` outcome), that response is
+    /// [`Error::request_cancelled`] (`-32800`) rather than partial data.
     ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
     #[must_use]

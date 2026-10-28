@@ -97,7 +97,7 @@ With `unstable_protocol_v2`, the binary also handles the complete advertised v2 
 
 The v2 implementation follows the split prompt lifecycle:
 
-1. `session/prompt` returns an empty acceptance response.
+1. `session/prompt` returns an acceptance response carrying the accepted user message's `messageId`.
 2. Testy independently sends the accepted user message and a `running` state update.
 3. Output arrives through message updates.
 4. An `idle` state update with a stop reason completes the foreground work.
@@ -106,8 +106,14 @@ The v2 implementation follows the split prompt lifecycle:
 while work remains active, and `session/cancel` is confirmed by `idle` with the `cancelled` stop
 reason. Testy also keeps simple message history and replays it before a `session/resume` response
 when the client requests replay from the start. Every successful resume sends
-a current idle-state snapshot after any replay and before responding, including
-when replay was not requested. The snapshot is not another completed turn.
+the current session info (`session_info_update` with the title) and a current
+idle-state snapshot after any replay and before responding, including when
+replay was not requested. Neither is a replayed historical change, and the
+snapshot is not another completed turn.
+
+Prompts may contain only the baseline `text` and `resource_link` content blocks; any other block
+is rejected with `-32602` before the turn begins. `session/list` returns every session in one page
+and never issues `nextCursor`, so any `cursor` is rejected with `-32602`.
 
 The existing v1 scenarios do not map one-to-one onto v2. V2 scenario parity, client callbacks,
 MCP, authentication, deletion, configuration, and other optional capabilities remain unadvertised

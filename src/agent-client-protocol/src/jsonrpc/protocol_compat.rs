@@ -103,7 +103,7 @@ pub(crate) fn normalize_v1_initialize_request(
         .get("capabilities")
         .and_then(serde_json::Value::as_object)
     {
-        for key in ["auth", "elicitation", "nes", "positionEncodings", "_meta"] {
+        for key in ["auth", "elicitation", "_meta"] {
             if let Some(value) = source.get(key) {
                 capabilities.insert(key.into(), value.clone());
             }

@@ -44,6 +44,18 @@ async fn next_update(events: &mut UnboundedReceiver<TestEvent>) -> v2::UpdateSes
     }
 }
 
+fn assert_session_info_snapshot(notification: v2::UpdateSessionNotification) {
+    match notification.update {
+        v2::SessionUpdate::SessionInfoUpdate(info) => {
+            assert_eq!(
+                info.title.value().map(String::as_str),
+                Some("Testy v2 session")
+            );
+        }
+        other => panic!("expected a session info snapshot, got {other:?}"),
+    }
+}
+
 fn only_text(
     content: &agent_client_protocol::schema::MaybeUndefined<Vec<v2::ContentBlock>>,
 ) -> Option<&str> {
@@ -210,6 +222,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                     if message.message_id == agent_message_id
                         && only_text(&message.content) == Some("hello from v2")
             ));
+            assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
                 v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
@@ -237,6 +250,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                             .map_err(Error::into_internal_error)
                     }
                 })?;
+            assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
                 v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
@@ -244,7 +258,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
             ));
             assert!(
                 matches!(next_event(&mut event_rx).await, TestEvent::ResumeResponded),
-                "resume without replayFrom must synchronize state before responding"
+                "resume without replayFrom must synchronize session info and state before responding"
             );
 
             connection
@@ -463,7 +477,7 @@ async fn testy_router_keeps_the_v1_implementation_available() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
+async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cursors() {
     Client
         .v2()
         .connect_with(Testy::new().v2(), async |connection| {
@@ -547,6 +561,16 @@ async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
                     .sessions
                     .is_empty(),
                 "a rejected session/new must not create a session"
+            );
+
+            let cursor_error = connection
+                .send_request(v2::ListSessionsRequest::new().cursor("never-issued"))
+                .block_task()
+                .await
+                .expect_err("Testy v2 never issues a nextCursor, so every cursor is invalid");
+            assert_eq!(
+                cursor_error.code,
+                agent_client_protocol::ErrorCode::InvalidParams
             );
             Ok(())
         })
