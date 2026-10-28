@@ -150,6 +150,7 @@ impl V2Testy {
     fn begin_prompt(
         &self,
         session_id: &acp::SessionId,
+        prompt: &[acp::ContentBlock],
     ) -> Result<(), agent_client_protocol::Error> {
         let mut state = self.lock_state();
         let session = state
@@ -162,6 +163,7 @@ impl V2Testy {
                 "session `{session_id}` already has foreground work"
             )));
         }
+        validate_prompt_content(prompt)?;
         session.foreground_work = true;
         session.cancelled = false;
         Ok(())
@@ -498,7 +500,7 @@ impl ConnectTo<Client> for V2Testy {
                                 responder: Responder<acp::PromptResponse>,
                                 connection: V2ConnectionTo<Client>| {
                         let session_id = request.session_id.clone();
-                        if let Err(error) = agent.begin_prompt(&session_id) {
+                        if let Err(error) = agent.begin_prompt(&session_id, &request.prompt) {
                             return responder.respond_with_error(error);
                         }
 
@@ -540,6 +542,20 @@ impl ConnectTo<Client> for V2Testy {
             .connect_to(client)
             .await
     }
+}
+
+/// Testy advertises no prompt capabilities, so only the baseline `text` and `resource_link`
+/// blocks are supported. v2 Agents must reject any other block with `-32602`.
+fn validate_prompt_content(
+    blocks: &[acp::ContentBlock],
+) -> Result<(), agent_client_protocol::Error> {
+    for block in blocks {
+        match block {
+            acp::ContentBlock::Text(_) | acp::ContentBlock::ResourceLink(_) => {}
+            _ => return Err(invalid_params("unsupported prompt content block")),
+        }
+    }
+    Ok(())
 }
 
 fn extract_text_from_prompt(blocks: &[acp::ContentBlock]) -> String {
