@@ -2369,7 +2369,49 @@ impl ResponseOrdering {
     }
 }
 
+// TODO(breaking): v1 and v2 connections share `PreparedRequest`, `SentRequest`,
+// `ResponseRouter`, `Responder` and `Dispatch`, so their `id()` reports the v1
+// `RequestId`, which allows `null`, and v2 users need the separate `v2_id()`
+// accessors. In the next breaking release, give v2 connections handle types
+// whose `id()` returns `schema::v2::RequestId`, then remove the `v2_id()`
+// accessors, `OutgoingRequestId` and `v2_request_id`.
+
+/// The JSON-RPC ID the SDK assigns to a request it sends.
+///
+/// The SDK never assigns `null`, so the ID is always representable as a
+/// protocol-v2 ID. Both forms are stored so the v2 accessors stay infallible.
+#[derive(Clone, Debug)]
+struct OutgoingRequestId {
+    id: RequestId,
+    #[cfg(feature = "unstable_protocol_v2")]
+    v2_id: crate::schema::v2::RequestId,
+}
+
+impl OutgoingRequestId {
+    fn generate() -> Self {
+        let id = Uuid::new_v4().to_string();
+        Self {
+            #[cfg(feature = "unstable_protocol_v2")]
+            v2_id: crate::schema::v2::RequestId::Str(id.clone()),
+            id: RequestId::Str(id),
+        }
+    }
+}
+
+/// Converts a v1 JSON-RPC request ID into its protocol-v2 form.
+///
+/// Returns `None` for `null`, which protocol v2 does not allow.
+#[cfg(feature = "unstable_protocol_v2")]
+fn v2_request_id(id: &RequestId) -> Option<crate::schema::v2::RequestId> {
+    match id {
+        RequestId::Null => None,
+        RequestId::Number(id) => Some(crate::schema::v2::RequestId::Number(*id)),
+        RequestId::Str(id) => Some(crate::schema::v2::RequestId::Str(id.clone())),
+    }
+}
+
 struct PendingReply {
+    id: OutgoingRequestId,
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<ResponsePayload>,
@@ -4834,14 +4876,15 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         let method = request.method().to_string();
-        let id = RequestId::Str(uuid::Uuid::new_v4().to_string());
+        let id = OutgoingRequestId::generate();
         let (response_tx, response_rx) = oneshot::channel();
         let response_ordering = ResponseOrdering::default();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
-            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.clone());
+            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.id.clone());
         let pending_reply = PendingReply {
+            id: id.clone(),
             method: method.clone(),
             role_id,
             sender: response_tx,
@@ -4856,7 +4899,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             request
                 .to_untyped_message()
                 .map(|untyped| OutgoingMessage::Request {
-                    id: id.clone(),
+                    id: id.id.clone(),
                     method: method.clone(),
                     untyped,
                     remote_style,
@@ -5324,6 +5367,19 @@ impl<T: JsonRpcResponse> Responder<T> {
         &self.id
     }
 
+    /// ID of the incoming request as a protocol-v2 request ID.
+    ///
+    /// Returns `None` only when the request has a `null` ID. Protocol v2 does
+    /// not allow `null` request IDs and the SDK rejects them before dispatch
+    /// on connections that negotiated v2, so this is always `Some` for
+    /// requests received on a v2 connection. A `null` ID can only reach a
+    /// handler on a v1 connection.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2_id(&self) -> Option<crate::schema::v2::RequestId> {
+        v2_request_id(&self.id)
+    }
+
     /// Returns the cancellation marker for this request.
     ///
     /// The marker is set when the peer sends `$/cancel_request` for this
@@ -5437,7 +5493,7 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     method: String,
 
     /// The `id` of the original request.
-    id: RequestId,
+    id: OutgoingRequestId,
 
     /// The RoleId to which the original request was sent
     /// (and hence from which the reply is expected).
@@ -5454,7 +5510,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponseRouter")
             .field("method", &self.method)
-            .field("id", &self.id)
+            .field("id", &self.id.id)
             .field("response_type", &std::any::type_name::<T>())
             .finish_non_exhaustive()
     }
@@ -5466,8 +5522,9 @@ impl ResponseRouter<serde_json::Value> {
     /// When [`route_with_result`](Self::route_with_result) is called, the response is sent through the oneshot
     /// channel to the code that originally sent the request. If that receiver was
     /// dropped, the response is discarded because there is no local awaiter left.
-    fn new(id: RequestId, pending_reply: PendingReply, dispatch: ResponseDispatch) -> Self {
+    fn new(pending_reply: PendingReply, dispatch: ResponseDispatch) -> Self {
         let PendingReply {
+            id,
             method,
             role_id,
             sender,
@@ -5477,7 +5534,7 @@ impl ResponseRouter<serde_json::Value> {
             accepts_lower_initialize_version: _,
         } = pending_reply;
         let reply_target = ResponseReplyTarget {
-            id: id.clone(),
+            id: id.id.clone(),
             method: method.clone(),
             sender: Arc::new(Mutex::new(Some(sender))),
             ordering,
@@ -5530,7 +5587,18 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
     /// ID of the original request.
     #[must_use]
     pub fn id(&self) -> &RequestId {
-        &self.id
+        &self.id.id
+    }
+
+    /// ID of the original request as a protocol-v2 request ID.
+    ///
+    /// Responses are only routed for requests the SDK sent, and the SDK never
+    /// assigns `null` to those, so this is always available. It is the same
+    /// ID as [`id`](Self::id).
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
+        &self.id.v2_id
     }
 
     /// The peer to which the original request was sent.
@@ -5571,7 +5639,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route the response result to the waiting task.
     pub fn route_with_result(self, response: Result<T, crate::Error>) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, "response routed to awaiter");
+        tracing::debug!(id = ?self.id.id, "response routed to awaiter");
         (self.send_fn)(response)
     }
 
@@ -5587,7 +5655,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route an error response to the waiting task.
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
+        tracing::debug!(id = ?self.id.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
         self.route_with_result(Err(error))
     }
 }
@@ -5785,6 +5853,22 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
             Dispatch::Request(_, cx) => Some(cx.id()),
             Dispatch::Notification(_) => None,
             Dispatch::Response(_, cx) => Some(cx.id()),
+        }
+    }
+
+    /// Returns the request ID as a protocol-v2 request ID if this is a
+    /// request or response, `None` if notification.
+    ///
+    /// See [`Responder::v2_id`] and [`ResponseRouter::v2_id`]. For requests,
+    /// this is also `None` when the request has a `null` ID, which can only
+    /// happen on a v1 connection.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2_id(&self) -> Option<crate::schema::v2::RequestId> {
+        match self {
+            Dispatch::Request(_, responder) => responder.v2_id(),
+            Dispatch::Notification(_) => None,
+            Dispatch::Response(_, router) => Some(router.v2_id().clone()),
         }
     }
 
@@ -6185,7 +6269,7 @@ impl JsonRpcNotification for UntypedMessage {}
               discards the response; consume it with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
 pub struct SentRequest<T> {
-    id: RequestId,
+    id: OutgoingRequestId,
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
@@ -6300,6 +6384,18 @@ impl<T> PreparedRequest<T> {
     #[must_use]
     pub fn id(&self) -> &RequestId {
         self.sent.id()
+    }
+
+    /// The ID reserved for this request as a protocol-v2 request ID.
+    ///
+    /// The SDK never assigns `null` to requests it sends, so every prepared
+    /// request ID is representable in protocol v2. This is the same ID as
+    /// [`id`](Self::id) and the one written to the wire when the request is
+    /// published.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
+        self.sent.v2_id()
     }
 
     /// The method of the prepared request.
@@ -6719,7 +6815,7 @@ impl<T: Debug> Debug for SentRequest<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("SentRequest");
         debug
-            .field("id", &self.id)
+            .field("id", &self.id.id)
             .field("method", &self.method)
             .field("task_tx", &self.task_tx)
             .field("response_rx", &self.response_rx);
@@ -6732,7 +6828,7 @@ impl<T: Debug> Debug for SentRequest<T> {
 
 impl SentRequest<serde_json::Value> {
     fn new(
-        id: RequestId,
+        id: OutgoingRequestId,
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
@@ -6851,7 +6947,18 @@ impl<T> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
     pub fn id(&self) -> &RequestId {
-        &self.id
+        &self.id.id
+    }
+
+    /// The id of the outgoing request as a protocol-v2 request ID.
+    ///
+    /// The SDK never assigns `null` to requests it sends, so every outgoing
+    /// request ID is representable in protocol v2. This is the same ID as
+    /// [`id`](Self::id) and the one written to the wire.
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[must_use]
+    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
+        &self.id.v2_id
     }
 
     /// The method of the request this is in response to.
@@ -8461,14 +8568,43 @@ mod tests {
         let pending_reply = pending_replies
             .remove(&request_id)
             .expect("the request should have a pending reply");
-        let (dispatch, _) =
-            incoming_actor::dispatch_from_response(request_id, pending_reply, result);
+        let (dispatch, _) = incoming_actor::dispatch_from_response(pending_reply, result);
         let Dispatch::Response(result, router) = dispatch else {
             panic!("expected a response dispatch");
         };
         router
             .route_with_result(result)
             .expect("response should route to the pending request");
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    #[test]
+    fn outgoing_request_ids_are_available_as_v2_ids() {
+        let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
+        let sent = connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("probe", serde_json::json!({}))
+                .expect("test request should serialize"),
+        );
+        let request_id = sent.id().clone();
+        let v2_id = sent.v2_id().clone();
+        assert_eq!(
+            serde_json::to_value(&v2_id).expect("v2 id should serialize"),
+            serde_json::to_value(&request_id).expect("v1 id should serialize"),
+        );
+
+        let pending_reply = pending_replies
+            .remove(&request_id)
+            .expect("the request should have a pending reply");
+        let (dispatch, _) =
+            incoming_actor::dispatch_from_response(pending_reply, Ok(serde_json::json!({})));
+        assert_eq!(dispatch.v2_id(), Some(v2_id.clone()));
+        let Dispatch::Response(_, router) = dispatch else {
+            panic!("expected a response dispatch");
+        };
+        assert_eq!(router.id(), &request_id);
+        assert_eq!(router.v2_id(), &v2_id);
+        sent.detach();
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
@@ -8733,7 +8869,6 @@ mod tests {
             .remove(&request_id)
             .expect("the request should have a pending reply");
         let (dispatch, response_dispatch) = incoming_actor::dispatch_from_response(
-            request_id,
             pending_reply,
             Err(crate::Error::invalid_params()),
         );
@@ -8863,7 +8998,6 @@ mod tests {
         // ordering marker must hold dispatch until the callback task is
         // subsequently installed and completes.
         let (dispatch, response_dispatch) = incoming_actor::dispatch_from_response(
-            request_id,
             pending_reply,
             Ok(serde_json::json!({"ok": true})),
         );

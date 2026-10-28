@@ -609,7 +609,7 @@ impl Fixture {
     ) -> Option<oneshot::Receiver<()>> {
         let pending_reply = self.pending_replies.remove(&id).unwrap();
         let (dispatch, response_dispatch) =
-            incoming_actor::dispatch_from_response(id, pending_reply, result);
+            incoming_actor::dispatch_from_response(pending_reply, result);
         let Dispatch::Response(result, router) = dispatch else {
             panic!("expected a response dispatch");
         };
