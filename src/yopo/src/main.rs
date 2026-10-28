@@ -70,7 +70,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Use the library function with callback to print progressively
     yopo::prompt_with_callback(agent, prompt.as_str(), |block| async move {
-        print!("{}", yopo::content_block_to_string(&block));
+        print!(
+            "{}",
+            strip_control_characters(&yopo::content_block_to_string(&block))
+        );
     })
     .await?;
 
@@ -87,9 +90,27 @@ fn parse_agent_args(agent_args: &[String]) -> Result<AcpAgent, agent_client_prot
     }
 }
 
+/// Removes terminal control characters from agent text before printing it.
+///
+/// Agent text is untrusted, and escape sequences could rewrite or hide
+/// terminal output. Newlines and tabs are kept for readability.
+fn strip_control_characters(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strips_control_characters_except_newlines_and_tabs() {
+        assert_eq!(
+            strip_control_characters("\u{1b}[2Jline\tone\r\nline\u{7}\u{9b}31m two"),
+            "[2Jline\tone\nline31m two"
+        );
+    }
     use std::path::Path;
 
     #[test]

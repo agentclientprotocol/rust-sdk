@@ -50,13 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |_request: v2::RequestPermissionRequest,
+            async move |request: v2::RequestPermissionRequest,
                         responder: Responder<v2::RequestPermissionResponse>,
-                        _connection: V2ConnectionTo<Agent>| {
-                eprintln!("Agent requested permission; cancelling in this non-interactive example");
-                responder.respond(v2::RequestPermissionResponse::new(
-                    v2::CancelledPermissionOutcome::new().into(),
-                ))
+                        connection: V2ConnectionTo<Agent>| {
+                responder.respond(reject_permission(&request, &connection)?)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -85,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let (output, stop_reason) =
                 wait_until_idle(&mut update_rx, session.session_id()).await?;
-            println!("{output}");
+            println!("{}", strip_control_characters(&output));
             eprintln!("Session is idle: {stop_reason:?}");
 
             session.close().block_task().await?;
@@ -111,18 +108,60 @@ async fn wait_until_idle(
         }
 
         match notification.update {
-            v2::SessionUpdate::StateUpdate(
-                v2::StateUpdate::Running(_) | v2::StateUpdate::RequiresAction(_),
-            ) => {
-                observed_active = true;
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) => {
+                if observed_active {
+                    return Ok((projection.text(), idle.stop_reason));
+                }
             }
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) if observed_active => {
-                return Ok((projection.text(), idle.stop_reason));
-            }
+            // Running, requires_action, and any state this client does not
+            // recognize all mean foreground work is still active. An unknown
+            // state must never be treated as idle.
+            v2::SessionUpdate::StateUpdate(_) => observed_active = true,
             update if observed_active => projection.apply(update),
             _ => {}
         }
     }
+}
+
+/// Declines a permission request in this non-interactive example.
+///
+/// Selects the agent's `reject_once` option when it offers one. The
+/// `cancelled` outcome is only valid once the client has cancelled the active
+/// work, so without such an option this sends `session/cancel` first.
+fn reject_permission(
+    request: &v2::RequestPermissionRequest,
+    connection: &V2ConnectionTo<Agent>,
+) -> Result<v2::RequestPermissionResponse, Error> {
+    if let Some(option) = request
+        .options
+        .iter()
+        .find(|option| option.kind == v2::PermissionOptionKind::RejectOnce)
+    {
+        eprintln!("Agent requested permission; rejecting it once in this non-interactive example");
+        return Ok(v2::RequestPermissionResponse::new(
+            v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            )),
+        ));
+    }
+
+    eprintln!("Agent requested permission without a reject option; cancelling the prompt");
+    connection.send_notification(v2::CancelSessionNotification::new(
+        request.session_id.clone(),
+    ))?;
+    Ok(v2::RequestPermissionResponse::new(
+        v2::CancelledPermissionOutcome::new().into(),
+    ))
+}
+
+/// Removes terminal control characters from agent text before printing it.
+///
+/// Agent text is untrusted, and escape sequences could rewrite or hide
+/// terminal output. Newlines and tabs are kept for readability.
+fn strip_control_characters(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect()
 }
 
 /// Minimal projection of v2 agent messages.
@@ -364,6 +403,40 @@ mod tests {
 
         let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
         assert_eq!(text, "current");
+        assert_eq!(stop_reason, Some(v2::StopReason::EndTurn));
+    }
+
+    #[test]
+    fn control_characters_are_stripped_except_newlines_and_tabs() {
+        assert_eq!(
+            strip_control_characters("\u{1b}[2Jline\tone\r\nline\u{7}\u{9b}31m two"),
+            "[2Jline\tone\nline31m two"
+        );
+    }
+
+    #[tokio::test]
+    async fn unrecognized_states_count_as_foreground_work() {
+        let session_id = v2::SessionId::new("session-1");
+        let (update_tx, mut update_rx) = unbounded_channel();
+        let other_state: v2::StateUpdate =
+            serde_json::from_value(serde_json::json!({ "state": "_compacting" })).unwrap();
+        for update in [
+            v2::SessionUpdate::StateUpdate(other_state),
+            v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new("busy".into(), "message-1")),
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
+                v2::IdleStateUpdate::new().stop_reason(v2::StopReason::EndTurn),
+            )),
+        ] {
+            update_tx
+                .send(v2::UpdateSessionNotification::new(
+                    session_id.clone(),
+                    update,
+                ))
+                .unwrap();
+        }
+
+        let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
+        assert_eq!(text, "busy");
         assert_eq!(stop_reason, Some(v2::StopReason::EndTurn));
     }
 
