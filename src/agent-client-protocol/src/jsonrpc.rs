@@ -47,12 +47,14 @@ use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 #[cfg(feature = "unstable_protocol_v2")]
-pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
-#[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol_compat::{
     InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
 };
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
+#[cfg(feature = "unstable_protocol_v2")]
+pub(crate) use crate::jsonrpc::protocol_compat::{
+    normalize_newer_v2_initialize_request, normalize_v1_initialize_request,
+};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
@@ -1237,6 +1239,25 @@ impl<
         self
     }
 
+    /// Record a request handler of type `Req`.
+    ///
+    /// A v1 agent that handles `initialize` itself rejects other requests
+    /// until initialization completes, as v1 agents SHOULD. Agents without
+    /// such a handler, including those with only catch-all handlers, keep
+    /// accepting requests without initialization, because they could not
+    /// complete one.
+    fn note_request_handler<Req: JsonRpcRequest>(mut self) -> Self {
+        // A handler for every method is a catch-all, not an initialize handler.
+        const UNRELATED_METHOD: &str = "\0acp-sdk/not-a-method";
+        if TypeId::of::<Host>() == TypeId::of::<Agent>()
+            && Req::matches_method("initialize")
+            && !Req::matches_method(UNRELATED_METHOD)
+        {
+            self.protocol_mode = self.protocol_mode.require_initialize();
+        }
+        self
+    }
+
     pub(crate) fn v1_client(mut self) -> Self {
         self.protocol_mode = ProtocolMode::v1_client();
         self
@@ -1468,7 +1489,7 @@ impl<
             op,
             to_future_hack,
         );
-        self.with_handler(handler)
+        self.note_request_handler::<Req>().with_handler(handler)
     }
 
     /// Register a handler for JSON-RPC requests of type `Req`.
@@ -1545,7 +1566,7 @@ impl<
             op,
             to_future_hack,
         );
-        self.with_handler(handler)
+        self.note_request_handler::<Req>().with_handler(handler)
     }
 
     /// Register a handler for JSON-RPC notifications of type `Notif`.
@@ -1669,7 +1690,7 @@ impl<
             op,
             to_future_hack,
         );
-        self.with_handler(handler)
+        self.note_request_handler::<Req>().with_handler(handler)
     }
 
     /// Register a handler for JSON-RPC requests from a specific peer.
@@ -1730,7 +1751,7 @@ impl<
             op,
             to_future_hack,
         );
-        self.with_handler(handler)
+        self.note_request_handler::<Req>().with_handler(handler)
     }
 
     /// Register a handler for JSON-RPC notifications from a specific peer.
@@ -3454,6 +3475,11 @@ impl V2ConnectionTo<Agent> {
     /// The request still resolves with an error for errors returned by the
     /// agent (including the `-32022` version mismatch), malformed responses,
     /// and transport failures.
+    ///
+    /// After an initialization completes, `initialize` may be sent again
+    /// before any other request; the agent treats the latest one as
+    /// authoritative. Once another request has been sent, a repeat resolves
+    /// with an `-32600` error without being sent.
     ///
     /// ```no_run
     /// # use agent_client_protocol::schema::{ProtocolVersion, v2};

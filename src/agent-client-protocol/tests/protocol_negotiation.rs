@@ -167,8 +167,6 @@ async fn standalone_v1_rejects_malformed_initialization_before_dispatch() -> Res
         json!({ "protocolVersion": -1 }),
         json!({ "protocolVersion": 1.5 }),
         json!({ "protocolVersion": 65536 }),
-        json!({ "protocolVersion": 2 }),
-        json!({ "protocolVersion": 2, "info": { "name": 123, "version": "1" } }),
     ] {
         let agent = Agent.builder().on_receive_request(
             async |_initialize: v1::InitializeRequest, responder, _cx| {
@@ -181,6 +179,31 @@ async fn standalone_v1_rejects_malformed_initialization_before_dispatch() -> Res
         let task = tokio::spawn(driver.expect("agent owns a driver"));
         let response = request(&mut channel, 1, "initialize", params).await?;
         assert_eq!(response["error"]["code"], -32602, "{response}");
+        task.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn standalone_v1_ignores_unparsable_newer_initialization_params() -> Result<(), Error> {
+    for params in [
+        json!({ "protocolVersion": 2 }),
+        json!({ "protocolVersion": 2, "info": { "name": 123, "version": "1" } }),
+        json!({ "protocolVersion": 2, "info": "malformed", "_meta": 1, "capabilities": [] }),
+    ] {
+        let agent = Agent.builder().on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                assert_eq!(initialize.client_info, None);
+                assert_eq!(initialize.meta, None);
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+        let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+        let task = tokio::spawn(driver.expect("agent owns a driver"));
+        let response = request(&mut channel, 1, "initialize", params).await?;
+        assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
         task.abort();
     }
     Ok(())
@@ -209,5 +232,69 @@ async fn standalone_v1_proxy_requires_exact_selected_version() -> Result<(), Err
         );
         task.abort();
     }
+    Ok(())
+}
+
+fn v1_agent_with_initialize_and_new_session() -> impl ConnectTo<Client> {
+    Agent
+        .builder()
+        .on_receive_request(
+            async |initialize: v1::InitializeRequest, responder, _cx| {
+                responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v1::NewSessionRequest, responder, _cx| {
+                responder.respond(v1::NewSessionResponse::new("v1-session"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v1_agent_with_initialize_handler_rejects_requests_before_initialization()
+-> Result<(), Error> {
+    let (mut channel, driver) =
+        ConnectTo::<Client>::into_channel_and_future(v1_agent_with_initialize_and_new_session());
+    let task = tokio::spawn(driver.expect("agent owns a driver"));
+    let new_session = json!({ "cwd": "/tmp", "mcpServers": [] });
+
+    let response = request(&mut channel, 1, "session/new", new_session.clone()).await?;
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+
+    let initialize = json!({ "protocolVersion": 1, "clientCapabilities": {} });
+    let response = request(&mut channel, 2, "initialize", initialize.clone()).await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    let response = request(&mut channel, 3, "session/new", new_session).await?;
+    assert_eq!(response["result"]["sessionId"], "v1-session", "{response}");
+
+    // V1 keeps accepting a repeated initialize.
+    let response = request(&mut channel, 4, "initialize", initialize).await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v1_agent_without_initialize_handler_serves_requests_without_initialization()
+-> Result<(), Error> {
+    let agent = Agent.builder().on_receive_request(
+        async |_request: v1::NewSessionRequest, responder, _cx| {
+            responder.respond(v1::NewSessionResponse::new("v1-session"))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("agent owns a driver"));
+    let response = request(
+        &mut channel,
+        1,
+        "session/new",
+        json!({ "cwd": "/tmp", "mcpServers": [] }),
+    )
+    .await?;
+    assert_eq!(response["result"]["sessionId"], "v1-session", "{response}");
+    task.abort();
     Ok(())
 }

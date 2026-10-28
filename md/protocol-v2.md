@@ -349,8 +349,22 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   remains available while initialization is in progress. The client is the
   initializer and the agent is the responder. Attempts in the opposite
   direction are rejected. An initialization error leaves the connection
-  uninitialized so the client can retry, while a second initialization after a
-  successful handshake is rejected.
+  uninitialized so the client can retry. A second `initialize` while one is in
+  flight is rejected with `-32600`.
+- The client may repeat `initialize` after the previous one completed and
+  before it sends any other request, for example to resend its parameters for
+  the version the agent selected. The agent dispatches each repeat to its
+  initialize handler and the latest one is authoritative. While a repeat is in
+  flight, other requests are rejected as they are during the first. A repeat
+  requesting a version below the selected one is rejected with `-32600`. A
+  repeat that fails, whether rejected by the SDK or by the handler, keeps the
+  previous initialization in place and the client may repeat again. The first
+  other request closes this window: a later `initialize` is rejected with
+  `-32600` on both sides and the connection stays ready. Notifications such as
+  `$/cancel_request` do not close it.
+- V2 request ids must be strings or integers. A v2 connection answers a request
+  with a `null` id with `-32600` and `id: null`. V1 connections still accept
+  `null` ids.
 - A v2 client advertises protocol v2 as its latest supported version.
 - A v2 client requires a v2 agent. Send initialization with
   `send_initialize` to learn how the agent negotiated: it resolves with
@@ -368,10 +382,21 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   v1 file-system or terminal-execution capabilities from unknown newer fields.
   V1's original fallback-to-latest rule is retained, including a v1 selection
   when the client requests an unsupported older version.
-- A standalone v2 agent accepts a request for v2 or a newer version with
-  compatible initialization parameters and selects v2. The request delivered
-  to the handler has `protocol_version` normalized to v2, and the response
-  selects v2. If a client initializes with v1, the request resolves with
+- A v1 agent that registers a typed `initialize` request handler rejects any
+  other request that arrives before initialization completes with `-32600`.
+  Agents without one, including those with only catch-all handlers, keep
+  serving requests without initialization. V1 agents still accept a repeated
+  `initialize` at any time.
+- A standalone v2 agent accepts a request for v2 or a newer version and
+  selects v2. The request delivered to the handler has `protocol_version`
+  normalized to v2, and the response selects v2. A request for exactly v2 must
+  be a valid v2 request. A request for a newer version was written for a
+  version the agent doesn't know, so the SDK keeps what parses under v2
+  instead of rejecting it: capabilities that don't parse and a `_meta` that is
+  not an object are dropped, fields v2 doesn't define are dropped, and a
+  missing or malformed `info` is replaced by an implementation named `unknown`
+  with version `unknown`. A v1 agent downgrading a newer request applies the
+  same rule to v1's shape, leaving its optional `clientInfo` unset instead. If a client initializes with v1, the request resolves with
   `-32022` (`Unsupported protocol version`) and
   `data: { "requested": 1, "supported": [2] }`. The v2 initialization handler
   is not invoked. Use an agent router with a v1 implementation to serve v1
@@ -446,7 +471,11 @@ configured version at or below the requested version, or reject initialization
 with a structured version-mismatch error if none exists. V1-only endpoints
 retain v1's original fallback-to-latest rule. The router
 normalizes a v2 initialize request when selecting a v1 implementation, but does
-not convert messages between v1 and v2 after routing. For compatibility, the
+not convert messages between v1 and v2 after routing. The selected
+implementation owns the connection: a repeated `initialize` is forwarded to it
+and never re-routed, so it is evaluated against the selected version. A v2
+implementation rejects a repeat that requests v1 with `-32600`, and a v1
+implementation selects v1 for a repeat that requests a newer version. For compatibility, the
 initial frame may be a batch whose first call-shaped entry is `initialize`. The
 router preserves the complete frame when handing it to the selected
 implementation. Response-only frames before initialization are ignored.
