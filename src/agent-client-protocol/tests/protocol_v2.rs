@@ -933,7 +933,7 @@ fn sdk_supported_v2_method_surface_is_jsonrpc_mapped() -> Result<(), Error> {
         RequestPermissionResponse,
         "session/request_permission",
         v2::RequestPermissionRequest::new("session-1", "Run command?", Vec::new()),
-        v2::RequestPermissionResponse::new(v2::RequestPermissionOutcome::Cancelled)
+        v2::RequestPermissionResponse::new(v2::CancelledPermissionOutcome::new().into())
     );
 
     let update = v2::UpdateSessionNotification::new(
@@ -2003,8 +2003,9 @@ async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(),
                 "source".into(),
                 Value::String("v2".into()),
             )]));
-            capabilities = capabilities
-                .auth(v2::AuthCapabilities::new().terminal(v2::TerminalAuthCapabilities::new()));
+            capabilities = capabilities.auth(
+                v2::ClientAuthCapabilities::new().terminal(v2::TerminalAuthCapabilities::new()),
+            );
             let request = v2::InitializeRequest::new(
                 ProtocolVersion::V2,
                 v2::Implementation::new("v2-metadata-client", "9.9.9").title("V2 Metadata Client"),

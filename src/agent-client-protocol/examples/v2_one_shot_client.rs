@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         _connection: V2ConnectionTo<Agent>| {
                 eprintln!("Agent requested permission; cancelling in this non-interactive example");
                 responder.respond(v2::RequestPermissionResponse::new(
-                    v2::RequestPermissionOutcome::Cancelled,
+                    v2::CancelledPermissionOutcome::new().into(),
                 ))
             },
             agent_client_protocol::on_receive_request!(),

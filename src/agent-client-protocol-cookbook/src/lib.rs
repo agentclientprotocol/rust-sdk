@@ -229,7 +229,7 @@ pub mod v2_one_shot_prompt {
     //!                         _connection: V2ConnectionTo<Agent>| {
     //!                 // This non-interactive recipe rejects permission requests.
     //!                 responder.respond(v2::RequestPermissionResponse::new(
-    //!                     v2::RequestPermissionOutcome::Cancelled,
+    //!                     v2::CancelledPermissionOutcome::new().into(),
     //!                 ))
     //!             },
     //!             agent_client_protocol::on_receive_request!(),
