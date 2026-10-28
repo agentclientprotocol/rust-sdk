@@ -16,6 +16,8 @@ use agent_client_protocol::schema::v2;
 use agent_client_protocol::{Agent, Client, Error, Responder, Result, Stdio, V2ConnectionTo};
 use tokio::sync::Notify;
 
+const SESSION_TITLE: &str = "Echo agent session";
+
 #[derive(Clone, Debug, Default)]
 struct EchoAgent {
     state: Arc<Mutex<AgentState>>,
@@ -68,7 +70,7 @@ impl EchoAgent {
             .map(|(session_id, session)| {
                 v2::SessionInfo::new(session_id.clone(), session.cwd.clone())
                     .additional_directories(session.additional_directories.clone())
-                    .title("Echo agent session")
+                    .title(SESSION_TITLE)
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
@@ -112,7 +114,7 @@ impl EchoAgent {
         Ok(history)
     }
 
-    fn begin_prompt(&self, session_id: &v2::SessionId) -> Result<()> {
+    fn begin_prompt(&self, session_id: &v2::SessionId, prompt: &[v2::ContentBlock]) -> Result<()> {
         let mut state = self.state.lock().expect("session state lock poisoned");
         let session = state
             .sessions
@@ -123,6 +125,16 @@ impl EchoAgent {
             return Err(invalid_params(format!(
                 "session `{session_id}` already has foreground work"
             )));
+        }
+        // No prompt capabilities are advertised, so only the baseline `text` and
+        // `resource_link` blocks are supported. Anything else must be rejected.
+        if prompt.iter().any(|block| {
+            !matches!(
+                block,
+                v2::ContentBlock::Text(_) | v2::ContentBlock::ResourceLink(_)
+            )
+        }) {
+            return Err(invalid_params("unsupported prompt content block"));
         }
         session.foreground_work = true;
         session.cancelled = false;
@@ -405,6 +417,13 @@ async fn main() -> Result<()> {
                     send_update(
                         &connection,
                         &request.session_id,
+                        v2::SessionUpdate::SessionInfoUpdate(
+                            v2::SessionInfoUpdate::new().title(SESSION_TITLE),
+                        ),
+                    )?;
+                    send_update(
+                        &connection,
+                        &request.session_id,
                         v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
                             v2::IdleStateUpdate::new(),
                         )),
@@ -444,7 +463,7 @@ async fn main() -> Result<()> {
                 async move |request: v2::PromptRequest,
                             responder: Responder<v2::PromptResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    if let Err(error) = agent.begin_prompt(&request.session_id) {
+                    if let Err(error) = agent.begin_prompt(&request.session_id, &request.prompt) {
                         return responder.respond_with_error(error);
                     }
                     let user_message_id = agent.next_message_id("user-message");

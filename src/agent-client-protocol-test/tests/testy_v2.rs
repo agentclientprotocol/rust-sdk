@@ -555,6 +555,65 @@ async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn testy_v2_rejects_unadvertised_prompt_content() {
+    Client
+        .v2()
+        .connect_with(Testy::new().v2(), async |connection| {
+            let initialize = connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            assert!(
+                initialize
+                    .capabilities
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.prompt.is_none()),
+                "Testy v2 advertises no prompt capabilities"
+            );
+            let session_id = connection
+                .send_request(v2::NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?
+                .session_id;
+
+            let error = connection
+                .send_request(v2::PromptRequest::new(
+                    session_id.clone(),
+                    vec![
+                        TestyCommand::Greet.to_prompt().into(),
+                        v2::ContentBlock::Image(v2::ImageContent::new("", "image/png")),
+                    ],
+                ))
+                .block_task()
+                .await
+                .expect_err("an unadvertised image block should be rejected");
+            assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+
+            connection
+                .send_request(v2::PromptRequest::new(
+                    session_id,
+                    vec![
+                        TestyCommand::Greet.to_prompt().into(),
+                        v2::ContentBlock::ResourceLink(v2::ResourceLink::new(
+                            "notes",
+                            "file:///tmp/notes.md",
+                        )),
+                    ],
+                ))
+                .block_task()
+                .await
+                .expect("baseline content is accepted after a rejected prompt");
+            Ok(())
+        })
+        .await
+        .expect("Testy v2 prompt content validation failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
     let (event_tx, mut event_rx) = unbounded_channel();
     Client

@@ -546,7 +546,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.12
+## Schema changes in schema 1.5 through 1.13
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
@@ -678,7 +678,8 @@ Client projections of tool calls and terminals should follow these rules:
   unknown fields and empty output, then appends.
 - Decode each terminal chunk independently and append the bytes in order.
   Ignore a chunk or `output` snapshot whose `data` is not valid base64,
-  keeping the bytes already held. Agents should send all output before a
+  keeping the bytes already held; the rest of that `terminal_update` still
+  applies. Agents should send all output before a
   concrete `exitStatus`, but clients still append output that arrives after
   it. Clients may cap how much output they retain, for example by dropping the
   oldest bytes; a later `output` snapshot replaces whatever they kept.
@@ -693,3 +694,42 @@ strip a leading path component, since that would drop part of an absolute
 path, and take paths from `changes` or from the `---`, `+++`, rename, and copy
 lines rather than by splitting the `diff --git` header. The SDK carries patch
 text; it does not rewrite paths or compute diffs from snippets.
+
+### Schema 1.13
+
+Draft v2 type changes:
+
+- v2 has its own `RequestId`, `Request`, and `Response` types. Request IDs are
+  a string or an integer, never `null`; error responses may still use `null`
+  when the request ID could not be determined.
+- `AvailableCommand` is a `type`-tagged union. Build commands with
+  `AvailableCommand::Command(Command::new(..))` and read them through
+  `name()`, `description()`, and `meta()`. Unknown command kinds parse as
+  `Other`; show them as plain commands by name and description, or ignore them.
+- `ToolCallLocation.line` is a 1-based `NonZeroU32`. The builder still takes a
+  `u32` and treats `0` as no line.
+- `TerminalExitStatus.exit_code` is an `i64` holding the code the platform
+  reports, so negative codes such as Windows NTSTATUS values survive.
+- `ResourceLink.size` is a `u64` byte count; a negative value parses as unknown.
+- `terminal_update` has an optional `size` with `cols` and `rows`, patched like
+  the other terminal fields. Clients should render the output at that size
+  when it is present.
+- `RequestPermissionOutcome::Cancelled` carries a `CancelledPermissionOutcome`
+  with optional `_meta`; `{"outcome": "cancelled"}` still parses.
+  `AuthCapabilities` is now `ClientAuthCapabilities`.
+- Unknown variants keep their optional fields verbatim in `fields`.
+
+Client projections should also follow these rules:
+
+- A `state_update` with an unrecognized state never means idle. Show a generic
+  busy state until a known state arrives.
+- An update or chunk for an unseen message ID creates the message. Its first
+  update or chunk fixes its timeline position; later updates patch it in
+  place, even after idle. Updates for different entities may interleave, and a
+  new ID does not end any other entity.
+- Show an unrecognized tool `kind` as `other`.
+- A `tool_call` permission subject applies to the stored tool call exactly like
+  a `tool_call_update`, in the order received and before the prompt is shown. A
+  first-seen `toolCallId` creates the tool call.
+- The Agent owns remembered `allow_always` and `reject_always` decisions and
+  their scope. Clients do not infer that scope from the option kind.
