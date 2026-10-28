@@ -13,9 +13,9 @@
 
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
-    ContentBlock, InitializeRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, TextContent,
+    ContentBlock, InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, TextContent,
 };
 use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
 use clap::Parser;
@@ -54,15 +54,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _connection| {
-                // YOLO: Auto-approve all permission requests by selecting the first option
+                // YOLO: auto-approve by option `kind`, never by position or
+                // name. Prefer the narrower `allow_once` over `allow_always`.
                 eprintln!("✅ Auto-approving permission request: {request:?}");
-                let option_id = request.options.first().map(|opt| opt.option_id.clone());
+                let option_id = [
+                    PermissionOptionKind::AllowOnce,
+                    PermissionOptionKind::AllowAlways,
+                ]
+                .iter()
+                .find_map(|kind| {
+                    request
+                        .options
+                        .iter()
+                        .find(|option| option.kind == *kind)
+                        .map(|option| option.option_id.clone())
+                });
                 if let Some(id) = option_id {
                     responder.respond(RequestPermissionResponse::new(
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id)),
                     ))
                 } else {
-                    eprintln!("⚠️ No options provided in permission request, cancelling");
+                    eprintln!("⚠️ No allow option in permission request, cancelling");
                     responder.respond(RequestPermissionResponse::new(
                         RequestPermissionOutcome::Cancelled,
                     ))

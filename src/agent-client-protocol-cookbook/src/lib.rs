@@ -351,12 +351,18 @@ pub mod connecting_as_client {
     //! ```ignore
     //! Client.builder()
     //!     .on_receive_request(async |req: RequestPermissionRequest, responder, _connection| {
-    //!         // Auto-approve by selecting the first option (YOLO mode)
-    //!         let option_id = req.options.first().map(|opt| opt.option_id.clone());
+    //!         // Auto-approve (YOLO mode) by option `kind`, never by position
+    //!         // or name: the agent decides which options exist and in what order.
+    //!         let allow = req.options.iter().find(|option| {
+    //!             matches!(
+    //!                 option.kind,
+    //!                 PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+    //!             )
+    //!         });
     //!         responder.respond(RequestPermissionResponse::new(
-    //!             match option_id {
-    //!                 Some(id) => RequestPermissionOutcome::Selected(
-    //!                     SelectedPermissionOutcome::new(id),
+    //!             match allow {
+    //!                 Some(option) => RequestPermissionOutcome::Selected(
+    //!                     SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                 ),
     //!                 None => RequestPermissionOutcome::Cancelled,
     //!             }

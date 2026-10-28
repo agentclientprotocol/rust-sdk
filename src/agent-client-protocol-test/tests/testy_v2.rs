@@ -158,7 +158,20 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 .expect_err("closed v2 sessions should reject prompts");
             assert_eq!(
                 closed_prompt.code,
-                agent_client_protocol::ErrorCode::InvalidParams
+                agent_client_protocol::ErrorCode::ResourceNotFound
+            );
+            assert_eq!(
+                closed_prompt.data,
+                Some(serde_json::json!({ "sessionId": session.session_id() }))
+            );
+            let closed_again = connection
+                .send_request(v2::CloseSessionRequest::new(session.session_id().clone()))
+                .block_task()
+                .await
+                .expect_err("closing an inactive v2 session should fail");
+            assert_eq!(
+                closed_again.code,
+                agent_client_protocol::ErrorCode::ResourceNotFound
             );
 
             let session_id = session.session_id().clone();
@@ -409,7 +422,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
                 .expect_err("close should leave the session inactive");
             assert_eq!(
                 prompt_error.code,
-                agent_client_protocol::ErrorCode::InvalidParams
+                agent_client_protocol::ErrorCode::ResourceNotFound
             );
             Ok(())
         });
@@ -447,4 +460,155 @@ async fn testy_router_keeps_the_v1_implementation_available() {
         })
         .await
         .expect("Testy protocol router should retain v1 support");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn testy_v2_rejects_unknown_sessions_and_unadvertised_mcp_servers() {
+    Client
+        .v2()
+        .connect_with(Testy::new().v2(), async |connection| {
+            let initialize = connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            assert!(
+                initialize
+                    .capabilities
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.mcp.is_none()),
+                "Testy v2 does not advertise MCP transports"
+            );
+
+            let unknown = v2::SessionId::new("testy-v2-session-unknown");
+            let prompt_error = connection
+                .send_request(v2::PromptRequest::new(
+                    unknown.clone(),
+                    vec![TestyCommand::Greet.to_prompt().into()],
+                ))
+                .block_task()
+                .await
+                .expect_err("prompting an unknown v2 session should fail");
+            assert_eq!(
+                prompt_error.code,
+                agent_client_protocol::ErrorCode::ResourceNotFound
+            );
+            assert_eq!(
+                prompt_error.data,
+                Some(serde_json::json!({ "sessionId": "testy-v2-session-unknown" }))
+            );
+
+            let close_error = connection
+                .send_request(v2::CloseSessionRequest::new(unknown.clone()))
+                .block_task()
+                .await
+                .expect_err("closing an unknown v2 session should fail");
+            assert_eq!(
+                close_error.code,
+                agent_client_protocol::ErrorCode::ResourceNotFound
+            );
+
+            let resume_error = connection
+                .send_request(v2::ResumeSessionRequest::new(
+                    unknown,
+                    PathBuf::from("/tmp"),
+                ))
+                .block_task()
+                .await
+                .expect_err("resuming an unknown v2 session should fail");
+            assert_eq!(
+                resume_error.code,
+                agent_client_protocol::ErrorCode::ResourceNotFound
+            );
+
+            let mcp_server = v2::McpServer::Http(v2::McpServerHttp::new(
+                "unadvertised",
+                "http://localhost:1/mcp",
+            ));
+            let new_session_error = connection
+                .send_request(
+                    v2::NewSessionRequest::new(PathBuf::from("/tmp")).mcp_servers(vec![mcp_server]),
+                )
+                .block_task()
+                .await
+                .expect_err("unadvertised MCP transports should be rejected");
+            assert_eq!(
+                new_session_error.code,
+                agent_client_protocol::ErrorCode::InvalidParams
+            );
+            assert!(
+                connection
+                    .send_request(v2::ListSessionsRequest::new())
+                    .block_task()
+                    .await?
+                    .sessions
+                    .is_empty(),
+                "a rejected session/new must not create a session"
+            );
+            Ok(())
+        })
+        .await
+        .expect("Testy v2 error handling failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                event_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(Testy::new().v2(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session_id = connection
+                .send_request(v2::NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?
+                .session_id;
+            connection
+                .send_request(v2::PromptRequest::new(
+                    session_id,
+                    vec![
+                        TestyCommand::RunScenario {
+                            scenario: TestyScenario::Full,
+                        }
+                        .to_prompt()
+                        .into(),
+                    ],
+                ))
+                .block_task()
+                .await?;
+
+            loop {
+                if let v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) =
+                    next_update(&mut event_rx).await.update
+                {
+                    assert!(
+                        matches!(idle.stop_reason, Some(v2::StopReason::Error(_))),
+                        "unimplemented scenarios should not be reported as refusals: {:?}",
+                        idle.stop_reason
+                    );
+                    break;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .expect("Testy v2 unimplemented scenario failed");
 }
