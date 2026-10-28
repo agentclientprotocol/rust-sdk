@@ -40,6 +40,72 @@ pub(crate) fn redacted_error(code: impl Into<i32>) -> impl std::fmt::Debug {
     RedactedError { code, reason }
 }
 
+/// Replace every environment variable and header value in a diagnostic copy.
+///
+/// ACP carries credentials in `env` and `headers` fields: MCP server
+/// declarations in session setup, terminal auth methods, terminal creation,
+/// and provider configuration. Names stay visible; values never reach logs.
+/// Fields are matched by name anywhere in the value rather than by method, so
+/// unrelated payloads that happen to use these keys are redacted as well.
+fn redact_env_and_header_values(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, field) in object.iter_mut() {
+                if key == "env" || key == "headers" {
+                    redact_name_value_pairs(field);
+                }
+                redact_env_and_header_values(field);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            values.iter_mut().for_each(redact_env_and_header_values);
+        }
+        _ => {}
+    }
+}
+
+/// Redact `[{ "name", "value" }]` lists and `{ name: value }` maps.
+fn redact_name_value_pairs(field: &mut serde_json::Value) {
+    let redacted = || serde_json::Value::String("[REDACTED]".to_owned());
+    match field {
+        serde_json::Value::Array(entries) => {
+            for entry in entries {
+                if let Some(value) = entry.get_mut("value") {
+                    *value = redacted();
+                }
+            }
+        }
+        serde_json::Value::Object(entries) => {
+            for value in entries.values_mut() {
+                *value = redacted();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Format one wire line for protocol TRACE logs with credentials redacted.
+///
+/// Redaction happens only when the event is actually formatted. A line that is
+/// not valid JSON cannot be redacted reliably, so only its length is shown.
+pub(crate) fn redacted_json_line(line: &str) -> impl std::fmt::Display + '_ {
+    struct RedactedJsonLine<'a>(&'a str);
+
+    impl std::fmt::Display for RedactedJsonLine<'_> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match serde_json::from_str::<serde_json::Value>(self.0) {
+                Ok(mut value) => {
+                    redact_env_and_header_values(&mut value);
+                    write!(f, "{value}")
+                }
+                Err(_) => write!(f, "<{} bytes of invalid JSON omitted>", self.0.len()),
+            }
+        }
+    }
+
+    RedactedJsonLine(line)
+}
+
 /// Cast from `N` to `M` by serializing/deserialization to/from JSON.
 ///
 /// Returned diagnostics can contain the input JSON and payload-bearing parse

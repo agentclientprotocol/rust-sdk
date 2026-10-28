@@ -110,14 +110,13 @@ where
                     Dispatch::Request(message, responder) => {
                         tracing::debug!(
                             request_type = std::any::type_name::<Req>(),
-                            message = ?message,
+                            method = %message.method,
                             "RequestHandler::handle_request"
                         );
                         if Req::matches_method(&message.method) {
                             match Req::parse_message(&message.method, &message.params) {
                                 Ok(req) => {
                                     tracing::trace!(
-                                        ?req,
                                         "RequestHandler::handle_request: parse completed"
                                     );
                                     let typed_responder = responder.cast();
@@ -148,7 +147,7 @@ where
                                 }
                                 Err(err) => {
                                     tracing::trace!(
-                                        ?err,
+                                        err = ?crate::util::redacted_error(err.code),
                                         "RequestHandler::handle_request: parse errored"
                                     );
                                     Err(err)
@@ -240,14 +239,13 @@ where
                     Dispatch::Notification(message) => {
                         tracing::debug!(
                             request_type = std::any::type_name::<Notif>(),
-                            message = ?message,
+                            method = %message.method,
                             "NotificationHandler::handle_dispatch"
                         );
                         if Notif::matches_method(&message.method) {
                             match Notif::parse_message(&message.method, &message.params) {
                                 Ok(notif) => {
                                     tracing::trace!(
-                                        ?notif,
                                         "NotificationHandler::handle_notification: parse completed"
                                     );
                                     let result = (self.to_future_hack)(
@@ -273,7 +271,7 @@ where
                                 }
                                 Err(err) => {
                                     tracing::trace!(
-                                        ?err,
+                                        err = ?crate::util::redacted_error(err.code),
                                         "NotificationHandler::handle_notification: parse errored"
                                     );
                                     Err(err)

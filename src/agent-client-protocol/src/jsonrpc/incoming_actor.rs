@@ -120,7 +120,13 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
         if foreground_succeeded.clone().now_or_never().is_some() {
             break;
         }
-        tracing::trace!(message = ?message_result, actor = "incoming_protocol_actor");
+        // Frames carry payloads; the transport actor already traced them redacted.
+        let event = match &message_result {
+            IncomingProtocolMsg::Transport(_) => "transport_frame",
+            IncomingProtocolMsg::TransportClosed => "transport_closed",
+            IncomingProtocolMsg::DynamicHandler(_) => "dynamic_handler",
+        };
+        tracing::trace!(event, actor = "incoming_protocol_actor");
         match message_result {
             IncomingProtocolMsg::TransportClosed => {
                 connection.begin_incoming_close();
@@ -517,7 +523,7 @@ async fn dispatch_dispatch<Counterpart: Role>(
     pending_messages: &mut Vec<Dispatch>,
     request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<(), crate::Error> {
-    tracing::trace!(?dispatch, "dispatch_dispatch");
+    tracing::trace!(method = dispatch.method(), id = ?dispatch.id(), "dispatch_dispatch");
 
     let mut retry_any = false;
 

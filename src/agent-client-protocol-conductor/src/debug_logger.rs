@@ -9,6 +9,18 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
+/// Redact credential values in a JSON line (protocol messages, or a JSON
+/// component config). Other text is kept as-is: it is not an ACP message.
+fn redact_json_line(line: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(mut value) => {
+            crate::trace::redact_credentials(&mut value);
+            value.to_string()
+        }
+        Err(_) => line.to_owned(),
+    }
+}
+
 /// A debug logger that writes lines to a timestamped log file
 pub struct DebugLogger {
     writer: Arc<Mutex<tokio::io::BufWriter<tokio::fs::File>>>,
@@ -45,7 +57,7 @@ impl DebugLogger {
         writer.write_all(b"Components:\n").await?;
         for (i, cmd) in component_commands.iter().enumerate() {
             writer
-                .write_all(format!("  {i}: {cmd}\n").as_bytes())
+                .write_all(format!("  {i}: {}\n", redact_json_line(cmd)).as_bytes())
                 .await?;
         }
         writer.write_all(b"========================\n").await?;
@@ -83,14 +95,15 @@ impl DebugLogger {
                     agent_client_protocol::LineDirection::Stderr => "!",
                 };
 
-                // Strip ANSI escape codes from stderr to keep logs clean
-                let cleaned_line =
-                    if matches!(direction, agent_client_protocol::LineDirection::Stderr) {
+                let cleaned_line = match direction {
+                    // Strip ANSI escape codes from stderr to keep logs clean
+                    agent_client_protocol::LineDirection::Stderr => {
                         let bytes = strip_ansi_escapes::strip(&line);
                         String::from_utf8_lossy(&bytes).to_string()
-                    } else {
-                        line
-                    };
+                    }
+                    agent_client_protocol::LineDirection::Stdin
+                    | agent_client_protocol::LineDirection::Stdout => redact_json_line(&line),
+                };
 
                 let log_line =
                     format!("{component_label} {arrow} +{elapsed_ms}ms {cleaned_line}\n");
@@ -173,5 +186,25 @@ impl Clone for DebugLogWriter {
             logger: self.logger.clone(),
             buffer: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_json_line;
+
+    #[test]
+    fn protocol_lines_and_component_configs_keep_only_credential_names() {
+        let line = r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{"cwd":"/work","mcpServers":[{"name":"s","command":"/bin/s","args":[],"env":[{"name":"API_KEY","value":"private"}]},{"type":"http","name":"h","url":"https://example.test/mcp","headers":[{"name":"X-Token","value":"private"}]}]}}"#;
+        let logged = redact_json_line(line);
+        assert!(!logged.contains("private"), "{logged}");
+        assert!(logged.contains("API_KEY") && logged.contains("X-Token"));
+
+        let config = r#"{"command":"agent","env":{"OPENAI_API_KEY":"private"}}"#;
+        let logged = redact_json_line(config);
+        assert!(!logged.contains("private"), "{logged}");
+        assert!(logged.contains("OPENAI_API_KEY"));
+
+        assert_eq!(redact_json_line("python agent.py"), "python agent.py");
     }
 }

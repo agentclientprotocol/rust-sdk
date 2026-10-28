@@ -93,7 +93,7 @@ pub async fn prompt_with_callback(
         .builder()
         .on_receive_dispatch(
             async |message: Dispatch<UntypedMessage, UntypedMessage>, _cx| {
-                tracing::trace!("received: {:?}", message.message());
+                tracing::trace!(method = message.method(), "received");
                 Ok(Handled::No {
                     message,
                     retry: false,

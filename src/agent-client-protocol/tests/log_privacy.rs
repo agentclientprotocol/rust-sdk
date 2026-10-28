@@ -36,9 +36,16 @@ impl LogCapture {
     }
 
     fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync + 'static {
+        self.subscriber_at(tracing::Level::WARN)
+    }
+
+    fn subscriber_at(
+        &self,
+        level: tracing::Level,
+    ) -> impl tracing::Subscriber + Send + Sync + 'static {
         let writer = self.clone();
         tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
+            .with_max_level(level)
             .without_time()
             .with_ansi(false)
             .with_writer(move || writer.clone())
@@ -218,4 +225,129 @@ async fn dispatch_and_error_response_warnings_do_not_echo_private_errors() {
     assert!(logs.contains("_test/private_request"));
     assert!(logs.contains("-32602"));
     assert!(!logs.contains(PRIVATE_MARKER), "{logs}");
+}
+
+const SECRET: &str = "SDK_SYNTHETIC_PRIVATE_CREDENTIAL";
+
+/// Exchange a `session/new` carrying MCP `env`/`headers` secrets and a response
+/// carrying terminal auth `env` over a real byte stream, capturing all logs at
+/// `level`.
+async fn exchange_secret_bearing_messages(level: tracing::Level) -> String {
+    use agent_client_protocol::schema::v1::{
+        EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
+        NewSessionResponse,
+    };
+
+    let capture = LogCapture::new();
+    let _subscriber = tracing::subscriber::set_default(capture.subscriber_at(level));
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, client_reader) = tokio::io::duplex(4096);
+            let server = UntypedRole
+                .builder()
+                .on_receive_request(
+                    async |request: NewSessionRequest,
+                           responder: Responder<NewSessionResponse>,
+                           _: ConnectionTo<UntypedRole>| {
+                        assert_eq!(request.mcp_servers.len(), 2);
+                        responder.respond(NewSessionResponse::new("session-1"))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                )
+                .on_receive_request(
+                    async |_: UntypedMessage,
+                           responder: Responder<Value>,
+                           _: ConnectionTo<UntypedRole>| {
+                        responder.respond(json!({ "authMethods": [{
+                            "type": "terminal", "id": "login", "name": "Login",
+                            "env": { "LOGIN_TOKEN": SECRET },
+                        }]}))
+                    },
+                    agent_client_protocol::on_receive_request!(),
+                );
+            tokio::task::spawn_local(server.connect_to(agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            )));
+
+            UntypedRole
+                .builder()
+                .connect_with(
+                    agent_client_protocol::ByteStreams::new(
+                        client_writer.compat_write(),
+                        client_reader.compat(),
+                    ),
+                    async |cx| {
+                        let request = NewSessionRequest::new("/work").mcp_servers(vec![
+                            McpServer::Stdio(
+                                McpServerStdio::new("stdio", "/bin/server")
+                                    .env(vec![EnvVariable::new("API_KEY", SECRET)]),
+                            ),
+                            McpServer::Http(
+                                McpServerHttp::new("http", "https://example.test/mcp")
+                                    .headers(vec![HttpHeader::new("X-Api-Token", SECRET)]),
+                            ),
+                        ]);
+                        let response = cx.send_request(request).block_task().await?;
+                        assert_eq!(response.session_id.to_string(), "session-1");
+                        let response = cx
+                            .send_request(UntypedMessage::new("_test/auth", json!({}))?)
+                            .block_task()
+                            .await?;
+                        assert_eq!(response["authMethods"][0]["env"]["LOGIN_TOKEN"], SECRET);
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap();
+        })
+        .await;
+    capture.text()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn debug_logs_omit_session_setup_payloads() {
+    let logs = exchange_secret_bearing_messages(tracing::Level::DEBUG).await;
+    // Failure messages name what was found instead of echoing the captured
+    // logs, which hold the secret if redaction regresses.
+    // Real DEBUG events were captured, identifying the method only.
+    assert!(
+        logs.contains("session/new"),
+        "DEBUG logs should name session/new"
+    );
+    assert!(!logs.contains(SECRET), "DEBUG logs leaked a secret value");
+    assert!(
+        !logs.contains("API_KEY"),
+        "DEBUG logs leaked an env variable name"
+    );
+    assert!(
+        !logs.contains("X-Api-Token"),
+        "DEBUG logs leaked a header name"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn trace_logs_redact_env_and_header_values() {
+    let logs = exchange_secret_bearing_messages(tracing::Level::TRACE).await;
+    // Wire-level TRACE events record the messages, keeping names visible.
+    assert!(
+        logs.contains("Sending JSON-RPC message"),
+        "TRACE logs should record sent messages"
+    );
+    assert!(
+        logs.contains("Received JSON-RPC message"),
+        "TRACE logs should record received messages"
+    );
+    for name in ["API_KEY", "X-Api-Token", "LOGIN_TOKEN"] {
+        assert!(
+            logs.contains(name),
+            "TRACE logs should keep the name {name}"
+        );
+    }
+    assert!(
+        logs.contains("[REDACTED]"),
+        "TRACE logs should mark redacted values"
+    );
+    assert!(!logs.contains(SECRET), "TRACE logs leaked a secret value");
 }

@@ -20,8 +20,22 @@ JSON input and a payload-bearing parse reason. Applications should not log these
 errors using their ordinary `Debug` or `Display` representations unless they
 intend to record that content.
 
-Explicitly enabled protocol TRACE logging can record complete messages,
-including terminal output, prompts, tool arguments, and error responses. Treat
+## DEBUG and TRACE logs
+
+DEBUG logs identify messages by kind, method, and request ID only. They never
+format params, results, or error messages and data, so enabling DEBUG does not
+record prompts, tool arguments, or credentials. Serde parse failures are logged
+by category (and position, for syntax errors) rather than their reason text.
+
+Only the transport-level TRACE events (`Received JSON-RPC message`, `Sending
+JSON-RPC message`, `Sending JSON-RPC batch`, and `Relaying invalid JSON-RPC
+value`) record complete messages. They redact every value of an `env` or
+`headers` field (MCP server declarations in session setup, terminal auth
+methods, terminal creation, and provider configuration), keeping the names, and
+omit lines that are not valid JSON. Other TRACE events carry metadata only.
+
+Explicitly enabled TRACE logging still records terminal output, prompts, tool
+arguments, error responses, and any credentials outside `env`/`headers`. Treat
 these traces as private data and enable, store, and share them accordingly.
-This warning-log policy does not redact opt-in DEBUG/TRACE diagnostics or
-application-provided logging callbacks.
+Application-provided logging callbacks, such as `AcpAgent::with_debug`, receive
+raw lines and are not redacted.

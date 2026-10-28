@@ -510,7 +510,16 @@ where
         client: ConnectionTo<Host::Counterpart>,
         message: ConductorMessage,
     ) -> Result<(), agent_client_protocol::Error> {
-        tracing::debug!(?message, "handle_conductor_message");
+        let (direction, dispatch) = match &message {
+            ConductorMessage::LeftToRight { message, .. } => ("left_to_right", message),
+            ConductorMessage::RightToLeft { message, .. } => ("right_to_left", message),
+        };
+        tracing::debug!(
+            direction,
+            method = dispatch.method(),
+            id = ?dispatch.id(),
+            "handle_conductor_message"
+        );
 
         match message {
             ConductorMessage::LeftToRight {
@@ -652,7 +661,8 @@ where
     ) -> Result<(), agent_client_protocol::Error> {
         tracing::trace!(
             target_component_index,
-            ?message,
+            method = message.method(),
+            id = ?message.id(),
             "forward_client_to_agent_message"
         );
 
@@ -916,7 +926,11 @@ where
         target_component_index: usize,
         message: Dispatch,
     ) -> Result<(), agent_client_protocol::Error> {
-        tracing::debug!(?message, "forward_message_to_proxy");
+        tracing::debug!(
+            method = message.method(),
+            id = ?message.id(),
+            "forward_message_to_proxy"
+        );
 
         #[cfg(not(feature = "unstable_protocol_v2"))]
         {
@@ -944,7 +958,10 @@ where
                     // request.
                     let sent = sent.forward_cancellation_from(responder.cancellation());
                     sent.on_receiving_result(async move |result| {
-                        tracing::debug!(?result, "got initialize_proxy response from proxy");
+                        tracing::debug!(
+                            ok = result.is_ok(),
+                            "got initialize_proxy response from proxy"
+                        );
                         responder.respond_with_result(result)
                     })
                 })
@@ -975,7 +992,10 @@ where
                     let sent = self.proxies[target_component_index].send_request(request);
                     let sent = sent.forward_cancellation_from(responder.cancellation());
                     sent.on_receiving_result(async move |result| {
-                        tracing::debug!(?result, "got initialize_proxy response from proxy");
+                        tracing::debug!(
+                            ok = result.is_ok(),
+                            "got initialize_proxy response from proxy"
+                        );
                         responder.respond_with_result(result)
                     })
                 }
@@ -1876,7 +1896,7 @@ impl ConductorHostRole for Proxy {
     ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         tracing::debug!(
             method = ?message.method(),
-            ?message,
+            id = ?message.id(),
             "ConductorToConductor::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &client_connection)

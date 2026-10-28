@@ -12,7 +12,8 @@ pub(crate) fn send_raw_message(
     tx: &OutgoingMessageTx,
     message: OutgoingMessage,
 ) -> Result<(), crate::Error> {
-    tracing::debug!(?message, ?tx, "send_raw_message");
+    let (kind, method, id) = message.log_summary();
+    tracing::debug!(kind, method, ?id, ?tx, "send_raw_message");
     tx.unbounded_send(message)
         .map_err(crate::util::internal_error)
 }
@@ -34,7 +35,8 @@ pub(super) async fn outgoing_protocol_actor(
     let mut drain_waiters = Vec::new();
 
     while let Some(message) = outgoing_rx.next().await {
-        tracing::debug!(?message, "outgoing_protocol_actor");
+        let (kind, method, id) = message.log_summary();
+        tracing::debug!(kind, method, ?id, "outgoing_protocol_actor");
 
         // Create the message to be sent over the transport
         let (json_rpc_message, destination) = match message {
