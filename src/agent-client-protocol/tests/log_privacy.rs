@@ -309,22 +309,45 @@ async fn exchange_secret_bearing_messages(level: tracing::Level) -> String {
 #[tokio::test(flavor = "current_thread")]
 async fn debug_logs_omit_session_setup_payloads() {
     let logs = exchange_secret_bearing_messages(tracing::Level::DEBUG).await;
+    // Failure messages name what was found instead of echoing the captured
+    // logs, which hold the secret if redaction regresses.
     // Real DEBUG events were captured, identifying the method only.
-    assert!(logs.contains("session/new"), "{logs}");
-    assert!(!logs.contains(SECRET), "{logs}");
-    assert!(!logs.contains("API_KEY"), "{logs}");
-    assert!(!logs.contains("X-Api-Token"), "{logs}");
+    assert!(
+        logs.contains("session/new"),
+        "DEBUG logs should name session/new"
+    );
+    assert!(!logs.contains(SECRET), "DEBUG logs leaked a secret value");
+    assert!(
+        !logs.contains("API_KEY"),
+        "DEBUG logs leaked an env variable name"
+    );
+    assert!(
+        !logs.contains("X-Api-Token"),
+        "DEBUG logs leaked a header name"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn trace_logs_redact_env_and_header_values() {
     let logs = exchange_secret_bearing_messages(tracing::Level::TRACE).await;
     // Wire-level TRACE events record the messages, keeping names visible.
-    assert!(logs.contains("Sending JSON-RPC message"), "{logs}");
-    assert!(logs.contains("Received JSON-RPC message"), "{logs}");
+    assert!(
+        logs.contains("Sending JSON-RPC message"),
+        "TRACE logs should record sent messages"
+    );
+    assert!(
+        logs.contains("Received JSON-RPC message"),
+        "TRACE logs should record received messages"
+    );
     for name in ["API_KEY", "X-Api-Token", "LOGIN_TOKEN"] {
-        assert!(logs.contains(name), "{name} missing from {logs}");
+        assert!(
+            logs.contains(name),
+            "TRACE logs should keep the name {name}"
+        );
     }
-    assert!(logs.contains("[REDACTED]"), "{logs}");
-    assert!(!logs.contains(SECRET), "{logs}");
+    assert!(
+        logs.contains("[REDACTED]"),
+        "TRACE logs should mark redacted values"
+    );
+    assert!(!logs.contains(SECRET), "TRACE logs leaked a secret value");
 }
