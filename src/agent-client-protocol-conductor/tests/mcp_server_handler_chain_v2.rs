@@ -403,3 +403,147 @@ async fn v2_global_mcp_attachment_preserves_setup_and_continues_handler_chain() 
     );
     Ok(())
 }
+
+/// Records the `mcpServers` of every setup request that reaches the agent.
+struct SetupRecordingAgent {
+    received: Arc<Mutex<Vec<Vec<v2::McpServer>>>>,
+}
+
+impl ConnectTo<Client> for SetupRecordingAgent {
+    async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
+        let new_received = self.received.clone();
+        let resume_received = self.received;
+
+        Agent
+            .v2()
+            .name("setup-recording-v2-agent")
+            .on_receive_request(
+                async |request: v2::InitializeRequest,
+                       responder: Responder<v2::InitializeResponse>,
+                       _connection: V2ConnectionTo<Client>| {
+                    responder.respond(v2::InitializeResponse::new(
+                        request.protocol_version,
+                        implementation("setup-recording-v2-agent"),
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: v2::NewSessionRequest,
+                            responder: Responder<v2::NewSessionResponse>,
+                            _connection: V2ConnectionTo<Client>| {
+                    new_received.lock().unwrap().push(request.mcp_servers);
+                    responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                        "setup-recording-session",
+                    )))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |request: v2::ResumeSessionRequest,
+                            responder: Responder<v2::ResumeSessionResponse>,
+                            _connection: V2ConnectionTo<Client>| {
+                    resume_received.lock().unwrap().push(request.mcp_servers);
+                    responder.respond(v2::ResumeSessionResponse::new())
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .connect_to(client)
+            .await
+    }
+}
+
+fn assert_proxy_name_collision<T: std::fmt::Debug>(result: Result<T, Error>) {
+    let error = result.expect_err("a colliding MCP server name must be rejected");
+    assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+    let message = error
+        .data
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .expect("the error should explain the collision");
+    assert!(
+        message.contains("`global-v2-server`") && message.contains("configured by the proxy"),
+        "unexpected error message: {message}"
+    );
+}
+
+#[tokio::test]
+async fn v2_global_mcp_attachment_rejects_client_server_with_same_name() -> Result<(), Error> {
+    let setup_handler_calls = Arc::new(AtomicUsize::new(0));
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let cwd = PathBuf::from("/tmp/global-v2-mcp");
+    let colliding_server = v2::McpServer::Http(v2::McpServerHttp::new(
+        "global-v2-server",
+        "https://example.com/mcp",
+    ));
+    let client_server = v2::McpServer::Http(v2::McpServerHttp::new(
+        "client-server",
+        "https://example.com/mcp",
+    ));
+
+    let proxy = DynConnectTo::new(GlobalMcpProxy {
+        setup_handler_calls: setup_handler_calls.clone(),
+        mcp_contexts: Arc::new(Mutex::new(Vec::new())),
+    });
+    let agent = DynConnectTo::new(SetupRecordingAgent {
+        received: received.clone(),
+    });
+
+    let forwarded_client_server = client_server.clone();
+    run_with_conductor(proxy, agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation("v2-editor"),
+            ))
+            .block_task()
+            .await?;
+
+        assert_proxy_name_collision(
+            connection
+                .send_request(
+                    v2::NewSessionRequest::new(cwd.clone())
+                        .mcp_servers(vec![client_server.clone(), colliding_server.clone()]),
+                )
+                .block_task()
+                .await,
+        );
+        assert_proxy_name_collision(
+            connection
+                .send_request(
+                    v2::ResumeSessionRequest::new(
+                        v2::SessionId::new("existing-session"),
+                        cwd.clone(),
+                    )
+                    .mcp_servers(vec![colliding_server]),
+                )
+                .block_task()
+                .await,
+        );
+
+        connection
+            .send_request(v2::NewSessionRequest::new(cwd).mcp_servers(vec![client_server]))
+            .block_task()
+            .await?;
+        Ok(())
+    })
+    .await?;
+
+    assert_eq!(
+        setup_handler_calls.load(Ordering::SeqCst),
+        1,
+        "only the non-colliding request should reach later proxy handlers"
+    );
+    let received = received.lock().unwrap();
+    match received.as_slice() {
+        [servers] => match servers.as_slice() {
+            [existing, v2::McpServer::Acp(global)] => {
+                assert_eq!(existing, &forwarded_client_server);
+                assert_eq!(global.name, "global-v2-server");
+            }
+            servers => panic!("unexpected forwarded MCP declarations: {servers:?}"),
+        },
+        received => panic!("only the non-colliding request should be forwarded: {received:?}"),
+    }
+    Ok(())
+}
