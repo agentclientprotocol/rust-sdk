@@ -225,6 +225,10 @@ A v2 proxy can instead attach one server globally with
 server ID and adds its declaration to v2 `session/new`, `session/resume`, and
 feature-gated `session/fork` requests. It modifies only the `mcpServers` field,
 preserving unrelated setup fields and extensions for downstream handlers.
+MCP server names must be unique within `mcpServers`. If the client already
+declares a server with the proxy server's name, the proxy fails that request
+with `-32602`, naming the server it configures, instead of forwarding a request
+the agent must reject. It does not rename or drop either server.
 
 `V2SessionBuilder::on_proxy_session_start` and
 `V2ResumeSessionBuilder::on_proxy_session_start`, plus

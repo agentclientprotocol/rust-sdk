@@ -2255,6 +2255,12 @@ impl<
     /// requests, plus fork requests when `unstable_session_fork` is enabled.
     /// Unrelated request fields are preserved exactly.
     ///
+    /// MCP server names must be unique within `mcpServers`. If a client's
+    /// setup request already declares a server with this server's name, the
+    /// proxy answers that request with `-32602` naming the conflicting server
+    /// and does not forward it. The client's servers are never renamed or
+    /// dropped.
+    ///
     /// Only applicable to proxies.
     ///
     /// The declaration is an `acp` transport (`McpServer::Acp`). The downstream

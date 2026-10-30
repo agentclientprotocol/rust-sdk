@@ -324,12 +324,28 @@ where
         }
     }
 
+    /// Append this server's declaration to a raw v2 session setup request.
+    ///
+    /// MCP server names must be unique within `mcpServers`. If the client
+    /// already declared a server with this server's name, this fails with
+    /// `-32602` and leaves the request unchanged.
     fn append_declaration_to_raw(&self, request: &mut UntypedMessage) -> Result<(), crate::Error> {
         let serde_json::Value::Object(params) = &mut request.params else {
             return Err(
                 crate::Error::invalid_params().data("session setup parameters must be an object")
             );
         };
+        if let Some(serde_json::Value::Array(servers)) = params.get("mcpServers") {
+            let name = self.connect.name();
+            if servers.iter().any(|server| {
+                server.get("name").and_then(serde_json::Value::as_str) == Some(name.as_str())
+            }) {
+                return Err(crate::Error::invalid_params().data(format!(
+                    "MCP server `{name}` is configured by the proxy, so mcpServers cannot \
+                     declare another server with that name; names must be unique within mcpServers"
+                )));
+            }
+        }
         let declaration =
             serde_json::to_value(self.declaration()).map_err(crate::Error::into_internal_error)?;
         match params.get_mut("mcpServers") {
@@ -378,7 +394,12 @@ where
                     });
                 }
 
-                self.append_declaration_to_raw(&mut request)?;
+                if let Err(error) = self.append_declaration_to_raw(&mut request) {
+                    // Answer the client directly rather than forwarding a
+                    // request the agent must reject.
+                    responder.respond_with_error(error)?;
+                    return Ok(Handled::Yes);
+                }
                 Ok(Handled::No {
                     message: (request, responder),
                     retry: false,
@@ -691,6 +712,88 @@ mod tests {
             assert_eq!(fork_server_id, new_server_id);
         }
 
+        Ok(())
+    }
+
+    fn assert_raw_append_rejects_name_collision(
+        handler: &V2McpSessionHandler<Conductor>,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<(), Error> {
+        let params = serde_json::to_value(params)?;
+        let mut request = UntypedMessage::new(method, params.clone())?;
+        assert!(V2McpSessionHandler::<Conductor>::validate_session_setup(
+            &request
+        )?);
+
+        let error = handler
+            .append_declaration_to_raw(&mut request)
+            .expect_err("a colliding MCP server name must be rejected");
+        assert_eq!(error.code, crate::ErrorCode::InvalidParams);
+        let message = error
+            .data
+            .as_ref()
+            .and_then(Value::as_str)
+            .expect("the error should explain the collision");
+        assert!(
+            message.contains("`global-v2-server`") && message.contains("configured by the proxy"),
+            "unexpected error message: {message}"
+        );
+        assert_eq!(
+            request.params, params,
+            "a rejected request must not be modified"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v2_global_mcp_declaration_rejects_client_server_with_same_name() -> Result<(), Error> {
+        let handler = handler();
+        let cwd = PathBuf::from("/tmp/global-v2-mcp");
+        let session_id = v2::SessionId::new("session-to-resume");
+        let servers = vec![
+            existing_server(),
+            McpServer::Http(v2::McpServerHttp::new(
+                "global-v2-server",
+                "https://example.com/mcp",
+            )),
+        ];
+
+        assert_raw_append_rejects_name_collision(
+            &handler,
+            "session/new",
+            v2::NewSessionRequest::new(cwd.clone()).mcp_servers(servers.clone()),
+        )?;
+        assert_raw_append_rejects_name_collision(
+            &handler,
+            "session/resume",
+            v2::ResumeSessionRequest::new(session_id.clone(), cwd.clone())
+                .mcp_servers(servers.clone()),
+        )?;
+        #[cfg(feature = "unstable_session_fork")]
+        assert_raw_append_rejects_name_collision(
+            &handler,
+            "session/fork",
+            v2::ForkSessionRequest::new(session_id, cwd).mcp_servers(servers),
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn v2_global_mcp_declaration_accepts_client_servers_with_other_names() -> Result<(), Error> {
+        let handler = handler();
+        let server_id = assert_raw_append_preserves_params(
+            &handler,
+            "session/new",
+            v2::NewSessionRequest::new(PathBuf::from("/tmp/global-v2-mcp")).mcp_servers(vec![
+                McpServer::Http(v2::McpServerHttp::new(
+                    "client-server",
+                    "https://example.com/mcp",
+                )),
+            ]),
+        )?;
+        assert_eq!(server_id.to_string(), "global-v2-server-id");
         Ok(())
     }
 
