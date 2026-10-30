@@ -38,6 +38,8 @@ pub(crate) mod run;
 mod task_actor;
 mod termination;
 mod transport_actor;
+#[cfg(feature = "unstable_protocol_v2")]
+pub(crate) mod v2_connection;
 
 use crate::jsonrpc::close::{ChainedClose, CloseCallback};
 pub use crate::jsonrpc::close::{HandleConnectionClose, NullClose};
@@ -49,6 +51,7 @@ use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 use crate::jsonrpc::protocol::HandleId;
 #[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol::V2;
+
 pub use crate::jsonrpc::protocol::{Protocol, Raw, V1};
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
@@ -400,7 +403,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
 /// # use agent_client_protocol_test::StatusUpdate;
 /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
-/// Agent.builder()
+/// Agent.v1()
 ///     .on_receive_request(async |req: InitializeRequest, responder, cx| {
 ///         responder.respond(
 ///             InitializeResponse::new(req.protocol_version)
@@ -462,7 +465,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// # use agent_client_protocol::{Client, Agent, ConnectTo};
 /// # use agent_client_protocol_test::{expensive_operation, ProcessComplete};
 /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-/// # Client.builder().connect_with(transport, async |cx| {
+/// # Client.v1().connect_with(transport, async |cx| {
 /// cx.spawn({
 ///     let connection = cx.clone();
 ///     async move {
@@ -535,15 +538,10 @@ where
     }
 }
 
-/// A JSON-RPC connection builder whose callbacks receive [`V2ConnectionTo`].
-#[cfg(feature = "unstable_protocol_v2")]
-pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullClose> =
-    Builder<Host, Handler, Runner, Close, V2>;
-
 /// A JSON-RPC connection that can act as either a server, client, or both.
 ///
 /// [`Builder`] provides a builder-style API for creating JSON-RPC servers and clients.
-/// You start by calling `Role.builder()` (e.g., `Client.builder()`), then add message
+/// You start with a versioned entry point such as `Client.v1()` or `Client.v2()`, then add message
 /// handlers, and finally drive the connection with either [`connect_to`](Builder::connect_to)
 /// or [`connect_with`](Builder::connect_with), providing a component implementation
 /// (e.g., [`ByteStreams`] for byte streams).
@@ -631,12 +629,12 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::{Dispatch, V1};
+/// # use agent_client_protocol::v1::Dispatch;
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // on_receive_dispatch receives requests, notifications, and responses
-/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification, V1>, _cx| {
+/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification>, _cx| {
 ///     match msg {
 ///         Dispatch::Request(req, responder) => {
 ///             responder.respond(InitializeResponse::make())
@@ -837,9 +835,10 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 /// # Protocol version
 ///
 /// `P` is the [`Protocol`] marker of the request handles that typed handlers
-/// receive and of the connection type callbacks receive. `Client.builder()`,
-/// `Agent.builder()` and `Proxy.builder()` return [`V1`] builders, the v2
-/// builders use `V2`, and [`Builder::new`], other roles and
+/// receive and of the connection type callbacks receive. `Client.v1()`,
+/// `Agent.v1()` and `Proxy.v1()` return [`V1`] builders
+/// ([`v1::Builder`](crate::v1::Builder)), the v2 builders use `V2`
+/// (`v2::Builder`), and [`Builder::new`], other roles and
 /// [`without_acp_version_guard`](Builder::without_acp_version_guard) use the
 /// version-neutral default, [`Raw`].
 #[must_use]
@@ -943,9 +942,9 @@ impl<
     /// builders, whose callbacks receive raw [`ConnectionTo`] values. It
     /// returns a [`Raw`] builder: handlers registered afterwards receive
     /// version-neutral request handles. Applications should normally use
-    /// [`Client::builder`](crate::Client::builder),
-    /// [`Agent::builder`](crate::Agent::builder),
-    /// [`Proxy::builder`](crate::Proxy::builder), or, with the
+    /// [`Client::v1`](crate::Client::v1),
+    /// [`Agent::v1`](crate::Agent::v1),
+    /// [`Proxy::v1`](crate::Proxy::v1), or, with the
     /// `unstable_protocol_v2` feature, `Client::v2`, `Agent::v2`, or
     /// `Proxy::v2` instead.
     ///
@@ -991,7 +990,7 @@ impl<
     /// consumes initialization itself must use
     /// [`Builder::without_acp_version_guard`] for the selected child. Most
     /// code should use [`Client::v2`](crate::Client::v2), which also exposes
-    /// the version-typed [`V2ConnectionTo`] API.
+    /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
     ///
     /// ```compile_fail
     /// # use agent_client_protocol::Client;
@@ -1034,7 +1033,7 @@ impl<
     /// consumes initialization itself must use
     /// [`Builder::without_acp_version_guard`] for the selected child. Most
     /// code should use [`Agent::v2`](crate::Agent::v2), which also exposes
-    /// the version-typed [`V2ConnectionTo`] API.
+    /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
     ///
     /// ```compile_fail
     /// # use agent_client_protocol::Agent;
@@ -1090,21 +1089,21 @@ impl<
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
+    pub(crate) fn v2_agent(self) -> Builder<Host, Handler, Runner, Close, V2> {
         let mut builder = self.into_protocol();
         builder.protocol_mode = ProtocolMode::v2_agent();
         builder
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
+    pub(crate) fn v2_client(self) -> Builder<Host, Handler, Runner, Close, V2> {
         let mut builder = self.into_protocol();
         builder.protocol_mode = ProtocolMode::v2_client();
         builder
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
+    pub(crate) fn v2_proxy(self) -> Builder<Host, Handler, Runner, Close, V2> {
         let mut builder = self.into_protocol();
         builder.protocol_mode = ProtocolMode::v2_proxy();
         builder
@@ -1260,7 +1259,7 @@ impl<
     /// ```
     /// # use agent_client_protocol::{Client, ConnectTo, Error};
     /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
-    /// Client.builder()
+    /// Client.v1()
     ///     .on_close(async |_cx| {
     ///         Err(Error::internal_error().data("agent transport closed"))
     ///     })
@@ -1303,10 +1302,10 @@ impl<
     ///
     /// ```no_run
     /// # use agent_client_protocol_test::*;
-    /// # use agent_client_protocol::{Dispatch, V1};
+    /// # use agent_client_protocol::v1::Dispatch;
     /// # async fn example() -> Result<(), agent_client_protocol::Error> {
     /// # let connection = mock_connection();
-    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate, V1>, _cx| {
+    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate>, _cx| {
     ///     match message {
     ///         Dispatch::Request(req, responder) => {
     ///             // Handle request and send response
@@ -1374,8 +1373,8 @@ impl<
     /// 1. The request (type `Req`)
     /// 2. A [`Responder<Req::Response, P>`] for sending the response
     /// 3. The builder-selected connection context for the peer that sent the
-    ///    request (`ConnectionTo` by default, or `V2ConnectionTo` for a
-    ///    `V2Builder`)
+    ///    request (`ConnectionTo` by default, or `v2::ConnectionTo` for a
+    ///    `v2::Builder`)
     ///
     /// The request context allows you to:
     /// - Send the response with [`Responder::respond`]
@@ -1389,7 +1388,7 @@ impl<
     /// # use agent_client_protocol::{Agent, ConnectTo};
     /// # use agent_client_protocol::schema::v1::{PromptRequest, PromptResponse, SessionNotification};
     /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
-    /// Agent.builder().on_receive_request(async |request: PromptRequest, responder, cx| {
+    /// Agent.v1().on_receive_request(async |request: PromptRequest, responder, cx| {
     ///     // Send a notification while processing
     ///     let notif: SessionNotification = todo!();
     ///     cx.send_notification(notif)?;
@@ -2094,7 +2093,7 @@ impl<
     /// The same native MCP server declaration is added to new, load, and resume
     /// requests, plus fork requests when `unstable_session_fork` is enabled.
     ///
-    /// Only applicable to proxies. Use the same method on `V2Builder` to
+    /// Only applicable to proxies. Use the same method on `v2::Builder` to
     /// attach the server to protocol v2 setup requests.
     pub fn with_mcp_server(
         self,
@@ -2263,7 +2262,7 @@ struct PendingReply {
     cancellation_disarm: SentRequestCancellationDisarm,
     ordering: ResponseOrdering,
     response_route_hook: Option<ResponseRouteHook>,
-    /// Set only by `V2ConnectionTo::send_initialize`, whose typed outcome
+    /// Set only by `v2::ConnectionTo::send_initialize`, whose typed outcome
     /// reports a lower-version initialize response as a success.
     accepts_lower_initialize_version: bool,
 }
@@ -3179,331 +3178,6 @@ impl<T> IntoHandled<T> for Handled<T> {
     }
 }
 
-/// A protocol-v2 connection context.
-///
-/// Values of this type are supplied to callbacks registered on a
-/// [`V2Builder`]. It exposes the general connection operations that are valid
-/// for protocol v2 while keeping version-specific high-level helpers for other
-/// protocol versions out of the typed context. The generic JSON-RPC send
-/// methods remain intentionally schema-agnostic.
-///
-/// This is a thin, cheaply cloneable handle to the underlying JSON-RPC
-/// connection. It intentionally does not implement [`Deref`](std::ops::Deref)
-/// to [`ConnectionTo`].
-#[cfg(feature = "unstable_protocol_v2")]
-#[derive(Clone, Debug)]
-pub struct V2ConnectionTo<Counterpart: Role> {
-    inner: ConnectionTo<Counterpart>,
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl V2ConnectionTo<Agent> {
-    /// Send the client's `initialize` request and report how the agent
-    /// negotiated.
-    ///
-    /// Unlike [`send_request`](Self::send_request), a v1-only agent's valid v1
-    /// response resolves successfully as [`InitializeOutcome::LowerVersion`]
-    /// with the agent's typed response, so the caller can decide whether to
-    /// fall back to a v1 client implementation. The connection stays
-    /// uninitialized in that case; the SDK never converts it to v1.
-    ///
-    /// The request still resolves with an error for errors returned by the
-    /// agent (including the `-32022` version mismatch), malformed responses,
-    /// and transport failures.
-    ///
-    /// After an initialization completes, `initialize` may be sent again
-    /// before any other request; the agent treats the latest one as
-    /// authoritative. Once another request has been sent, a repeat resolves
-    /// with an `-32600` error without being sent.
-    ///
-    /// ```no_run
-    /// # use agent_client_protocol::schema::{ProtocolVersion, v2};
-    /// # use agent_client_protocol::{
-    /// #     Client, ConnectTo, InitializeOutcome, SelectedInitializeResponse,
-    /// # };
-    /// # async fn example(agent: impl ConnectTo<Client>) -> agent_client_protocol::Result<()> {
-    /// let outcome = Client
-    ///     .v2()
-    ///     .connect_with(agent, async |cx| {
-    ///         let request = v2::InitializeRequest::new(
-    ///             ProtocolVersion::V2,
-    ///             v2::Implementation::new("example", "0.1.0"),
-    ///         );
-    ///         match cx.send_initialize(request).block_task().await? {
-    ///             InitializeOutcome::Initialized(_response) => {
-    ///                 // Continue with v2 traffic.
-    ///                 Ok(None)
-    ///             }
-    ///             InitializeOutcome::LowerVersion(mismatch) => Ok(Some(mismatch)),
-    ///             _ => Err(agent_client_protocol::util::internal_error("unexpected outcome")),
-    ///         }
-    ///     })
-    ///     .await?;
-    /// if let Some(mismatch) = outcome
-    ///     && let SelectedInitializeResponse::V1(_v1_response) = mismatch.response
-    /// {
-    ///     // Reconnect with a v1 client implementation.
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn send_initialize(
-        &self,
-        request: crate::schema::v2::InitializeRequest,
-    ) -> SentRequest<InitializeOutcome, V2> {
-        let mut prepared = self.inner.prepare_request_to_with_options::<V2, _, _>(
-            self.inner.counterpart(),
-            protocol_compat::InitializeNegotiation(request),
-            None,
-            None,
-        );
-        prepared
-            .publication
-            .pending_reply
-            .accepts_lower_initialize_version = true;
-        prepared.into_sent_request(false)
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
-    /// Access the underlying version-neutral connection inside the SDK.
-    pub(crate) fn raw_connection(&self) -> &ConnectionTo<Counterpart> {
-        &self.inner
-    }
-
-    /// Return the counterpart role this connection is talking to.
-    pub fn counterpart(&self) -> Counterpart {
-        self.inner.counterpart()
-    }
-
-    /// Wait until the incoming transport reaches clean EOF.
-    pub async fn incoming_closed(&self) {
-        self.inner.incoming_closed().await;
-    }
-
-    /// Return whether clean incoming-EOF processing has completed.
-    #[must_use]
-    pub fn is_incoming_closed(&self) -> bool {
-        self.inner.is_incoming_closed()
-    }
-
-    /// Wait until the connection driver has terminated, for any reason.
-    ///
-    /// See [`ConnectionTo::terminated`].
-    pub async fn terminated(&self) -> ConnectionTermination {
-        self.inner.terminated().await
-    }
-
-    /// Return the termination reason if the connection driver has terminated.
-    #[must_use]
-    pub fn termination(&self) -> Option<ConnectionTermination> {
-        self.inner.termination()
-    }
-
-    /// Spawn a task that runs for as long as the JSON-RPC connection is served.
-    #[track_caller]
-    pub fn spawn(
-        &self,
-        task: impl IntoFuture<Output = Result<(), crate::Error>, IntoFuture: Send + 'static>,
-    ) -> Result<(), crate::Error> {
-        self.inner.spawn(task)
-    }
-
-    /// Spawn a JSON-RPC connection in the background.
-    ///
-    /// The returned connection context is selected by `builder`; spawning a
-    /// [`V2Builder`] therefore returns another [`V2ConnectionTo`].
-    ///
-    /// ```no_run
-    /// # use agent_client_protocol::{
-    /// #     Agent, Client, ConnectTo, Error, V2ConnectionTo,
-    /// # };
-    /// # fn example(
-    /// #     connection: V2ConnectionTo<Agent>,
-    /// #     transport: impl ConnectTo<Client> + 'static,
-    /// # ) -> Result<(), Error> {
-    /// let child: V2ConnectionTo<Agent> =
-    ///     connection.spawn_connection(Client.v2(), transport)?;
-    /// # drop(child);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[track_caller]
-    pub fn spawn_connection<R: Role, P: Protocol>(
-        &self,
-        builder: Builder<
-            R,
-            impl HandleDispatchFrom<R::Counterpart> + 'static,
-            impl RunWithConnectionTo<R::Counterpart> + 'static,
-            impl HandleConnectionClose<R::Counterpart> + 'static,
-            P,
-        >,
-        transport: impl ConnectTo<R> + 'static,
-    ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
-        self.inner.spawn_connection_with_context(builder, transport)
-    }
-
-    /// Send a request or notification and forward its response appropriately.
-    pub fn send_proxied_message<
-        Req: JsonRpcRequest<Response: Send>,
-        Notif: JsonRpcNotification,
-        Q: Protocol,
-    >(
-        &self,
-        message: Dispatch<Req, Notif, Q>,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Counterpart>,
-    {
-        self.inner.send_proxied_message(message)
-    }
-
-    /// Send a request or notification to a specific peer and forward its
-    /// response appropriately.
-    pub fn send_proxied_message_to<
-        Peer: Role,
-        Req: JsonRpcRequest<Response: Send>,
-        Notif: JsonRpcNotification,
-        Q: Protocol,
-    >(
-        &self,
-        peer: Peer,
-        message: Dispatch<Req, Notif, Q>,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        self.inner.send_proxied_message_to(peer, message)
-    }
-
-    /// Send an outgoing request to the default counterpart peer.
-    pub fn send_request<Req: JsonRpcRequest>(&self, request: Req) -> SentRequest<Req::Response, V2>
-    where
-        Counterpart: HasPeer<Counterpart>,
-    {
-        self.send_request_to(self.inner.counterpart(), request)
-    }
-
-    /// Send an outgoing request to a specific peer.
-    pub fn send_request_to<Peer: Role, Req: JsonRpcRequest>(
-        &self,
-        peer: Peer,
-        request: Req,
-    ) -> SentRequest<Req::Response, V2>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        self.inner
-            .send_request_to_with_options(peer, request, false, None, None)
-    }
-
-    /// Prepare a request without sending it until response handling is selected.
-    ///
-    /// See [`ConnectionTo::prepare_request`] for publication and ordering semantics.
-    pub fn prepare_request<Req: JsonRpcRequest>(
-        &self,
-        request: Req,
-    ) -> PreparedRequest<Req::Response, V2>
-    where
-        Counterpart: HasPeer<Counterpart>,
-    {
-        self.prepare_request_to(self.inner.counterpart(), request)
-    }
-
-    /// Prepare a request to a specific peer without sending it.
-    ///
-    /// See [`ConnectionTo::prepare_request_to`] for publication and ordering semantics.
-    pub fn prepare_request_to<Peer: Role, Req: JsonRpcRequest>(
-        &self,
-        peer: Peer,
-        request: Req,
-    ) -> PreparedRequest<Req::Response, V2>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        self.inner
-            .prepare_request_to_with_options(peer, request, None, None)
-    }
-
-    /// Send an outgoing notification to the default counterpart peer.
-    pub fn send_notification<N: JsonRpcNotification>(
-        &self,
-        notification: N,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Counterpart>,
-    {
-        self.inner.send_notification(notification)
-    }
-
-    /// Send an outgoing notification to a specific peer.
-    pub fn send_notification_to<Peer: Role, N: JsonRpcNotification>(
-        &self,
-        peer: Peer,
-        notification: N,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        self.inner.send_notification_to(peer, notification)
-    }
-
-    /// Send a `$/cancel_request` notification to the default counterpart peer.
-    pub fn send_cancel_request(
-        &self,
-        request_id: impl Into<RawJsonRpcId>,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Counterpart>,
-    {
-        self.inner.send_cancel_request(request_id)
-    }
-
-    /// Send a `$/cancel_request` notification to a specific peer.
-    pub fn send_cancel_request_to<Peer: Role>(
-        &self,
-        peer: Peer,
-        request_id: impl Into<RawJsonRpcId>,
-    ) -> Result<(), crate::Error>
-    where
-        Counterpart: HasPeer<Peer>,
-    {
-        self.inner.send_cancel_request_to(peer, request_id)
-    }
-
-    /// Register a low-level dynamic message handler.
-    ///
-    /// Dynamic handlers use the version-neutral [`HandleDispatchFrom`] trait,
-    /// so their callback receives the underlying [`ConnectionTo`]. Prefer
-    /// typed handlers on [`V2Builder`] when registration can happen before the
-    /// connection starts.
-    ///
-    /// ```no_run
-    /// # use agent_client_protocol::{
-    /// #     Agent, Client, ConnectTo, DynamicHandlerGuard, Error, NullHandler,
-    /// # };
-    /// # async fn example(
-    /// #     transport: impl ConnectTo<Client> + 'static,
-    /// # ) -> Result<(), Error> {
-    /// Client.v2().connect_with(transport, async |connection| {
-    ///     let guard: DynamicHandlerGuard<Agent> =
-    ///         connection.add_dynamic_handler(NullHandler)?;
-    ///
-    ///     // Keep `guard` alive for as long as the modal handler is needed.
-    ///     drop(guard);
-    ///     Ok(())
-    /// }).await
-    /// # }
-    /// ```
-    pub fn add_dynamic_handler(
-        &self,
-        handler: impl HandleDispatchFrom<Counterpart> + 'static,
-    ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
-        self.inner.add_dynamic_handler(handler)
-    }
-}
-
 /// Connection context for sending messages and spawning tasks.
 ///
 /// This is the primary handle for interacting with the JSON-RPC connection from
@@ -4154,7 +3828,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// # Returns
     ///
     /// The child builder may use any [`Protocol`]. For example, this method
-    /// can spawn a `V2Builder`, whose callbacks receive `V2ConnectionTo`,
+    /// can spawn a `v2::Builder`, whose callbacks receive `v2::ConnectionTo`,
     /// while preserving this method's existing raw return type and single
     /// explicit role parameter.
     ///
@@ -4201,21 +3875,20 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// by its builder.
     ///
     /// This is the low-level counterpart to
-    /// [`V2ConnectionTo::spawn_connection`] for code that intentionally works
+    /// [`v2::ConnectionTo::spawn_connection`](crate::v2::ConnectionTo::spawn_connection) for code that intentionally works
     /// with a raw [`ConnectionTo`], such as custom [`HandleDispatchFrom`] or
     /// [`RunWithConnectionTo`] implementations. Prefer [`Self::spawn_connection`]
     /// when a raw child handle is sufficient.
     ///
     /// ```no_run
     /// # use agent_client_protocol::{
-    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole,
-    /// #     V2ConnectionTo,
+    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole, v2,
     /// # };
     /// # fn example(
     /// #     connection: ConnectionTo<UntypedRole>,
     /// #     transport: impl ConnectTo<Client> + 'static,
     /// # ) -> Result<(), Error> {
-    /// let child: V2ConnectionTo<Agent> =
+    /// let child: v2::ConnectionTo<Agent> =
     ///     connection.spawn_connection_with_context(Client.v2(), transport)?;
     /// # drop(child);
     /// # Ok(())
@@ -4971,8 +4644,8 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 /// # Protocol version
 ///
 /// `P` is the [`Protocol`] marker and selects the type [`id`](Self::id)
-/// returns. Typed handlers on `Client.builder()`, `Agent.builder()` and
-/// `Proxy.builder()` receive [`V1`] responders and those on the v2 builders
+/// returns. Typed handlers on `Client.v1()`, `Agent.v1()` and
+/// `Proxy.v1()` receive [`V1`] responders and those on the v2 builders
 /// receive `V2` responders. The version-neutral raw dispatch layer
 /// ([`HandleDispatchFrom`], [`MatchDispatch`](crate::util::MatchDispatch))
 /// uses the default, [`Raw`]. [`raw_id`](Self::raw_id) returns the wire ID
@@ -5291,7 +4964,8 @@ impl<T: JsonRpcResponse> Responder<T, Raw> {
     /// ```
     /// # use agent_client_protocol::{Error, Responder, V1, schema::v1};
     /// # fn example(responder: Responder<v1::PromptResponse>) -> Result<(), Error> {
-    /// let responder: Responder<v1::PromptResponse, V1> = responder.into_protocol()?;
+    /// let responder: agent_client_protocol::v1::Responder<v1::PromptResponse> =
+    ///     responder.into_protocol::<V1>()?;
     /// let id: &v1::RequestId = responder.id();
     /// # let _ = id;
     /// # Ok(())
@@ -6190,7 +5864,7 @@ impl JsonRpcNotification for UntypedMessage {}
 ///
 /// `P` is the [`Protocol`] marker of the connection handle that sent the
 /// request: [`Raw`] for the version-neutral [`ConnectionTo`], `V2` for
-/// `V2ConnectionTo`. It selects the type [`id`](Self::id) returns.
+/// `v2::ConnectionTo`. It selects the type [`id`](Self::id) returns.
 #[must_use = "dropping a SentRequest asks the peer to cancel the request and \
               discards the response; consume it with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
@@ -7892,7 +7566,7 @@ mod tests {
                 future::ready(Ok::<_, std::io::Error>(()))
             });
             let builder = Client
-                .builder()
+                .v1()
                 .with_spawned({
                     let cleaned = cleaned.clone();
                     async move |cx: ConnectionTo<Agent>| {
@@ -8174,7 +7848,7 @@ mod tests {
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn v2_builder_exposes_typed_context_to_user_callbacks() {
-        fn assert_v2_context(_connection: &V2ConnectionTo<Agent>) {}
+        fn assert_v2_context(_connection: &crate::v2::ConnectionTo<Agent>) {}
 
         let _builder = Client
             .v2()
@@ -8239,7 +7913,7 @@ mod tests {
         use crate::schema::ProtocolVersion;
 
         // A v1 proxy selects v1 for a newer request.
-        let mode = Proxy.builder().protocol_mode;
+        let mode = Proxy.v1().protocol_mode;
         assert_eq!(mode.api_protocol_version(), Some(ProtocolVersion::V1));
         let request = ProtocolCompat::new(mode).incoming_message(UntypedMessage::new(
             "proxy/initialize",
@@ -8321,7 +7995,7 @@ mod tests {
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
     fn v2_proxy_builder_exposes_typed_context_to_user_callbacks() {
-        fn assert_v2_context(_connection: &V2ConnectionTo<crate::Conductor>) {}
+        fn assert_v2_context(_connection: &crate::v2::ConnectionTo<crate::Conductor>) {}
 
         let _builder = Proxy
             .v2()
@@ -8368,13 +8042,13 @@ mod tests {
 
         let child: ConnectionTo<Agent> = parent
             .spawn_connection::<Client>(
-                Client
-                    .v2()
-                    .with_spawned(async move |_connection: V2ConnectionTo<Agent>| {
+                Client.v2().with_spawned(
+                    async move |_connection: crate::v2::ConnectionTo<Agent>| {
                         callback_tx.send(()).map_err(|()| {
                             crate::util::internal_error("typed child callback receiver was dropped")
                         })
-                    }),
+                    },
+                ),
                 transport,
             )
             .expect("v2 child connection should be spawned");
@@ -8403,7 +8077,7 @@ mod tests {
         let (parent, mut task_rx) = connection_with_task_receiver();
         let (transport, _peer) = Channel::duplex();
 
-        let child: V2ConnectionTo<Agent> = parent
+        let child: crate::v2::ConnectionTo<Agent> = parent
             .spawn_connection_with_context(Client.v2(), transport)
             .expect("v2 child connection should be spawned");
 
@@ -8513,7 +8187,7 @@ mod tests {
         assert_eq!(raw_sent_id, raw_sent.raw_id());
         raw_sent.detach();
 
-        let v2_connection = V2ConnectionTo { inner: connection };
+        let v2_connection = crate::v2::ConnectionTo { inner: connection };
         let sent = v2_connection.send_request_to(
             crate::role::UntypedRole,
             UntypedMessage::new("probe", serde_json::json!({}))
@@ -8984,7 +8658,7 @@ mod tests {
         let transport_completion: SharedTransportCompletion =
             future::ready(Ok::<(), crate::Error>(())).boxed().shared();
         let pending_replies = PendingReplies::default();
-        let connection = V2ConnectionTo {
+        let connection = crate::v2::ConnectionTo {
             inner: ConnectionTo::new(
                 Agent,
                 message_tx,

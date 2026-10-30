@@ -1,4 +1,4 @@
-//! The `testy` binary serves v1 and v2 through `Testy::protocol_router` when
+//! The `testy` binary serves v1 and v2 through `testy::protocol_router` when
 //! `unstable_protocol_v2` is enabled, and the v1 `Testy` alone otherwise. A v1
 //! client must not be able to tell the two apart.
 
@@ -10,7 +10,7 @@ use agent_client_protocol::{
     ByteStreams, Client, ConnectTo,
     schema::{ProtocolVersion, v1},
 };
-use agent_client_protocol_test::testy::Testy;
+use agent_client_protocol_test::testy::{self, v1::Testy};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt as _};
@@ -81,7 +81,7 @@ fn new_session(id: u64) -> Value {
 
 async fn assert_same_for_v1_client(messages: &[Value]) {
     let standalone = exchange(Testy::new(), messages).await;
-    let routed = exchange(Testy::new().protocol_router(), messages).await;
+    let routed = exchange(testy::protocol_router(), messages).await;
     assert_eq!(
         routed, standalone,
         "the protocol router changed what a v1 client sees for {messages:#?}"

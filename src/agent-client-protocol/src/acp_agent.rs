@@ -1418,7 +1418,7 @@ mod tests {
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            Client.builder().connect_to(agent),
+            Client.v1().connect_to(agent),
         )
         .await
         .expect("connection should finish after the child exits")
@@ -1449,7 +1449,7 @@ mod tests {
         let (release_tx, release_rx) = futures::channel::oneshot::channel();
         let connection = tokio::spawn(
             Client
-                .builder()
+                .v1()
                 .on_close(async move |_cx| {
                     closed_tx.send(()).map_err(|()| {
                         crate::Error::internal_error().data("close observer dropped")
@@ -1595,7 +1595,7 @@ mod tests {
         let (agent, mut pid_rx) =
             wrapper_agent("echo ACP_TEST_CHILD_PID=$$ >&2; exec 1>&-; while :; do sleep 30; done");
         let mut connection: futures::future::BoxFuture<'static, Result<(), crate::Error>> =
-            Box::pin(Client.builder().connect_to(agent));
+            Box::pin(Client.v1().connect_to(agent));
         let child_pid = reported_descendant_pid(&mut connection, &mut pid_rx).await;
         let mut cleanup = KillOnDrop(Some(child_pid));
 
@@ -1766,7 +1766,7 @@ mod tests {
     ) -> (Result<(), crate::Error>, Duration) {
         let pid_path = markers.pid_path();
         let (stopped_tx, stopped_rx) = futures::channel::oneshot::channel();
-        let connection = Client.builder().connect_with(agent, async move |_cx| {
+        let connection = Client.v1().connect_with(agent, async move |_cx| {
             while !pid_path.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

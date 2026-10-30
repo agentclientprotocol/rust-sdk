@@ -164,7 +164,7 @@ async fn host<Run: RunWithConnectionTo<Agent> + 'static>(
 ) {
     let (transport, mut peer) = Channel::duplex();
     let (stop, stopped) = oneshot::channel();
-    let task = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+    let task = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
         cx.build_session_cwd()?
             .with_mcp_server(server)?
             .block_task()

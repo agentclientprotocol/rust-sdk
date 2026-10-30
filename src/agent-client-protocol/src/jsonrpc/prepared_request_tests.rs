@@ -539,7 +539,7 @@ fn cancellation_handle_traits_do_not_depend_on_the_response_type() {
 #[test]
 fn v2_context_exposes_both_preparation_methods() {
     let mut fixture = Fixture::new();
-    let connection = V2ConnectionTo {
+    let connection = crate::v2::ConnectionTo {
         inner: fixture.connection.clone(),
     };
     let first = connection.prepare_request(request());

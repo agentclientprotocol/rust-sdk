@@ -68,7 +68,7 @@ impl ConnectTo<Conductor> for NativeMcpProvider {
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         Proxy
-            .builder()
+            .v1()
             .name("native-mcp-provider")
             .on_receive_request_from(
                 Agent,
@@ -147,7 +147,7 @@ impl ConnectTo<Client> for RecordingAgent {
         let resume_observed = self.observed;
 
         Agent
-            .builder()
+            .v1()
             .name("recording-agent")
             .on_receive_request(
                 async move |request: InitializeRequest, responder, _cx| {
@@ -345,7 +345,7 @@ async fn run_with_provider(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     Client
-        .builder()
+        .v1()
         .name("polyfill-test-client")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(

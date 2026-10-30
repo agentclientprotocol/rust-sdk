@@ -225,7 +225,7 @@ pub fn mock_connection() -> Builder<
     agent_client_protocol::NullClose,
     agent_client_protocol::V1,
 > {
-    Client.builder()
+    Client.v1()
 }
 
 pub trait Make {

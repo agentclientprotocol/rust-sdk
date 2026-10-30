@@ -17,7 +17,7 @@ pub async fn run_arrow_proxy(
     transport: impl ConnectTo<Proxy> + 'static,
 ) -> Result<(), agent_client_protocol::Error> {
     Proxy
-        .builder()
+        .v1()
         .name("arrow-proxy")
         // Intercept session notifications from successor (agent) and modify them.
         // Using on_receive_notification_from(Agent, ...) automatically unwraps

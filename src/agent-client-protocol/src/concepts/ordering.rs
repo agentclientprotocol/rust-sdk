@@ -77,7 +77,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.spawn({
 //!     let cx = cx.clone();
 //!     async move {
@@ -106,7 +106,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.prepare_request(MyRequest {})
 //!     .on_receiving_result(async |result| {
 //!         // A peer response routed in its original dispatch holds this barrier
@@ -165,7 +165,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session_cwd()?
 //!     .block_task()
 //!     .run_until(async |mut session| {
@@ -200,8 +200,8 @@
 //! [`on_receive_notification`]: crate::Builder::on_receive_notification
 //! [`on_receiving_result`]: crate::SentRequest::on_receiving_result
 //! [`on_receiving_ok_result`]: crate::SentRequest::on_receiving_ok_result
-//! [`on_session_start`]: crate::SessionBuilder::on_session_start
-//! [`on_proxy_session_start`]: crate::SessionBuilder::on_proxy_session_start
+//! [`on_session_start`]: crate::v1::SessionBuilder::on_session_start
+//! [`on_proxy_session_start`]: crate::v1::SessionBuilder::on_proxy_session_start
 //! [`SentRequest`]: crate::SentRequest
 //! [`PreparedRequest::on_receiving_result`]: crate::PreparedRequest::on_receiving_result
 //! [`prepare_request`]: crate::ConnectionTo::prepare_request

@@ -152,7 +152,7 @@ pub(crate) fn normalize_v1_initialize_request(
     Ok(normalized)
 }
 
-/// The outcome of a v2 client's [`send_initialize`](crate::V2ConnectionTo::send_initialize).
+/// The outcome of a v2 client's [`send_initialize`](crate::v2::ConnectionTo::send_initialize).
 ///
 /// A v1-only agent may legitimately answer a v2 initialization attempt with a
 /// v1 response. That is a successful reply, not an error, so it is reported as
@@ -297,7 +297,7 @@ impl crate::JsonRpcResponse for InitializeOutcome {
     }
 }
 
-/// The request sent by [`send_initialize`](crate::V2ConnectionTo::send_initialize).
+/// The request sent by [`send_initialize`](crate::v2::ConnectionTo::send_initialize).
 ///
 /// Its pending reply opts into receiving a lower-version response as a
 /// successful [`InitializeOutcome`] instead of the connection's local error.

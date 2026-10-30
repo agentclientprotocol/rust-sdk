@@ -15,7 +15,8 @@
 use std::{collections::HashMap, str::FromStr};
 
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
-use agent_client_protocol::{AcpAgent, Agent, Client, Error, Responder, V2, V2ConnectionTo};
+use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::{AcpAgent, Agent, Client, Error};
 use clap::Parser;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -42,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .name("v2-one-shot-client")
         .on_receive_notification(
             async move |notification: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: ConnectionTo<Agent>| {
                 update_tx
                     .send(notification)
                     .map_err(Error::into_internal_error)
@@ -51,8 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .on_receive_request(
             async move |request: v2::RequestPermissionRequest,
-                        responder: Responder<v2::RequestPermissionResponse, V2>,
-                        connection: V2ConnectionTo<Agent>| {
+                        responder: Responder<v2::RequestPermissionResponse>,
+                        connection: ConnectionTo<Agent>| {
                 responder.respond(reject_permission(&request, &connection)?)
             },
             agent_client_protocol::on_receive_request!(),
@@ -130,7 +131,7 @@ async fn wait_until_idle(
 /// work, so without such an option this sends `session/cancel` first.
 fn reject_permission(
     request: &v2::RequestPermissionRequest,
-    connection: &V2ConnectionTo<Agent>,
+    connection: &ConnectionTo<Agent>,
 ) -> Result<v2::RequestPermissionResponse, Error> {
     if let Some(option) = request
         .options

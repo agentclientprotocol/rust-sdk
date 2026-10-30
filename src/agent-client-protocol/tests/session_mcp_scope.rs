@@ -213,7 +213,7 @@ async fn isolated_scope(exit: ScopeExit) {
         let (exit_tx, exit_rx) = oneshot::channel();
         let (returned_tx, mut returned_rx) = oneshot::channel();
         let (finish_tx, finish_rx) = oneshot::channel();
-        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+        let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             // This registration and its subscription outlive the scoped session.
             let live_session = cx
                 .build_session_cwd()?
@@ -366,7 +366,7 @@ async fn failed_start_session(cancel: bool) {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (drop_tx, drop_rx) = oneshot::channel();
         let (finish_tx, finish_rx) = oneshot::channel();
-        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+        let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             let _live = cx
                 .build_session_cwd()?
                 .with_mcp_server(McpServer::new_service(

@@ -951,7 +951,7 @@ where
             // The pass-through proxy forwards untyped messages, so one
             // guard-less proxy serves every protocol version. The endpoints
             // validate the selected version themselves.
-            let trace_proxy = DynConnectTo::new(Proxy.builder().without_acp_version_guard());
+            let trace_proxy = DynConnectTo::new(Builder::new(Proxy).without_acp_version_guard());
 
             self.connect_to_proxy(
                 &client,
@@ -1543,8 +1543,7 @@ impl ConductorHostRole for Agent {
         // Like the client connection, the agent connection forwards every
         // protocol version untyped and leaves validation to the endpoints.
         let connection_to_agent = client_connection.spawn_connection(
-            Client
-                .builder()
+            Builder::new(Client)
                 .without_acp_version_guard()
                 .name("conductor-to-agent")
                 .on_receive_dispatch(

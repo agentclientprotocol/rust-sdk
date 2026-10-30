@@ -7,7 +7,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectionTo, Error, ErrorCode, Responder, RunWithConnectionTo, V2ConnectionTo,
+    Agent, Client, ConnectionTo, Error, ErrorCode, Responder, RunWithConnectionTo,
     schema::{ProtocolVersion, v2},
 };
 use futures::{
@@ -53,7 +53,7 @@ impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
             .as_ref()
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        assert!(data.contains("V2ConnectionTo"), "{error:?}");
+        assert!(data.contains("`v2::ConnectionTo`"), "{error:?}");
 
         self.completed.send(()).map_err(|()| {
             Error::internal_error().data("v1 session guard test receiver was dropped")
@@ -88,7 +88,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.protocol_version, ProtocolVersion::V2);
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -97,7 +97,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert!(AsRef::<std::path::Path>::as_ref(&request.cwd).is_absolute());
                 responder.respond(agent_new_response.clone())
             },
@@ -106,7 +106,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .on_receive_request(
             async move |request: v2::PromptRequest,
                         responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("v2-session"));
                 assert!(matches!(
                     request.prompt.as_slice(),
@@ -151,7 +151,7 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -240,7 +240,7 @@ async fn v2_fork_builder_uses_the_forked_response_id_and_preserves_the_response(
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(
                     v2::InitializeResponse::new(request.protocol_version, implementation())
                         .capabilities(v2::AgentCapabilities::new().session(
@@ -256,7 +256,7 @@ async fn v2_fork_builder_uses_the_forked_response_id_and_preserves_the_response(
                 v2::ForkSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, agent_source_session_id);
                 assert_eq!(request.cwd, expected_cwd);
                 responder.respond(agent_response.clone())
@@ -301,7 +301,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -309,7 +309,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "cancel-session",
                 )))
@@ -319,7 +319,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                   connection: V2ConnectionTo<Client>| {
+                   connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new("cancel-user"))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id.clone(),
@@ -338,7 +338,8 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_notification(
-            async |cancel: v2::CancelSessionNotification, connection: V2ConnectionTo<Client>| {
+            async |cancel: v2::CancelSessionNotification,
+                   connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     cancel.session_id.clone(),
                     v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
@@ -361,7 +362,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -420,7 +421,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -428,7 +429,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "parallel-prompts",
                 )))
@@ -438,7 +439,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                   connection: V2ConnectionTo<Client>| {
+                   connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert!(matches!(
                     request.prompt.as_slice(),
                     [v2::ContentBlock::Text(text)]
@@ -464,7 +465,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -521,7 +522,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -529,7 +530,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "rejected-prompt",
                 )))
@@ -539,7 +540,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                   connection: V2ConnectionTo<Client>| {
+                   connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond_with_error(Error::invalid_params().data("prompt rejected"))?;
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     request.session_id,
@@ -557,7 +558,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -612,7 +613,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -620,7 +621,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "permission-session",
                 )))
@@ -630,7 +631,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .on_receive_request(
             async |request: v2::PromptRequest,
                    responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                   connection: V2ConnectionTo<Client>| {
+                   connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new("permission-user"))?;
 
                 let session_id = request.session_id;
@@ -674,7 +675,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -687,7 +688,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
                 v2::RequestPermissionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 permission_tx
                     .unbounded_send((request, responder))
                     .map_err(Error::into_internal_error)
@@ -746,7 +747,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -754,7 +755,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "unhandled-session",
                 )))
@@ -764,7 +765,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
         .on_receive_request(
             async move |request: v2::PromptRequest,
                         responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::PromptResponse::new("unhandled-user"))?;
 
                 // A v2 client without typed handlers should ignore an
@@ -842,7 +843,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -853,7 +854,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
                 v2::ResumeSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, agent_session_id);
                 assert!(matches!(
                     request.replay_from,
@@ -883,7 +884,7 @@ async fn v2_resume_replay_is_handled_before_the_response() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 let message_id = match update.update {
                     v2::SessionUpdate::UserMessage(message) => message.message_id,
                     v2::SessionUpdate::AgentMessage(message) => message.message_id,
@@ -949,7 +950,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -957,7 +958,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(
                     v2::NewSessionResponse::new(v2::SessionId::new("command-session"))
                         .config_options(vec![new_session_config_option.clone()]),
@@ -971,7 +972,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
                 v2::SetSessionConfigOptionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("command-session"));
                 assert_eq!(request.config_id, v2::SessionConfigId::new("thinking"));
                 assert_eq!(request.value, v2::SessionConfigOptionValue::from(true));
@@ -985,7 +986,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
                 v2::CloseSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("command-session"));
                 let mut count = agent_close_count.lock().unwrap();
                 *count += 1;
@@ -1060,7 +1061,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1068,7 +1069,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::NewSessionResponse::new(agent_session_id.clone()))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1079,7 +1080,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
                 v2::ListSessionsResponse,
                 agent_client_protocol::V2,
             >,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 connection.send_notification(v2::UpdateSessionNotification::new(
                     v2::SessionId::new("dropped-handle"),
                     v2::SessionUpdate::AgentMessage(
@@ -1097,7 +1098,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
                 update_tx
                     .unbounded_send(update)
                     .map_err(Error::into_internal_error)
@@ -1151,7 +1152,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1159,7 +1160,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |_request: v2::NewSessionRequest,
                    responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond_with_error(Error::invalid_params().data("session rejected"))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1167,7 +1168,7 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .on_receive_request(
             async |_request: v2::ListSessionsRequest,
                    responder: Responder<v2::ListSessionsResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(v2::ListSessionsResponse::new(Vec::new()))
             },
             agent_client_protocol::on_receive_request!(),

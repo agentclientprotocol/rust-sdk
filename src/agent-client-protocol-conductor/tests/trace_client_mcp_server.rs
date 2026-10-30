@@ -16,7 +16,7 @@ use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_rmcp::McpServerExt as _;
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use expect_test::expect;
 use futures::StreamExt;
 use futures::channel::mpsc;
@@ -274,7 +274,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
     // Run the client with a client-hosted MCP server
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         agent_client_protocol::Client
-            .builder()
+            .v1()
             .name("test-client")
             .connect_with(
                 agent_client_protocol::ByteStreams::new(

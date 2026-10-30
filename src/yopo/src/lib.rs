@@ -90,7 +90,7 @@ pub async fn prompt_with_callback(
 
     // Run the client
     Client
-        .builder()
+        .v1()
         .on_receive_dispatch(
             async |message: Dispatch<UntypedMessage, UntypedMessage, V1>, _cx| {
                 tracing::trace!(method = message.method(), "received");
@@ -121,7 +121,7 @@ pub async fn prompt_with_callback(
                 loop {
                     let update = session.read_update().await?;
                     match update {
-                        agent_client_protocol::SessionMessage::SessionMessage(message) => {
+                        agent_client_protocol::v1::SessionMessage::SessionMessage(message) => {
                             MatchDispatch::new(message)
                                 .if_notification(async |notification: SessionNotification| {
                                     tracing::debug!(
@@ -166,7 +166,7 @@ pub async fn prompt_with_callback(
                                 .otherwise(async |_msg| Ok(()))
                                 .await?;
                         }
-                        agent_client_protocol::SessionMessage::StopReason(stop_reason) => {
+                        agent_client_protocol::v1::SessionMessage::StopReason(stop_reason) => {
                             match stop_reason {
                                 StopReason::EndTurn => break,
                                 StopReason::MaxTokens => {

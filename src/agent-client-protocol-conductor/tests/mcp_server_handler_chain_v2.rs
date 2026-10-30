@@ -9,9 +9,10 @@ use std::{
     },
 };
 
+use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
     Agent, ByteStreams, Client, Conductor, ConnectTo, DynConnectTo, Error, JsonRpcRequest,
-    JsonRpcResponse, NullRun, Proxy, Responder, V2ConnectionTo,
+    JsonRpcResponse, NullRun, Proxy, Responder,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
     schema::{ProtocolVersion, v2},
@@ -125,7 +126,7 @@ impl ConnectTo<Conductor> for GlobalMcpProxy {
                     v2::NewSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            connection: V2ConnectionTo<Conductor>| {
+                            connection: ConnectionTo<Conductor>| {
                     new_calls.fetch_add(1, Ordering::SeqCst);
                     connection
                         .send_request_to(Agent, request)
@@ -140,7 +141,7 @@ impl ConnectTo<Conductor> for GlobalMcpProxy {
                     v2::ResumeSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            connection: V2ConnectionTo<Conductor>| {
+                            connection: ConnectionTo<Conductor>| {
                     resume_calls.fetch_add(1, Ordering::SeqCst);
                     connection
                         .send_request_to(Agent, request)
@@ -211,7 +212,7 @@ impl ConnectTo<Client> for RecordingAgent {
             .on_receive_request(
                 async |request: v2::InitializeRequest,
                        responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                       _connection: V2ConnectionTo<Client>| {
+                       _connection: ConnectionTo<Client>| {
                     responder.respond(v2::InitializeResponse::new(
                         request.protocol_version,
                         implementation("recording-v2-agent"),
@@ -225,7 +226,7 @@ impl ConnectTo<Client> for RecordingAgent {
                     v2::NewSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            connection: V2ConnectionTo<Client>| {
+                            connection: ConnectionTo<Client>| {
                     let new_setup = new_setup.clone();
                     let new_existing = new_existing.clone();
                     let new_cwd = new_cwd.clone();
@@ -281,7 +282,7 @@ impl ConnectTo<Client> for RecordingAgent {
                     v2::ResumeSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            _connection: V2ConnectionTo<Client>| {
+                            _connection: ConnectionTo<Client>| {
                     let resume_setup = resume_setup.clone();
                     let resume_existing = resume_existing.clone();
                     let resume_cwd = resume_cwd.clone();
@@ -311,7 +312,7 @@ impl ConnectTo<Client> for RecordingAgent {
 async fn run_with_conductor(
     proxy: DynConnectTo<Conductor>,
     agent: DynConnectTo<Client>,
-    editor_task: impl AsyncFnOnce(V2ConnectionTo<Agent>) -> Result<(), Error>,
+    editor_task: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
@@ -432,7 +433,7 @@ impl ConnectTo<Client> for SetupRecordingAgent {
             .on_receive_request(
                 async |request: v2::InitializeRequest,
                        responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                       _connection: V2ConnectionTo<Client>| {
+                       _connection: ConnectionTo<Client>| {
                     responder.respond(v2::InitializeResponse::new(
                         request.protocol_version,
                         implementation("setup-recording-v2-agent"),
@@ -446,7 +447,7 @@ impl ConnectTo<Client> for SetupRecordingAgent {
                     v2::NewSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            _connection: V2ConnectionTo<Client>| {
+                            _connection: ConnectionTo<Client>| {
                     new_received.lock().unwrap().push(request.mcp_servers);
                     responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                         "setup-recording-session",
@@ -460,7 +461,7 @@ impl ConnectTo<Client> for SetupRecordingAgent {
                     v2::ResumeSessionResponse,
                     agent_client_protocol::V2,
                 >,
-                            _connection: V2ConnectionTo<Client>| {
+                            _connection: ConnectionTo<Client>| {
                     resume_received.lock().unwrap().push(request.mcp_servers);
                     responder.respond(v2::ResumeSessionResponse::new())
                 },

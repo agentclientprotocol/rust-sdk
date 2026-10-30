@@ -139,7 +139,7 @@ fn check(responses: &Value, expected: Value) {
 #[tokio::test(flavor = "current_thread")]
 async fn v1_connection_error_wire_format() {
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |request: FailRequest, responder, _cx| {
                 respond(responder, v1_error(&request.case));

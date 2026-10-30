@@ -174,7 +174,7 @@ async fn real_rmcp_stateless_http_survives_subscription_cancellation() -> Result
         let (stopped_tx, mut stopped_rx) = mpsc::unbounded_channel();
         let lists = Arc::new(AtomicUsize::new(0));
         let agent = Agent
-            .builder()
+            .v1()
             .on_receive_request(
                 async |request: InitializeRequest, responder, _cx| {
                     responder.respond(
@@ -203,7 +203,7 @@ async fn real_rmcp_stateless_http_survives_subscription_cancellation() -> Result
                 agent_client_protocol::on_receive_request!(),
             );
 
-        Client.builder().connect_with(
+        Client.v1().connect_with(
             ConductorImpl::new_agent(
                 "http-bridge",
                 ProxiesAndAgent::new(agent).proxy(McpOverAcpPolyfill::http()),

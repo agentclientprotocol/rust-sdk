@@ -15,9 +15,8 @@ use std::{
 };
 
 use agent_client_protocol::schema::v2;
-use agent_client_protocol::{
-    Agent, Client, Error, RequestCancellation, Responder, Result, Stdio, V2ConnectionTo,
-};
+use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::{Agent, Client, Error, RequestCancellation, Result, Stdio};
 use tokio::sync::Notify;
 
 const SESSION_TITLE: &str = "Echo agent session";
@@ -220,8 +219,8 @@ impl EchoAgent {
     fn run_inserted_prompt(
         &self,
         request: v2::PromptRequest,
-        responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-        connection: &V2ConnectionTo<Client>,
+        responder: Responder<v2::PromptResponse>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let user_message_id = self.next_message_id("user-message");
         let user_message = v2::SessionUpdate::UserMessage(
@@ -252,7 +251,7 @@ impl EchoAgent {
     fn finish_prompt(
         &self,
         session_id: &v2::SessionId,
-        connection: &V2ConnectionTo<Client>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let mut state = self.state.lock().expect("session state lock poisoned");
         let session = state
@@ -387,7 +386,7 @@ impl EchoAgent {
         &self,
         request: v2::PromptRequest,
         user_message: v2::SessionUpdate,
-        connection: V2ConnectionTo<Client>,
+        connection: ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id.clone();
         let result = self
@@ -406,7 +405,7 @@ impl EchoAgent {
         &self,
         request: v2::PromptRequest,
         user_message: v2::SessionUpdate,
-        connection: &V2ConnectionTo<Client>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id;
         send_update(connection, &session_id, user_message)?;
@@ -467,8 +466,8 @@ async fn main() -> Result<()> {
         .name("simple-agent-v2")
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   responder: Responder<v2::InitializeResponse>,
+                   _connection: ConnectionTo<Client>| {
                 responder.respond(
                     v2::InitializeResponse::new(
                         request.protocol_version,
@@ -485,11 +484,8 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::NewSessionRequest,
-                            responder: Responder<
-                    v2::NewSessionResponse,
-                    agent_client_protocol::V2,
-                >,
-                            connection: V2ConnectionTo<Client>| {
+                            responder: Responder<v2::NewSessionResponse>,
+                            connection: ConnectionTo<Client>| {
                     let session_id = match agent.create_session(request) {
                         Ok(session_id) => session_id,
                         Err(error) => return responder.respond_with_error(error),
@@ -513,11 +509,8 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::ListSessionsRequest,
-                            responder: Responder<
-                    v2::ListSessionsResponse,
-                    agent_client_protocol::V2,
-                >,
-                            _connection: V2ConnectionTo<Client>| {
+                            responder: Responder<v2::ListSessionsResponse>,
+                            _connection: ConnectionTo<Client>| {
                     // Every session fits in one page and no `nextCursor` is ever
                     // issued, so any cursor a client sends is invalid.
                     if let Some(cursor) = &request.cursor {
@@ -539,11 +532,8 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<
-                    v2::ResumeSessionResponse,
-                    agent_client_protocol::V2,
-                >,
-                            connection: V2ConnectionTo<Client>| {
+                            responder: Responder<v2::ResumeSessionResponse>,
+                            connection: ConnectionTo<Client>| {
                     let history = match agent.resume_session(&request) {
                         Ok(history) => history,
                         Err(error) => return responder.respond_with_error(error),
@@ -577,11 +567,8 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::CloseSessionRequest,
-                            responder: Responder<
-                    v2::CloseSessionResponse,
-                    agent_client_protocol::V2,
-                >,
-                            connection: V2ConnectionTo<Client>| {
+                            responder: Responder<v2::CloseSessionResponse>,
+                            connection: ConnectionTo<Client>| {
                     if !agent.close(&request.session_id) {
                         return responder.respond(v2::CloseSessionResponse::new());
                     }
@@ -600,8 +587,8 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::PromptRequest,
-                            responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
-                            connection: V2ConnectionTo<Client>| {
+                            responder: Responder<v2::PromptResponse>,
+                            connection: ConnectionTo<Client>| {
                     match agent.admit_prompt(&request.session_id, &request.prompt) {
                         Err(error) => responder.respond_with_error(error),
                         Ok(PromptAdmission::Inserted) => {
@@ -640,7 +627,7 @@ async fn main() -> Result<()> {
         )
         .on_receive_notification(
             async move |notification: v2::CancelSessionNotification,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: ConnectionTo<Client>| {
                 agent.cancel(&notification.session_id);
                 Ok(())
             },
@@ -651,7 +638,7 @@ async fn main() -> Result<()> {
 }
 
 fn send_update(
-    connection: &V2ConnectionTo<Client>,
+    connection: &ConnectionTo<Client>,
     session_id: &v2::SessionId,
     update: v2::SessionUpdate,
 ) -> Result<()> {

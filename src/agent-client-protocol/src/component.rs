@@ -18,7 +18,7 @@
 //! // An agent connects to clients
 //! impl ConnectTo<Client> for MyAgent {
 //!     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<()> {
-//!         Agent.builder()
+//!         Agent.v1()
 //!             .name("my-agent")
 //!             .connect_to(client)
 //!             .await
@@ -268,7 +268,7 @@ impl Debug for ConnectionDriver {
 ///
 /// impl ConnectTo<Client> for MyAgent {
 ///     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<()> {
-///         Agent.builder()
+///         Agent.v1()
 ///             .name("my-agent")
 ///             .connect_to(client)
 ///             .await

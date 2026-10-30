@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Set up the proxy connection with our MCP server
     Proxy
-        .builder()
+        .v1()
         .name("mcp-server-proxy")
         // Register the MCP server as a handler
         .with_mcp_server(mcp_server)

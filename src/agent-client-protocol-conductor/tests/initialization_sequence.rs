@@ -2,14 +2,14 @@
 //!
 //! These tests verify that:
 //! 1. Single-component chains receive `InitializeRequest` (agent mode)
-//! 2. Multi-component chains: proxies receive `InitializeProxyRequest`
+//! 2. Multi-component chains: proxies receive `v1::InitializeProxyRequest`
 //! 3. Last component (agent) receives `InitializeRequest`
 
 use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
-use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion};
+use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
-use agent_client_protocol_test::testy::Testy;
+use agent_client_protocol_test::testy::v1::Testy;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -77,16 +77,16 @@ impl ConnectTo<Conductor> for InitComponent {
         let config2 = Arc::clone(&config);
 
         Proxy
-            .builder()
+            .v1()
             .name("init-component")
-            // Handle InitializeProxyRequest (we're a proxy)
+            // Handle v1::InitializeProxyRequest (we're a proxy)
             .on_receive_request_from(
                 Client,
-                async move |request: InitializeProxyRequest, responder, cx| {
+                async move |request: v1::InitializeProxyRequest, responder, cx| {
                     *config.received_init_type.lock().expect("unpoisoned") =
                         Some(InitRequestType::InitializeProxy);
 
-                    // Forward InitializeRequest (not InitializeProxyRequest) to successor
+                    // Forward InitializeRequest (not v1::InitializeProxyRequest) to successor
                     cx.send_request_to(agent_client_protocol::Agent, request.initialize)
                         .on_receiving_result(async move |response| {
                             let response: InitializeResponse = response?;
@@ -129,7 +129,7 @@ async fn run_test_with_components(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(
@@ -171,7 +171,7 @@ async fn test_single_component_gets_initialize_request() -> Result<(), agent_cli
 #[tokio::test]
 async fn test_two_components_proxy_gets_initialize_proxy()
 -> Result<(), agent_client_protocol::Error> {
-    // First component (proxy) gets InitializeProxyRequest
+    // First component (proxy) gets v1::InitializeProxyRequest
     // Second component (agent, ElizaAgent) gets InitializeRequest
     let component1 = InitConfig::new();
 
@@ -193,11 +193,11 @@ async fn test_two_components_proxy_gets_initialize_proxy()
     )
     .await?;
 
-    // First component (proxy) should receive InitializeProxyRequest
+    // First component (proxy) should receive v1::InitializeProxyRequest
     assert_eq!(
         component1.read_init_type(),
         Some(InitRequestType::InitializeProxy),
-        "Proxy component should receive InitializeProxyRequest"
+        "Proxy component should receive v1::InitializeProxyRequest"
     );
 
     // Second component (ElizaAgent) receives InitializeRequest implicitly
@@ -208,7 +208,7 @@ async fn test_two_components_proxy_gets_initialize_proxy()
 #[tokio::test]
 async fn test_three_components_all_proxies_get_initialize_proxy()
 -> Result<(), agent_client_protocol::Error> {
-    // First two components (proxies) get InitializeProxyRequest
+    // First two components (proxies) get v1::InitializeProxyRequest
     // Third component (agent, ElizaAgent) gets InitializeRequest
     let component1 = InitConfig::new();
     let component2 = InitConfig::new();
@@ -234,16 +234,16 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
     )
     .await?;
 
-    // First two components (proxies) should receive InitializeProxyRequest
+    // First two components (proxies) should receive v1::InitializeProxyRequest
     assert_eq!(
         component1.read_init_type(),
         Some(InitRequestType::InitializeProxy),
-        "First proxy should receive InitializeProxyRequest"
+        "First proxy should receive v1::InitializeProxyRequest"
     );
     assert_eq!(
         component2.read_init_type(),
         Some(InitRequestType::InitializeProxy),
-        "Second proxy should receive InitializeProxyRequest"
+        "Second proxy should receive v1::InitializeProxyRequest"
     );
 
     // Third component (ElizaAgent) receives InitializeRequest implicitly
@@ -251,7 +251,7 @@ async fn test_three_components_all_proxies_get_initialize_proxy()
     Ok(())
 }
 
-/// A proxy that incorrectly forwards InitializeProxyRequest instead of InitializeRequest.
+/// A proxy that incorrectly forwards v1::InitializeProxyRequest instead of InitializeRequest.
 /// This tests that the conductor rejects such malformed forwarding.
 struct BadProxy;
 
@@ -261,12 +261,12 @@ impl ConnectTo<Conductor> for BadProxy {
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         Proxy
-            .builder()
+            .v1()
             .name("bad-proxy")
             .on_receive_request_from(
                 Client,
-                async move |request: InitializeProxyRequest, responder, cx| {
-                    // BUG: forwards InitializeProxyRequest instead of request.initialize
+                async move |request: v1::InitializeProxyRequest, responder, cx| {
+                    // BUG: forwards v1::InitializeProxyRequest instead of request.initialize
                     cx.send_request_to(Agent, request)
                         .on_receiving_result(async move |response| {
                             let response: InitializeResponse = response?;
@@ -295,7 +295,7 @@ async fn run_bad_proxy_test(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(
@@ -325,7 +325,7 @@ fn assert_initialize_proxy_rejection(error: &agent_client_protocol::Error) {
 #[tokio::test]
 async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
 -> Result<(), agent_client_protocol::Error> {
-    // BadProxy incorrectly forwards InitializeProxyRequest to the agent.
+    // BadProxy incorrectly forwards v1::InitializeProxyRequest to the agent.
     // The conductor should reject this with an error.
     let result = run_bad_proxy_test(
         vec![DynConnectTo::new(BadProxy)],
@@ -346,7 +346,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
     .await;
 
     match result {
-        Ok(()) => panic!("Expected error when proxy forwards InitializeProxyRequest to agent"),
+        Ok(()) => panic!("Expected error when proxy forwards v1::InitializeProxyRequest to agent"),
         Err(err) => assert_initialize_proxy_rejection(&err),
     }
 
@@ -356,7 +356,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_agent()
 #[tokio::test]
 async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
 -> Result<(), agent_client_protocol::Error> {
-    // BadProxy incorrectly forwards InitializeProxyRequest to another proxy.
+    // BadProxy incorrectly forwards v1::InitializeProxyRequest to another proxy.
     // The conductor should reject this with an error.
     let result = run_bad_proxy_test(
         vec![
@@ -382,7 +382,7 @@ async fn test_conductor_rejects_initialize_proxy_forwarded_to_proxy()
 
     // The error might bubble up through run_test_with_components instead
     match result {
-        Ok(()) => panic!("Expected error when proxy forwards InitializeProxyRequest to proxy"),
+        Ok(()) => panic!("Expected error when proxy forwards v1::InitializeProxyRequest to proxy"),
         Err(err) => assert_initialize_proxy_rejection(&err),
     }
 

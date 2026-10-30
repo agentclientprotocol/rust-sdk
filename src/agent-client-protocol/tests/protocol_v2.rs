@@ -11,16 +11,16 @@ use std::{
 };
 
 use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
+use agent_client_protocol::v2::{InitializeOutcome, SelectedInitializeResponse};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
     ConnectTo, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose, HandleDispatchFrom,
-    InitializeOutcome, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    NullHandler, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, RunWithConnectionTo,
-    SelectedInitializeResponse, TransportFrame, UntypedMessage, UntypedRole, V2Builder,
-    V2ConnectionTo,
+    JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, NullHandler, Proxy,
+    RawJsonRpcMessage, RawJsonRpcResponse, Role, RunWithConnectionTo, TransportFrame,
+    UntypedMessage, UntypedRole,
 };
 use agent_client_protocol_test::MockTransport;
-use agent_client_protocol_test::testy::Testy;
+use agent_client_protocol_test::testy::v1::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -194,7 +194,7 @@ async fn read_wire_json(
 }
 
 fn runtime_flag_protocol_router(enable_protocol_v2: bool) -> AgentProtocolRouter {
-    let v1_agent = Agent.builder().on_receive_request(
+    let v1_agent = Agent.v1().on_receive_request(
         async |initialize: v1::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
             responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
@@ -280,7 +280,7 @@ impl ConnectTo<Agent> for InitializingV1Client {
         let client_capabilities = self.client_capabilities;
         let previous_clients_dropped = self.previous_clients_dropped;
         Client
-            .builder()
+            .v1()
             .connect_with(agent, async move |cx| {
                 let mut request = v1::InitializeRequest::new(ProtocolVersion::V1).client_info(
                     v1::Implementation::new(implementation_name, env!("CARGO_PKG_VERSION")),
@@ -454,7 +454,7 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
 
 fn v1_agent_with_session(session_id: &'static str) -> impl ConnectTo<Client> {
     Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -569,8 +569,8 @@ async fn v2_context_preserves_protocol_neutral_connection_management() -> Result
             let dynamic_handler: DynamicHandlerGuard<Agent> =
                 connection.add_dynamic_handler(NullHandler)?;
             let raw_child: ConnectionTo<Agent> =
-                connection.spawn_connection::<Client, _>(Client.builder(), MockTransport)?;
-            let v2_child: V2ConnectionTo<Agent> =
+                connection.spawn_connection::<Client, _>(Client.v1(), MockTransport)?;
+            let v2_child: agent_client_protocol::v2::ConnectionTo<Agent> =
                 connection.spawn_connection(Client.v2(), MockTransport)?;
 
             drop((dynamic_handler, raw_child, v2_child));
@@ -611,8 +611,8 @@ async fn v2_agent_rejects_initialize_with_malformed_protocol_version() -> Result
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn role_builder_v1_agent_negotiates_v1_for_v2_client() -> Result<(), Error> {
-    let agent = <Agent as Role>::builder(Agent).on_receive_request(
+async fn v1_entry_point_agent_negotiates_v1_for_v2_client() -> Result<(), Error> {
+    let agent = Agent.v1().on_receive_request(
         async |initialize: v1::InitializeRequest, responder, _cx| {
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
             responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
@@ -650,7 +650,7 @@ async fn builder_new_with_v1_agent_negotiates_v1_for_v2_client() -> Result<(), E
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn role_builder_v1_client_is_rejected_by_v2_agent() -> Result<(), Error> {
+async fn v1_entry_point_client_is_rejected_by_v2_agent() -> Result<(), Error> {
     let agent = Agent.v2().on_receive_request(
         async |_initialize: v2::InitializeRequest, responder, _cx| {
             responder.respond_with_internal_error("handler should not run")
@@ -658,7 +658,8 @@ async fn role_builder_v1_client_is_rejected_by_v2_agent() -> Result<(), Error> {
         agent_client_protocol::on_receive_request!(),
     );
 
-    <Client as Role>::builder(Client)
+    Client
+        .v1()
         .connect_with(agent, async |cx| {
             let error = cx
                 .send_request(v1_initialize_request(ProtocolVersion::V1))
@@ -1196,8 +1197,7 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
 async fn v2_client_does_not_send_session_requests_before_initialization() -> Result<(), Error> {
     let handler_ran = Arc::new(AtomicBool::new(false));
     let handler_flag = Arc::clone(&handler_ran);
-    let agent = Agent
-        .builder()
+    let agent = Builder::new(Agent)
         .without_acp_version_guard()
         .on_receive_request(
             async move |_request: v2::NewSessionRequest, responder, _cx| {
@@ -1245,8 +1245,7 @@ async fn v2_agent_rejects_session_requests_before_initialization() -> Result<(),
         agent_client_protocol::on_receive_request!(),
     );
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
@@ -1295,8 +1294,7 @@ async fn v2_agent_accepts_repeated_initialize_until_another_request() -> Result<
             agent_client_protocol::on_receive_request!(),
         );
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             for name in ["first", "second"] {
@@ -1361,19 +1359,22 @@ async fn v2_client_and_agent_repeat_initialize() -> Result<(), Error> {
 
     Client
         .v2()
-        .connect_with(agent, async |cx: V2ConnectionTo<Agent>| {
-            for _ in 0..2 {
-                let outcome = cx
-                    .send_initialize(v2_initialize_request(ProtocolVersion::V2))
-                    .block_task()
-                    .await?;
-                assert!(
-                    matches!(outcome, InitializeOutcome::Initialized(_)),
-                    "{outcome:?}"
-                );
-            }
-            Ok(())
-        })
+        .connect_with(
+            agent,
+            async |cx: agent_client_protocol::v2::ConnectionTo<Agent>| {
+                for _ in 0..2 {
+                    let outcome = cx
+                        .send_initialize(v2_initialize_request(ProtocolVersion::V2))
+                        .block_task()
+                        .await?;
+                    assert!(
+                        matches!(outcome, InitializeOutcome::Initialized(_)),
+                        "{outcome:?}"
+                    );
+                }
+                Ok(())
+            },
+        )
         .await?;
 
     assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
@@ -1656,8 +1657,7 @@ async fn protocol_router_ignores_unparsable_newer_initialize_params() -> Result<
 async fn v2_client_can_retry_after_malformed_initialize_success() -> Result<(), Error> {
     let initialize_count = Arc::new(AtomicUsize::new(0));
     let initialize_counter = Arc::clone(&initialize_count);
-    let agent = Agent
-        .builder()
+    let agent = Builder::new(Agent)
         .without_acp_version_guard()
         .on_receive_request(
             async move |_initialize: RawInitializeRequest, responder, _cx| {
@@ -1722,8 +1722,7 @@ async fn v2_agent_can_retry_after_malformed_initialize_success() -> Result<(), E
         agent_client_protocol::on_receive_request!(),
     );
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
@@ -1771,8 +1770,7 @@ async fn v2_agent_can_retry_after_initialize_responder_is_dropped() -> Result<()
         agent_client_protocol::on_receive_request!(),
     );
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
@@ -1861,7 +1859,7 @@ async fn client_protocol_connector_does_not_retry_after_v2_initialize_rejection(
         .with_v1(|| RejectingV1Client)
         .with_v2(|| ExpectingV2InitializeErrorClient)
         .connect_to(|| {
-            Agent.builder().on_receive_request(
+            Agent.v1().on_receive_request(
                 async |_request: v1::InitializeRequest, responder, _cx| {
                     responder.respond_with_error(
                         Error::invalid_request().data("deliberate initialize rejection"),
@@ -1934,7 +1932,7 @@ async fn client_protocol_connector_reuses_matching_connection_before_v1_fallback
 
             Agent.protocol_router().with_v1(
                 Agent
-                    .builder()
+                    .v1()
                     .on_receive_request(
                         async move |initialize: v1::InitializeRequest, responder, _cx| {
                             assert_eq!(initialize_connection_number, 1);
@@ -2013,7 +2011,7 @@ async fn client_protocol_connector_reconnects_before_v1_fallback() -> Result<(),
 
             Agent.protocol_router().with_v1(
                 Agent
-                    .builder()
+                    .v1()
                     .on_receive_request(
                         async move |initialize: v1::InitializeRequest, responder, _cx| {
                             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -2072,7 +2070,7 @@ async fn protocol_router_routes_v1_client_to_v1_implementation() -> Result<(), E
         .protocol_router()
         .with_v1(
             Agent
-                .builder()
+                .v1()
                 .on_receive_request(
                     async |initialize: v1::InitializeRequest, responder, _cx| {
                         assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
@@ -2098,7 +2096,7 @@ async fn protocol_router_routes_v1_client_to_v1_implementation() -> Result<(), E
         ));
 
     Client
-        .builder()
+        .v1()
         .connect_with(agent, async |cx| {
             let initialize = cx
                 .send_request(v1_initialize_request(ProtocolVersion::V1))
@@ -2120,7 +2118,7 @@ async fn protocol_router_routes_v1_client_to_v1_implementation() -> Result<(), E
 async fn protocol_router_routes_v2_client_to_v2_implementation() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
-        .with_v1(Agent.builder().on_receive_request(
+        .with_v1(Agent.v1().on_receive_request(
             async |_initialize: v1::InitializeRequest, responder, _cx| {
                 responder.respond_with_internal_error("v1 implementation should not run")
             },
@@ -2172,7 +2170,7 @@ async fn protocol_router_routes_v2_client_to_v2_implementation() -> Result<(), E
 async fn protocol_router_can_route_only_v1() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
-        .with_v1(Agent.builder().on_receive_request(
+        .with_v1(Agent.v1().on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
@@ -2181,7 +2179,7 @@ async fn protocol_router_can_route_only_v1() -> Result<(), Error> {
         ));
 
     Client
-        .builder()
+        .v1()
         .connect_with(agent, async |cx| {
             let initialize = cx
                 .send_request(v1_initialize_request(ProtocolVersion::V1))
@@ -2257,7 +2255,7 @@ async fn protocol_router_supports_runtime_v2_registration_flag() -> Result<(), E
 async fn protocol_router_downgrades_v2_initialize_metadata_to_v1() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
-        .with_v1(Agent.builder().on_receive_request(
+        .with_v1(Agent.v1().on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
                 let client_info = initialize
@@ -2381,7 +2379,7 @@ async fn protocol_router_rejection_is_initialize_request_error() -> Result<(), E
         ));
 
     Client
-        .builder()
+        .v1()
         .connect_with(agent, async |cx| {
             let error = cx
                 .send_request(v1_initialize_request(ProtocolVersion::V1))
@@ -2413,7 +2411,7 @@ async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Err
     let agent_task = tokio::spawn(agent.connect_to(server_transport));
 
     Client
-        .builder()
+        .v1()
         .connect_with(client_transport, async |cx| {
             let error = cx
                 .send_request(v1_initialize_request(ProtocolVersion::V1))
@@ -2494,7 +2492,7 @@ async fn protocol_router_ignores_retained_standalone_response_before_initialize(
 -> Result<(), Error> {
     use tokio::io::{AsyncWriteExt as _, BufReader};
 
-    let v1_agent = Agent.builder().on_receive_request(
+    let v1_agent = Agent.v1().on_receive_request(
         async |initialize: v1::InitializeRequest, responder, _cx| {
             responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
         },
@@ -2720,7 +2718,7 @@ async fn standalone_v2_agent_negotiates_future_protocol_version() -> Result<(), 
 async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
-        .with_v1(Agent.builder().on_receive_request(
+        .with_v1(Agent.v1().on_receive_request(
             async |_initialize: v1::InitializeRequest, responder, _cx| {
                 responder.respond_with_internal_error("v1 implementation should not run")
             },
@@ -2847,7 +2845,8 @@ async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() 
 /// A v2 agent whose `session/new` handler only responds once the peer cancels
 /// the request via `$/cancel_request`.
 fn v2_agent_with_cancellable_new_session()
--> V2Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>> {
+-> agent_client_protocol::v2::Builder<Agent, impl agent_client_protocol::HandleDispatchFrom<Client>>
+{
     Agent
         .v2()
         .on_receive_request(
@@ -3071,7 +3070,7 @@ async fn v2_responder_id_is_the_wire_request_id() -> Result<(), Error> {
 #[tokio::test(flavor = "current_thread")]
 async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
     let received_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         {
             let received_ids = received_ids.clone();
             async move |initialize: v1::InitializeRequest, responder, _cx| {
@@ -3112,8 +3111,7 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
 #[tokio::test(flavor = "current_thread")]
 async fn raw_responders_convert_to_v2_responders_unless_the_id_is_null() -> Result<(), Error> {
     let converted = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let agent = Agent
-        .builder()
+    let agent = Builder::new(Agent)
         .without_acp_version_guard()
         .on_receive_request(
             {

@@ -115,7 +115,7 @@ impl ConnectTo<Conductor> for ProxyWithMcpAndHandler {
             .build();
 
         agent_client_protocol::Proxy
-            .builder()
+            .v1()
             .name("proxy-with-mcp-and-handler")
             // Add the MCP server
             .with_mcp_server(mcp_server)
@@ -157,7 +157,7 @@ impl ConnectTo<Client> for SimpleAgent {
         let resume_requests = self.setup_requests;
 
         Agent
-            .builder()
+            .v1()
             .name("simple-agent")
             .on_receive_request(
                 async |request: InitializeRequest, responder, _cx| {
@@ -210,7 +210,7 @@ async fn run_test(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-conductor")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(

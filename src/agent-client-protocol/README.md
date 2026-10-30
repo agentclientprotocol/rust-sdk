@@ -31,7 +31,7 @@ use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 
 # async fn connect() -> Result<()> {
 let agent = AcpAgent::from_args(["my-agent"])?;
-Client.builder()
+Client.v1()
     .name("my-client")
     .connect_with(agent, async |cx| {
         // Initialize the connection
@@ -45,16 +45,19 @@ Client.builder()
 # }
 ```
 
-Draft protocol v2 is opt-in through `unstable_protocol_v2`. `Client.v2()`,
-`Agent.v2()`, and `Proxy.v2()` callbacks receive a version-typed
-`V2ConnectionTo` with
+Every connection names its protocol version. `Client.v1()`, `Agent.v1()`, and
+`Proxy.v1()` start stable v1 connections; their types (`ConnectionTo`,
+`Builder`, `Responder`, `SessionBuilder`, `ActiveSession`, ...) are in
+`agent_client_protocol::v1`. Draft protocol v2 is opt-in through
+`unstable_protocol_v2`, and `agent_client_protocol::v2` exports the same names
+for it. `Client.v2()`, `Agent.v2()`, and `Proxy.v2()` callbacks receive a
+version-typed `v2::ConnectionTo` with
 high-level, command-only session helpers because prompt acceptance and inbound
 traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
-`Proxy.builder()` remains the stable v1 entry point. Use
-`Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
+Use `Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
 implementations as one component; custom raw routing infrastructure can use
-`Proxy.builder().without_acp_version_guard()`.
+`Builder::new(Proxy).without_acp_version_guard()`.
 
 ### Runnable draft-v2 pair
 
@@ -134,15 +137,15 @@ communicate through request-scoped `mcp/message` operations targeting MCP
 Stable protocol v1 supports per-session and global proxy attachment. Draft
 protocol v2 supports both scopes when both unstable features are enabled:
 `Proxy.v2().with_mcp_server(...)` injects a global server into supported setup
-requests, `V2SessionBuilder::with_mcp_server(...)` attaches one to a single
-`session/new`, and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one
+requests, `v2::SessionBuilder::with_mcp_server(...)` attaches one to a single
+`session/new`, and `v2::ResumeSessionBuilder::with_mcp_server(...)` attaches one
 to a single `session/resume`. With `unstable_session_fork`,
-`V2ForkSessionBuilder::with_mcp_server(...)` attaches one to a single
-`session/fork`. In v1, `ActiveSession` owns per-session MCP registrations:
+`v2::ForkSessionBuilder::with_mcp_server(...)` attaches one to a single
+`session/fork`. In v1, `v1::ActiveSession` owns per-session MCP registrations:
 dropping it removes them unless a proxy handoff detaches them
 (`proxy_remaining_messages` or successful `on_proxy_session_start`).
 Successful v2 setup detaches MCP handlers for the connection lifetime, so
-dropping the returned `V2Session` does not unregister them. Global proxy
+dropping the returned `v2::ActiveSession` does not unregister them. Global proxy
 attachments are connection-scoped in both versions.
 A v2 proxy can forward any of these setup operations with the
 builder's `on_proxy_session_start`; updates and interactive requests remain

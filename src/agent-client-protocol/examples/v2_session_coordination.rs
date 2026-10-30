@@ -14,8 +14,9 @@ use std::{
     str::FromStr,
 };
 
+use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{
-    AcpAgent, Agent, Client, ConnectTo, Error, Responder, V2ConnectionTo,
+    AcpAgent, Agent, Client, ConnectTo, Error,
     schema::{ProtocolVersion, v2},
 };
 use clap::Parser;
@@ -159,7 +160,7 @@ struct Driver {
 }
 
 impl Driver {
-    async fn run(mut self, connection: V2ConnectionTo<Agent>) -> Result<(), Error> {
+    async fn run(mut self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
         loop {
             // Honor already-queued acquisition/release decisions before exposing
             // a response. Wire events still retain their own FIFO order.
@@ -339,7 +340,7 @@ impl Driver {
         Some(Effect::Resume(session_id))
     }
 
-    fn send(&self, effect: Effect, connection: &V2ConnectionTo<Agent>) -> Result<(), Error> {
+    fn send(&self, effect: Effect, connection: &ConnectionTo<Agent>) -> Result<(), Error> {
         let events = self.wire_events.clone();
         match effect {
             Effect::Resume(session_id) => connection
@@ -410,7 +411,7 @@ async fn with_sessions(
     Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _cx: V2ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification, _cx: ConnectionTo<Agent>| {
                 drop(updates.unbounded_send(WireEvent::Update(Box::new(update))));
                 Ok(())
             },
@@ -418,11 +419,8 @@ async fn with_sessions(
         )
         .on_receive_request(
             async |_request: v2::RequestPermissionRequest,
-                   responder: Responder<
-                v2::RequestPermissionResponse,
-                agent_client_protocol::V2,
-            >,
-                   _cx: V2ConnectionTo<Agent>| {
+                   responder: Responder<v2::RequestPermissionResponse>,
+                   _cx: ConnectionTo<Agent>| {
                 responder.respond(v2::RequestPermissionResponse::new(
                     v2::CancelledPermissionOutcome::new().into(),
                 ))

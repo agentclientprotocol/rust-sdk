@@ -8,7 +8,7 @@ use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo, Proxy, RunWithCo
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
 use agent_client_protocol_rmcp::McpServerExt as _;
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         Proxy
-            .builder()
+            .v1()
             .name("greet-proxy")
             .with_mcp_server(self.mcp_server)
             .connect_to(client)

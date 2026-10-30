@@ -160,7 +160,7 @@ async fn every_batch_shape_gets_one_invalid_request_error() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn v1_agent_rejects_a_batched_initialize_and_accepts_a_retry() {
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         async |initialize: v1::InitializeRequest, responder, _cx| {
             responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
         },
@@ -231,7 +231,7 @@ mod v2 {
         for protocol_version in [ProtocolVersion::V1, ProtocolVersion::V2] {
             let router = Agent
                 .protocol_router()
-                .with_v1(Agent.builder().on_receive_request(
+                .with_v1(Agent.v1().on_receive_request(
                     async |initialize: v1::InitializeRequest, responder, _cx| {
                         responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
                     },

@@ -1,8 +1,9 @@
 //! Native draft protocol v2 support for Testy.
 
 use super::{TestyCommand, TestyScenario, parse_command};
+use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, RequestCancellation, Responder, V2, V2ConnectionTo,
+    Agent, Client, ConnectTo, RequestCancellation,
     schema::{ProtocolVersion, v2 as acp},
 };
 use std::{
@@ -16,17 +17,17 @@ const SESSION_UPDATED_AT: &str = "2026-01-01T00:00:00Z";
 
 /// The native draft protocol v2 Testy agent.
 ///
-/// Construct this with [`super::Testy::v2`]. Unlike the v1 fixture, prompt
+/// Unlike the v1 [`super::v1::Testy`], prompt
 /// responses only acknowledge acceptance; output and completion are reported
 /// independently through typed `session/update` notifications.
 #[derive(Clone, Debug)]
-pub struct V2Testy {
-    state: Arc<Mutex<V2TestyState>>,
+pub struct Testy {
+    state: Arc<Mutex<TestyState>>,
     state_changed: Arc<Notify>,
 }
 
 #[derive(Debug, Default)]
-struct V2TestyState {
+struct TestyState {
     sessions: HashMap<acp::SessionId, V2SessionData>,
     next_session_id: u64,
     next_message_id: u64,
@@ -55,18 +56,19 @@ enum PromptAdmission {
     Held { ticket: u64, cancel_epoch: u64 },
 }
 
-impl V2Testy {
-    pub(super) fn new() -> Self {
+impl Testy {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
-            state: Arc::new(Mutex::new(V2TestyState {
+            state: Arc::new(Mutex::new(TestyState {
                 next_session_id: 1,
-                ..V2TestyState::default()
+                ..TestyState::default()
             })),
             state_changed: Arc::new(Notify::new()),
         }
     }
 
-    fn lock_state(&self) -> std::sync::MutexGuard<'_, V2TestyState> {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, TestyState> {
         self.state.lock().expect("v2 Testy state lock poisoned")
     }
 
@@ -250,7 +252,7 @@ impl V2Testy {
     fn finish_prompt(
         &self,
         session_id: &acp::SessionId,
-        connection: &V2ConnectionTo<Client>,
+        connection: &ConnectionTo<Client>,
         requested_stop_reason: acp::StopReason,
     ) -> Result<(), agent_client_protocol::Error> {
         let mut state = self.lock_state();
@@ -373,7 +375,7 @@ impl V2Testy {
         &self,
         request: acp::PromptRequest,
         user_update: acp::SessionUpdate,
-        connection: V2ConnectionTo<Client>,
+        connection: ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();
         match self
@@ -392,7 +394,7 @@ impl V2Testy {
         &self,
         request: acp::PromptRequest,
         user_update: acp::SessionUpdate,
-        connection: &V2ConnectionTo<Client>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<acp::StopReason, agent_client_protocol::Error> {
         let session_id = request.session_id;
         send_update(connection, &session_id, user_update)?;
@@ -471,8 +473,8 @@ impl V2Testy {
     fn run_inserted_prompt(
         &self,
         request: acp::PromptRequest,
-        responder: Responder<acp::PromptResponse, V2>,
-        connection: &V2ConnectionTo<Client>,
+        responder: Responder<acp::PromptResponse>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();
         let user_message_id = self.next_message_id("user-message");
@@ -508,7 +510,7 @@ impl V2Testy {
     }
 }
 
-impl ConnectTo<Client> for V2Testy {
+impl ConnectTo<Client> for Testy {
     async fn connect_to(
         self,
         client: impl ConnectTo<Agent>,
@@ -518,9 +520,9 @@ impl ConnectTo<Client> for V2Testy {
             .name("test-agent-v2")
             .on_receive_request(
                 async |request: acp::InitializeRequest,
-                       responder: Responder<acp::InitializeResponse, V2>,
-                       _connection: V2ConnectionTo<Client>| {
-                    responder.respond(V2Testy::initialize_response(request.protocol_version))
+                       responder: Responder<acp::InitializeResponse>,
+                       _connection: ConnectionTo<Client>| {
+                    responder.respond(Testy::initialize_response(request.protocol_version))
                 },
                 agent_client_protocol::on_receive_request!(),
             )
@@ -528,8 +530,8 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::NewSessionRequest,
-                                responder: Responder<acp::NewSessionResponse, V2>,
-                                _connection: V2ConnectionTo<Client>| {
+                                responder: Responder<acp::NewSessionResponse>,
+                                _connection: ConnectionTo<Client>| {
                         match agent.create_session(request) {
                             Ok(session_id) => {
                                 responder.respond(acp::NewSessionResponse::new(session_id))
@@ -544,8 +546,8 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::ListSessionsRequest,
-                                responder: Responder<acp::ListSessionsResponse, V2>,
-                                _connection: V2ConnectionTo<Client>| {
+                                responder: Responder<acp::ListSessionsResponse>,
+                                _connection: ConnectionTo<Client>| {
                         // Testy returns every session in one page and never issues a
                         // `nextCursor`, so any cursor a client sends is invalid.
                         if let Some(cursor) = &request.cursor {
@@ -569,8 +571,8 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::ResumeSessionRequest,
-                                responder: Responder<acp::ResumeSessionResponse, V2>,
-                                connection: V2ConnectionTo<Client>| {
+                                responder: Responder<acp::ResumeSessionResponse>,
+                                connection: ConnectionTo<Client>| {
                         let replay = match agent.resume_session(&request) {
                             Ok(replay) => replay,
                             Err(error) => return responder.respond_with_error(error),
@@ -607,8 +609,8 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::CloseSessionRequest,
-                                responder: Responder<acp::CloseSessionResponse, V2>,
-                                connection: V2ConnectionTo<Client>| {
+                                responder: Responder<acp::CloseSessionResponse>,
+                                connection: ConnectionTo<Client>| {
                         if !agent.close_session(&request.session_id) {
                             return responder.respond(acp::CloseSessionResponse::new());
                         }
@@ -627,8 +629,8 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::PromptRequest,
-                                responder: Responder<acp::PromptResponse, V2>,
-                                connection: V2ConnectionTo<Client>| {
+                                responder: Responder<acp::PromptResponse>,
+                                connection: ConnectionTo<Client>| {
                         match agent.admit_prompt(&request.session_id, &request.prompt) {
                             Err(error) => responder.respond_with_error(error),
                             Ok(PromptAdmission::Inserted) => {
@@ -669,7 +671,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self;
                     async move |notification: acp::CancelSessionNotification,
-                                _connection: V2ConnectionTo<Client>| {
+                                _connection: ConnectionTo<Client>| {
                         agent.mark_cancelled(&notification.session_id);
                         Ok(())
                     }
@@ -721,7 +723,7 @@ fn v2_help_text() -> String {
 }
 
 fn send_update(
-    connection: &V2ConnectionTo<Client>,
+    connection: &ConnectionTo<Client>,
     session_id: &acp::SessionId,
     update: acp::SessionUpdate,
 ) -> Result<(), agent_client_protocol::Error> {
@@ -775,4 +777,10 @@ fn unsupported_command(message: String) -> (String, acp::StopReason) {
         message,
         acp::StopReason::Error(acp::ErrorStopReason::new().error(error)),
     )
+}
+
+impl Default for Testy {
+    fn default() -> Self {
+        Self::new()
+    }
 }

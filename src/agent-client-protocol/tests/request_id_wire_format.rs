@@ -141,7 +141,7 @@ fn raw_id(line: &str) -> &str {
 async fn v1_request_ids_round_trip_byte_for_byte() {
     let mut peer = WirePeer::connect(
         Agent
-            .builder()
+            .v1()
             .on_receive_request(
                 async |_request: EchoRequest, responder, _cx| responder.respond(EchoResponse {}),
                 agent_client_protocol::on_receive_request!(),

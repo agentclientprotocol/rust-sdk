@@ -3,8 +3,9 @@
 //! cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
 //!   --features unstable_protocol_v2,unstable_mcp_over_acp
 
+use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{
-    Agent, Client, Error, Responder, V2, V2ConnectionTo,
+    Agent, Client, Error,
     mcp_server::McpServer,
     schema::{ProtocolVersion, v2},
 };
@@ -47,8 +48,8 @@ async fn main() -> Result<(), Error> {
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse, V2>,
-                   _cx: V2ConnectionTo<Client>| {
+                   responder: Responder<v2::InitializeResponse>,
+                   _cx: ConnectionTo<Client>| {
                 responder.respond(
                     v2::InitializeResponse::new(
                         request.protocol_version,
@@ -66,8 +67,8 @@ async fn main() -> Result<(), Error> {
         )
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse, V2>,
-                        cx: V2ConnectionTo<Client>| {
+                        responder: Responder<v2::NewSessionResponse>,
+                        cx: ConnectionTo<Client>| {
                 let [v2::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
                     return Err(Error::invalid_params().data("expected one native server"));
                 };

@@ -13,7 +13,7 @@ use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled, Lines,
     Proxy, Role, UntypedMessage,
-    schema::{InitializeProxyRequest, ProtocolVersion, v1},
+    schema::{ProtocolVersion, v1},
 };
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};
@@ -71,9 +71,9 @@ impl WirePeer {
 #[tokio::test(flavor = "current_thread")]
 async fn v1_proxy_default_forwarding_is_feature_independent() {
     // The test plays the conductor.
-    let mut conductor = WirePeer::connect(Proxy.builder());
+    let mut conductor = WirePeer::connect(Proxy.v1());
 
-    let mut initialize_params = serde_json::to_value(InitializeProxyRequest::from(
+    let mut initialize_params = serde_json::to_value(v1::InitializeProxyRequest::from(
         v1::InitializeRequest::new(ProtocolVersion::V1),
     ))
     .expect("serialize proxy/initialize");
@@ -214,7 +214,7 @@ impl HandleDispatchFrom<Agent> for CaptureUpdate {
 async fn v1_client_retries_unhandled_session_messages() {
     let (captured_tx, captured_rx) = tokio::sync::oneshot::channel();
     let mut captured_tx = Some(captured_tx);
-    let client = Client.builder().on_receive_request(
+    let client = Client.v1().on_receive_request(
         async move |request: UntypedMessage,
                     responder: agent_client_protocol::Responder<Value, V1>,
                     cx: ConnectionTo<Agent>| {

@@ -15,21 +15,42 @@
 //! - **Proxies** that add capabilities to existing agents (like adding custom tools via MCP)
 //! - **Agents** that respond to prompts with AI-powered responses
 //!
+//! ## Protocol versions
+//!
+//! Every connection names the ACP protocol version it speaks:
+//!
+//! - [`Client.v1()`](Client::v1), [`Agent.v1()`](Agent::v1) and
+//!   [`Proxy.v1()`](Proxy::v1) start a stable protocol v1 connection. Its
+//!   types are in [`v1`] and its messages in [`schema::v1`].
+//! - With the `unstable_protocol_v2` feature, `Client.v2()`, `Agent.v2()` and
+//!   `Proxy.v2()` start a draft protocol v2 connection. Its types are in
+//!   `agent_client_protocol::v2` and its messages in `schema::v2`.
+//!
+//! The `v1` and `v2` modules export the same names (`ConnectionTo`,
+//! `Builder`, `Responder`, `Dispatch`, `SessionBuilder`, `ActiveSession`, ...),
+//! so code moves between versions by changing the module it imports from.
+//! The crate root holds what every version shares: transports, roles, the
+//! JSON-RPC traits, [`Error`], the generic request handles (which default to
+//! the version-neutral [`Raw`] marker) and, with `unstable_protocol_v2`, the
+//! routers that serve both versions. [`Builder::new`] and
+//! [`without_acp_version_guard`](Builder::without_acp_version_guard) remain
+//! as the raw, version-neutral escape hatch.
+//!
 //! ## Quick Start: Connecting to an Agent
 //!
 //! The most common use case is connecting to an existing ACP agent as a client.
 //! This example uses stable ACP protocol v1. The draft protocol v2 feature
-//! provides a command-only `V2Session` API and receives updates and interactive
+//! provides a command-only `v2::ActiveSession` API and receives updates and interactive
 //! requests through typed connection handlers because prompt acceptance and
 //! inbound traffic are independent. With both v2 and MCP-over-ACP features,
-//! `Proxy.v2()` supports global MCP attachment, while `V2SessionBuilder` and
-//! `V2ResumeSessionBuilder` support per-session attachment plus non-blocking
-//! proxy setup. With `unstable_session_fork`, `V2ForkSessionBuilder` provides
+//! `Proxy.v2()` supports global MCP attachment, while `v2::SessionBuilder` and
+//! `v2::ResumeSessionBuilder` support per-session attachment plus non-blocking
+//! proxy setup. With `unstable_session_fork`, `v2::ForkSessionBuilder` provides
 //! the same shape for forked sessions and uses the response's new session ID.
 //! Per-session MCP routes and runners are ready before a setup request is
 //! published, as is proxy session routing for resume replay. Successful v2
 //! setup detaches MCP handlers for the connection lifetime; dropping the
-//! returned `V2Session` does not unregister them. In v1, `ActiveSession` owns
+//! returned `v2::ActiveSession` does not unregister them. In v1, `v1::ActiveSession` owns
 //! per-session MCP registrations until drop, unless a proxy handoff detaches
 //! them (`proxy_remaining_messages` or successful `on_proxy_session_start`).
 //! Global proxy attachments are connection-scoped in both versions.
@@ -42,7 +63,7 @@
 //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 //!
 //! # async fn run(transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
-//! Client.builder()
+//! Client.v1()
 //!     .name("my-client")
 //!     .connect_with(transport, async |cx| {
 //!         // Step 1: Initialize the connection
@@ -152,7 +173,13 @@ pub mod role;
 pub mod schema;
 /// Utility functions and types
 pub mod util;
+pub mod v1;
+#[cfg(feature = "unstable_protocol_v2")]
+#[cfg_attr(docsrs, doc(cfg(feature = "unstable_protocol_v2")))]
+pub mod v2;
 
+#[cfg(feature = "unstable_protocol_v2")]
+pub use jsonrpc::V2;
 pub use jsonrpc::{
     Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionTermination,
     ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose, HandleDispatchFrom,
@@ -162,11 +189,6 @@ pub use jsonrpc::{
     RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportFrame, UntypedMessage, V1,
     is_connection_terminated, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
-};
-#[cfg(feature = "unstable_protocol_v2")]
-pub use jsonrpc::{
-    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse, V2, V2Builder,
-    V2ConnectionTo,
 };
 pub use jsonrpc::{RequestCancellation, RequestCancellationHandle, is_cancel_request_notification};
 
@@ -196,7 +218,6 @@ pub use error::{Error, ErrorCode, Result};
 pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 mod session;
-pub use session::*;
 
 #[cfg(all(feature = "process", not(target_family = "wasm")))]
 mod acp_agent;

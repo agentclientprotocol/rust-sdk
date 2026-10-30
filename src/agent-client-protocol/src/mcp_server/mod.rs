@@ -7,9 +7,9 @@
 //! Stable protocol v1 and draft protocol v2 both support global proxy
 //! attachment and per-session attachment. V2 uses
 //! `Proxy.v2().with_mcp_server(...)` or
-//! `V2SessionBuilder::with_mcp_server(...)` for new sessions and
-//! `V2ResumeSessionBuilder::with_mcp_server(...)` for resumed sessions. With
-//! `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server(...)`
+//! `v2::SessionBuilder::with_mcp_server(...)` for new sessions and
+//! `v2::ResumeSessionBuilder::with_mcp_server(...)` for resumed sessions. With
+//! `unstable_session_fork`, `v2::ForkSessionBuilder::with_mcp_server(...)`
 //! attaches a server to a forked session. V2 attachment additionally requires
 //! `unstable_protocol_v2`.
 //!

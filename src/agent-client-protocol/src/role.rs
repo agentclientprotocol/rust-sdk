@@ -39,14 +39,6 @@ pub trait Role: Debug + Clone + Send + Sync + 'static + Eq + Ord + Hash {
     /// - `Conductor::Counterpart = Proxy`
     type Counterpart: Role<Counterpart = Self>;
 
-    /// Creates a new builder playing this role.
-    fn builder(self) -> Builder<Self>
-    where
-        Self: Sized,
-    {
-        Builder::new(self)
-    }
-
     /// Returns a unique identifier for this role.
     fn role_id(&self) -> RoleId;
 

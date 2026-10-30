@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion, v1, v2};
+use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     ByteStreams, Channel, Client, Conductor, ConnectTo, Error, Proxy, ProxyProtocolRouter,
     RawJsonRpcMessage, RawJsonRpcResponse, TransportFrame,
@@ -15,8 +15,8 @@ use futures::StreamExt as _;
 use serde_json::Value;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-fn v1_proxy_initialize(protocol_version: ProtocolVersion) -> InitializeProxyRequest {
-    InitializeProxyRequest::from(
+fn v1_proxy_initialize(protocol_version: ProtocolVersion) -> v1::InitializeProxyRequest {
+    v1::InitializeProxyRequest::from(
         v1::InitializeRequest::new(protocol_version)
             .client_info(v1::Implementation::new("router-test-client", "1.0.0")),
     )
@@ -37,9 +37,9 @@ fn router(v1_hits: Arc<AtomicUsize>, v2_hits: Arc<AtomicUsize>) -> ProxyProtocol
 }
 
 fn v1_proxy(v1_hits: Arc<AtomicUsize>) -> impl ConnectTo<Conductor> {
-    Proxy.builder().on_receive_request_from(
+    Proxy.v1().on_receive_request_from(
         Client,
-        async move |request: InitializeProxyRequest, responder, _cx| {
+        async move |request: v1::InitializeProxyRequest, responder, _cx| {
             v1_hits.fetch_add(1, Ordering::SeqCst);
             responder.respond(v1::InitializeResponse::new(
                 request.initialize.protocol_version,

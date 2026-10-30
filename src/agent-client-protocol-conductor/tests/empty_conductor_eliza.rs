@@ -8,7 +8,7 @@
 
 use agent_client_protocol::{Conductor, ConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 

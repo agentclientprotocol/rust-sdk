@@ -204,7 +204,7 @@ async fn v1_scope_error(owned_cleanup: bool, foreground_success: bool) {
         let runner_dropped = dropped.clone();
         let runner_completed = completed.clone();
         let service_completed = completed.clone();
-        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+        let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             let _live = cx
                 .build_session_cwd()?
                 .with_mcp_server(McpServer::new_service(

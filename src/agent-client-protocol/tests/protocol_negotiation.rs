@@ -64,7 +64,7 @@ async fn standalone_v1_keeps_legacy_selection_and_serves_v1_sessions() -> Result
         let initialized = Arc::new(AtomicUsize::new(0));
         let calls = initialized.clone();
         let agent = Agent
-            .builder()
+            .v1()
             .on_receive_request(
                 async move |initialize: v1::InitializeRequest, responder, _cx| {
                     calls.fetch_add(1, Ordering::SeqCst);
@@ -139,7 +139,7 @@ async fn standalone_v1_keeps_legacy_selection_and_serves_v1_sessions() -> Result
 async fn v1_only_router_preserves_legacy_fallback() -> Result<(), Error> {
     let agent = Agent
         .protocol_router()
-        .with_v1(Agent.builder().on_receive_request(
+        .with_v1(Agent.v1().on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
@@ -169,7 +169,7 @@ async fn standalone_v1_rejects_malformed_initialization_before_dispatch() -> Res
         json!({ "protocolVersion": 1.5 }),
         json!({ "protocolVersion": 65536 }),
     ] {
-        let agent = Agent.builder().on_receive_request(
+        let agent = Agent.v1().on_receive_request(
             async |_initialize: v1::InitializeRequest, responder, _cx| {
                 responder
                     .respond_with_internal_error("malformed initialization reached the handler")
@@ -192,7 +192,7 @@ async fn standalone_v1_ignores_unparsable_newer_initialization_params() -> Resul
         json!({ "protocolVersion": 2, "info": { "name": 123, "version": "1" } }),
         json!({ "protocolVersion": 2, "info": "malformed", "_meta": 1, "capabilities": [] }),
     ] {
-        let agent = Agent.builder().on_receive_request(
+        let agent = Agent.v1().on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
                 assert_eq!(initialize.client_info, None);
@@ -216,30 +216,28 @@ async fn standalone_v1_ignores_unparsable_newer_initialization_params() -> Resul
 #[tokio::test(flavor = "current_thread")]
 async fn standalone_v1_proxy_negotiates_like_a_v1_agent() -> Result<(), Error> {
     for requested in [0_u16, 1, 2, 3, u16::MAX] {
-        let proxy = agent_client_protocol::Proxy
-            .builder()
-            .on_receive_request_from(
-                Client,
-                async move |request: agent_client_protocol::schema::InitializeProxyRequest,
-                            responder,
-                            _cx| {
-                    assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);
-                    if requested >= 2 {
-                        assert_eq!(
-                            request
-                                .initialize
-                                .client_info
-                                .as_ref()
-                                .map(|info| info.name.as_str()),
-                            Some("newer-client")
-                        );
-                    }
-                    responder.respond(v1::InitializeResponse::new(
-                        request.initialize.protocol_version,
-                    ))
-                },
-                agent_client_protocol::on_receive_request!(),
-            );
+        let proxy = agent_client_protocol::Proxy.v1().on_receive_request_from(
+            Client,
+            async move |request: agent_client_protocol::schema::v1::InitializeProxyRequest,
+                        responder,
+                        _cx| {
+                assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);
+                if requested >= 2 {
+                    assert_eq!(
+                        request
+                            .initialize
+                            .client_info
+                            .as_ref()
+                            .map(|info| info.name.as_str()),
+                        Some("newer-client")
+                    );
+                }
+                responder.respond(v1::InitializeResponse::new(
+                    request.initialize.protocol_version,
+                ))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
         let (mut channel, driver) =
             ConnectTo::<agent_client_protocol::Conductor>::into_channel_and_future(proxy);
         let task = tokio::spawn(driver.expect("proxy owns a driver"));
@@ -261,7 +259,7 @@ async fn standalone_v1_proxy_negotiates_like_a_v1_agent() -> Result<(), Error> {
 
 fn v1_agent_with_initialize_and_new_session() -> impl ConnectTo<Client> {
     Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: v1::InitializeRequest, responder, _cx| {
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
@@ -303,7 +301,7 @@ async fn v1_agent_with_initialize_handler_rejects_requests_before_initialization
 #[tokio::test(flavor = "current_thread")]
 async fn v1_agent_without_initialize_handler_serves_requests_without_initialization()
 -> Result<(), Error> {
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         async |_request: v1::NewSessionRequest, responder, _cx| {
             responder.respond(v1::NewSessionResponse::new("v1-session"))
         },

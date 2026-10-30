@@ -7,8 +7,8 @@ use std::sync::{
 
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
-    Agent, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, DynConnectTo, Error,
-    JsonRpcRequest, JsonRpcResponse, Proxy, UntypedMessage, V2ConnectionTo,
+    Agent, Builder, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, DynConnectTo, Error,
+    JsonRpcRequest, JsonRpcResponse, Proxy, UntypedMessage,
 };
 use agent_client_protocol_conductor::{
     ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent, ProxiesAndAgent,
@@ -178,7 +178,7 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
                 Client,
                 async move |request: v2::InitializeProxyRequest,
                             responder,
-                            cx: V2ConnectionTo<Conductor>| {
+                            cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                     assert_eq!(
                         sequence.fetch_add(1, Ordering::SeqCst),
                         0,
@@ -195,7 +195,7 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
                 Client,
                 async move |request: v2::NewSessionRequest,
                             responder,
-                            cx: V2ConnectionTo<Conductor>| {
+                            cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                     cx.send_request_to(Agent, request)
                         .forward_response_to(responder)
                 },
@@ -208,7 +208,7 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
 
 async fn run_with_conductor(
     components: impl InstantiateProxiesAndAgent + 'static,
-    editor_task: impl AsyncFnOnce(V2ConnectionTo<Agent>) -> Result<(), Error>,
+    editor_task: impl AsyncFnOnce(agent_client_protocol::v2::ConnectionTo<Agent>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
@@ -237,8 +237,7 @@ async fn run_raw_client_with_conductor(
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .name("raw-v2-editor")
         .with_spawned(|_cx| async move {
@@ -256,8 +255,7 @@ async fn run_raw_client_with_conductor(
 async fn assert_invalid_final_agent_initialize_response(
     response: serde_json::Value,
 ) -> Result<(), Error> {
-    let agent = Agent
-        .builder()
+    let agent = Builder::new(Agent)
         .without_acp_version_guard()
         .on_receive_request(
             async move |request: UntypedMessage, responder, _cx| {
@@ -702,7 +700,9 @@ async fn v2_proxy_session_helper_preserves_response_and_routes_later_updates() -
     let (callback_tx, mut callback_rx) = mpsc::unbounded();
     let proxy = Proxy.v2().on_receive_request_from(
         Client,
-        async move |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+        async move |request: v2::NewSessionRequest,
+                    responder,
+                    cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
             let callback_tx = callback_tx.clone();
             cx.build_session_from(request).on_proxy_session_start(
                 responder,
@@ -825,7 +825,9 @@ async fn v2_proxy_resume_helper_routes_replay_before_response_and_later_updates(
     let (callback_tx, mut callback_rx) = mpsc::unbounded();
     let proxy = Proxy.v2().on_receive_request_from(
         Client,
-        async move |request: v2::ResumeSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+        async move |request: v2::ResumeSessionRequest,
+                    responder,
+                    cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
             let callback_tx = callback_tx.clone();
             cx.resume_session_from(request).on_proxy_session_start(
                 responder,
@@ -968,7 +970,9 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
         );
     let proxy = Proxy.v2().on_receive_request_from(
         Client,
-        async |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+        async |request: v2::NewSessionRequest,
+               responder,
+               cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
             cx.build_session_from(request)
                 .on_proxy_session_start(responder, |_opened| async { Ok(()) })
         },
@@ -1084,7 +1088,9 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
         );
     let proxy = Proxy.v2().on_receive_request_from(
         Client,
-        async |request: v2::ResumeSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+        async |request: v2::ResumeSessionRequest,
+               responder,
+               cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
             cx.resume_session_from(request)
                 .on_proxy_session_start(responder, |_opened| async { Ok(()) })
         },
@@ -1166,8 +1172,7 @@ async fn v2_proxy_session_helper_forwards_invalid_success_without_closing_connec
 -> Result<(), Error> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let agent_attempts = Arc::clone(&attempts);
-    let agent = Agent
-        .builder()
+    let agent = Builder::new(Agent)
         .without_acp_version_guard()
         .on_receive_request(
             async move |request: UntypedMessage,
@@ -1203,7 +1208,9 @@ async fn v2_proxy_session_helper_forwards_invalid_success_without_closing_connec
     let proxy_callback_count = Arc::clone(&callback_count);
     let proxy = Proxy.v2().on_receive_request_from(
         Client,
-        async move |request: v2::NewSessionRequest, responder, cx: V2ConnectionTo<Conductor>| {
+        async move |request: v2::NewSessionRequest,
+                    responder,
+                    cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
             let callback_count = Arc::clone(&proxy_callback_count);
             cx.build_session_from(request).on_proxy_session_start(
                 responder,
@@ -1380,7 +1387,7 @@ fn counting_agent_router(
     v2_hits: Arc<AtomicUsize>,
 ) -> impl ConnectTo<Client> {
     let v1_agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async move |request: v1::InitializeRequest, responder, _cx| {
                 v1_hits.fetch_add(1, Ordering::SeqCst);
@@ -1419,10 +1426,10 @@ async fn v1_only_proxy_negotiates_a_v2_chain_down_to_v1() -> Result<(), Error> {
         let components = if nested {
             ProxiesAndAgent::new(agent).proxy(ConductorImpl::new_proxy(
                 "nested-conductor",
-                vec![Proxy.builder()],
+                vec![Proxy.v1()],
             ))
         } else {
-            ProxiesAndAgent::new(agent).proxy(Proxy.builder())
+            ProxiesAndAgent::new(agent).proxy(Proxy.v1())
         };
 
         run_raw_client_with_conductor(components, async move |cx| {
@@ -1460,7 +1467,7 @@ async fn v1_only_proxy_negotiates_a_v2_chain_down_to_v1() -> Result<(), Error> {
 #[tokio::test]
 async fn v1_only_proxy_before_a_v2_only_agent_rejects_the_chain() -> Result<(), Error> {
     run_raw_client_with_conductor(
-        ProxiesAndAgent::new(Agent.v2()).proxy(Proxy.builder()),
+        ProxiesAndAgent::new(Agent.v2()).proxy(Proxy.v1()),
         async move |cx| {
             let error = cx
                 .send_request(UntypedMessage::new(

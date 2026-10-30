@@ -174,7 +174,7 @@ impl ConnectTo<Conductor> for McpOverAcpProxy {
         match self.0 {
             PolyfillProtocol::V1 => {
                 Proxy
-                    .builder()
+                    .v1()
                     .name("mcp-over-acp-polyfill")
                     .with_runner(runner)
                     .with_handler(handler)

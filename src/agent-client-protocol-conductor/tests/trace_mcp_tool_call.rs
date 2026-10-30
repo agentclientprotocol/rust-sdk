@@ -18,7 +18,7 @@ use agent_client_protocol::schema::v1::{
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use expect_test::expect;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -286,7 +286,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
     // Run the client interaction
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         agent_client_protocol::Client
-            .builder()
+            .v1()
             .name("test-client")
             .on_receive_notification(
                 {

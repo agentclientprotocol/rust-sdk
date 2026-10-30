@@ -33,7 +33,7 @@
 //!
 //! // With `unstable_mcp_over_acp`, attach it to a proxy and connect the proxy
 //! // to its transport.
-//! Proxy.builder()
+//! Proxy.v1()
 //!     .with_mcp_server(server)
 //!     .connect_to(transport)
 //!     .await?;

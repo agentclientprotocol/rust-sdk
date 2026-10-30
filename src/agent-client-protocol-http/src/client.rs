@@ -2673,7 +2673,7 @@ mod tests {
             axum::serve(listener, app).await.unwrap();
         });
         let client = HttpClient::new(format!("http://{addr}")).unwrap();
-        let mut connection = Box::pin(Client.builder().connect_with(client, async move |cx| {
+        let mut connection = Box::pin(Client.v1().connect_with(client, async move |cx| {
             cx.send_request(UntypedMessage::new(
                 "initialize",
                 json!({"protocolVersion": 1, "clientCapabilities": {}}),
@@ -2759,7 +2759,7 @@ mod tests {
         });
         let (callback_done_tx, callback_done_rx) = futures::channel::oneshot::channel();
         let client = HttpClient::new(format!("ws://{addr}")).unwrap();
-        let mut connection = Box::pin(Client.builder().connect_with(client, async move |cx| {
+        let mut connection = Box::pin(Client.v1().connect_with(client, async move |cx| {
             for method in ["custom/first", "custom/second"] {
                 cx.send_notification(UntypedMessage::new(method, json!({}))?)?;
             }

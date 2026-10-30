@@ -82,9 +82,9 @@ component that it is running as a proxy and may forward messages with
 `proxy/successor`.
 
 The response is the matching version's normal `InitializeResponse` result. The
-stable flat `schema::InitializeProxyRequest` type uses v1; with
-`unstable_protocol_v2`, `schema::v2::InitializeProxyRequest` preserves the v2
-request and response types. The final agent receives the ordinary `initialize`
+SDK has one request type per version: `schema::v1::InitializeProxyRequest` and,
+with `unstable_protocol_v2`, `schema::v2::InitializeProxyRequest`, each with
+that version's request and response types. The final agent receives the ordinary `initialize`
 method and does not need to understand the proxy extension.
 
 ## Successor Forwarding

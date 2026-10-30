@@ -42,7 +42,7 @@ impl ConnectTo<Conductor> for ProxyComponent {
             .build();
 
         agent_client_protocol::Proxy
-            .builder()
+            .v1()
             .name("proxy-component")
             .with_mcp_server(test_server)
             .connect_to(client)

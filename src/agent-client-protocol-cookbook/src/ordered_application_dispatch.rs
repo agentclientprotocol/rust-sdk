@@ -24,7 +24,8 @@
 //!
 //! ```
 //! use std::path::PathBuf;
-//! use agent_client_protocol::{Agent, Client, ConnectTo, Error, V2ConnectionTo};
+//! use agent_client_protocol::{Agent, Client, ConnectTo, Error};
+//! use agent_client_protocol::v2::ConnectionTo;
 //! use agent_client_protocol::schema::{ProtocolVersion, v2};
 //! use futures::{channel::mpsc, StreamExt as _};
 //!
@@ -47,7 +48,7 @@
 //!     Client.v2()
 //!         .on_receive_notification(
 //!             async move |update: v2::UpdateSessionNotification,
-//!                         _connection: V2ConnectionTo<Agent>| {
+//!                         _connection: ConnectionTo<Agent>| {
 //!                 // A dropped receiver means the application stopped observing.
 //!                 drop(updates_tx.unbounded_send(ApplicationEvent::Update(Box::new(update))));
 //!                 Ok(())
