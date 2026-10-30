@@ -1,7 +1,7 @@
 //! Direct native ACP call into a real rmcp service, without an MCP handshake.
 //!
 //! cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
-//!   --features unstable_protocol_v2,unstable_mcp_over_acp
+//!   --features rmcp_3,unstable_protocol_v2,unstable_mcp_over_acp
 
 use agent_client_protocol::v2::{ConnectionTo, Responder};
 use agent_client_protocol::{
@@ -9,7 +9,9 @@ use agent_client_protocol::{
     mcp_server::McpServer,
     schema::{ProtocolVersion, v2},
 };
-use agent_client_protocol_rmcp::McpServerExt;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+extern crate rmcp_3 as rmcp;
+
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{

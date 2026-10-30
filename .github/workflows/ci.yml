@@ -40,9 +40,10 @@ jobs:
         run: |
           cargo check --workspace --all-targets --all-features --locked
           # Keep default checks separate: rmcp enables schemars on the core.
-          # Preview 2 covers defaults; check the full surface on both WASI targets.
+          # Preview 2 covers defaults (rmcp has no default rmcp version, so
+          # select `rmcp_3`); check the full surface on both WASI targets.
           cargo check -p agent-client-protocol --lib --target wasm32-wasip2 --locked
-          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --locked
+          cargo check -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --features rmcp_3 --locked
           cargo check -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip1 --all-features --locked
           cargo check -p agent-client-protocol -p agent-client-protocol-rmcp --lib --target wasm32-wasip2 --all-features --locked
           cargo check -p agent-client-protocol --lib --target wasm32-unknown-unknown --features wasm_js --locked
@@ -111,7 +112,7 @@ jobs:
       - name: Check docs.rs build
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: cargo +nightly doc -p agent-client-protocol --all-features --no-deps --locked
+        run: cargo +nightly doc -p agent-client-protocol -p agent-client-protocol-rmcp --all-features --no-deps --locked
 
       - name: Check WASI documentation
         env:

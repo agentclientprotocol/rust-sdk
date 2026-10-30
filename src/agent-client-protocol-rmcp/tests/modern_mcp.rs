@@ -1,11 +1,14 @@
 //! Exercise the adapter with modern MCP requests, without an initialization handshake.
+#![cfg(feature = "rmcp_3")]
 
 use std::{future::Future, time::Duration};
 
 use agent_client_protocol::{
     ConnectionTo, Error, UntypedMessage, mcp_server::McpServer, role::mcp,
 };
-use agent_client_protocol_rmcp::McpServerExt;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+extern crate rmcp_3 as rmcp;
+
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
@@ -58,7 +61,7 @@ async fn built_server_handles_modern_calls_before_discovery() -> Result<(), Erro
                 "echo",
                 "Echo a message",
                 async |input: Echo, _cx| Ok(input),
-                agent_client_protocol_rmcp::tool_fn!(),
+                agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
             )
             .build();
 

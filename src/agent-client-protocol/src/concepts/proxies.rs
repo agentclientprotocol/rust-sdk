@@ -96,7 +96,7 @@
 //! ```ignore
 //! # use agent_client_protocol::{Proxy, Conductor, ConnectTo};
 //! # use agent_client_protocol::mcp_server::McpServer;
-//! # use agent_client_protocol_rmcp::McpServerExt;
+//! # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
 //! # let my_mcp_server = McpServer::<Conductor, _>::builder("tools").build();
 //! Proxy.v1()
@@ -128,7 +128,7 @@
 //! # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
 //! # use agent_client_protocol::schema::v1::NewSessionRequest;
 //! # use agent_client_protocol::mcp_server::McpServer;
-//! # use agent_client_protocol_rmcp::McpServerExt;
+//! # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
 //! Proxy.v1()
 //!     .on_receive_request_from(Client, async |req: NewSessionRequest, responder, cx| {

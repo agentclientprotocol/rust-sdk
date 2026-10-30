@@ -623,3 +623,42 @@ strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
 implemented outside the conductor crate. Its methods take a `ConductorRunner`,
 whose fields are private, so no external implementation could be written
 before either. Use the provided `Agent` and `Proxy` host roles.
+
+## The rmcp integration moves behind the `rmcp_3` feature
+
+`agent-client-protocol-rmcp` now has one module per supported rmcp major
+version, each behind a matching Cargo feature. The rmcp 3.x integration lives
+in the `rmcp_3` module, enabled by the `rmcp_3` feature. No rmcp feature is
+enabled by default, so without one the crate is empty.
+
+Enable the feature next to the features you already use; your own `rmcp`
+dependency stays as it is:
+
+```toml
+[dependencies]
+agent-client-protocol-rmcp = { version = "5", features = ["rmcp_3", "unstable_mcp_over_acp"] }
+rmcp = "3"
+```
+
+The `unstable_protocol_v2` and `unstable_mcp_over_acp` passthrough features are
+unchanged and apply to every rmcp module.
+
+Then add `rmcp_3::` to every import from the crate:
+
+| Before | After |
+| --- | --- |
+| `agent_client_protocol_rmcp::McpServerExt` | `agent_client_protocol_rmcp::rmcp_3::McpServerExt` |
+| `agent_client_protocol_rmcp::McpServerBuilder` | `agent_client_protocol_rmcp::rmcp_3::McpServerBuilder` |
+| `agent_client_protocol_rmcp::McpTool` | `agent_client_protocol_rmcp::rmcp_3::McpTool` |
+| `agent_client_protocol_rmcp::EnabledTools` | `agent_client_protocol_rmcp::rmcp_3::EnabledTools` |
+| `agent_client_protocol_rmcp::tool_fn!` | `agent_client_protocol_rmcp::rmcp_3::tool_fn!` |
+| `agent_client_protocol_rmcp::tool_fn_mut!` | `agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!` |
+
+`McpTool`, `EnabledTools`, `tool_fn!` and `tool_fn_mut!` are re-exports of the
+core crate's items, which you can also import from
+`agent_client_protocol::mcp_server` and `agent_client_protocol` directly.
+
+Future rmcp major versions arrive as new features and modules (such as
+`rmcp_4`) in minor releases, so you can enable both while moving your services
+to the new rmcp major version. Removing support for an rmcp major version is a
+breaking change and only happens in an ACP major release.

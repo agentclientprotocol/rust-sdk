@@ -6,7 +6,7 @@
 use agent_client_protocol::{
     ByteStreams, ConnectTo, RunWithConnectionTo, mcp_server::McpServer, role::mcp, util::run_until,
 };
-use agent_client_protocol_rmcp::McpServerExt as _;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
 use rmcp::{ClientHandler, ServiceExt, model::ClientConfig};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

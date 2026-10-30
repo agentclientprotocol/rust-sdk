@@ -2,6 +2,7 @@
 
 use std::{future::Future, marker::PhantomData, pin::pin, sync::Arc};
 
+use ::rmcp_3 as rmcp;
 use futures::future::{BoxFuture, Either};
 use futures_concurrency::future::TryJoin;
 use rmcp::{
@@ -28,14 +29,14 @@ use agent_client_protocol::{
 
 /// Builder for creating MCP servers with tools.
 ///
-/// Use [`crate::McpServerExt::builder`] to create a new builder, then chain methods to
+/// Use [`McpServerExt::builder`](super::McpServerExt::builder) to create a new builder, then chain methods to
 /// configure the server and call [`build`](Self::build) to create the server.
 ///
 /// # Example
 ///
 /// ```rust,ignore
 /// use agent_client_protocol::mcp_server::McpServer;
-/// use agent_client_protocol_rmcp::McpServerExt;
+/// use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 ///
 /// let server = McpServer::builder("my-server".to_string())
 ///     .instructions("A helpful assistant")
@@ -44,7 +45,7 @@ use agent_client_protocol::{
 ///         "greet",
 ///         "Greet someone by name",
 ///         async |input: GreetInput, _cx| Ok(format!("Hello, {}!", input.name)),
-///         agent_client_protocol_rmcp::tool_fn!(),
+///         agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
 ///     )
 ///     .build();
 /// ```
@@ -264,7 +265,7 @@ impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> 
         request: McpRequest,
         context: McpRequestContext<Counterpart>,
     ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
-        crate::native::execute(
+        super::native::execute(
             Arc::new(McpServerConnection {
                 data: self.data.clone(),
                 mcp_connection: context.connection().clone(),

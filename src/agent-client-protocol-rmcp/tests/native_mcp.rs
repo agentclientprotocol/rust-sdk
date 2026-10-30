@@ -1,12 +1,14 @@
 //! Real rmcp service lifecycle through native ACP carriers and raw Channels.
-#![cfg(feature = "unstable_mcp_over_acp")]
+#![cfg(all(feature = "rmcp_3", feature = "unstable_mcp_over_acp"))]
 
 use agent_client_protocol::{
     Agent, Channel, Client, Error, RawJsonRpcMessage, RunWithConnectionTo, TransportFrame,
     mcp_server::{McpConnectionTo, McpServer},
 };
-use agent_client_protocol_rmcp::McpServerExt;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 use futures::StreamExt;
+extern crate rmcp_3 as rmcp;
+
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{
@@ -330,7 +332,7 @@ async fn scoped_closure_cleanup(mutable: bool, eof: bool) {
                     "closure",
                     "cleanup probe",
                     operation,
-                    agent_client_protocol_rmcp::tool_fn_mut!(),
+                    agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!(),
                 )
                 .build(),
         )
@@ -342,7 +344,7 @@ async fn scoped_closure_cleanup(mutable: bool, eof: bool) {
                     "closure",
                     "cleanup probe",
                     operation,
-                    agent_client_protocol_rmcp::tool_fn!(),
+                    agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
                 )
                 .build(),
         )

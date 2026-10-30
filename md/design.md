@@ -24,7 +24,9 @@ Optional HTTP/SSE and WebSocket clients and servers built on the core transport-
 
 ### agent-client-protocol-rmcp
 
-Integration with the [rmcp](https://docs.rs/rmcp) crate:
+Integration with the [rmcp](https://docs.rs/rmcp) crate. Each supported rmcp
+major version has its own module behind a matching feature (`rmcp_3` for the
+`rmcp_3` module); none is enabled by default. Each module provides:
 
 - **`McpServer::builder()`** - define MCP tools in Rust code
 - **`McpServer::from_rmcp()`** - wrap an rmcp server as an ACP MCP server

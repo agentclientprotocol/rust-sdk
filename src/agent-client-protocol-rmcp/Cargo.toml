@@ -10,24 +10,34 @@ description = "rmcp integration for Agent Client Protocol MCP servers"
 keywords = ["acp", "agent", "proxy", "mcp", "rmcp"]
 categories = ["development-tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
+# No rmcp version is enabled by default. Each supported rmcp major version has
+# its own feature and module; features are additive.
 default = []
+# rmcp 3.x integration in the `rmcp_3` module.
+rmcp_3 = ["dep:rmcp_3"]
+# Passthrough features; they apply to every rmcp module.
 unstable_mcp_over_acp = ["agent-client-protocol/unstable_mcp_over_acp"]
 unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [[example]]
 name = "with_mcp_server"
-required-features = ["unstable_mcp_over_acp"]
+required-features = ["rmcp_3", "unstable_mcp_over_acp"]
 
 [[example]]
 name = "stateless_native_mcp"
-required-features = ["unstable_protocol_v2", "unstable_mcp_over_acp"]
+required-features = ["rmcp_3", "unstable_protocol_v2", "unstable_mcp_over_acp"]
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["schemars"] }
 futures.workspace = true
 futures-concurrency.workspace = true
-rmcp.workspace = true
+# Keep the version and features in step with the workspace `rmcp` entry.
+rmcp_3 = { package = "rmcp", version = "3.4.0", optional = true, default-features = false, features = ["server", "schemars"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,7 +45,9 @@ tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
 tokio-util = { workspace = true, features = ["rt"] }
 
 [dev-dependencies]
-rmcp = { workspace = true, features = ["macros"] }
+# Cargo requires one name per package, so tests and examples import `rmcp_3`
+# under its usual name with `extern crate rmcp_3 as rmcp;`.
+rmcp_3 = { package = "rmcp", version = "3.4.0", default-features = false, features = ["macros", "server", "schemars"] }
 tokio = { workspace = true, features = ["io-std", "rt-multi-thread"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

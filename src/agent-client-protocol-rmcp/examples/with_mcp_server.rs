@@ -5,11 +5,13 @@
 //!
 //! Run with:
 //! ```bash
-//! cargo run --example with_mcp_server --features unstable_mcp_over_acp
+//! cargo run --example with_mcp_server --features rmcp_3,unstable_mcp_over_acp
 //! ```
 
 use agent_client_protocol::{Proxy, mcp_server::McpServer};
-use agent_client_protocol_rmcp::McpServerExt;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+extern crate rmcp_3 as rmcp;
+
 use rmcp::{
     ErrorData as McpError, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},

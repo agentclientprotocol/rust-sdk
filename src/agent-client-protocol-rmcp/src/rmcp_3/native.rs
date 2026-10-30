@@ -1,5 +1,6 @@
 //! Direct OneshotTransport adapter; no hidden initialization or byte bridge.
 
+use ::rmcp_3 as rmcp;
 use acp::{
     Role,
     mcp_server::{MCP_BACKEND_FAILURE, McpOutcome, McpRequest, McpRequestContext},
