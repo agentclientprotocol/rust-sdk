@@ -35,7 +35,7 @@ async fn initialize_raw_v2_proxy(
     ));
     peer.tx
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
-            "_proxy/initialize".to_owned(),
+            "proxy/initialize".to_owned(),
             serde_json::to_value(initialize).expect("initialize request should serialize"),
             initialize_id.clone(),
         )?))
@@ -48,7 +48,7 @@ async fn initialize_raw_v2_proxy(
         panic!("expected the proxy initialize response");
     };
     assert_eq!(id, initialize_id);
-    let response = v2::InitializeResponse::from_value("_proxy/initialize", result)?;
+    let response = v2::InitializeResponse::from_value("proxy/initialize", result)?;
     assert_eq!(response.protocol_version, ProtocolVersion::V2);
     Ok(())
 }

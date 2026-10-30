@@ -220,7 +220,7 @@ async fn standalone_v1_proxy_requires_exact_selected_version() -> Result<(), Err
         let response = request(
             &mut channel,
             1,
-            "_proxy/initialize",
+            "proxy/initialize",
             json!({ "protocolVersion": requested }),
         )
         .await?;

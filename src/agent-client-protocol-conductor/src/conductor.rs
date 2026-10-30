@@ -22,11 +22,11 @@
 //!
 //! ## Recursive Chain Building
 //!
-//! The chain is built recursively through the `_proxy/successor` envelope:
+//! The chain is built recursively through the `proxy/successor` envelope:
 //!
 //! 1. Editor connects to Component 0 via the conductor
 //! 2. When Component 0 wants to communicate with its successor, it sends
-//!    a `_proxy/successor` request or notification containing the inner method
+//!    a `proxy/successor` request or notification containing the inner method
 //!    and params
 //! 3. The conductor unwraps the inner message and forwards it to Component 1
 //! 4. Component 1 does the same for Component 2, and so on
@@ -39,7 +39,7 @@
 //!
 //! Components discover whether they're a proxy or agent via the initialization request they receive:
 //!
-//! - **Proxy components**: Receive `InitializeProxyRequest` (`_proxy/initialize` method)
+//! - **Proxy components**: Receive `InitializeProxyRequest` (`proxy/initialize` method)
 //! - **Agent component**: Receives standard `InitializeRequest` (`initialize` method)
 //!
 //! The conductor sends `InitializeProxyRequest` to all proxy components in the chain,
@@ -52,7 +52,7 @@
 //! The conductor runs an event loop processing messages from:
 //!
 //! - **Editor to first component**: Standard ACP messages
-//! - **Component to successor**: Via the `_proxy/successor` envelope
+//! - **Component to successor**: Via the `proxy/successor` envelope
 //! - **Component responses**: Via futures channels back to requesters
 //!
 //! The message flow ensures bidirectional communication while maintaining the
@@ -115,8 +115,8 @@
 //!
 //! The conductor selects the chain's protocol version from the first
 //! `initialize` request, then forwards every version through one untyped path:
-//! `_proxy/initialize` has the same wire shape in v1 and v2, so the conductor
-//! only renames `initialize` to `_proxy/initialize` for the first proxy and
+//! `proxy/initialize` has the same wire shape in v1 and v2, so the conductor
+//! only renames `initialize` to `proxy/initialize` for the first proxy and
 //! otherwise forwards messages unchanged. Its connections have no protocol
 //! version guard; the endpoints validate the selected version's traffic.
 
@@ -255,7 +255,7 @@ fn unsupported_by_instantiator(version: ProtocolVersion) -> Error {
     ))
 }
 
-/// The protocol version requested by an `initialize` or `_proxy/initialize`
+/// The protocol version requested by an `initialize` or `proxy/initialize`
 /// request.
 fn requested_protocol_version(request: &UntypedMessage) -> Result<ProtocolVersion, Error> {
     request
@@ -826,7 +826,7 @@ where
     /// Ensures components are initialized before processing messages.
     ///
     /// If components haven't been initialized yet, this expects the first message
-    /// to be an `initialize` request (`_proxy/initialize` for a conductor acting
+    /// to be an `initialize` request (`proxy/initialize` for a conductor acting
     /// as a proxy), selects the chain's protocol version, and uses the request to
     /// instantiate and spawn the component chain.
     ///
@@ -1067,7 +1067,7 @@ where
     /// with index `target_component_index`.
     ///
     /// Forwarding is untyped and the same for every protocol version:
-    /// `_proxy/initialize` has the same wire shape in v1 and v2, so the
+    /// `proxy/initialize` has the same wire shape in v1 and v2, so the
     /// conductor never parses or re-serializes forwarded messages, and fields
     /// it does not know survive.
     fn forward_message_from_client_to_proxy(
@@ -1093,7 +1093,7 @@ where
             {
                 // Proxies receive incoming `initialize` messages as if they
                 // were a client. The conductor (us) renames them to
-                // `_proxy/initialize`, keeping the params untouched. The proxy
+                // `proxy/initialize`, keeping the params untouched. The proxy
                 // then initializes itself and forwards an `initialize` request
                 // to its successor.
                 request.method = METHOD_INITIALIZE_PROXY.to_string();
@@ -1136,7 +1136,7 @@ fn forward_message_to_agent(
     }
 }
 
-/// The error for a `_proxy/initialize` request that arrives from outside the
+/// The error for a `proxy/initialize` request that arrives from outside the
 /// conductor: only the conductor initializes its proxies.
 fn initialize_proxy_from_outside() -> Error {
     Error::invalid_request().data("initialize/proxy requests are only sent by the conductor")
@@ -1434,12 +1434,15 @@ pub enum ConductorMessage {
 ///
 /// * ConductorToClient -- conductor is acting as an agent, so when its last proxy sends to its successor, the conductor sends that message to its agent component
 /// * ConductorToConductor -- conductor is acting as a proxy, so when its last proxy sends to its successor, the (inner) conductor sends that message to its successor, via the outer conductor
-pub trait ConductorHostRole: Role<Counterpart: HasPeer<Client>> {
+///
+/// This trait is sealed: it is implemented for [`Agent`] and [`Proxy`] and
+/// cannot be implemented outside this crate.
+pub trait ConductorHostRole: sealed::Sealed + Role<Counterpart: HasPeer<Client>> {
     /// The type used to instantiate components for this link type.
     type Instantiator: Send;
 
     /// The method of the request that initializes the conductor:
-    /// `initialize`, or `_proxy/initialize` for a conductor acting as a proxy.
+    /// `initialize`, or `proxy/initialize` for a conductor acting as a proxy.
     fn initialize_method(&self) -> &'static str;
 
     /// Select the chain's protocol version for an initialization that
@@ -1472,6 +1475,14 @@ pub trait ConductorHostRole: Role<Counterpart: HasPeer<Client>> {
         connection: ConnectionTo<Self::Counterpart>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
     ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send;
+}
+
+mod sealed {
+    /// Prevents implementations of [`super::ConductorHostRole`] outside this crate.
+    pub trait Sealed {}
+
+    impl Sealed for agent_client_protocol::Agent {}
+    impl Sealed for agent_client_protocol::Proxy {}
 }
 
 /// Conductor acting as an agent
@@ -1637,7 +1648,7 @@ impl ConductorHostRole for Proxy {
                     method = ?message.method(),
                     "ConductorToConductor::handle_dispatch - matched Client"
                 );
-                // A proxy is initialized with `_proxy/initialize`, never with
+                // A proxy is initialized with `proxy/initialize`, never with
                 // a plain `initialize` from its predecessor.
                 let message = match message {
                     Dispatch::Request(request, responder) if request.method() == "initialize" => {

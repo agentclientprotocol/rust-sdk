@@ -10,6 +10,11 @@
 > `McpServer::Acp` with `mcp/connect`, `mcp/message`, and `mcp/disconnect`; the
 > compatibility polyfill translates those native declarations only for
 > HTTP-capable agents. Do not copy the historical MCP examples below.
+>
+> Likewise, the `proxy/successor/{send,receive}/*` methods below were replaced
+> by a single `proxy/successor` method, and proxies are initialized with
+> `proxy/initialize`, as described in the
+> [proxy chains RFD](https://agentclientprotocol.com/rfds/proxy-chains).
 
 # Elevator pitch
 
@@ -23,7 +28,7 @@ Key changes:
 
 - Define a proxy chain architecture where components can transform ACP messages
 - Create an orchestrator (Conductor) that manages the proxy chain and presents as a normal ACP agent to editors
-- Establish the `_proxy/successor/*` protocol for proxies to communicate with downstream components
+- Establish the `proxy/successor/*` protocol for proxies to communicate with downstream components
 - Enable composition without requiring editors to understand P/ACP internals
 
 # Status quo
@@ -92,8 +97,8 @@ flowchart LR
         P2[Proxy 2]
         Agent[ACP Agent]
 
-        P1 -->|_proxy/successor/*| P2
-        P2 -->|_proxy/successor/*| Agent
+        P1 -->|proxy/successor/*| P2
+        P2 -->|proxy/successor/*| Agent
     end
 
     Editor <-->|ACP| O
@@ -104,7 +109,7 @@ P/ACP defines three kinds of actors:
 
 - **Editors** spawn the orchestrator and communicate via standard ACP
 - **Orchestrator** manages the proxy chain, appears as a normal ACP agent to editors
-- **Proxies** intercept and transform messages, communicate with downstream via `_proxy/successor/*` protocol
+- **Proxies** intercept and transform messages, communicate with downstream via `proxy/successor/*` protocol
 - **Agents** provide base AI model behavior using standard ACP
 
 The orchestrator handles message routing, making the proxy chain transparent to editors. Proxies can transform requests, responses, or add side-effects without editors or agents needing P/ACP awareness.
@@ -148,7 +153,7 @@ The conductor uses a two-way capability handshake to verify that proxy component
 2. **Component accepts proxy capability** - The component must respond with `"proxy": true` in the `_meta` field of its InitializeResponse
 3. **Last component (agent)** - The final component is treated as a standard ACP agent and does NOT receive the proxy capability offer
 
-**Why a two-way handshake?** The proxy capability is an _active protocol_ - it requires the component to handle `_proxy/successor/*` messages and route communications appropriately. Unlike passive capabilities (like "http" or "sse") which are just declarations, proxy components must actively participate in message routing. If a component doesn't respond with the proxy capability, the conductor fails initialization with an error like "component X is not a proxy", since that component cannot fulfill its required function in the chain.
+**Why a two-way handshake?** The proxy capability is an _active protocol_ - it requires the component to handle `proxy/successor/*` messages and route communications appropriately. Unlike passive capabilities (like "http" or "sse") which are just declarations, proxy components must actively participate in message routing. If a component doesn't respond with the proxy capability, the conductor fails initialization with an error like "component X is not a proxy", since that component cannot fulfill its required function in the chain.
 
 # Shiny future
 
@@ -269,48 +274,48 @@ If a component that was offered the proxy capability does not respond with it, t
 **Agent capability:**
 The last component in the chain (the agent) is NOT offered the proxy capability and does not need to respond with it. Agents are just normal ACP agents with no P/ACP awareness required.
 
-### The `_proxy/successor/{send,receive}` protocol
+### The `proxy/successor/{send,receive}` protocol
 
-Proxies communicate with their downstream component (next proxy or agent) through special extension messages handled by the orchestrator:
+Proxies communicate with their downstream component (next proxy or agent) through special messages handled by the orchestrator:
 
-**`_proxy/successor/send/request`** - Proxy wants to send a request downstream:
+**`proxy/successor/send/request`** - Proxy wants to send a request downstream:
 
 ```json
 {
-  "method": "_proxy/successor/send/request",
+  "method": "proxy/successor/send/request",
   "params": {
     "message": <ACP_REQUEST>
   }
 }
 ```
 
-**`_proxy/successor/send/notification`** - Proxy wants to send a notification downstream:
+**`proxy/successor/send/notification`** - Proxy wants to send a notification downstream:
 
 ```json
 {
-  "method": "_proxy/successor/send/notification",
+  "method": "proxy/successor/send/notification",
   "params": {
     "message": <ACP_NOTIFICATION>
   }
 }
 ```
 
-**`_proxy/successor/receive/request`** - Orchestrator delivers a request from downstream:
+**`proxy/successor/receive/request`** - Orchestrator delivers a request from downstream:
 
 ```json
 {
-  "method": "_proxy/successor/receive/request",
+  "method": "proxy/successor/receive/request",
   "params": {
     "message": <ACP_REQUEST>
   }
 }
 ```
 
-**`_proxy/successor/receive/notification`** - Orchestrator delivers a notification from downstream:
+**`proxy/successor/receive/notification`** - Orchestrator delivers a notification from downstream:
 
 ```json
 {
-  "method": "_proxy/successor/receive/notification",
+  "method": "proxy/successor/receive/notification",
   "params": {
     "message": <ACP_NOTIFICATION>
   }
@@ -321,7 +326,7 @@ Proxies communicate with their downstream component (next proxy or agent) throug
 
 1. Editor sends ACP `prompt` request to orchestrator
 2. Orchestrator forwards to Proxy1 as normal ACP message
-3. Proxy1 transforms and sends `_proxy/successor/send/request { message: <modified_prompt> }`
+3. Proxy1 transforms and sends `proxy/successor/send/request { message: <modified_prompt> }`
 4. Orchestrator routes that to Proxy2 as normal ACP `prompt`
 5. Eventually reaches agent, response flows back through chain
 6. Orchestrator wraps responses going upstream appropriately
@@ -338,8 +343,8 @@ match message {
     AcpNotification(notif) => send_to_successor_notification(notif),
 
     // Forward from successor back to editor
-    ExtRequest("_proxy/successor/receive/request", msg) => respond_to_editor(msg),
-    ExtNotification("_proxy/successor/receive/notification", msg) => forward_to_editor(msg),
+    ExtRequest("proxy/successor/receive/request", msg) => respond_to_editor(msg),
+    ExtNotification("proxy/successor/receive/notification", msg) => forward_to_editor(msg),
 }
 ```
 
@@ -553,11 +558,11 @@ When bridging is needed, the main conductor spawns `conductor mcp $port` as the 
 
 ### Additional Extension Messages
 
-Proxies can define their own extension messages beyond `_proxy/successor/*` to provide specific capabilities. Examples might include:
+Proxies can define their own extension messages beyond `proxy/successor` to provide specific capabilities. Like any ACP extension, these should use an `_`-prefixed vendor name (unprefixed names are reserved for ACP). Examples might include:
 
-- **Logging/observability**: `_proxy/log` messages for structured logging
-- **Metrics**: `_proxy/metric` messages for tracking usage
-- **Configuration**: `_proxy/config` messages for dynamic reconfiguration
+- **Logging/observability**: `_acme/log` messages for structured logging
+- **Metrics**: `_acme/metric` messages for tracking usage
+- **Configuration**: `_acme/config` messages for dynamic reconfiguration
 
 The orchestrator can handle routing these messages appropriately, or they can be handled by specific proxies in the chain.
 
@@ -572,7 +577,7 @@ These extensions are beyond the scope of this initial RFD and will be defined as
 **Completed:**
 
 - ✅ P/ACP protocol design with Conductor orchestrator architecture
-- ✅ `_proxy/successor/{send,receive}` message protocol defined
+- ✅ `proxy/successor/{send,receive}` message protocol defined
 - ✅ `scp` Rust crate with JSON-RPC layer and ACP message types
 - ✅ Comprehensive JSON-RPC test suite (21 tests)
 - ✅ Proxy message type definitions (`ToSuccessorRequest`, etc.)
@@ -665,14 +670,14 @@ This section shows the exact message flows for the minimal Sparkle demo.
 
 There are two distinct types of UUIDs in these sequences:
 
-1. **Message IDs (JSON-RPC request IDs)**: These identify individual JSON-RPC requests and must be tracked to route responses correctly. When a component forwards a message using `_proxy/successor/request`, it creates a fresh message ID for the downstream request and remembers the mapping to route the response back.
+1. **Message IDs (JSON-RPC request IDs)**: These identify individual JSON-RPC requests and must be tracked to route responses correctly. When a component forwards a message using `proxy/successor/request`, it creates a fresh message ID for the downstream request and remembers the mapping to route the response back.
 
 2. **Session IDs (ACP session identifiers)**: These identify ACP sessions and flow through the chain unchanged. The agent creates a session ID, and all components pass it back unmodified.
 
 **Conductor's routing rules:**
 
 1. Message from Editor → Forward "as is" to first component (same message ID)
-2. `_proxy/successor/request` from component → Unwrap payload and send to next component (using message ID from the wrapper)
+2. `proxy/successor/request` from component → Unwrap payload and send to next component (using message ID from the wrapper)
 3. Response from downstream → Send back to whoever made the `_proxy` request
 4. First component's response → Send back to Editor
 
@@ -706,10 +711,10 @@ sequenceDiagram
 
     Note over Sparkle: Sees proxy capability offer,<br/>initializes successor
 
-    Sparkle->>Conductor: _proxy/successor/request (id: I1)<br/>payload: initialize
+    Sparkle->>Conductor: proxy/successor/request (id: I1)<br/>payload: initialize
     Conductor->>Agent: initialize (id: I1)<br/>(NO proxy capability - agent is last)
     Agent-->>Conductor: initialize response (id: I1)
-    Conductor-->>Sparkle: _proxy/successor response (id: I1)
+    Conductor-->>Sparkle: proxy/successor response (id: I1)
 
     Note over Sparkle: Sees Agent capabilities,<br/>prepares response
 
@@ -726,7 +731,7 @@ sequenceDiagram
 
     Note over Sparkle: Wants to inject Sparkle MCP server
 
-    Sparkle->>Conductor: _proxy/successor/request (id: U1)<br/>payload: session/new with tools (M0, sparkle-mcp)
+    Sparkle->>Conductor: proxy/successor/request (id: U1)<br/>payload: session/new with tools (M0, sparkle-mcp)
     Conductor->>Agent: session/new (id: U1, tools: M0 + sparkle-mcp)
 
     Agent-->>Conductor: response (id: U1, sessionId: S1)
@@ -779,13 +784,13 @@ sequenceDiagram
    }
    ```
 
-3. **Sparkle → Conductor: \_proxy/successor/request** (id: I1, wrapping initialize)
+3. **Sparkle → Conductor: \proxy/successor/request** (id: I1, wrapping initialize)
 
    ```json
    {
      "jsonrpc": "2.0",
      "id": "I1",
-     "method": "_proxy/successor/request",
+     "method": "proxy/successor/request",
      "params": {
        "message": {
          "method": "initialize",
@@ -828,7 +833,7 @@ sequenceDiagram
    }
    ```
 
-6. **Conductor → Sparkle: \_proxy/successor response** (id: I1, wrapping Agent's response)
+6. **Conductor → Sparkle: \proxy/successor response** (id: I1, wrapping Agent's response)
 
    ```json
    {
@@ -899,13 +904,13 @@ sequenceDiagram
    }
    ```
 
-10. **Sparkle → Conductor: \_proxy/successor/request** (id: U1, with injected Sparkle MCP)
+10. **Sparkle → Conductor: \proxy/successor/request** (id: U1, with injected Sparkle MCP)
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": "U1",
-  "method": "_proxy/successor/request",
+  "method": "proxy/successor/request",
   "params": {
     "message": {
       "method": "session/new",
@@ -953,7 +958,7 @@ sequenceDiagram
 }
 ```
 
-13. **Conductor → Sparkle: \_proxy/successor response** (id: U1)
+13. **Conductor → Sparkle: \proxy/successor response** (id: U1)
 
 ```json
 {
@@ -997,7 +1002,7 @@ sequenceDiagram
 
     Note over Sparkle: First prompt detected!<br/>Run embodiment sequence first
 
-    Sparkle->>Conductor: _proxy/successor/request (id: P1)<br/>payload: session/prompt (embodiment)
+    Sparkle->>Conductor: proxy/successor/request (id: P1)<br/>payload: session/prompt (embodiment)
     Conductor->>Agent: session/prompt (id: P1, embodiment)
 
     Agent-->>Conductor: response (id: P1, tool_use: embody_sparkle)
@@ -1005,7 +1010,7 @@ sequenceDiagram
 
     Note over Sparkle: Embodiment complete,<br/>now send real prompt
 
-    Sparkle->>Conductor: _proxy/successor/request (id: P2)<br/>payload: session/prompt (user message)
+    Sparkle->>Conductor: proxy/successor/request (id: P2)<br/>payload: session/prompt (user message)
     Conductor->>Agent: session/prompt (id: P2, user message)
 
     Agent-->>Conductor: response (id: P2, actual answer)
@@ -1053,13 +1058,13 @@ sequenceDiagram
    }
    ```
 
-3. **Sparkle → Conductor: \_proxy/successor/request** (id: P1, embodiment sequence)
+3. **Sparkle → Conductor: \proxy/successor/request** (id: P1, embodiment sequence)
 
    ```json
    {
      "jsonrpc": "2.0",
      "id": "P1",
-     "method": "_proxy/successor/request",
+     "method": "proxy/successor/request",
      "params": {
        "message": {
          "method": "session/prompt",
@@ -1116,13 +1121,13 @@ sequenceDiagram
    }
    ```
 
-6. **Sparkle → Conductor: \_proxy/successor/request** (id: P2, actual user prompt)
+6. **Sparkle → Conductor: \proxy/successor/request** (id: P2, actual user prompt)
 
    ```json
    {
      "jsonrpc": "2.0",
      "id": "P2",
-     "method": "_proxy/successor/request",
+     "method": "proxy/successor/request",
      "params": {
        "message": {
          "method": "session/prompt",
@@ -1186,7 +1191,7 @@ sequenceDiagram
 
     Note over Sparkle: Already embodied,<br/>pass through unchanged
 
-    Sparkle->>Conductor: _proxy/successor/request (id: P4)<br/>payload: session/prompt (unchanged)
+    Sparkle->>Conductor: proxy/successor/request (id: P4)<br/>payload: session/prompt (unchanged)
     Conductor->>Agent: session/prompt (id: P4, unchanged)
 
     Agent-->>Conductor: response (id: P4)
@@ -1221,13 +1226,13 @@ sequenceDiagram
    }
    ```
 
-2. **Sparkle → Conductor: \_proxy/successor/request** (id: P4, message unchanged)
+2. **Sparkle → Conductor: \proxy/successor/request** (id: P4, message unchanged)
 
    ```json
    {
      "jsonrpc": "2.0",
      "id": "P4",
-     "method": "_proxy/successor/request",
+     "method": "proxy/successor/request",
      "params": {
        "message": {
          "method": "session/prompt",
@@ -1276,7 +1281,7 @@ sequenceDiagram
    }
    ```
 
-Note that even though Sparkle is passing messages through "transparently", it still uses the `_proxy/successor/request` protocol. This maintains the consistent routing pattern where all downstream communication flows through Conductor.
+Note that even though Sparkle is passing messages through "transparently", it still uses the `proxy/successor/request` protocol. This maintains the consistent routing pattern where all downstream communication flows through Conductor.
 
 **Implementation Note on Embodiment Responses:**
 

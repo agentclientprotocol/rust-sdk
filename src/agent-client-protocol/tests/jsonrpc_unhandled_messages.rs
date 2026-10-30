@@ -6,7 +6,7 @@
 //! - Unhandled notifications are ignored instead of rejected, so peers that
 //!   use optional protocol-level or vendor extensions interoperate with
 //!   components that do not support them.
-//! - A `_proxy/successor` envelope that cannot be peeled still reaches the
+//! - A `proxy/successor` envelope that cannot be peeled still reaches the
 //!   handler chain unchanged.
 //! - A response routed to a request handle that was already dropped is
 //!   discarded without disturbing the connection.
@@ -293,7 +293,7 @@ async fn malformed_successor_envelope_still_reaches_handlers() {
 
             client_writer
                 .write_all(
-                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"bogus":true}}
+                    br#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"bogus":true}}
 "#,
                 )
                 .await
@@ -301,7 +301,7 @@ async fn malformed_successor_envelope_still_reaches_handlers() {
             client_writer.flush().await.unwrap();
 
             let (method, params) = next_with_timeout(&mut notification_rx).await;
-            assert_eq!(method, "_proxy/successor");
+            assert_eq!(method, "proxy/successor");
             assert_eq!(params, serde_json::json!({ "bogus": true }));
         })
         .await;

@@ -722,7 +722,7 @@ impl MessageInfo {
     /// Extract logical message info from method and params.
     ///
     /// This unwraps protocol wrappers to get the "real" message:
-    /// - `_proxy/successor` messages are unwrapped to get the inner message
+    /// - `proxy/successor` messages are unwrapped to get the inner message
     /// - `mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).

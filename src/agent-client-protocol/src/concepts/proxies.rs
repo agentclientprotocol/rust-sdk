@@ -19,12 +19,12 @@
 //! `Proxy::builder` creates a stable protocol v1 proxy. With the
 //! `unstable_protocol_v2` feature, `Proxy.v2()` creates a v2-only proxy whose
 //! fluent callbacks receive `V2ConnectionTo<Conductor>`. The builder
-//! validates `_proxy/initialize` and later traffic against the selected
+//! validates `proxy/initialize` and later traffic against the selected
 //! version.
 //!
 //! Use `Proxy.protocol_router()` to package separate v1 and v2 implementations
 //! behind one `ConnectTo<Conductor>` component. It dispatches the
-//! conductor-selected `_proxy/initialize` version exactly and performs no
+//! conductor-selected `proxy/initialize` version exactly and performs no
 //! cross-version conversion.
 //!
 //! Low-level infrastructure implementing custom raw version routing can use
@@ -33,7 +33,7 @@
 //! proxy.
 //!
 //! Default forwarding is the same for every builder and every protocol
-//! version: `_proxy/initialize` has the same wire shape in v1 and v2, so a
+//! version: `proxy/initialize` has the same wire shape in v1 and v2, so a
 //! proxy forwards untyped messages, and fields the SDK does not know survive.
 //!
 //! # Default Forwarding

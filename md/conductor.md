@@ -27,7 +27,7 @@ Components do not open direct connections to one another. The conductor owns
 each transport and maps the logical chain onto those connections:
 
 - Upstream traffic is delivered to the first proxy as ordinary ACP messages.
-- A proxy uses `_proxy/successor` to send a request or notification to the next
+- A proxy uses `proxy/successor` to send a request or notification to the next
   component.
 - Traffic from a successor is presented to its predecessor through the same
   typed proxy abstraction.
@@ -35,13 +35,16 @@ each transport and maps the logical chain onto those connections:
 
 The final agent receives ordinary ACP and does not need to implement the proxy
 extension. See the [Proxy Extension Protocol Reference](./protocol.md) for the
-wire method shapes.
+wire method shapes. The conductor uses `proxy/initialize` and `proxy/successor`
+from the ACP proxy chains RFD; earlier releases used `_proxy/initialize` and
+`_proxy/successor`, so upgrade conductors and proxies together (see
+[Migrating Proxy Method Names](./migration-proxy-methods.md)).
 
 ## Lazy Initialization
 
 Proxy and agent components are instantiated when the first `initialize`
 request arrives. For each non-final component, the conductor sends
-`_proxy/initialize`; the last component in agent mode receives ordinary
+`proxy/initialize`; the last component in agent mode receives ordinary
 `initialize`. Each proxy can initialize its successor before completing its own
 response, so capabilities flow back toward the client through the chain.
 
@@ -76,9 +79,9 @@ with an error and leaves the conductor uninitialized, so the client can retry.
 ## Forwarding
 
 Forwarding is the same for every protocol version and does not depend on the
-feature: `_proxy/initialize` has the same wire shape in v1 and v2. The
-conductor rejects a `_proxy/initialize` that arrives from outside, renames
-`initialize` to `_proxy/initialize` for the first proxy with its params
+feature: `proxy/initialize` has the same wire shape in v1 and v2. The
+conductor rejects a `proxy/initialize` that arrives from outside, renames
+`initialize` to `proxy/initialize` for the first proxy with its params
 untouched, and forwards everything else unchanged, without parsing or
 re-serializing it. The conductor's connections to its client and to the final
 agent, and the pass-through proxy it inserts for tracing, have no protocol

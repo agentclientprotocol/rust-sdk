@@ -33,7 +33,7 @@ The conductor:
 **Component Communication:**
 
 - Editor talks to conductor via stdio
-- Conductor uses the `_proxy/successor` envelope to route messages
+- Conductor uses the `proxy/successor` envelope to route messages
 - Each proxy can intercept, transform, or forward messages
 - Final agent receives standard ACP messages
 

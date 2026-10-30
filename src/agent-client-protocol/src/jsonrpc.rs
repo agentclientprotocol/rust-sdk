@@ -2820,7 +2820,7 @@ fn peel_successor_envelopes<'message>(
 }
 
 /// Whether a notification is a `$/cancel_request`, even when it is still
-/// wrapped in `_proxy/successor` envelopes.
+/// wrapped in `proxy/successor` envelopes.
 ///
 /// `$/cancel_request` is connection-scoped: its `requestId` was allocated on
 /// the connection the notification arrived over and means nothing on any
@@ -7854,7 +7854,7 @@ mod tests {
 
             let error = ProtocolCompat::new(mode)
                 .incoming_message(UntypedMessage::new(
-                    "_proxy/initialize",
+                    "proxy/initialize",
                     serde_json::json!({ "protocolVersion": unsupported }),
                 )?)
                 .expect_err("a proxy builder must reject the other protocol version");
@@ -7926,7 +7926,7 @@ mod tests {
             .and_then(|data| data.as_str())
             .unwrap_or_default();
         assert!(data.contains("logical `initialize`"), "{error:?}");
-        assert!(data.contains("_proxy/successor"), "{error:?}");
+        assert!(data.contains("proxy/successor"), "{error:?}");
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
@@ -8720,13 +8720,13 @@ mod tests {
     #[test]
     fn peel_successor_envelopes_unwraps_nested_envelopes() {
         let params = serde_json::json!({
-            "method": "_proxy/successor",
+            "method": "proxy/successor",
             "params": {
                 "method": "$/cancel_request",
                 "params": { "requestId": "req-1" }
             }
         });
-        let (method, peeled) = peel_successor_envelopes("_proxy/successor", &params);
+        let (method, peeled) = peel_successor_envelopes("proxy/successor", &params);
         assert_eq!(method, "$/cancel_request");
         assert_eq!(peeled, &serde_json::json!({ "requestId": "req-1" }));
     }
@@ -8736,8 +8736,8 @@ mod tests {
         // No string `method` field: the envelope cannot be peeled, so the
         // message is returned as-is for the handler chain to deal with.
         let params = serde_json::json!({ "unexpected": true });
-        let (method, peeled) = peel_successor_envelopes("_proxy/successor", &params);
-        assert_eq!(method, "_proxy/successor");
+        let (method, peeled) = peel_successor_envelopes("proxy/successor", &params);
+        assert_eq!(method, "proxy/successor");
         assert_eq!(peeled, &params);
     }
 
@@ -8751,7 +8751,7 @@ mod tests {
         #[test]
         fn cancellation_request_id_is_extracted_from_wrapped_notifications() {
             let message = notification(
-                "_proxy/successor",
+                "proxy/successor",
                 serde_json::json!({
                     "method": "$/cancel_request",
                     "params": { "requestId": "req-1" }
@@ -8766,7 +8766,7 @@ mod tests {
         fn malformed_successor_envelope_is_not_treated_as_cancellation() {
             // The envelope cannot be peeled; the message must flow on to the
             // handler chain instead of erroring the dispatch.
-            let message = notification("_proxy/successor", serde_json::json!({ "bogus": true }));
+            let message = notification("proxy/successor", serde_json::json!({ "bogus": true }));
             let request_id = cancellation_request_id_from_message(&message)
                 .expect("malformed envelope should be left to the handler chain");
             assert_eq!(request_id, None);
@@ -8778,7 +8778,7 @@ mod tests {
             assert!(is_cancel_request_notification(&plain));
 
             let wrapped = notification(
-                "_proxy/successor",
+                "proxy/successor",
                 serde_json::json!({
                     "method": "$/cancel_request",
                     "params": { "requestId": 1 }
@@ -8787,7 +8787,7 @@ mod tests {
             assert!(is_cancel_request_notification(&wrapped));
 
             let other_wrapped = notification(
-                "_proxy/successor",
+                "proxy/successor",
                 serde_json::json!({
                     "method": "session/update",
                     "params": {}
@@ -8796,7 +8796,7 @@ mod tests {
             assert!(!is_cancel_request_notification(&other_wrapped));
 
             let malformed_envelope =
-                notification("_proxy/successor", serde_json::json!({ "bogus": true }));
+                notification("proxy/successor", serde_json::json!({ "bogus": true }));
             assert!(!is_cancel_request_notification(&malformed_envelope));
         }
 

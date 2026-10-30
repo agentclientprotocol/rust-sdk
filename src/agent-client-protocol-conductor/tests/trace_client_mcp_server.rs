@@ -343,7 +343,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                     from: "Client",
                     to: "Proxy(0)",
                     id: String("id:0"),
-                    method: "_proxy/initialize",
+                    method: "proxy/initialize",
                     session: None,
                     params: Object {
                         "protocolVersion": Number(1),

@@ -313,7 +313,7 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
 
             client_writer
                 .write_all(
-                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":"req-1"}}}
+                    br#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":"req-1"}}}
 "#,
                 )
                 .await
@@ -391,7 +391,7 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
             // outer id must cancel it.
             client_writer
                 .write_all(
-                    br#"{"jsonrpc":"2.0","id":7,"method":"_proxy/successor","params":{"method":"simple_method","params":{"message":"wrapped"}}}
+                    br#"{"jsonrpc":"2.0","id":7,"method":"proxy/successor","params":{"method":"simple_method","params":{"message":"wrapped"}}}
 "#,
                 )
                 .await
@@ -400,7 +400,7 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
 
             client_writer
                 .write_all(
-                    br#"{"jsonrpc":"2.0","method":"_proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":7}}}
+                    br#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":7}}}
 "#,
                 )
                 .await
@@ -465,7 +465,7 @@ async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_deliver
         else {
             panic!("expected the successor-wrapped request");
         };
-        assert_eq!(request.method.as_ref(), "_proxy/successor");
+        assert_eq!(request.method.as_ref(), "proxy/successor");
         assert_eq!(
             serde_json::to_value(request.params).unwrap(),
             json!({"method": "simple_method", "params": {"message": "wrapped cancel"}})
@@ -476,7 +476,7 @@ async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_deliver
         else {
             panic!("expected the successor-wrapped cancellation");
         };
-        assert_eq!(cancellation.method.as_ref(), "_proxy/successor");
+        assert_eq!(cancellation.method.as_ref(), "proxy/successor");
         assert_eq!(
             serde_json::to_value(cancellation.params).unwrap(),
             json!({"method": "$/cancel_request", "params": {"requestId": request.id}})
@@ -542,7 +542,7 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                     agent_client_protocol::on_receive_request!(),
                 )
                 // Matches only a `$/cancel_request` wrapped in a
-                // `_proxy/successor` envelope: observing it here proves the
+                // `proxy/successor` envelope: observing it here proves the
                 // client wrapped the outgoing cancellation the same way as
                 // the request it refers to.
                 .on_receive_notification_from(
@@ -1658,7 +1658,7 @@ async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
 }
 
 /// A proxy that forwards raw dispatches with `send_proxied_message` can see a
-/// `$/cancel_request` that is still wrapped in a `_proxy/successor` envelope:
+/// `$/cancel_request` that is still wrapped in a `proxy/successor` envelope:
 /// raw dispatch handlers run before any peer-specific unwrapping. The
 /// hop-scoped filter must peel the envelope and drop the notification rather
 /// than tunnel it to the next peer.

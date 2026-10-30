@@ -288,14 +288,14 @@ the connection handler with an explicit buffering and subscriber policy.
 
 Proxy authors should make the version boundary explicit. `Proxy.builder()` is
 the stable v1 builder, while `Proxy.v2()` is v2-only and requires
-`_proxy/initialize` to select protocol v2. A proxy built for one version rejects
+`proxy/initialize` to select protocol v2. A proxy built for one version rejects
 the other version instead of parsing it through a permissive schema.
 
 When one component must expose independently authored v1 and v2 proxies,
 compose them with
 `Proxy.protocol_router().with_v1(v1_proxy).with_v2(v2_proxy)`. The conductor
 has already selected and canonicalized the protocol before
-`_proxy/initialize`, so the proxy router requires an exact v1 or v2 match,
+`proxy/initialize`, so the proxy router requires an exact v1 or v2 match,
 preserves the complete initial transport frame, and does not downgrade or
 convert later traffic. Anything other than a request for exactly v2 is handed
 unchanged to a configured v1 implementation, so a v1 conductor sees the v1
@@ -306,7 +306,7 @@ Components implementing their own raw version selector can use
 `ConnectionTo` callbacks. This disables the SDK's automatic version guard and
 is not a substitute for selecting `Proxy.v2()` in an ordinary v2 proxy
 implementation. A proxy's default forwarding is the same for every builder and
-every protocol version: `_proxy/initialize` has the same wire shape in v1 and
+every protocol version: `proxy/initialize` has the same wire shape in v1 and
 v2, so the proxy forwards untyped messages, and fields the SDK does not know
 survive. After a forwarded `session/new` succeeds, the proxy reads the raw
 `sessionId` from the response and routes that session's updates back to the
@@ -320,8 +320,8 @@ The conductor forwards both versions through one untyped path that does not
 depend on the feature or on the selected version. Its connections to the
 client and to the final agent have no version guard; the endpoints validate
 the traffic of the version the conductor selected. The conductor rejects a
-`_proxy/initialize` that arrives from outside, renames the client's
-`initialize` to `_proxy/initialize` for the first proxy without touching its
+`proxy/initialize` that arrives from outside, renames the client's
+`initialize` to `proxy/initialize` for the first proxy without touching its
 params (the proxy restores the ordinary method before the request reaches the
 final agent), and forwards everything else unchanged. `info`, `capabilities`,
 metadata, and unknown extension fields therefore retain their wire shape
@@ -358,7 +358,7 @@ selected version even if an instantiator attempts to change it.
 The concrete
 `agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill` can
 participate in a v2 conductor chain when its `unstable_protocol_v2` feature is
-enabled. It selects v1 or v2 from `_proxy/initialize`, uses that version's MCP
+enabled. It selects v1 or v2 from `proxy/initialize`, uses that version's MCP
 capability and wire types, and adapts native `McpServer::Acp` declarations in
 v2 `session/new`, `session/resume`, and feature-gated `session/fork` requests.
 Other declarations and unrelated request fields remain unchanged. See
@@ -535,7 +535,7 @@ start an application. A failed initialize leaves the connection
 uninitialized and open, so the client may send `initialize` again, for
 example with a supported version or corrected parameters. Notifications that
 arrive before initialization are ignored. The proxy protocol router, whose
-`_proxy/initialize` comes from the conductor, still closes after a rejection.
+`proxy/initialize` comes from the conductor, still closes after a rejection.
 
 Custom endpoints can construct the same wire error with
 `agent_client_protocol::util::unsupported_protocol_version(requested, supported)`.
@@ -555,7 +555,7 @@ support for every older version.
 
 ### Proxy and client routing
 
-The proxy protocol router reads `_proxy/initialize` after the conductor has
+The proxy protocol router reads `proxy/initialize` after the conductor has
 selected the chain's wire version. It therefore requires an exact configured
 v1 or v2 implementation instead of negotiating or downgrading. It validates
 the selected schema, then hands the complete, unchanged initial frame to that

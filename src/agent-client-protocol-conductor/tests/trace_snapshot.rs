@@ -195,7 +195,7 @@ async fn test_trace_snapshot() -> Result<(), agent_client_protocol::Error> {
                     from: "Client",
                     to: "Proxy(0)",
                     id: String("id:0"),
-                    method: "_proxy/initialize",
+                    method: "proxy/initialize",
                     session: None,
                     params: Object {
                         "protocolVersion": Number(1),

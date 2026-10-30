@@ -255,13 +255,13 @@ async fn client_connector_cancels_opaque_driver_after_final_frame() -> Result<()
 // The agent router keeps a connection open after a rejected initialize so the
 // client can retry, and a router with v1 configured hands anything that does
 // not select v2 to the v1 implementation. A v2-only proxy router still
-// finishes after rejecting the conductor's `_proxy/initialize`, so it
+// finishes after rejecting the conductor's `proxy/initialize`, so it
 // exercises the rejection drain.
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_initialize_flushes_lines_without_input_eof() -> Result<(), Error> {
     let frames = run_over_lines(
         Proxy.protocol_router().with_v2(Proxy.v2()),
-        "_proxy/initialize",
+        "proxy/initialize",
         json!({}),
     )
     .await?;
@@ -277,7 +277,7 @@ async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Resu
         let input_guard = tx;
         input_guard
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
-                "_proxy/initialize".into(),
+                "proxy/initialize".into(),
                 json!({}),
                 v1::RequestId::Number(7),
             )?))
@@ -372,7 +372,7 @@ async fn finite_agent_router_flushes_response_and_final_notification() -> Result
 async fn finite_proxy_router_flushes_response_and_final_notification() -> Result<(), Error> {
     let frames = run_over_lines(
         Proxy.protocol_router().with_v1(FiniteProxy),
-        "_proxy/initialize",
+        "proxy/initialize",
         serde_json::to_value(InitializeProxyRequest::from(v1::InitializeRequest::new(
             ProtocolVersion::V1,
         )))

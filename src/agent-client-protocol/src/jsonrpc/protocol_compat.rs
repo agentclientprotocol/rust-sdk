@@ -375,7 +375,7 @@ mod imp {
         fn is_incoming_initialize_request(self, method: &str) -> bool {
             match self.initialize_surface {
                 InitializeSurface::Peer => method == "initialize",
-                InitializeSurface::Proxy => method == "_proxy/initialize",
+                InitializeSurface::Proxy => method == "proxy/initialize",
             }
         }
 
@@ -389,7 +389,7 @@ mod imp {
         fn is_outgoing_initialize_response(self, method: &str) -> bool {
             match self.initialize_surface {
                 InitializeSurface::Peer => method == "initialize",
-                InitializeSurface::Proxy => method == "_proxy/initialize",
+                InitializeSurface::Proxy => method == "proxy/initialize",
             }
         }
     }
@@ -1143,7 +1143,7 @@ mod imp {
                     }
                     return Ok(Some(&mut message.params));
                 }
-                if message.method() == "_proxy/initialize" {
+                if message.method() == "proxy/initialize" {
                     return Err(invalid_proxy_initialize_direction());
                 }
                 Ok(None)
@@ -1156,14 +1156,14 @@ mod imp {
         let mut params = message.params();
         let mut wrapped = false;
 
-        while method == "_proxy/successor" {
+        while method == "proxy/successor" {
             wrapped = true;
             let Some(inner_method) = params.get("method").and_then(serde_json::Value::as_str)
             else {
                 return false;
             };
             method = inner_method;
-            if method == "_proxy/successor" {
+            if method == "proxy/successor" {
                 let Some(inner_params) = params.get("params") else {
                     return false;
                 };
@@ -1171,7 +1171,7 @@ mod imp {
             }
         }
 
-        wrapped && matches!(method, "initialize" | "_proxy/initialize")
+        wrapped && matches!(method, "initialize" | "proxy/initialize")
     }
 
     fn invalid_initialize_protocol_version() -> crate::Error {
@@ -1206,13 +1206,13 @@ mod imp {
 
     fn invalid_proxy_initialize_direction() -> crate::Error {
         crate::Error::invalid_request().data(
-            "proxy initialization must arrive as `_proxy/initialize`; outgoing `initialize` must target the successor so the connection can apply `_proxy/successor`",
+            "proxy initialization must arrive as `proxy/initialize`; outgoing `initialize` must target the successor so the connection can apply `proxy/successor`",
         )
     }
 
     fn invalid_prewrapped_initialize() -> crate::Error {
         crate::Error::invalid_request().data(
-            "initialize requests must be sent as a logical `initialize` message; `_proxy/successor` wrapping is applied by connection routing",
+            "initialize requests must be sent as a logical `initialize` message; `proxy/successor` wrapping is applied by connection routing",
         )
     }
 
@@ -2127,7 +2127,7 @@ mod imp {
                 initialized_v2_agent()?,
                 initialized_v2_client()?,
             ] {
-                for method in ["initialize", "_proxy/initialize", "session/new"] {
+                for method in ["initialize", "proxy/initialize", "session/new"] {
                     let state = initialization_state(&compat);
                     let error = compat
                         .incoming_request(
@@ -2410,7 +2410,7 @@ mod imp {
                 let compat = ProtocolCompat::new(mode);
                 let error = compat
                     .incoming_message(UntypedMessage::new(
-                        "_proxy/initialize",
+                        "proxy/initialize",
                         serde_json::json!({ "protocolVersion": unsupported }),
                     )?)
                     .expect_err(
@@ -2444,10 +2444,10 @@ mod imp {
                             "initialize",
                             serde_json::json!({ "protocolVersion": ProtocolVersion::V2 }),
                         )?)
-                        .expect_err("proxy initialization must arrive through `_proxy/initialize`"),
+                        .expect_err("proxy initialization must arrive through `proxy/initialize`"),
                     compat
                         .incoming_message(UntypedMessage::new(
-                            "_proxy/successor",
+                            "proxy/successor",
                             serde_json::json!({
                                 "method": "initialize",
                                 "params": { "protocolVersion": ProtocolVersion::V2 }
@@ -2456,11 +2456,11 @@ mod imp {
                         .expect_err("successor traffic must not carry initialization"),
                     compat
                         .incoming_message(UntypedMessage::new(
-                            "_proxy/successor",
+                            "proxy/successor",
                             serde_json::json!({
-                                "method": "_proxy/successor",
+                                "method": "proxy/successor",
                                 "params": {
-                                    "method": "_proxy/initialize",
+                                    "method": "proxy/initialize",
                                     "params": { "protocolVersion": ProtocolVersion::V2 }
                                 }
                             }),
@@ -2474,24 +2474,24 @@ mod imp {
                             )?,
                             RemoteStyle::Predecessor,
                         )
-                        .expect_err("downstream proxy initialization must use `_proxy/successor`"),
+                        .expect_err("downstream proxy initialization must use `proxy/successor`"),
                     compat
                         .outgoing_message(
                             UntypedMessage::new(
-                                "_proxy/initialize",
+                                "proxy/initialize",
                                 serde_json::json!({ "protocolVersion": ProtocolVersion::V2 }),
                             )?,
                             RemoteStyle::Successor,
                         )
-                        .expect_err("a proxy must not send `_proxy/initialize` downstream"),
+                        .expect_err("a proxy must not send `proxy/initialize` downstream"),
                 ] {
                     let data = error
                         .data
                         .as_ref()
                         .and_then(|data| data.as_str())
                         .unwrap_or_default();
-                    assert!(data.contains("_proxy/initialize"), "{error:?}");
-                    assert!(data.contains("_proxy/successor"), "{error:?}");
+                    assert!(data.contains("proxy/initialize"), "{error:?}");
+                    assert!(data.contains("proxy/successor"), "{error:?}");
                 }
                 assert_eq!(pending_initialize(&compat), None);
             }
@@ -2532,16 +2532,16 @@ mod imp {
         fn outgoing_initialize_rejects_explicit_successor_wrapping() -> Result<(), crate::Error> {
             for message in [
                 UntypedMessage::new(
-                    "_proxy/successor",
+                    "proxy/successor",
                     serde_json::json!({
                         "method": "initialize",
                         "params": { "protocolVersion": ProtocolVersion::V1 }
                     }),
                 )?,
                 UntypedMessage::new(
-                    "_proxy/successor",
+                    "proxy/successor",
                     serde_json::json!({
-                        "method": "_proxy/successor",
+                        "method": "proxy/successor",
                         "params": {
                             "method": "initialize",
                             "params": { "protocolVersion": ProtocolVersion::V1 }
@@ -2559,7 +2559,7 @@ mod imp {
                     .and_then(|data| data.as_str())
                     .unwrap_or_default();
                 assert!(data.contains("logical `initialize`"), "{error:?}");
-                assert!(data.contains("_proxy/successor"), "{error:?}");
+                assert!(data.contains("proxy/successor"), "{error:?}");
                 assert_eq!(pending_initialize(&compat), None);
             }
 
@@ -2583,7 +2583,7 @@ mod imp {
             ] {
                 let compat = ProtocolCompat::new(mode);
                 let request = compat.incoming_message(UntypedMessage::new(
-                    "_proxy/initialize",
+                    "proxy/initialize",
                     serde_json::json!({ "protocolVersion": selected }),
                 )?)?;
                 assert_eq!(
@@ -2593,7 +2593,7 @@ mod imp {
                 assert_eq!(pending_initialize(&compat), Some(selected_kind));
 
                 let response = compat.outgoing_response(
-                    "_proxy/initialize",
+                    "proxy/initialize",
                     Ok(serde_json::json!({ "protocolVersion": selected })),
                 )?;
                 assert_eq!(required_protocol_version_from_value(&response)?, selected);

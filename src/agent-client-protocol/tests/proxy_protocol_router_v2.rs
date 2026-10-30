@@ -66,7 +66,7 @@ async fn initialize(
     router: ProxyProtocolRouter,
     params: Value,
 ) -> Result<Result<Value, Error>, Error> {
-    request(router, "_proxy/initialize", params).await
+    request(router, "proxy/initialize", params).await
 }
 
 async fn request(
@@ -193,7 +193,7 @@ async fn requires_proxy_initialize_as_the_first_call() -> Result<(), Error> {
             .data
             .as_ref()
             .and_then(Value::as_str)
-            .is_some_and(|data| data.contains("`_proxy/initialize`")),
+            .is_some_and(|data| data.contains("`proxy/initialize`")),
         "{error:?}"
     );
     Ok(())
@@ -299,7 +299,7 @@ async fn preserves_the_complete_initial_transport_frame() -> Result<(), Error> {
         let initialize = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "_proxy/initialize",
+            "method": "proxy/initialize",
             "params": initialize_params_with_extensions(protocol_version)?,
         });
         write_wire_json(&mut conductor_writer, &initialize).await?;

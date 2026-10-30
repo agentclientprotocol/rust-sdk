@@ -121,7 +121,7 @@ Components currently use the conductor's debug names, such as `Client`,
 The trace shows logical component-to-component traffic rather than conductor
 plumbing:
 
-- `_proxy/successor` is unwrapped and logged as its inner ACP method.
+- `proxy/successor` is unwrapped and logged as its inner ACP method.
 - `mcp/message` is unwrapped and its inner method is marked with protocol
   `mcp`.
 - Responses are correlated with the request details retained by the trace

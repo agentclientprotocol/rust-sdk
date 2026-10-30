@@ -182,7 +182,7 @@ as its own `TransportFrame::Single`. Dropping a `Responder` never sends an
 automatic reply.
 
 Lifecycle-sensitive routing is unaffected: `ProxyProtocolRouter` requires an
-exact v1 or v2 `_proxy/initialize` match and preserves the initial frame without
+exact v1 or v2 `proxy/initialize` match and preserves the initial frame without
 cross-version conversion, and `ClientProtocolConnector` starts each attempted
 client implementation with an individual `initialize` request. Response-only
 frames received before initialization are ignored.
