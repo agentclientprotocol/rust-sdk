@@ -152,36 +152,6 @@ impl HttpClient {
         Ok(Self { endpoint, http })
     }
 
-    /// Reuse an existing HTTP/SSE client with the standard ACP endpoint.
-    ///
-    /// Preserves the same base-URL path normalization as [`Self::new`].
-    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
-    /// before any network I/O; migrate those calls to [`Self::builder`].
-    #[deprecated(
-        note = "Use builder(...).configure_http(...).build(), or from_http_client with an exact HTTP/SSE endpoint"
-    )]
-    pub fn with_client(
-        base_url: impl AsRef<str>,
-        http: reqwest::Client,
-    ) -> Result<Self, HttpClientError> {
-        Self::from_http_client(parse_base_url(base_url.as_ref())?, http)
-    }
-
-    /// Reuse an existing HTTP/SSE client at an exact endpoint.
-    ///
-    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
-    /// before any network I/O; migrate those calls to
-    /// [`Self::builder_with_endpoint`].
-    #[deprecated(
-        note = "Use builder_with_endpoint(...).configure_http(...).build(), or from_http_client for an existing HTTP/SSE client"
-    )]
-    pub fn with_endpoint_and_client(
-        endpoint: impl AsRef<str>,
-        http: reqwest::Client,
-    ) -> Result<Self, HttpClientError> {
-        Self::from_http_client(endpoint, http)
-    }
-
     fn is_websocket(&self) -> bool {
         is_websocket_url(&self.endpoint)
     }
@@ -2032,35 +2002,6 @@ mod tests {
             HttpClient::from_http_client("ftp://example.com/acp", http),
             Err(HttpClientError::UnsupportedScheme(_))
         ));
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_constructors_preserve_http_paths_and_reject_websockets() {
-        let http = reqwest::Client::new();
-        for scheme in ["http", "https"] {
-            for path in ["", "/proxy", "/proxy/acp/"] {
-                let url = format!("{scheme}://example.com{path}?key=value");
-                let legacy = HttpClient::with_client(&url, http.clone()).unwrap();
-                assert_eq!(legacy.endpoint, HttpClient::new(&url).unwrap().endpoint);
-                let exact = HttpClient::with_endpoint_and_client(&url, http.clone()).unwrap();
-                assert_eq!(
-                    exact.endpoint,
-                    HttpClient::with_endpoint(&url).unwrap().endpoint
-                );
-            }
-        }
-        for scheme in ["ws", "wss"] {
-            let url = format!("{scheme}://example.com/custom");
-            assert!(matches!(
-                HttpClient::with_client(&url, http.clone()),
-                Err(HttpClientError::WebSocketRequiresBuilder)
-            ));
-            assert!(matches!(
-                HttpClient::with_endpoint_and_client(&url, http.clone()),
-                Err(HttpClientError::WebSocketRequiresBuilder)
-            ));
-        }
     }
 
     #[test]

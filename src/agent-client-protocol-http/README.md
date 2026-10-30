@@ -33,8 +33,8 @@ after assembly, and the SDK cannot inspect that opaque configuration.
 
 `HttpClient::from_http_client(exact_endpoint, client)` reuses an existing reqwest
 client for HTTP/SSE only. The old `with_client` and `with_endpoint_and_client`
-constructors remain as deprecated HTTP/SSE compatibility wrappers. WebSocket
-calls to those constructors return a migration error; use the builder instead.
+constructors have been removed; use `builder(...)` or `builder_with_endpoint(...)`
+with `configure_http`, or `from_http_client` for an existing HTTP/SSE client.
 
 See the [client configuration and migration guide](https://agentclientprotocol.github.io/rust-sdk/http-transport.html#client-configuration).
 
