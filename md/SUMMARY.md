@@ -34,7 +34,7 @@
 
 # Reference
 
-- [Migrating to v4](./migration-v4.md)
+- [Migrating to v5](./migration-v5.md)
 - [Migrating to Core v3](./migration-v3.md)
 - [Migrating the Config API](./migration-config-api.md)
 - [Migrating the Native MCP Binding](./migration-stateless-mcp.md)

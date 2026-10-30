@@ -1,6 +1,6 @@
-# Migrating to v4
+# Migrating to v5
 
-This page covers the breaking changes in `agent-client-protocol` 4.0 and the
+This page covers the breaking changes in `agent-client-protocol` 5.0 and the
 crates released with it.
 
 ## `v1` and `v2` modules and versioned entry points
