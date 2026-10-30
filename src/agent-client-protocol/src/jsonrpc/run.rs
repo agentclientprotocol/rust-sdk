@@ -13,7 +13,7 @@ use futures::future::{Either, select};
 
 use crate::{
     ConnectionTo,
-    jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
+    jsonrpc::{Protocol, V1, protocol},
     role::Role,
 };
 
@@ -156,28 +156,28 @@ async fn finish_runner_after_error<R: Role>(
 }
 
 /// A RunIn created from a closure via [`with_spawned`](crate::Builder::with_spawned).
-pub struct SpawnedRun<F, Context = RawConnectionContext> {
+pub struct SpawnedRun<F, P = V1> {
     task_fn: F,
     location: &'static std::panic::Location<'static>,
-    context: PhantomData<fn() -> Context>,
+    protocol: PhantomData<fn() -> P>,
 }
 
-impl<F, Context> SpawnedRun<F, Context> {
+impl<F, P> SpawnedRun<F, P> {
     /// Create a new spawned RunIn from a closure.
     pub fn new(location: &'static std::panic::Location<'static>, task_fn: F) -> Self {
         Self {
             task_fn,
             location,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 }
 
-impl<Counterpart, F, Fut, Context> RunWithConnectionTo<Counterpart> for SpawnedRun<F, Context>
+impl<Counterpart, F, Fut, P> RunWithConnectionTo<Counterpart> for SpawnedRun<F, P>
 where
     Counterpart: Role,
-    Context: ConnectionContext,
-    F: FnOnce(Context::Connection<Counterpart>) -> Fut + Send,
+    P: Protocol,
+    F: FnOnce(P::Connection<Counterpart>) -> Fut + Send,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     async fn run_with_connection_to(
@@ -185,7 +185,7 @@ where
         connection: ConnectionTo<Counterpart>,
     ) -> Result<(), crate::Error> {
         let location = self.location;
-        (self.task_fn)(connection_context::from_raw::<Context, _>(connection))
+        (self.task_fn)(protocol::connection_from_raw::<P, _>(connection))
             .await
             .map_err(|err| {
                 let data = err.data.clone();

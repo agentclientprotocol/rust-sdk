@@ -472,11 +472,11 @@ async fn dispatch_dispatch<Counterpart: Role>(
     pending_messages: &mut Vec<Dispatch>,
     request_cancellations: &super::RequestCancellationRegistry,
 ) -> Result<(), crate::Error> {
-    tracing::trace!(method = dispatch.method(), id = ?dispatch.id(), "dispatch_dispatch");
+    tracing::trace!(method = dispatch.method(), id = ?dispatch.raw_id(), "dispatch_dispatch");
 
     let mut retry_any = false;
 
-    let id = dispatch.id().cloned();
+    let id = dispatch.raw_id().cloned();
     let method = dispatch.method().to_string();
     let error_target = dispatch.handler_error_target();
     // Hold back a dropped responder's automatic error until we know whether

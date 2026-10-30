@@ -140,7 +140,7 @@ async fn prepared_cancellation_handle_survives_publication_and_preserves_callbac
             let connection = connection_rx.await.unwrap();
             let prepared =
                 connection.prepare_request(UntypedMessage::new("prepared", json!({})).unwrap());
-            let request_id = prepared.id().clone();
+            let request_id = prepared.raw_id().clone();
             let cancellation: RequestCancellationHandle = prepared.cancellation_handle();
             let cloned_cancellation = cancellation.clone();
             cancellation.cancel().unwrap();
@@ -248,7 +248,7 @@ async fn detached_requests_retain_explicit_cancellation_control() {
                             drop(application_owner);
                             Ok(response)
                         });
-                    let request_id = request.id().clone();
+                    let request_id = request.raw_id().clone();
                     let cancellation = request.cancellation_handle();
                     request.detach().unwrap();
                     (request_id, cancellation)
@@ -259,7 +259,7 @@ async fn detached_requests_retain_explicit_cancellation_control() {
                             drop(application_owner);
                             Ok(response)
                         });
-                    let request_id = request.id().clone();
+                    let request_id = request.raw_id().clone();
                     let cancellation = request.cancellation_handle();
                     request.detach();
                     (request_id, cancellation)

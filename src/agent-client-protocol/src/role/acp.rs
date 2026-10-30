@@ -9,6 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::DynConnectTo;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::RawJsonRpcId;
+use crate::V1;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
@@ -1723,12 +1724,12 @@ async fn forward_proxy_dispatch(
             if request.method() == METHOD_INITIALIZE_PROXY =>
         {
             request.method = "initialize".to_string();
-            cx.send_ordered_request_to(Agent, request)
+            cx.send_ordered_request_to::<V1, _, _>(Agent, request)
                 .forward_response_to(responder)?;
             return Ok(Handled::Yes);
         }
         Dispatch::Request(request, responder) if request.method() == "session/new" => {
-            let sent = cx.send_ordered_request_to(Agent, request);
+            let sent = cx.send_ordered_request_to::<V1, _, _>(Agent, request);
             // The dynamic-handler hook below means we cannot use
             // `forward_response_to`, so wire up cancellation forwarding
             // explicitly to keep `session/new` cancellable like every

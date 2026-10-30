@@ -155,7 +155,7 @@ pub mod v2_one_shot_prompt {
     //!
     //! ```
     //! use std::collections::HashMap;
-    //! use agent_client_protocol::{Agent, Client, ConnectTo, Error, Responder, V2ConnectionTo};
+    //! use agent_client_protocol::{Agent, Client, ConnectTo, Error, Responder, V2, V2ConnectionTo};
     //! use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
     //! use futures::{StreamExt, channel::mpsc};
     //!
@@ -225,7 +225,7 @@ pub mod v2_one_shot_prompt {
     //!         )
     //!         .on_receive_request(
     //!             async move |request: v2::RequestPermissionRequest,
-    //!                         responder: Responder<v2::RequestPermissionResponse>,
+    //!                         responder: Responder<v2::RequestPermissionResponse, V2>,
     //!                         connection: V2ConnectionTo<Agent>| {
     //!                 // This non-interactive recipe rejects permission requests.
     //!                 let reject_once = request

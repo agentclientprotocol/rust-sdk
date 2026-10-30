@@ -665,7 +665,7 @@ where
         tracing::debug!(
             direction,
             method = dispatch.method(),
-            id = ?dispatch.id(),
+            id = ?dispatch.raw_id(),
             "handle_conductor_message"
         );
 
@@ -810,7 +810,7 @@ where
         tracing::trace!(
             target_component_index,
             method = message.method(),
-            id = ?message.id(),
+            id = ?message.raw_id(),
             "forward_client_to_agent_message"
         );
 
@@ -1090,7 +1090,7 @@ where
     ) -> Result<(), agent_client_protocol::Error> {
         tracing::debug!(
             method = message.method(),
-            id = ?message.id(),
+            id = ?message.raw_id(),
             "forward_message_to_proxy"
         );
 
@@ -1636,7 +1636,7 @@ impl ConductorHostRole for Proxy {
     ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         tracing::debug!(
             method = ?message.method(),
-            id = ?message.id(),
+            id = ?message.raw_id(),
             "ConductorToConductor::handle_dispatch"
         );
         MatchDispatchFrom::new(message, &client_connection)

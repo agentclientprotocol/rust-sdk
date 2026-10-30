@@ -138,7 +138,7 @@ mod callback_future_lifetimes {
     fn v2_on_proxy_session_start_accepts_non_static_callback_future<'a>(
         connection: &V2ConnectionTo<Conductor>,
         request: v2::NewSessionRequest,
-        responder: Responder<v2::NewSessionResponse>,
+        responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
     ) -> Result<(), agent_client_protocol::Error> {
         connection
@@ -150,7 +150,7 @@ mod callback_future_lifetimes {
     fn v2_on_proxy_resume_accepts_non_static_callback_future<'a>(
         connection: &V2ConnectionTo<Conductor>,
         request: v2::ResumeSessionRequest,
-        responder: Responder<v2::ResumeSessionResponse>,
+        responder: Responder<v2::ResumeSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
     ) -> Result<(), agent_client_protocol::Error> {
         connection
@@ -162,7 +162,7 @@ mod callback_future_lifetimes {
     fn v2_on_proxy_fork_accepts_non_static_callback_future<'a>(
         connection: &V2ConnectionTo<Conductor>,
         request: v2::ForkSessionRequest,
-        responder: Responder<v2::ForkSessionResponse>,
+        responder: Responder<v2::ForkSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
     ) -> Result<(), agent_client_protocol::Error> {
         connection

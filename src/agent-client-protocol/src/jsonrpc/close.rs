@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use crate::{
     ConnectionTo,
-    jsonrpc::{ConnectionContext, RawConnectionContext, connection_context},
+    jsonrpc::{Protocol, V1, protocol},
     role::Role,
 };
 
@@ -37,21 +37,21 @@ impl<Counterpart: Role> HandleConnectionClose<Counterpart> for NullClose {
     }
 }
 
-pub(crate) struct CloseCallback<F, Context = RawConnectionContext> {
+pub(crate) struct CloseCallback<F, P = V1> {
     callback: F,
-    context: PhantomData<fn() -> Context>,
+    protocol: PhantomData<fn() -> P>,
 }
 
-impl<F, Context> CloseCallback<F, Context> {
+impl<F, P> CloseCallback<F, P> {
     pub(crate) fn new(callback: F) -> Self {
         Self {
             callback,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 }
 
-impl<F, Context> Debug for CloseCallback<F, Context> {
+impl<F, P> Debug for CloseCallback<F, P> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CloseCallback")
@@ -59,18 +59,18 @@ impl<F, Context> Debug for CloseCallback<F, Context> {
     }
 }
 
-impl<Counterpart, F, Fut, Context> HandleConnectionClose<Counterpart> for CloseCallback<F, Context>
+impl<Counterpart, F, Fut, P> HandleConnectionClose<Counterpart> for CloseCallback<F, P>
 where
     Counterpart: Role,
-    Context: ConnectionContext,
-    F: FnOnce(Context::Connection<Counterpart>) -> Fut + Send,
+    P: Protocol,
+    F: FnOnce(P::Connection<Counterpart>) -> Fut + Send,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     async fn handle_connection_close(
         self,
         connection: ConnectionTo<Counterpart>,
     ) -> Result<(), crate::Error> {
-        let result = (self.callback)(connection_context::from_raw::<Context, _>(connection)).await;
+        let result = (self.callback)(protocol::connection_from_raw::<P, _>(connection)).await;
         if let Err(error) = &result {
             tracing::warn!(error = ?crate::util::redacted_error(error.code), "Connection close callback failed");
         }

@@ -153,7 +153,7 @@ where
         method = %dispatch.method(),
         ?counterpart,
         ?peer,
-        id = ?dispatch.id(),
+        id = ?dispatch.raw_id(),
         "handle_incoming_dispatch: enter"
     );
 

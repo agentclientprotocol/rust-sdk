@@ -418,7 +418,10 @@ async fn with_sessions(
         )
         .on_receive_request(
             async |_request: v2::RequestPermissionRequest,
-                   responder: Responder<v2::RequestPermissionResponse>,
+                   responder: Responder<
+                v2::RequestPermissionResponse,
+                agent_client_protocol::V2,
+            >,
                    _cx: V2ConnectionTo<Agent>| {
                 responder.respond(v2::RequestPermissionResponse::new(
                     v2::CancelledPermissionOutcome::new().into(),

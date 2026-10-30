@@ -121,7 +121,10 @@ impl ConnectTo<Conductor> for GlobalMcpProxy {
             .on_receive_request_from(
                 Client,
                 async move |request: v2::NewSessionRequest,
-                            responder: Responder<v2::NewSessionResponse>,
+                            responder: Responder<
+                    v2::NewSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Conductor>| {
                     new_calls.fetch_add(1, Ordering::SeqCst);
                     connection
@@ -133,7 +136,10 @@ impl ConnectTo<Conductor> for GlobalMcpProxy {
             .on_receive_request_from(
                 Client,
                 async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<v2::ResumeSessionResponse>,
+                            responder: Responder<
+                    v2::ResumeSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Conductor>| {
                     resume_calls.fetch_add(1, Ordering::SeqCst);
                     connection
@@ -204,7 +210,7 @@ impl ConnectTo<Client> for RecordingAgent {
             .name("recording-v2-agent")
             .on_receive_request(
                 async |request: v2::InitializeRequest,
-                       responder: Responder<v2::InitializeResponse>,
+                       responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                        _connection: V2ConnectionTo<Client>| {
                     responder.respond(v2::InitializeResponse::new(
                         request.protocol_version,
@@ -215,7 +221,10 @@ impl ConnectTo<Client> for RecordingAgent {
             )
             .on_receive_request(
                 async move |request: v2::NewSessionRequest,
-                            responder: Responder<v2::NewSessionResponse>,
+                            responder: Responder<
+                    v2::NewSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Client>| {
                     let new_setup = new_setup.clone();
                     let new_existing = new_existing.clone();
@@ -268,7 +277,10 @@ impl ConnectTo<Client> for RecordingAgent {
             )
             .on_receive_request(
                 async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<v2::ResumeSessionResponse>,
+                            responder: Responder<
+                    v2::ResumeSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             _connection: V2ConnectionTo<Client>| {
                     let resume_setup = resume_setup.clone();
                     let resume_existing = resume_existing.clone();
@@ -419,7 +431,7 @@ impl ConnectTo<Client> for SetupRecordingAgent {
             .name("setup-recording-v2-agent")
             .on_receive_request(
                 async |request: v2::InitializeRequest,
-                       responder: Responder<v2::InitializeResponse>,
+                       responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                        _connection: V2ConnectionTo<Client>| {
                     responder.respond(v2::InitializeResponse::new(
                         request.protocol_version,
@@ -430,7 +442,10 @@ impl ConnectTo<Client> for SetupRecordingAgent {
             )
             .on_receive_request(
                 async move |request: v2::NewSessionRequest,
-                            responder: Responder<v2::NewSessionResponse>,
+                            responder: Responder<
+                    v2::NewSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             _connection: V2ConnectionTo<Client>| {
                     new_received.lock().unwrap().push(request.mcp_servers);
                     responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
@@ -441,7 +456,10 @@ impl ConnectTo<Client> for SetupRecordingAgent {
             )
             .on_receive_request(
                 async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<v2::ResumeSessionResponse>,
+                            responder: Responder<
+                    v2::ResumeSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             _connection: V2ConnectionTo<Client>| {
                     resume_received.lock().unwrap().push(request.mcp_servers);
                     responder.respond(v2::ResumeSessionResponse::new())

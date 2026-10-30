@@ -72,7 +72,10 @@ fn v1_error(case: &str) -> Option<Error> {
     }
 }
 
-fn respond(responder: agent_client_protocol::Responder<FailResponse>, error: Option<Error>) {
+fn respond<P: agent_client_protocol::Protocol>(
+    responder: agent_client_protocol::Responder<FailResponse, P>,
+    error: Option<Error>,
+) {
     match error {
         Some(error) => responder.respond_with_error(error).unwrap(),
         None => drop(responder),

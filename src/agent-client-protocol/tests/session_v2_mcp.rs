@@ -284,7 +284,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -292,7 +292,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         )
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse>,
+                        responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
                         connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.meta.as_ref(), Some(&expected_setup_meta));
                 let server = match request.mcp_servers.as_slice() {
@@ -465,7 +465,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -473,7 +473,10 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
         )
         .on_receive_request(
             async move |request: v2::ForkSessionRequest,
-                        responder: Responder<v2::ForkSessionResponse>,
+                        responder: Responder<
+                v2::ForkSessionResponse,
+                agent_client_protocol::V2,
+            >,
                         connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, expected_source_session_id);
                 assert_eq!(request.cwd, expected_fork_cwd);
@@ -652,7 +655,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -660,7 +663,10 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
         )
         .on_receive_request(
             async move |request: v2::ResumeSessionRequest,
-                        responder: Responder<v2::ResumeSessionResponse>,
+                        responder: Responder<
+                v2::ResumeSessionResponse,
+                agent_client_protocol::V2,
+            >,
                         connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, expected_session_id);
                 assert_eq!(request.cwd, expected_resume_cwd);
@@ -863,7 +869,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -871,7 +877,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         )
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse>,
+                        responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
                         _connection: V2ConnectionTo<Client>| {
                 agent_session_new_seen.store(true, Ordering::Release);
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
@@ -882,7 +888,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         )
         .on_receive_request(
             async |request: ConnectionProbeRequest,
-                   responder: Responder<ConnectionProbeResponse>,
+                   responder: Responder<ConnectionProbeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(ConnectionProbeResponse {
                     nonce: request.nonce,
@@ -957,7 +963,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -965,7 +971,10 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
         )
         .on_receive_request(
             async move |_request: v2::ResumeSessionRequest,
-                        responder: Responder<v2::ResumeSessionResponse>,
+                        responder: Responder<
+                v2::ResumeSessionResponse,
+                agent_client_protocol::V2,
+            >,
                         _connection: V2ConnectionTo<Client>| {
                 agent_session_resume_seen.store(true, Ordering::Release);
                 responder.respond(v2::ResumeSessionResponse::new())
@@ -974,7 +983,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
         )
         .on_receive_request(
             async |request: ConnectionProbeRequest,
-                   responder: Responder<ConnectionProbeResponse>,
+                   responder: Responder<ConnectionProbeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(ConnectionProbeResponse {
                     nonce: request.nonce,
@@ -1048,7 +1057,7 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -1056,7 +1065,7 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
         )
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse>,
+                        responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
                         _connection: V2ConnectionTo<Client>| {
                 assert!(matches!(
                     request.mcp_servers.as_slice(),
@@ -1146,7 +1155,7 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
@@ -1154,7 +1163,10 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
         )
         .on_receive_request(
             async move |request: v2::ResumeSessionRequest,
-                        responder: Responder<v2::ResumeSessionResponse>,
+                        responder: Responder<
+                v2::ResumeSessionResponse,
+                agent_client_protocol::V2,
+            >,
                         _connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, agent_expected_session_id);
                 assert!(matches!(
@@ -1239,7 +1251,7 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
 async fn v2_session_builder_rejects_duplicate_mcp_server_names() -> Result<(), Error> {
     let agent = Agent.v2().on_receive_request(
         async |request: v2::InitializeRequest,
-               responder: Responder<v2::InitializeResponse>,
+               responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                _connection: V2ConnectionTo<Client>| {
             responder.respond(initialize_response(request.protocol_version))
         },

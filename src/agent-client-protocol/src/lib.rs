@@ -154,20 +154,19 @@ pub mod schema;
 pub mod util;
 
 pub use jsonrpc::{
-    Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionContext,
-    ConnectionTermination, ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose,
-    HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage,
-    JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler,
-    PreparedRequest, RawConnectionContext, RawJsonRpcError, RawJsonRpcId, RawJsonRpcMessage,
-    RawJsonRpcParams, RawJsonRpcRequest, RawJsonRpcResponse, Responder, ResponseRouter,
-    SentRequest, TransportFrame, UntypedMessage, is_connection_terminated,
-    is_incoming_transport_closed,
+    Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionTermination,
+    ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose, HandleDispatchFrom,
+    Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage, JsonRpcNotification,
+    JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler, PreparedRequest, Protocol,
+    RawJsonRpcError, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcParams, RawJsonRpcRequest,
+    RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportFrame, UntypedMessage, V1,
+    is_connection_terminated, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 #[cfg(feature = "unstable_protocol_v2")]
 pub use jsonrpc::{
-    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse, V2Builder,
-    V2ConnectionContext, V2ConnectionTo,
+    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse, V2, V2Builder,
+    V2ConnectionTo,
 };
 pub use jsonrpc::{RequestCancellation, RequestCancellationHandle, is_cancel_request_notification};
 

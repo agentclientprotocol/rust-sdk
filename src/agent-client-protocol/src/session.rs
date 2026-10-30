@@ -20,6 +20,7 @@ use crate::{
     util::{MatchDispatch, MatchDispatchFrom},
 };
 
+use crate::V1;
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
@@ -465,7 +466,7 @@ where
     let routing_ready = connection.dynamic_handler_barrier();
 
     connection
-        .send_ordered_request_to_after(Agent, request, routing_ready)
+        .send_ordered_request_to_after::<V1, _, _, _>(Agent, request, routing_ready)
         .on_receiving_result({
             let connection = connection.clone();
             async move |result| {
@@ -501,7 +502,7 @@ where
     let session_connection = connection.clone();
 
     connection
-        .send_ordered_request_to_after(Agent, request, routing_ready)
+        .send_ordered_request_to_after::<V1, _, _, _>(Agent, request, routing_ready)
         .block_task_with_ordered_result(move |result| {
             let response = result?;
             Ok(restored_session::<_, Request>(
@@ -783,7 +784,7 @@ where
         ))?;
 
         connection
-            .send_ordered_request_to(Agent, request)
+            .send_ordered_request_to::<V1, _, _>(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
                 async move |result| {
@@ -880,7 +881,7 @@ where
         ))?;
 
         // Send the "new session" request to the agent.
-        let sent = connection.send_ordered_request_to(Agent, request);
+        let sent = connection.send_ordered_request_to::<V1, _, _>(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -1020,7 +1021,7 @@ where
 
         let session_connection = connection.clone();
         connection
-            .send_ordered_request_to(Agent, request)
+            .send_ordered_request_to::<V1, _, _>(Agent, request)
             .block_task_with_ordered_result(move |result| {
                 let response = result?;
                 session_connection.attach_session(response, dynamic_handler_registrations)
@@ -1156,7 +1157,7 @@ where
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
-            .send_ordered_request_to(
+            .send_ordered_request_to::<V1, _, _>(
                 Agent,
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
             )
