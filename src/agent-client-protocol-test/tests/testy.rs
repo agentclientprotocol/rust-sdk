@@ -33,7 +33,7 @@ use agent_client_protocol::{
         },
     },
 };
-use agent_client_protocol_test::testy::{Testy, TestyCommand, TestyScenario};
+use agent_client_protocol_test::testy::{TestyCommand, TestyScenario, v1::Testy};
 
 #[tokio::test]
 async fn testy_handles_stable_agent_requests() -> Result<(), agent_client_protocol::Error> {

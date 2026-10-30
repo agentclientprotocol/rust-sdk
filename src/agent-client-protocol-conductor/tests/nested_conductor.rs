@@ -24,7 +24,7 @@ use agent_client_protocol::{Conductor, ConnectTo, DynConnectTo};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::arrow_proxy::run_arrow_proxy;
 use agent_client_protocol_test::test_binaries::{arrow_proxy_example, conductor_binary, testy};
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 

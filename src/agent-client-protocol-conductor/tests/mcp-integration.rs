@@ -15,7 +15,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
-use agent_client_protocol_test::testy::{Testy, TestyCommand};
+use agent_client_protocol_test::testy::{TestyCommand, v1::Testy};
 use futures::{SinkExt, StreamExt, channel::mpsc};
 
 use tokio::io::duplex;

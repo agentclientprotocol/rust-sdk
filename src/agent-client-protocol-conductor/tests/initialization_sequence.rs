@@ -9,7 +9,7 @@ use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, In
 use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
-use agent_client_protocol_test::testy::Testy;
+use agent_client_protocol_test::testy::v1::Testy;
 use std::sync::Arc;
 use std::sync::Mutex;
 

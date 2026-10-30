@@ -7,7 +7,7 @@ use agent_client_protocol::{
     Client, Error,
     schema::{ProtocolVersion, v1, v2},
 };
-use agent_client_protocol_test::testy::{Testy, TestyCommand, TestyScenario};
+use agent_client_protocol_test::testy::{self, TestyCommand, TestyScenario};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -81,7 +81,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(Testy::new().protocol_router(), async move |connection| {
+        .connect_with(testy::protocol_router(), async move |connection| {
             let initialize = connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -286,7 +286,7 @@ async fn testy_v2_prompt_acceptance_is_independent_from_cancellation_completion(
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(Testy::new().v2(), async move |connection| {
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
             connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -359,7 +359,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(Testy::new().v2(), async move |connection| {
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
             connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -448,7 +448,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
 async fn testy_router_keeps_the_v1_implementation_available() {
     Client
         .v1()
-        .connect_with(Testy::new().protocol_router(), async |connection| {
+        .connect_with(testy::protocol_router(), async |connection| {
             let initialize = connection
                 .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
@@ -477,7 +477,7 @@ async fn testy_router_keeps_the_v1_implementation_available() {
 async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cursors() {
     Client
         .v2()
-        .connect_with(Testy::new().v2(), async |connection| {
+        .connect_with(testy::v2::Testy::new(), async |connection| {
             let initialize = connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -600,7 +600,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
 async fn testy_v2_rejects_unadvertised_prompt_content() {
     Client
         .v2()
-        .connect_with(Testy::new().v2(), async |connection| {
+        .connect_with(testy::v2::Testy::new(), async |connection| {
             let initialize = connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -670,7 +670,7 @@ async fn testy_v2_rejects_empty_prompt_without_inserting_it() {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(Testy::new().v2(), async move |connection| {
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
             connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -732,7 +732,7 @@ async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
             },
             agent_client_protocol::on_receive_notification!(),
         )
-        .connect_with(Testy::new().v2(), async move |connection| {
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
             connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,
@@ -781,7 +781,7 @@ async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
 async fn testy_v2_holds_prompts_during_active_work() {
     let client = Client
         .v2()
-        .connect_with(Testy::new().v2(), async move |connection| {
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
             connection
                 .send_request(v2::InitializeRequest::new(
                     ProtocolVersion::V2,

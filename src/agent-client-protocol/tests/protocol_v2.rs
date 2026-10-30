@@ -20,7 +20,7 @@ use agent_client_protocol::{
     UntypedMessage, UntypedRole,
 };
 use agent_client_protocol_test::MockTransport;
-use agent_client_protocol_test::testy::Testy;
+use agent_client_protocol_test::testy::v1::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
