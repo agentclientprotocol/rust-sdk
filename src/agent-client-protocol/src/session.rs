@@ -1,6 +1,6 @@
 use std::{future::Future, marker::PhantomData, path::Path, sync::Arc};
 
-use futures::channel::{mpsc, oneshot};
+use futures::channel::mpsc;
 use futures::future::{self, Either};
 
 use crate::{
@@ -989,6 +989,11 @@ where
     /// Returns an `ActiveSession<'static, _>` because the session's runners are spawned into
     /// background tasks that live for the connection lifetime.
     ///
+    /// An error response to `session/new` is returned to the caller and leaves
+    /// the connection running. The session's dynamic handlers are removed, so
+    /// its runners stop once their cleanup finishes. Session routing is
+    /// installed before later inbound messages are dispatched.
+    ///
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn start_session(self) -> Result<ActiveSession<'static, Counterpart>, crate::Error>
     where
@@ -1004,8 +1009,6 @@ where
             block_state: _,
         } = self;
 
-        let (active_session_tx, active_session_rx) = oneshot::channel();
-
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
             session_runner_connection(connection.clone(), &cleanup);
@@ -1015,25 +1018,14 @@ where
             error_scope,
         ))?;
 
-        connection.clone().spawn(async move {
-            let response = connection
-                .send_request_to(Agent, request)
-                .block_task()
-                .await?;
-
-            let active_session =
-                connection.attach_session(response, dynamic_handler_registrations)?;
-
-            active_session_tx
-                .send(active_session)
-                .map_err(|_| crate::Error::internal_error())?;
-
-            Ok(())
-        })?;
-
-        active_session_rx
+        let session_connection = connection.clone();
+        connection
+            .send_ordered_request_to(Agent, request)
+            .block_task_with_ordered_result(move |result| {
+                let response = result?;
+                session_connection.attach_session(response, dynamic_handler_registrations)
+            })
             .await
-            .map_err(|_| crate::Error::internal_error())
     }
 
     /// Start a proxy session that forwards all messages between client and agent.
