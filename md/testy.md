@@ -116,7 +116,8 @@ replay was not requested. Neither is a replayed historical change, and the
 snapshot is not another completed turn.
 
 Prompts may contain only the baseline `text` and `resource_link` content blocks; any other block
-is rejected with `-32602` before the turn begins. `session/list` returns every session in one page
+is rejected with `-32602` before the turn begins. An empty `prompt` array is likewise rejected with
+`-32602` without inserting a user message. `session/list` returns every session in one page
 and never issues `nextCursor`, so any `cursor` is rejected with `-32602`.
 
 A prompt that arrives while the session has foreground work is held, not rejected. Held prompts

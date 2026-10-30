@@ -146,6 +146,10 @@ impl EchoAgent {
             .get_mut(session_id)
             .filter(|session| session.active)
             .ok_or_else(|| session_not_found(session_id))?;
+        // Clients must not send an empty prompt; reject one without inserting it.
+        if prompt.is_empty() {
+            return Err(invalid_params("prompt must not be empty"));
+        }
         // No prompt capabilities are advertised, so only the baseline `text` and
         // `resource_link` blocks are supported. Anything else must be rejected.
         if prompt.iter().any(|block| {
@@ -674,5 +678,35 @@ fn reject_mcp_servers(mcp_servers: &[v2::McpServer]) -> Result<()> {
         Err(invalid_params(
             "this agent does not advertise any MCP server transports",
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_prompt_without_inserting_it() {
+        let agent = EchoAgent::default();
+        let session_id = agent
+            .create_session(v2::NewSessionRequest::new("/tmp"))
+            .expect("session should be created");
+
+        let Err(error) = agent.admit_prompt(&session_id, &[]) else {
+            panic!("an empty prompt should be rejected");
+        };
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+        {
+            let state = agent.state.lock().expect("session state lock poisoned");
+            let session = &state.sessions[&session_id];
+            assert!(!session.foreground_work, "no work should start");
+            assert!(session.held_prompts.is_empty(), "nothing should be held");
+            assert!(session.history.is_empty(), "nothing should be inserted");
+        }
+
+        assert!(matches!(
+            agent.admit_prompt(&session_id, &[v2::ContentBlock::from("hello")]),
+            Ok(PromptAdmission::Inserted)
+        ));
     }
 }

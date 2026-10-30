@@ -655,6 +655,69 @@ async fn testy_v2_rejects_unadvertised_prompt_content() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn testy_v2_rejects_empty_prompt_without_inserting_it() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let update_tx = event_tx.clone();
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                update_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(Testy::new().v2(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session_id = connection
+                .send_request(v2::NewSessionRequest::new(PathBuf::from("/tmp")))
+                .block_task()
+                .await?
+                .session_id;
+
+            let error = connection
+                .send_request(v2::PromptRequest::new(session_id.clone(), vec![]))
+                .block_task()
+                .await
+                .expect_err("an empty prompt should be rejected");
+            assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+
+            let accepted = connection
+                .send_request(v2::PromptRequest::new(
+                    session_id,
+                    vec![TestyCommand::Greet.to_prompt().into()],
+                ))
+                .block_task()
+                .await
+                .expect("the session accepts a prompt after an empty one is rejected");
+
+            // The first user message belongs to the accepted prompt, so the
+            // empty prompt inserted nothing.
+            loop {
+                match next_update(&mut event_rx).await.update {
+                    v2::SessionUpdate::UserMessage(message) => {
+                        assert_eq!(message.message_id, accepted.message_id);
+                        break;
+                    }
+                    v2::SessionUpdate::SessionInfoUpdate(_) => {}
+                    other => panic!("expected the accepted user message, got {other:?}"),
+                }
+            }
+            Ok(())
+        })
+        .await
+        .expect("Testy v2 empty prompt validation failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
     let (event_tx, mut event_rx) = unbounded_channel();
     Client
