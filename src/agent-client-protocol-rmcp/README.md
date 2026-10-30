@@ -118,7 +118,7 @@ a major release of this crate; it shares its version with the other ACP crates.
 | 2.x                        | 1.x                   | 2.x                      |
 | 1.x                        | 1.x                   | 1.x                      |
 
-See the [v4 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-v4.html#the-rmcp-integration-moves-behind-the-rmcp_3-feature)
+See the [v5 migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-v5.html#the-rmcp-integration-moves-behind-the-rmcp_3-feature)
 for moving to the `rmcp_3` feature and module, and the
 [rmcp 4.x integration migration guide](https://agentclientprotocol.github.io/rust-sdk/migration-rmcp-v4.html)
 for migrating both public dependencies in the combined core 3.x / integration
