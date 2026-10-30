@@ -30,7 +30,9 @@
 //! Low-level infrastructure implementing custom raw version routing can use
 //! `Proxy.builder().without_acp_version_guard()`. Disabling the guard is an
 //! explicit version-neutral escape hatch, not the ordinary way to author a v2
-//! proxy.
+//! proxy. Default forwarding is chosen by the builder, not by the crate
+//! feature: only a `Proxy.v2()` connection forwards untyped v2 messages, and
+//! every other proxy keeps the stable v1 forwarding.
 //!
 //! # Default Forwarding
 //!

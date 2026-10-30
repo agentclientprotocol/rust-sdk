@@ -17,7 +17,9 @@ Enable the separate draft v2 feature to build a dual-version binary:
 cargo build -p agent-client-protocol-test --bin testy --features unstable_protocol_v2
 ```
 
-That binary selects v1 or v2 from the client's `initialize` request. `just prep-tests` already
+That binary selects v1 or v2 from the client's `initialize` request. Everything that does not
+request v2 goes to the v1 agent unchanged, so a v1 client sees the same agent as with the stable-only
+build. `just prep-tests` already
 builds Testy with all features, so the prebuilt test binary supports both versions.
 
 Run the complete workspace suite with `just test`. Its `prep-tests` dependency builds

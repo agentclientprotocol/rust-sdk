@@ -1370,22 +1370,10 @@ where
     }
 }
 
-#[cfg(not(feature = "unstable_protocol_v2"))]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "signature matches the feature-enabled protocol guard"
-)]
-fn ensure_v1_session_protocol<Counterpart: Role>(
-    _connection: &ConnectionTo<Counterpart>,
-) -> Result<(), crate::Error> {
-    Ok(())
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
 fn ensure_v1_session_protocol<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
 ) -> Result<(), crate::Error> {
-    if connection.acp_protocol_version() != Some(crate::schema::ProtocolVersion::V2) {
+    if !connection.is_acp_v2() {
         return Ok(());
     }
 

@@ -70,7 +70,7 @@ async fn initialize(
 }
 
 async fn request(
-    router: ProxyProtocolRouter,
+    router: impl ConnectTo<Conductor>,
     method: &str,
     params: Value,
 ) -> Result<Result<Value, Error>, Error> {
@@ -176,13 +176,24 @@ async fn requires_proxy_initialize_as_the_first_call() -> Result<(), Error> {
     .await?
     .expect_err("an ordinary initialize request must not select a proxy");
 
+    // The request does not select v2, so the v1 proxy answers it exactly as it
+    // would without the router.
+    let standalone = request(
+        v1_proxy(Arc::new(AtomicUsize::new(0))),
+        "initialize",
+        serde_json::to_value(v1_proxy_initialize(ProtocolVersion::V1))
+            .map_err(Error::into_internal_error)?,
+    )
+    .await?
+    .expect_err("a v1 proxy rejects an ordinary initialize request");
+    assert_eq!(error, standalone);
     assert_eq!(i32::from(error.code), -32600);
     assert!(
         error
             .data
             .as_ref()
             .and_then(Value::as_str)
-            .is_some_and(|data| data.contains("must be `_proxy/initialize`")),
+            .is_some_and(|data| data.contains("`_proxy/initialize`")),
         "{error:?}"
     );
     Ok(())

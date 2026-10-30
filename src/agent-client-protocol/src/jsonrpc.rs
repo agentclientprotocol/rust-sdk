@@ -1028,6 +1028,24 @@ impl<
         self.protocol_mode = ProtocolMode::disabled();
         self
     }
+
+    /// Keep this builder's stable v1 guard unless the peer's first
+    /// initialization requests ACP protocol v2 or newer.
+    ///
+    /// This is intended for version-routing infrastructure, such as the
+    /// conductor, that serves both versions on one connection. A v1 peer gets
+    /// exactly the behavior of the v1 builder. When the first incoming
+    /// `initialize` (or `_proxy/initialize` for a proxy) requests v2 or newer,
+    /// the guard is disabled for the rest of the connection, as with
+    /// [`Self::without_acp_version_guard`], and the infrastructure validates
+    /// v2 traffic itself. Builders without a v1 guard are unchanged.
+    ///
+    /// Requires the `unstable_protocol_v2` crate feature.
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub fn with_v1_guard_unless_v2_initialize(mut self) -> Self {
+        self.protocol_mode = self.protocol_mode.defer_to_v2();
+        self
+    }
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -3831,6 +3849,24 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn acp_protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
         self.protocol_mode.api_protocol_version()
+    }
+
+    /// Whether this connection uses the ACP protocol v2 API.
+    ///
+    /// Shared code paths select v2 behavior with this runtime check rather than
+    /// with the `unstable_protocol_v2` feature, so enabling the feature never
+    /// changes how a v1 (or guard-less) connection behaves. Always `false`
+    /// without the feature, because no v2 connection can exist.
+    #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(clippy::unused_self))]
+    pub(crate) fn is_acp_v2(&self) -> bool {
+        #[cfg(feature = "unstable_protocol_v2")]
+        {
+            self.acp_protocol_version() == Some(crate::schema::ProtocolVersion::V2)
+        }
+        #[cfg(not(feature = "unstable_protocol_v2"))]
+        {
+            false
+        }
     }
 
     /// Return the counterpart role this connection is talking to.

@@ -53,10 +53,13 @@ With the conductor crate's `unstable_protocol_v2` feature, initialization
 selects the v1 or v2 schema from the raw `protocolVersion` before
 deserialization. This prevents v2 `info`, `capabilities`, metadata, and future
 extension fields from being interpreted as a permissive v1 request and dropped.
-An exact-version request whose typed value is unchanged keeps its original raw
-parameters, including unknown extensions. A request for a later compatible
-protocol version selects v2 and is canonicalized through the selected v2
-schema.
+A request for v2 or a later compatible version selects v2. An exact v2 request
+whose typed value is unchanged keeps its original raw parameters, including
+unknown extensions; a request for a later version is canonicalized through the
+v2 schema. Every other first message runs exactly the v1 conductor of a build
+without the feature, including its v1 connection guard, v1's
+fallback-to-latest rule, and typed v1 forwarding, so enabling the feature
+never changes what a v1 client sees.
 The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
 proxy vectors can carry either selected schema, but each supplied component
 must support that version. Use `Agent.protocol_router()` or

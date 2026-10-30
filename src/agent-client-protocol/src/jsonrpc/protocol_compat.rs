@@ -351,6 +351,12 @@ mod imp {
         /// lifecycle. V1 agents with an initialize handler set this; v2
         /// responders get it from [`InitializationRole::Responder`].
         requires_initialize: bool,
+        /// Give up the v1 guard for the rest of the connection when the first
+        /// incoming initialization requests protocol v2 or newer.
+        ///
+        /// Lets version-routing infrastructure keep exactly the v1 guard for
+        /// v1 peers while still accepting v2 peers.
+        defers_to_v2: bool,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -405,6 +411,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Unchecked,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -432,6 +439,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Unchecked,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -441,6 +449,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Proxy,
                 initialization_role: InitializationRole::Unchecked,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -451,6 +460,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Responder,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -461,6 +471,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Peer,
                 initialization_role: InitializationRole::Initiator,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -471,6 +482,7 @@ mod imp {
                 initialize_surface: InitializeSurface::Proxy,
                 initialization_role: InitializationRole::Unchecked,
                 requires_initialize: false,
+                defers_to_v2: false,
             })
         }
 
@@ -496,9 +508,25 @@ mod imp {
                     );
                     Self::Acp(AcpProtocolMode {
                         requires_initialize: this.requires_initialize || other.requires_initialize,
+                        defers_to_v2: this.defers_to_v2 || other.defers_to_v2,
                         ..this
                     })
                 }
+            }
+        }
+
+        /// Keep a v1 mode's guard unless the first incoming initialization
+        /// requests protocol v2 or newer; see [`AcpProtocolMode::defers_to_v2`].
+        #[cfg(feature = "unstable_protocol_v2")]
+        pub(crate) fn defer_to_v2(self) -> Self {
+            match self {
+                Self::Acp(mode) if mode.api == ProtocolVersionKind::V1 => {
+                    Self::Acp(AcpProtocolMode {
+                        defers_to_v2: true,
+                        ..mode
+                    })
+                }
+                mode => mode,
             }
         }
 
@@ -532,6 +560,9 @@ mod imp {
         /// authoritative. The first request the client sends closes this
         /// window for the rest of the connection.
         repeatable: bool,
+        /// Whether a mode that [defers to v2](AcpProtocolMode::defers_to_v2)
+        /// gave up its guard because the peer requested protocol v2.
+        deferred_to_v2: bool,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -599,8 +630,51 @@ mod imp {
                     initialization,
                     initialized: false,
                     repeatable: false,
+                    deferred_to_v2: false,
                 })),
             }
+        }
+
+        /// The active guard mode, or `None` when the guard is disabled or a
+        /// v1 mode deferred to a v2 peer.
+        fn mode(&self) -> Option<AcpProtocolMode> {
+            let mode = self.mode?;
+            if mode.defers_to_v2
+                && self
+                    .state
+                    .lock()
+                    .expect("protocol compatibility state mutex poisoned")
+                    .deferred_to_v2
+            {
+                return None;
+            }
+            Some(mode)
+        }
+
+        /// Give up a deferring v1 guard when the first incoming
+        /// initialization requests protocol v2 or newer.
+        ///
+        /// Returns whether the guard was given up. A request that does not
+        /// select v2, or any initialization after the first, keeps the v1
+        /// guard, so a v1 peer sees exactly the v1 behavior.
+        fn defer_to_v2(&self, mode: AcpProtocolMode, message: &UntypedMessage) -> bool {
+            if !mode.defers_to_v2 || !mode.is_incoming_initialize_request(message.method()) {
+                return false;
+            }
+            let requests_v2 = message
+                .params()
+                .get("protocolVersion")
+                .and_then(|version| serde_json::from_value::<ProtocolVersion>(version.clone()).ok())
+                .is_some_and(|version| version >= ProtocolVersionKind::V2.as_protocol_version());
+            let mut state = self
+                .state
+                .lock()
+                .expect("protocol compatibility state mutex poisoned");
+            if !requests_v2 || state.initialized || state.pending_initialize.is_some() {
+                return false;
+            }
+            state.deferred_to_v2 = true;
+            true
         }
 
         #[cfg(all(test, feature = "unstable_protocol_v2"))]
@@ -616,7 +690,7 @@ mod imp {
             id: &RequestId,
             message: UntypedMessage,
         ) -> Result<UntypedMessage, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return Ok(message);
             };
 
@@ -625,6 +699,9 @@ mod imp {
             // cannot be determined.
             if mode.api == ProtocolVersionKind::V2 && *id == RequestId::Null {
                 return Err(null_request_id());
+            }
+            if self.defer_to_v2(mode, &message) {
+                return Ok(message);
             }
 
             if mode.is_incoming_initialize_request(message.method()) {
@@ -656,7 +733,7 @@ mod imp {
             mut message: UntypedMessage,
             remote_style: RemoteStyle,
         ) -> Result<UntypedMessage, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return Ok(message);
             };
 
@@ -683,7 +760,7 @@ mod imp {
             &self,
             message: UntypedMessage,
         ) -> Result<Vec<UntypedMessage>, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return Ok(vec![message]);
             };
 
@@ -700,7 +777,7 @@ mod imp {
             &self,
             message: UntypedMessage,
         ) -> Result<Vec<UntypedMessage>, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return Ok(vec![message]);
             };
 
@@ -724,7 +801,7 @@ mod imp {
             accepts_lower_version: bool,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return result;
             };
 
@@ -753,7 +830,7 @@ mod imp {
             method: &str,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
-            let Some(mode) = self.mode else {
+            let Some(mode) = self.mode() else {
                 return result;
             };
 

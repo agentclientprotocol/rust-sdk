@@ -135,58 +135,21 @@ use futures::{
 };
 use tracing::{debug, info};
 
+/// The protocol version requested by an `initialize` or `_proxy/initialize`
+/// request.
 #[cfg(feature = "unstable_protocol_v2")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InitializeProtocol {
-    V1,
-    V2,
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl InitializeProtocol {
-    fn from_request(
-        request: &agent_client_protocol::UntypedMessage,
-    ) -> Result<InitializeProtocolSelection, Error> {
-        let requested = request
-            .params()
-            .get("protocolVersion")
-            .cloned()
-            .ok_or_else(invalid_initialize_protocol_version)
-            .and_then(|version| {
-                serde_json::from_value::<ProtocolVersion>(version)
-                    .map_err(|_| invalid_initialize_protocol_version())
-            })?;
-
-        let protocol = if requested >= ProtocolVersion::V2 {
-            Self::V2
-        } else if requested == ProtocolVersion::V1 {
-            Self::V1
-        } else {
-            return Err(agent_client_protocol::util::unsupported_protocol_version(
-                requested,
-                &[ProtocolVersion::V1, ProtocolVersion::V2],
-            ));
-        };
-
-        Ok(InitializeProtocolSelection {
-            requested,
-            protocol,
+fn requested_protocol_version(
+    request: &agent_client_protocol::UntypedMessage,
+) -> Result<ProtocolVersion, Error> {
+    request
+        .params()
+        .get("protocolVersion")
+        .cloned()
+        .ok_or_else(invalid_initialize_protocol_version)
+        .and_then(|version| {
+            serde_json::from_value::<ProtocolVersion>(version)
+                .map_err(|_| invalid_initialize_protocol_version())
         })
-    }
-
-    fn version(self) -> ProtocolVersion {
-        match self {
-            Self::V1 => ProtocolVersion::V1,
-            Self::V2 => ProtocolVersion::V2,
-        }
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct InitializeProtocolSelection {
-    requested: ProtocolVersion,
-    protocol: InitializeProtocol,
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -194,18 +157,40 @@ fn invalid_initialize_protocol_version() -> Error {
     Error::invalid_params().data("initialize.protocolVersion must be a valid ACP protocol version")
 }
 
+/// Whether the conductor's first message is an initialization request for
+/// protocol v2 or newer.
+///
+/// This is the same rule the host connection's
+/// [`with_v1_guard_unless_v2_initialize`](Builder::with_v1_guard_unless_v2_initialize)
+/// guard uses, so the conductor takes its v2 path exactly when the guard has
+/// stepped aside. Every other first message takes the stable v1 path.
+#[cfg(feature = "unstable_protocol_v2")]
+fn selects_protocol_v2<Host: ConductorHostRole>(message: &Dispatch) -> bool {
+    let Dispatch::Request(request, _) = message else {
+        return false;
+    };
+    // The host connection's initialization surface: a conductor acting as a
+    // proxy is initialized with `_proxy/initialize`, otherwise `initialize`.
+    let is_initialize = if std::any::TypeId::of::<Host>() == std::any::TypeId::of::<Proxy>() {
+        InitializeProxyRequest::matches_method(request.method())
+    } else {
+        InitializeRequest::matches_method(request.method())
+    };
+    is_initialize
+        && requested_protocol_version(request).is_ok_and(|version| version >= ProtocolVersion::V2)
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 fn forwarded_initialize_request<Request>(
     raw_request: &UntypedMessage,
-    selection: InitializeProtocolSelection,
+    requested: ProtocolVersion,
     original_request: &Request,
     modified_request: Request,
 ) -> Result<UntypedMessage, Error>
 where
     Request: JsonRpcRequest + PartialEq,
 {
-    if modified_request == *original_request && selection.requested == selection.protocol.version()
-    {
+    if modified_request == *original_request && requested == ProtocolVersion::V2 {
         Ok(UntypedMessage {
             method: "initialize".to_string(),
             params: raw_request.params().clone(),
@@ -307,6 +292,8 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             instantiator: Some(self.instantiator),
             #[cfg(feature = "unstable_protocol_v2")]
             initialization: InitializationState::Pending(self.instantiator),
+            #[cfg(feature = "unstable_protocol_v2")]
+            protocol_v2: false,
             proxies: Vec::default(),
             successor: Arc::new(agent_client_protocol::util::internal_error(
                 "successor not initialized",
@@ -322,8 +309,10 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 host: self.host.clone(),
             },
         );
+        // A v1 client keeps the v1 guard it has without the feature; the
+        // guard steps aside only for a v2 `initialize`.
         #[cfg(feature = "unstable_protocol_v2")]
-        let connection = connection.without_acp_version_guard();
+        let connection = connection.with_v1_guard_unless_v2_initialize();
 
         connection
             .name(self.name)
@@ -413,6 +402,13 @@ where
     /// The explicit initialization lifecycle used by the multi-version router.
     #[cfg(feature = "unstable_protocol_v2")]
     initialization: InitializationState<Host::Instantiator>,
+
+    /// Whether the client selected protocol v2 during initialization.
+    ///
+    /// Every other connection runs the same v1 code as a build without the
+    /// `unstable_protocol_v2` feature.
+    #[cfg(feature = "unstable_protocol_v2")]
+    protocol_v2: bool,
 
     /// The chain of proxies before the agent (if any).
     ///
@@ -721,6 +717,14 @@ where
             match state {
                 InitializationState::Pending(instantiator) => {
                     let host = self.host.clone();
+                    if !selects_protocol_v2::<Host>(&message) {
+                        // Exactly the initialization of a build without the
+                        // `unstable_protocol_v2` feature.
+                        let message = host.initialize(message, client, instantiator, self).await?;
+                        self.initialization = InitializationState::Ready;
+                        return Ok(Some(message));
+                    }
+                    self.protocol_v2 = true;
                     match host
                         .initialize_with_outcome(message, client, instantiator, self)
                         .await?
@@ -791,9 +795,16 @@ where
         // passes through messages but which can trigger the
         // tracing events.
         if self.trace_handle.is_some() && num_proxies == 0 {
-            let trace_proxy = Proxy.builder();
+            // The pass-through proxy speaks the selected protocol version, so
+            // a v1 chain uses the same stable v1 proxy as a build without the
+            // `unstable_protocol_v2` feature.
+            let trace_proxy = DynConnectTo::new(Proxy.builder());
             #[cfg(feature = "unstable_protocol_v2")]
-            let trace_proxy = trace_proxy.without_acp_version_guard();
+            let trace_proxy = if self.protocol_v2 {
+                DynConnectTo::new(Proxy.v2())
+            } else {
+                trace_proxy
+            };
 
             self.connect_to_proxy(
                 &client,
@@ -918,9 +929,6 @@ where
             )
     }
 
-    // The feature-off implementation awaits typed dispatch matchers; the v2
-    // implementation is intentionally raw and completes synchronously.
-    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn forward_message_from_client_to_proxy(
         &mut self,
         target_component_index: usize,
@@ -932,75 +940,84 @@ where
             "forward_message_to_proxy"
         );
 
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        {
-            MatchDispatch::new(message)
-                .if_request(async |_request: InitializeProxyRequest, responder| {
-                    responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_request()
-                            .data("initialize/proxy requests are only sent by the conductor"),
-                    )
-                })
-                .await
-                .if_request(async |request: InitializeRequest, responder| {
-                    // The pattern for `Initialize` messages is a bit subtle.
-                    // Proxies receive incoming `Initialize` messages as if they
-                    // were a client. The conductor (us) intercepts these and
-                    // converts them to an `InitializeProxyRequest`.
-                    //
-                    // The proxy will then initialize itself and forward an `Initialize`
-                    // request to its successor.
-                    let sent = self.proxies[target_component_index]
-                        .send_request(InitializeProxyRequest::from(request));
-                    // The request is rewritten, so `forward_response_to` cannot be
-                    // used here; wire up cancellation forwarding explicitly to
-                    // keep `initialize` cancellable like every other forwarded
-                    // request.
-                    let sent = sent.forward_cancellation_from(responder.cancellation());
-                    sent.on_receiving_result(async move |result| {
-                        tracing::debug!(
-                            ok = result.is_ok(),
-                            "got initialize_proxy response from proxy"
-                        );
-                        responder.respond_with_result(result)
-                    })
-                })
-                .await
-                .otherwise(async |message| {
-                    self.proxies[target_component_index].send_proxied_message(message)
-                })
-                .await
+        // Only a protocol v2 chain takes the raw path. A v1 chain runs the
+        // same typed code as a build without the `unstable_protocol_v2`
+        // feature.
+        #[cfg(feature = "unstable_protocol_v2")]
+        if self.protocol_v2 {
+            return self.forward_v2_message_from_client_to_proxy(target_component_index, message);
         }
 
-        #[cfg(feature = "unstable_protocol_v2")]
-        {
-            match message {
-                Dispatch::Request(request, responder)
-                    if request.method()
-                        == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY =>
-                {
-                    responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_request()
-                            .data("initialize/proxy requests are only sent by the conductor"),
-                    )
-                }
-                Dispatch::Request(mut request, responder)
-                    if InitializeRequest::matches_method(request.method()) =>
-                {
-                    request.method =
-                        agent_client_protocol::schema::METHOD_INITIALIZE_PROXY.to_string();
-                    let sent = self.proxies[target_component_index].send_request(request);
-                    let sent = sent.forward_cancellation_from(responder.cancellation());
-                    sent.on_receiving_result(async move |result| {
-                        tracing::debug!(
-                            ok = result.is_ok(),
-                            "got initialize_proxy response from proxy"
-                        );
-                        responder.respond_with_result(result)
-                    })
-                }
-                message => self.proxies[target_component_index].send_proxied_message(message),
+        MatchDispatch::new(message)
+            .if_request(async |_request: InitializeProxyRequest, responder| {
+                responder.respond_with_error(
+                    agent_client_protocol::Error::invalid_request()
+                        .data("initialize/proxy requests are only sent by the conductor"),
+                )
+            })
+            .await
+            .if_request(async |request: InitializeRequest, responder| {
+                // The pattern for `Initialize` messages is a bit subtle.
+                // Proxies receive incoming `Initialize` messages as if they
+                // were a client. The conductor (us) intercepts these and
+                // converts them to an `InitializeProxyRequest`.
+                //
+                // The proxy will then initialize itself and forward an `Initialize`
+                // request to its successor.
+                let sent = self.proxies[target_component_index]
+                    .send_request(InitializeProxyRequest::from(request));
+                // The request is rewritten, so `forward_response_to` cannot be
+                // used here; wire up cancellation forwarding explicitly to
+                // keep `initialize` cancellable like every other forwarded
+                // request.
+                let sent = sent.forward_cancellation_from(responder.cancellation());
+                sent.on_receiving_result(async move |result| {
+                    tracing::debug!(
+                        ok = result.is_ok(),
+                        "got initialize_proxy response from proxy"
+                    );
+                    responder.respond_with_result(result)
+                })
+            })
+            .await
+            .otherwise(async |message| {
+                self.proxies[target_component_index].send_proxied_message(message)
+            })
+            .await
+    }
+
+    /// Raw forwarding to a proxy in a protocol v2 chain, preserving the v2
+    /// wire shape.
+    #[cfg(feature = "unstable_protocol_v2")]
+    fn forward_v2_message_from_client_to_proxy(
+        &mut self,
+        target_component_index: usize,
+        message: Dispatch,
+    ) -> Result<(), agent_client_protocol::Error> {
+        match message {
+            Dispatch::Request(request, responder)
+                if request.method() == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY =>
+            {
+                responder.respond_with_error(
+                    agent_client_protocol::Error::invalid_request()
+                        .data("initialize/proxy requests are only sent by the conductor"),
+                )
             }
+            Dispatch::Request(mut request, responder)
+                if InitializeRequest::matches_method(request.method()) =>
+            {
+                request.method = agent_client_protocol::schema::METHOD_INITIALIZE_PROXY.to_string();
+                let sent = self.proxies[target_component_index].send_request(request);
+                let sent = sent.forward_cancellation_from(responder.cancellation());
+                sent.on_receiving_result(async move |result| {
+                    tracing::debug!(
+                        ok = result.is_ok(),
+                        "got initialize_proxy response from proxy"
+                    );
+                    responder.respond_with_result(result)
+                })
+            }
+            message => self.proxies[target_component_index].send_proxied_message(message),
         }
     }
 
@@ -1008,32 +1025,17 @@ where
     /// This is called by `self.successor`'s [`ConductorSuccessor::send_message`]
     /// method when `Link = ConductorToClient` (i.e., the conductor is not itself
     /// running as a proxy).
-    // The feature-off implementation awaits typed dispatch matchers; the v2
-    // implementation is intentionally raw and completes synchronously.
-    #[allow(unknown_lints, clippy::unused_async, clippy::unused_async_trait_impl)]
     async fn forward_message_to_agent(
         &mut self,
         _client_connection: ConnectionTo<Host::Counterpart>,
         message: Dispatch,
         agent_connection: ConnectionTo<Agent>,
     ) -> Result<(), Error> {
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        {
-            MatchDispatch::new(message)
-                .if_request(async |_request: InitializeProxyRequest, responder| {
-                    responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_request()
-                            .data("initialize/proxy requests are only sent by the conductor"),
-                    )
-                })
-                .await
-                .otherwise(async |message| agent_connection.send_proxied_message_to(Agent, message))
-                .await
-        }
-
+        // Only a protocol v2 chain takes the raw path; see
+        // `forward_message_from_client_to_proxy`.
         #[cfg(feature = "unstable_protocol_v2")]
-        {
-            match message {
+        if self.protocol_v2 {
+            return match message {
                 Dispatch::Request(request, responder)
                     if request.method()
                         == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY =>
@@ -1044,8 +1046,19 @@ where
                     )
                 }
                 message => agent_connection.send_proxied_message_to(Agent, message),
-            }
+            };
         }
+
+        MatchDispatch::new(message)
+            .if_request(async |_request: InitializeProxyRequest, responder| {
+                responder.respond_with_error(
+                    agent_client_protocol::Error::invalid_request()
+                        .data("initialize/proxy requests are only sent by the conductor"),
+                )
+            })
+            .await
+            .otherwise(async |message| agent_connection.send_proxied_message_to(Agent, message))
+            .await
     }
 }
 
@@ -1525,69 +1538,33 @@ async fn initialize_agent_for_selected_protocol(
         return reject_initialization(init_responder, invalid_request());
     }
 
-    let selection = match InitializeProtocol::from_request(&raw_request) {
-        Ok(selection) => selection,
+    let requested = match requested_protocol_version(&raw_request) {
+        Ok(requested) => requested,
         Err(error) => return reject_initialization(init_responder, error),
     };
-    let protocol = selection.protocol;
+    // `ConductorRunner::ensure_initialized` sends every other request through
+    // the stable v1 initialization.
+    debug_assert!(requested >= ProtocolVersion::V2);
 
     // Select the schema before deserializing. Parsing v2 as permissive v1
     // would silently discard fields such as `info` and `capabilities`.
-    let initialization = match protocol {
-        InitializeProtocol::V1 => {
-            let mut init_request = match InitializeRequest::parse_message(
-                raw_request.method(),
-                raw_request.params(),
-            ) {
-                Ok(request) => request,
-                Err(error) => return reject_initialization(init_responder, error),
-            };
-            init_request.protocol_version = protocol.version();
-            let original_request = init_request.clone();
-            match instantiator
-                .instantiate_proxies_and_agent(init_request)
-                .await
-            {
-                Ok((mut request, proxies, agent)) => {
-                    request.protocol_version = protocol.version();
-                    forwarded_initialize_request(
-                        &raw_request,
-                        selection,
-                        &original_request,
-                        request,
-                    )
-                    .map(|request| (request, proxies, agent))
-                }
-                Err(error) => Err(error),
-            }
+    let mut init_request =
+        match v2::InitializeRequest::parse_message(raw_request.method(), raw_request.params()) {
+            Ok(request) => request,
+            Err(error) => return reject_initialization(init_responder, error),
+        };
+    init_request.protocol_version = ProtocolVersion::V2;
+    let original_request = init_request.clone();
+    let initialization = match instantiator
+        .instantiate_v2_proxies_and_agent(init_request)
+        .await
+    {
+        Ok((mut request, proxies, agent)) => {
+            request.protocol_version = ProtocolVersion::V2;
+            forwarded_initialize_request(&raw_request, requested, &original_request, request)
+                .map(|request| (request, proxies, agent))
         }
-        InitializeProtocol::V2 => {
-            let mut init_request = match v2::InitializeRequest::parse_message(
-                raw_request.method(),
-                raw_request.params(),
-            ) {
-                Ok(request) => request,
-                Err(error) => return reject_initialization(init_responder, error),
-            };
-            init_request.protocol_version = protocol.version();
-            let original_request = init_request.clone();
-            match instantiator
-                .instantiate_v2_proxies_and_agent(init_request)
-                .await
-            {
-                Ok((mut request, proxies, agent)) => {
-                    request.protocol_version = protocol.version();
-                    forwarded_initialize_request(
-                        &raw_request,
-                        selection,
-                        &original_request,
-                        request,
-                    )
-                    .map(|request| (request, proxies, agent))
-                }
-                Err(error) => Err(error),
-            }
-        }
+        Err(error) => Err(error),
     };
     let (modified_req, proxy_components, agent_component) = match initialization {
         Ok(initialization) => initialization,
@@ -1596,10 +1573,7 @@ async fn initialize_agent_for_selected_protocol(
 
     debug!(?agent_component, "spawning agent");
 
-    let agent_builder = match protocol {
-        InitializeProtocol::V1 => Builder::new(Client),
-        InitializeProtocol::V2 => Builder::new(Client).with_v2_protocol_guard(),
-    };
+    let agent_builder = Builder::new(Client).with_v2_protocol_guard();
     let connection_to_agent = client_connection.spawn_connection(
         agent_builder
             .name("conductor-to-agent")
@@ -1756,65 +1730,31 @@ async fn initialize_proxy_for_selected_protocol(
         return reject_initialization(init_responder, invalid_request());
     }
 
-    let selection = match InitializeProtocol::from_request(&raw_request) {
-        Ok(selection) => selection,
+    let requested = match requested_protocol_version(&raw_request) {
+        Ok(requested) => requested,
         Err(error) => return reject_initialization(init_responder, error),
     };
-    let protocol = selection.protocol;
+    // `ConductorRunner::ensure_initialized` sends every other request through
+    // the stable v1 initialization.
+    debug_assert!(requested >= ProtocolVersion::V2);
 
-    tracing::debug!(?protocol, "ensure_initialized: proxy initialize");
+    tracing::debug!(%requested, "ensure_initialized: v2 proxy initialize");
 
-    let initialization = match protocol {
-        InitializeProtocol::V1 => {
-            let InitializeProxyRequest { mut initialize } =
-                match InitializeProxyRequest::parse_message(
-                    raw_request.method(),
-                    raw_request.params(),
-                ) {
-                    Ok(request) => request,
-                    Err(error) => return reject_initialization(init_responder, error),
-                };
-            initialize.protocol_version = protocol.version();
-            let original_request = initialize.clone();
-            match instantiator.instantiate_proxies(initialize).await {
-                Ok((mut request, proxies)) => {
-                    request.protocol_version = protocol.version();
-                    forwarded_initialize_request(
-                        &raw_request,
-                        selection,
-                        &original_request,
-                        request,
-                    )
-                    .map(|request| (request, proxies))
-                }
-                Err(error) => Err(error),
-            }
+    let v2::InitializeProxyRequest { mut initialize } =
+        match v2::InitializeProxyRequest::parse_message(raw_request.method(), raw_request.params())
+        {
+            Ok(request) => request,
+            Err(error) => return reject_initialization(init_responder, error),
+        };
+    initialize.protocol_version = ProtocolVersion::V2;
+    let original_request = initialize.clone();
+    let initialization = match instantiator.instantiate_v2_proxies(initialize).await {
+        Ok((mut request, proxies)) => {
+            request.protocol_version = ProtocolVersion::V2;
+            forwarded_initialize_request(&raw_request, requested, &original_request, request)
+                .map(|request| (request, proxies))
         }
-        InitializeProtocol::V2 => {
-            let v2::InitializeProxyRequest { mut initialize } =
-                match v2::InitializeProxyRequest::parse_message(
-                    raw_request.method(),
-                    raw_request.params(),
-                ) {
-                    Ok(request) => request,
-                    Err(error) => return reject_initialization(init_responder, error),
-                };
-            initialize.protocol_version = protocol.version();
-            let original_request = initialize.clone();
-            match instantiator.instantiate_v2_proxies(initialize).await {
-                Ok((mut request, proxies)) => {
-                    request.protocol_version = protocol.version();
-                    forwarded_initialize_request(
-                        &raw_request,
-                        selection,
-                        &original_request,
-                        request,
-                    )
-                    .map(|request| (request, proxies))
-                }
-                Err(error) => Err(error),
-            }
-        }
+        Err(error) => Err(error),
     };
     let (modified_req, proxy_components) = match initialization {
         Ok(initialization) => initialization,
