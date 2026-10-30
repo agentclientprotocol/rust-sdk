@@ -26,7 +26,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 type Received = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn recording_v1_agent(received: Received) -> impl ConnectTo<Client> {
-    Agent.builder().on_receive_request(
+    Agent.v1().on_receive_request(
         async move |request: UntypedMessage,
                     responder: Responder<Value, V1>,
                     _cx: ConnectionTo<Client>| {
@@ -86,7 +86,7 @@ async fn run_v1_chain(initialize: &Value) -> ChainRun {
         move |request: SelectedInitializeRequest| async move {
             *instantiated_version.lock().expect("version lock") = Some(request.protocol_version());
             let request = request.into_v1()?;
-            let proxies = vec![DynConnectTo::new(Proxy.builder())];
+            let proxies = vec![DynConnectTo::new(Proxy.v1())];
             let agent = DynConnectTo::new(recording_v1_agent(received));
             Ok((request.into(), proxies, agent))
         }

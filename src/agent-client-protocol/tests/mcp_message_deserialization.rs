@@ -59,7 +59,7 @@ async fn unresolved_server_is_a_binding_failure_not_a_peer_mcp_error() {
 
     tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        Agent.builder().connect_with(Client.builder(), async |cx| {
+        Agent.v1().connect_with(Client.v1(), async |cx| {
             let response = cx
                 .send_request(
                     v1::MessageMcpRequest::new("unregistered", "logical-id", "ping").params(

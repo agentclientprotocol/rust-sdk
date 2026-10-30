@@ -18,7 +18,7 @@
 //!
 //! `Proxy::builder` creates a stable protocol v1 proxy. With the
 //! `unstable_protocol_v2` feature, `Proxy.v2()` creates a v2-only proxy whose
-//! fluent callbacks receive `V2ConnectionTo<Conductor>`. Each builder
+//! fluent callbacks receive `v2::ConnectionTo<Conductor>`. Each builder
 //! negotiates `proxy/initialize` the way an agent of its version negotiates
 //! `initialize`, so a v1 proxy answers a newer request as v1, then validates
 //! later traffic against the negotiated version.
@@ -30,7 +30,7 @@
 //! later traffic.
 //!
 //! Low-level infrastructure implementing custom raw version routing can use
-//! `Proxy.builder().without_acp_version_guard()`. Disabling the guard is an
+//! `Builder::new(Proxy).without_acp_version_guard()`. Disabling the guard is an
 //! explicit version-neutral escape hatch, not the ordinary way to author a v2
 //! proxy.
 //!
@@ -46,7 +46,7 @@
 //! ```
 //! # use agent_client_protocol::{Proxy, Conductor, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
-//! Proxy.builder()
+//! Proxy.v1()
 //!     .connect_to(transport)
 //!     .await?;
 //! # Ok(())
@@ -63,7 +63,7 @@
 //! # use agent_client_protocol::{Proxy, Client, Agent, Conductor, ConnectTo};
 //! # use agent_client_protocol_test::ProcessRequest;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
-//! Proxy.builder()
+//! Proxy.v1()
 //!     // Intercept requests from the client
 //!     .on_receive_request_from(Client, async |req: ProcessRequest, responder, cx| {
 //!         // Modify the request
@@ -99,7 +99,7 @@
 //! # use agent_client_protocol_rmcp::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
 //! # let my_mcp_server = McpServer::<Conductor, _>::builder("tools").build();
-//! Proxy.builder()
+//! Proxy.v1()
 //!     .with_mcp_server(my_mcp_server)
 //!     .connect_to(transport)
 //!     .await?;
@@ -130,7 +130,7 @@
 //! # use agent_client_protocol::mcp_server::McpServer;
 //! # use agent_client_protocol_rmcp::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
-//! Proxy.builder()
+//! Proxy.v1()
 //!     .on_receive_request_from(Client, async |req: NewSessionRequest, responder, cx| {
 //!         let my_mcp_server = McpServer::<Conductor, _>::builder("tools").build();
 //!         cx.build_session_from(req)
@@ -148,8 +148,8 @@
 //!
 //! The corresponding v2 proxy uses `Proxy.v2()`, a
 //! `schema::v2::NewSessionRequest`, and the same fluent session-builder shape.
-//! Its `V2SessionBuilder::on_proxy_session_start` callback receives an
-//! `OpenedV2Session` containing both the command-only v2 session handle and the
+//! Its `v2::SessionBuilder::on_proxy_session_start` callback receives an
+//! `v2::OpenedSession` containing both the command-only v2 session handle and the
 //! complete `NewSessionResponse`:
 //!
 //! ```rust,ignore
@@ -171,9 +171,9 @@
 //!
 //! For `schema::v2::ResumeSessionRequest`, use
 //! `cx.resume_session_from(request)` and the resulting
-//! `V2ResumeSessionBuilder` in the same shape. With
+//! `v2::ResumeSessionBuilder` in the same shape. With
 //! `unstable_session_fork`, use `cx.fork_session_from(request)` and
-//! `V2ForkSessionBuilder` for `ForkSessionRequest`; the returned session and
+//! `v2::ForkSessionBuilder` for `ForkSessionRequest`; the returned session and
 //! installed route use the new ID from `ForkSessionResponse`, not the source
 //! session ID. Resume routing and any per-session MCP attachment are ready
 //! before the downstream request is published, allowing replay to precede the
@@ -213,7 +213,7 @@
 //! | Task | Approach |
 //! |------|----------|
 //! | Forward everything | Just `connect_to(transport)` |
-//! | Author a v1 or v2 proxy | `Proxy.builder()` or `Proxy.v2()` |
+//! | Author a v1 or v2 proxy | `Proxy.v1()` or `Proxy.v2()` |
 //! | Package v1 and v2 implementations | `Proxy.protocol_router().with_v1(...).with_v2(...)` |
 //! | Implement custom raw routing | `without_acp_version_guard` on the raw proxy builder |
 //! | Intercept specific messages | `on_receive_*_from` with explicit peers |

@@ -125,7 +125,7 @@ async fn agent_connect_with_drains_final_notification_to_physical_bytes() {
     let expected = wire_bytes(0);
     let mut connection = Box::pin(async {
         Agent
-            .builder()
+            .v1()
             .connect_with(transport, async |cx| {
                 cx.send_notification(notification(0))?;
                 Ok(())
@@ -175,7 +175,7 @@ async fn client_connect_with_drains_final_notification_to_physical_lines() {
     let expected = wire_bytes(0);
     let mut connection = Box::pin(async {
         Client
-            .builder()
+            .v1()
             .connect_with(transport, async |cx| {
                 cx.send_notification(notification(0))?;
                 Ok(())
@@ -698,7 +698,7 @@ async fn direct_builder_reports_physical_close_error_after_writing_accepted_outp
     );
     let error = tokio::time::timeout(
         TIMEOUT,
-        Agent.builder().connect_with(transport, async |cx| {
+        Agent.v1().connect_with(transport, async |cx| {
             cx.send_notification(notification(0))?;
             Ok(())
         }),

@@ -286,7 +286,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
     // Run the client interaction
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         agent_client_protocol::Client
-            .builder()
+            .v1()
             .name("test-client")
             .on_receive_notification(
                 {

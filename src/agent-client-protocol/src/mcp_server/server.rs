@@ -46,10 +46,10 @@ use crate::schema::v1::ForkSessionRequest;
 /// session setup through `Builder::with_mcp_server` or
 /// `SessionBuilder::with_mcp_server`. When `unstable_protocol_v2` is also
 /// enabled, `Proxy.v2().with_mcp_server` attaches a server globally to draft
-/// v2 setup requests. `V2SessionBuilder::with_mcp_server` attaches one to a
-/// single new v2 session, while `V2ResumeSessionBuilder::with_mcp_server`
+/// v2 setup requests. `v2::SessionBuilder::with_mcp_server` attaches one to a
+/// single new v2 session, while `v2::ResumeSessionBuilder::with_mcp_server`
 /// attaches one to a single resumed session. With `unstable_session_fork`,
-/// `V2ForkSessionBuilder::with_mcp_server` attaches one to a single forked
+/// `v2::ForkSessionBuilder::with_mcp_server` attaches one to a single forked
 /// session.
 ///
 /// # Creating an MCP Server
@@ -370,7 +370,7 @@ where
     pub fn into_dynamic_handler(
         self,
         mcp_servers: &mut Vec<crate::schema::v2::McpServer>,
-        cx: &crate::V2ConnectionTo<Counterpart>,
+        cx: &crate::v2::ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
         let name = self.connect.name();
         if mcp_servers

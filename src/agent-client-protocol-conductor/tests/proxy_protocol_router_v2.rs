@@ -7,7 +7,7 @@ use std::sync::{
 
 use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion, v1, v2};
 use agent_client_protocol::{
-    Agent, ByteStreams, Client, Conductor, ConnectionTo, Error, Proxy, V2ConnectionTo,
+    Agent, Builder, ByteStreams, Client, Conductor, ConnectionTo, Error, Proxy,
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use tokio::io::duplex;
@@ -91,7 +91,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
     let v1_proxy_initialize = Arc::clone(&observations);
     let v1_proxy_list = Arc::clone(&observations);
     let v1_proxy = Proxy
-        .builder()
+        .v1()
         .name("v1-proxy")
         .on_receive_request_from(
             Client,
@@ -126,7 +126,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
             Client,
             async move |request: v2::InitializeProxyRequest,
                         responder,
-                        cx: V2ConnectionTo<Conductor>| {
+                        cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                 v2_proxy_initialize
                     .v2
                     .record_proxy_initialize(request.initialize.protocol_version);
@@ -139,7 +139,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
             Client,
             async move |request: v2::ListSessionsRequest,
                         responder,
-                        cx: V2ConnectionTo<Conductor>| {
+                        cx: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                 v2_proxy_list
                     .v2
                     .proxy_list_sessions
@@ -153,7 +153,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
     let v1_agent_initialize = Arc::clone(&observations);
     let v1_agent_list = Arc::clone(&observations);
     let v1_agent = Agent
-        .builder()
+        .v1()
         .name("v1-agent")
         .on_receive_request(
             async move |request: v1::InitializeRequest, responder, _cx| {
@@ -217,7 +217,7 @@ async fn run_v1_client(
     let (conductor_out, client_in) = duplex(4096);
 
     Client
-        .builder()
+        .v1()
         .name("v1-client")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent("conductor", components)
@@ -236,7 +236,7 @@ async fn run_v1_client(
 
 async fn run_v2_client(
     components: ProxiesAndAgent,
-    client_task: impl AsyncFnOnce(V2ConnectionTo<Agent>) -> Result<(), Error>,
+    client_task: impl AsyncFnOnce(agent_client_protocol::v2::ConnectionTo<Agent>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (client_out, conductor_in) = duplex(4096);
     let (conductor_out, client_in) = duplex(4096);
@@ -266,8 +266,7 @@ async fn run_raw_client(
     let (client_out, conductor_in) = duplex(4096);
     let (conductor_out, client_in) = duplex(4096);
 
-    Client
-        .builder()
+    Builder::new(Client)
         .without_acp_version_guard()
         .name("future-client")
         .with_spawned(|_cx| async move {

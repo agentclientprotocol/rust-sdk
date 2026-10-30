@@ -126,7 +126,7 @@ fn provider_capabilities_and_open_protocol_values_round_trip() {
 #[tokio::test(flavor = "current_thread")]
 async fn v1_client_can_list_set_and_disable_providers() -> Result<(), Error> {
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |request: InitializeRequest, responder, _cx| {
                 responder.respond(
@@ -160,7 +160,7 @@ async fn v1_client_can_list_set_and_disable_providers() -> Result<(), Error> {
         );
 
     Client
-        .builder()
+        .v1()
         .connect_with(agent, async |cx| {
             let initialize = cx
                 .send_request(InitializeRequest::new(ProtocolVersion::V1))

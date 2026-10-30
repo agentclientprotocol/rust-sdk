@@ -16,8 +16,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcRequest,
-    JsonRpcResponse, RawJsonRpcId, Responder, Role, RoleId, SentRequest,
+    Builder, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
+    JsonRpcRequest, JsonRpcResponse, RawJsonRpcId, Responder, Role, RoleId, SentRequest,
     role::UntypedRole,
     schema::v1::{CancelRequestNotification, ProtocolLevelNotification},
 };
@@ -279,8 +279,7 @@ async fn unhandled_wrapped_protocol_level_notifications_are_ignored() {
                 server_writer.compat_write(),
                 server_reader.compat(),
             );
-            let server = WrappedHost
-                .builder()
+            let server = Builder::new(WrappedHost)
                 .on_receive_notification_from(
                     WrappedSuccessor,
                     async |cancel: CancelRequestNotification,
@@ -359,7 +358,7 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
                 server_writer.compat_write(),
                 server_reader.compat(),
             );
-            let server = WrappedHost.builder().on_receive_request_from(
+            let server = Builder::new(WrappedHost).on_receive_request_from(
                 WrappedSuccessor,
                 async |_request: SimpleRequest,
                        responder: Responder<SimpleResponse>,
@@ -430,9 +429,8 @@ async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_deliver
 
     let (transport, mut peer) = Channel::duplex();
     let (published_tx, published_rx) = oneshot::channel();
-    let client = WrappedCounterpart
-        .builder()
-        .connect_with(transport, async move |connection| {
+    let client =
+        Builder::new(WrappedCounterpart).connect_with(transport, async move |connection| {
             let prepared = connection.prepare_request_to(
                 WrappedSuccessor,
                 SimpleRequest {
@@ -521,8 +519,7 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
             let (server_reader, server_writer, client_reader, client_writer) = setup_test_streams();
             let server_transport =
                 agent_client_protocol::ByteStreams::new(server_writer, server_reader);
-            let server = WrappedHost
-                .builder()
+            let server = Builder::new(WrappedHost)
                 .on_receive_request_from(
                     WrappedSuccessor,
                     async |_request: SimpleRequest,
@@ -577,8 +574,7 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            let (expected_id, error) = WrappedCounterpart
-                .builder()
+            let (expected_id, error) = Builder::new(WrappedCounterpart)
                 .connect_with(client_transport, async |cx| {
                     let request: SentRequest<SimpleResponse> = cx.send_request_to(
                         WrappedSuccessor,
@@ -1750,7 +1746,7 @@ async fn send_proxied_message_does_not_tunnel_wrapped_cancel_notifications() {
                 agent_client_protocol::ByteStreams::new(server_writer, server_reader);
             // The raw dispatch handler receives successor-addressed messages
             // still wrapped in their envelope and forwards them verbatim.
-            let proxy = WrappedHost.builder().on_receive_dispatch(
+            let proxy = Builder::new(WrappedHost).on_receive_dispatch(
                 {
                     let backend_connection = backend_connection.clone();
                     async move |dispatch: Dispatch,
@@ -1769,8 +1765,7 @@ async fn send_proxied_message_does_not_tunnel_wrapped_cancel_notifications() {
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
-            WrappedCounterpart
-                .builder()
+            Builder::new(WrappedCounterpart)
                 .connect_with(client_transport, async |cx| {
                     // A successor-wrapped `$/cancel_request`, exactly as
                     // produced when cancelling a request sent to a successor

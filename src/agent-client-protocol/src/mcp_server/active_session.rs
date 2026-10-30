@@ -698,7 +698,7 @@ mod tests {
             let (remove_tx, remove_rx) = tokio::sync::oneshot::channel();
             let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
             let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
-            let task = tokio::spawn(crate::Client.builder().connect_with(transport, async move |cx| {
+            let task = tokio::spawn(crate::Client.v1().connect_with(transport, async move |cx| {
                 let handler = McpActiveSession::<Agent>::new_with_service(
                     McpServerAcpId::new("provider"), Arc::new(Standalone),
                     Some(Arc::new(Service {

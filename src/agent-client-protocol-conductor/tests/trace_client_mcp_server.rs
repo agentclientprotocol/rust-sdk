@@ -274,7 +274,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
     // Run the client with a client-hosted MCP server
     let test_result = tokio::time::timeout(std::time::Duration::from_secs(30), async move {
         agent_client_protocol::Client
-            .builder()
+            .v1()
             .name("test-client")
             .connect_with(
                 agent_client_protocol::ByteStreams::new(

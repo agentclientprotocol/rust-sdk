@@ -53,7 +53,7 @@ async fn test_scoped_mcp_server_through_proxy() -> Result<(), agent_client_proto
 #[tokio::test]
 async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_protocol::Error> {
     // Run the client
-    agent_client_protocol::Client.builder()
+    agent_client_protocol::Client.v1()
         .connect_with(
             ConductorImpl::new_agent(
                 "conductor".to_string(),
@@ -141,7 +141,7 @@ impl ConnectTo<Conductor> for ScopedProxy {
         let mcp_server = make_mcp_server::<agent_client_protocol::Conductor>(&values);
 
         Proxy
-            .builder()
+            .v1()
             .name("scoped-mcp-server")
             .with_mcp_server(mcp_server)
             .connect_to(client)

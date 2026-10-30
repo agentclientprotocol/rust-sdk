@@ -13,7 +13,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, ErrorCode, JsonRpcRequest,
-    JsonRpcResponse, Responder, RunWithConnectionTo, V2ConnectionTo,
+    JsonRpcResponse, Responder, RunWithConnectionTo,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
     schema::{ProtocolVersion, v2},
@@ -208,7 +208,7 @@ struct RoundTrip {
 }
 
 async fn run_mcp_round_trip(
-    connection: &V2ConnectionTo<Client>,
+    connection: &agent_client_protocol::v2::ConnectionTo<Client>,
     server_id: &v2::McpServerAcpId,
     sequence: usize,
 ) -> Result<RoundTrip, Error> {
@@ -285,7 +285,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -293,7 +293,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.meta.as_ref(), Some(&expected_setup_meta));
                 let server = match request.mcp_servers.as_slice() {
                     [existing, v2::McpServer::Acp(server)]
@@ -333,25 +333,27 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .with_spawned(move |connection: V2ConnectionTo<Client>| async move {
-            let server_id = server_id_rx.next().await.ok_or_else(|| {
-                Error::internal_error().data("session/new did not advertise an MCP server")
-            })?;
-            let mut sequence = 1;
+        .with_spawned(
+            move |connection: agent_client_protocol::v2::ConnectionTo<Client>| async move {
+                let server_id = server_id_rx.next().await.ok_or_else(|| {
+                    Error::internal_error().data("session/new did not advertise an MCP server")
+                })?;
+                let mut sequence = 1;
 
-            while round_trip_trigger_rx.next().await.is_some() {
-                sequence += 1;
-                let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
-                let failed = result.is_err();
-                round_trip_tx
-                    .unbounded_send(result)
-                    .map_err(Error::into_internal_error)?;
-                if failed {
-                    break;
+                while round_trip_trigger_rx.next().await.is_some() {
+                    sequence += 1;
+                    let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
+                    let failed = result.is_err();
+                    round_trip_tx
+                        .unbounded_send(result)
+                        .map_err(Error::into_internal_error)?;
+                    if failed {
+                        break;
+                    }
                 }
-            }
-            Ok(())
-        });
+                Ok(())
+            },
+        );
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
@@ -466,7 +468,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -477,7 +479,7 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
                 v2::ForkSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, expected_source_session_id);
                 assert_eq!(request.cwd, expected_fork_cwd);
                 assert_eq!(
@@ -522,25 +524,27 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .with_spawned(move |connection: V2ConnectionTo<Client>| async move {
-            let server_id = server_id_rx.next().await.ok_or_else(|| {
-                Error::internal_error().data("session/fork did not advertise an MCP server")
-            })?;
-            let mut sequence = 1;
+        .with_spawned(
+            move |connection: agent_client_protocol::v2::ConnectionTo<Client>| async move {
+                let server_id = server_id_rx.next().await.ok_or_else(|| {
+                    Error::internal_error().data("session/fork did not advertise an MCP server")
+                })?;
+                let mut sequence = 1;
 
-            while round_trip_trigger_rx.next().await.is_some() {
-                sequence += 1;
-                let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
-                let failed = result.is_err();
-                round_trip_tx
-                    .unbounded_send(result)
-                    .map_err(Error::into_internal_error)?;
-                if failed {
-                    break;
+                while round_trip_trigger_rx.next().await.is_some() {
+                    sequence += 1;
+                    let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
+                    let failed = result.is_err();
+                    round_trip_tx
+                        .unbounded_send(result)
+                        .map_err(Error::into_internal_error)?;
+                    if failed {
+                        break;
+                    }
                 }
-            }
-            Ok(())
-        });
+                Ok(())
+            },
+        );
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
@@ -656,7 +660,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -667,7 +671,7 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
                 v2::ResumeSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        connection: V2ConnectionTo<Client>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, expected_session_id);
                 assert_eq!(request.cwd, expected_resume_cwd);
                 assert_eq!(
@@ -717,25 +721,27 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .with_spawned(move |connection: V2ConnectionTo<Client>| async move {
-            let server_id = server_id_rx.next().await.ok_or_else(|| {
-                Error::internal_error().data("session/resume did not advertise an MCP server")
-            })?;
-            let mut sequence = 1;
+        .with_spawned(
+            move |connection: agent_client_protocol::v2::ConnectionTo<Client>| async move {
+                let server_id = server_id_rx.next().await.ok_or_else(|| {
+                    Error::internal_error().data("session/resume did not advertise an MCP server")
+                })?;
+                let mut sequence = 1;
 
-            while round_trip_trigger_rx.next().await.is_some() {
-                sequence += 1;
-                let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
-                let failed = result.is_err();
-                round_trip_tx
-                    .unbounded_send(result)
-                    .map_err(Error::into_internal_error)?;
-                if failed {
-                    break;
+                while round_trip_trigger_rx.next().await.is_some() {
+                    sequence += 1;
+                    let result = run_mcp_round_trip(&connection, &server_id, sequence).await;
+                    let failed = result.is_err();
+                    round_trip_tx
+                        .unbounded_send(result)
+                        .map_err(Error::into_internal_error)?;
+                    if failed {
+                        break;
+                    }
                 }
-            }
-            Ok(())
-        });
+                Ok(())
+            },
+        );
 
     let test = async move {
         let (context_tx, mut context_rx) = mpsc::unbounded();
@@ -870,7 +876,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -878,7 +884,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         .on_receive_request(
             async move |_request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 agent_session_new_seen.store(true, Ordering::Release);
                 responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                     "unexpected-session",
@@ -889,7 +895,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
         .on_receive_request(
             async |request: ConnectionProbeRequest,
                    responder: Responder<ConnectionProbeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(ConnectionProbeResponse {
                     nonce: request.nonce,
                 })
@@ -964,7 +970,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -975,7 +981,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
                 v2::ResumeSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 agent_session_resume_seen.store(true, Ordering::Release);
                 responder.respond(v2::ResumeSessionResponse::new())
             },
@@ -984,7 +990,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
         .on_receive_request(
             async |request: ConnectionProbeRequest,
                    responder: Responder<ConnectionProbeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(ConnectionProbeResponse {
                     nonce: request.nonce,
                 })
@@ -1058,7 +1064,7 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1066,7 +1072,7 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
                         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert!(matches!(
                     request.mcp_servers.as_slice(),
                     [v2::McpServer::Acp(server)] if server.name == "rejected-v2-mcp"
@@ -1156,7 +1162,7 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
         .on_receive_request(
             async |request: v2::InitializeRequest,
                    responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-                   _connection: V2ConnectionTo<Client>| {
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 responder.respond(initialize_response(request.protocol_version))
             },
             agent_client_protocol::on_receive_request!(),
@@ -1167,7 +1173,7 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
                 v2::ResumeSessionResponse,
                 agent_client_protocol::V2,
             >,
-                        _connection: V2ConnectionTo<Client>| {
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
                 assert_eq!(request.session_id, agent_expected_session_id);
                 assert!(matches!(
                     request.mcp_servers.as_slice(),
@@ -1252,7 +1258,7 @@ async fn v2_session_builder_rejects_duplicate_mcp_server_names() -> Result<(), E
     let agent = Agent.v2().on_receive_request(
         async |request: v2::InitializeRequest,
                responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
-               _connection: V2ConnectionTo<Client>| {
+               _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
             responder.respond(initialize_response(request.protocol_version))
         },
         agent_client_protocol::on_receive_request!(),

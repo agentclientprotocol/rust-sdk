@@ -25,12 +25,12 @@ use crate::schema::v2;
 /// | --- | --- | --- |
 /// | [`Raw`] (the default) | [`RawJsonRpcId`] | [`ConnectionTo`] |
 /// | [`V1`] | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`ConnectionTo`] |
-/// | `V2` (`unstable_protocol_v2`) | `schema::v2::RequestId` | `V2ConnectionTo` |
+/// | `V2` (`unstable_protocol_v2`) | `schema::v2::RequestId` | `v2::ConnectionTo` |
 ///
-/// - Typed handlers on `Client.builder()`, `Agent.builder()` and
-///   `Proxy.builder()` receive [`V1`] handles.
+/// - Typed handlers on `Client.v1()`, `Agent.v1()` and
+///   `Proxy.v1()` receive [`V1`] handles.
 /// - Typed handlers on `Client.v2()`, `Agent.v2()` and `Proxy.v2()`, and
-///   requests sent through `V2ConnectionTo`, use `V2`.
+///   requests sent through `v2::ConnectionTo`, use `V2`.
 /// - Everything that is not tied to one version uses [`Raw`]: the
 ///   [`HandleDispatchFrom`](crate::HandleDispatchFrom) layer,
 ///   [`MatchDispatch`](crate::util::MatchDispatch), builders whose version
@@ -188,8 +188,8 @@ pub struct V2;
 impl sealed::Sealed for V2 {
     fn connection_from_raw<Counterpart: Role>(
         connection: ConnectionTo<Counterpart>,
-    ) -> super::V2ConnectionTo<Counterpart> {
-        super::V2ConnectionTo { inner: connection }
+    ) -> super::v2_connection::ConnectionTo<Counterpart> {
+        super::v2_connection::ConnectionTo { inner: connection }
     }
 
     fn request_id_from_raw(id: &RawJsonRpcId) -> Result<v2::RequestId, crate::Error> {
@@ -204,7 +204,7 @@ impl sealed::Sealed for V2 {
 #[cfg(feature = "unstable_protocol_v2")]
 impl Protocol for V2 {
     type RequestId = v2::RequestId;
-    type Connection<Counterpart: Role> = super::V2ConnectionTo<Counterpart>;
+    type Connection<Counterpart: Role> = super::v2_connection::ConnectionTo<Counterpart>;
 }
 
 /// The ID of a request handle: the wire ID and the same ID as the handle's

@@ -1,9 +1,9 @@
 use std::{path::Path, time::Duration};
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::{ActiveSession, SessionMessage};
 use agent_client_protocol::{
-    ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
-    SessionMessage, TransportFrame,
+    Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
@@ -18,7 +18,7 @@ use futures::channel::mpsc;
 
 #[cfg(feature = "unstable_protocol_v2")]
 use agent_client_protocol::{
-    JsonRpcMessage, JsonRpcResponse, Proxy, V2ConnectionTo,
+    JsonRpcMessage, JsonRpcResponse, Proxy,
     schema::{ProtocolVersion, SuccessorMessage, v2},
 };
 
@@ -90,7 +90,7 @@ mod callback_future_lifetimes {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_proxy_session_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::OpenedV2Session<Conductor, v2::NewSessionResponse>,
+        agent_client_protocol::v2::OpenedSession<Conductor, v2::NewSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
@@ -99,7 +99,7 @@ mod callback_future_lifetimes {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_proxy_resume_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::OpenedV2Session<Conductor, v2::ResumeSessionResponse>,
+        agent_client_protocol::v2::OpenedSession<Conductor, v2::ResumeSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
@@ -108,7 +108,7 @@ mod callback_future_lifetimes {
 
     #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_session_fork"))]
     fn v2_proxy_fork_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::OpenedV2Session<Conductor, v2::ForkSessionResponse>,
+        agent_client_protocol::v2::OpenedSession<Conductor, v2::ForkSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
@@ -137,7 +137,7 @@ mod callback_future_lifetimes {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_on_proxy_session_start_accepts_non_static_callback_future<'a>(
-        connection: &V2ConnectionTo<Conductor>,
+        connection: &agent_client_protocol::v2::ConnectionTo<Conductor>,
         request: v2::NewSessionRequest,
         responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
@@ -149,7 +149,7 @@ mod callback_future_lifetimes {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_on_proxy_resume_accepts_non_static_callback_future<'a>(
-        connection: &V2ConnectionTo<Conductor>,
+        connection: &agent_client_protocol::v2::ConnectionTo<Conductor>,
         request: v2::ResumeSessionRequest,
         responder: Responder<v2::ResumeSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
@@ -161,7 +161,7 @@ mod callback_future_lifetimes {
 
     #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_session_fork"))]
     fn v2_on_proxy_fork_accepts_non_static_callback_future<'a>(
-        connection: &V2ConnectionTo<Conductor>,
+        connection: &agent_client_protocol::v2::ConnectionTo<Conductor>,
         request: v2::ForkSessionRequest,
         responder: Responder<v2::ForkSessionResponse, agent_client_protocol::V2>,
         _scope: &'a str,
@@ -190,7 +190,7 @@ async fn active_session_preserves_config_options_from_new_session_response() {
         NewSessionResponse::new("config-options-session").config_options(config_options.clone());
     let agent_response = expected_response.clone();
 
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         async move |_request: NewSessionRequest,
                     responder: Responder<NewSessionResponse, V1>,
                     _connection: ConnectionTo<Client>| {
@@ -199,19 +199,17 @@ async fn active_session_preserves_config_options_from_new_session_response() {
         agent_client_protocol::on_receive_request!(),
     );
 
-    let client = Client
-        .builder()
-        .connect_with(agent, async move |connection| {
-            let session = connection
-                .build_session_cwd()?
-                .block_task()
-                .start_session()
-                .await?;
+    let client = Client.v1().connect_with(agent, async move |connection| {
+        let session = connection
+            .build_session_cwd()?
+            .block_task()
+            .start_session()
+            .await?;
 
-            assert_eq!(session.config_options(), Some(config_options.as_slice()));
-            assert_eq!(session.response(), expected_response);
-            Ok(())
-        });
+        assert_eq!(session.config_options(), Some(config_options.as_slice()));
+        assert_eq!(session.response(), expected_response);
+        Ok(())
+    });
 
     tokio::time::timeout(TIMEOUT, client)
         .await
@@ -226,7 +224,7 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
     let prompt_session_id = session_id.clone();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async move |_request: NewSessionRequest,
                         responder: Responder<NewSessionResponse, V1>,
@@ -252,25 +250,23 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
         );
 
     let (result_tx, result_rx) = oneshot::channel();
-    let client = Client
-        .builder()
-        .connect_with(agent, async move |connection| {
-            connection
-                .build_session_cwd()?
-                .on_session_start(async move |mut session| {
-                    session.send_prompt("test ordering")?;
-                    let text = session.read_to_string().await?;
-                    result_tx
-                        .send(text)
-                        .map_err(|_| agent_client_protocol::Error::internal_error())
-                })?;
+    let client = Client.v1().connect_with(agent, async move |connection| {
+        connection
+            .build_session_cwd()?
+            .on_session_start(async move |mut session| {
+                session.send_prompt("test ordering")?;
+                let text = session.read_to_string().await?;
+                result_tx
+                    .send(text)
+                    .map_err(|_| agent_client_protocol::Error::internal_error())
+            })?;
 
-            let text = result_rx
-                .await
-                .map_err(|_| agent_client_protocol::Error::internal_error())?;
-            assert_eq!(text, "ordered response");
-            Ok(())
-        });
+        let text = result_rx
+            .await
+            .map_err(|_| agent_client_protocol::Error::internal_error())?;
+        assert_eq!(text, "ordered response");
+        Ok(())
+    });
 
     tokio::time::timeout(TIMEOUT, client)
         .await
@@ -287,7 +283,7 @@ async fn on_session_start_installs_routing_before_later_message() {
     let (result_tx, result_rx) = oneshot::channel();
 
     let client = Client
-        .builder()
+        .v1()
         .connect_with(transport, async move |connection| {
             connection
                 .build_session_cwd()?
@@ -355,7 +351,7 @@ async fn start_session_installs_routing_before_later_message() {
     let (transport, mut peer) = Channel::duplex();
 
     let client = Client
-        .builder()
+        .v1()
         .connect_with(transport, async move |connection| {
             let mut session = connection
                 .build_session_cwd()?
@@ -411,7 +407,7 @@ async fn start_session_installs_routing_before_later_message() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn start_session_returns_session_new_error_without_closing_connection() {
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         async |request: NewSessionRequest,
                responder: Responder<NewSessionResponse, V1>,
                _connection: ConnectionTo<Client>| {
@@ -426,29 +422,27 @@ async fn start_session_returns_session_new_error_without_closing_connection() {
         agent_client_protocol::on_receive_request!(),
     );
 
-    let client = Client
-        .builder()
-        .connect_with(agent, async move |connection| {
-            let error = connection
-                .build_session("/rejected")
-                .block_task()
-                .start_session()
-                .await
-                .expect_err("the session/new error must reach the caller");
-            assert_eq!(
-                error,
-                agent_client_protocol::Error::invalid_params().data("session rejected"),
-                "the helper must preserve the peer's JSON-RPC error"
-            );
+    let client = Client.v1().connect_with(agent, async move |connection| {
+        let error = connection
+            .build_session("/rejected")
+            .block_task()
+            .start_session()
+            .await
+            .expect_err("the session/new error must reach the caller");
+        assert_eq!(
+            error,
+            agent_client_protocol::Error::invalid_params().data("session rejected"),
+            "the helper must preserve the peer's JSON-RPC error"
+        );
 
-            let session = connection
-                .build_session("/accepted")
-                .block_task()
-                .start_session()
-                .await?;
-            assert_eq!(session.session_id(), &SessionId::new("accepted-session"));
-            Ok(())
-        });
+        let session = connection
+            .build_session("/accepted")
+            .block_task()
+            .start_session()
+            .await?;
+        assert_eq!(session.session_id(), &SessionId::new("accepted-session"));
+        Ok(())
+    });
 
     tokio::time::timeout(TIMEOUT, client)
         .await
@@ -486,7 +480,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
             Client,
             async move |request: v2::NewSessionRequest,
                         responder,
-                        connection: V2ConnectionTo<Conductor>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                 let callback_response = callback_response.clone();
                 let response_session_id = response_session_id.clone();
                 let callback_tx = callback_tx.clone();
@@ -637,7 +631,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
             Client,
             async move |request: v2::ForkSessionRequest,
                         responder,
-                        connection: V2ConnectionTo<Conductor>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                 let callback_response = callback_response.clone();
                 let callback_session_id = callback_session_id.clone();
                 let callback_tx = callback_tx.clone();
@@ -792,7 +786,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
             Client,
             async move |request: v2::ResumeSessionRequest,
                         responder,
-                        connection: V2ConnectionTo<Conductor>| {
+                        connection: agent_client_protocol::v2::ConnectionTo<Conductor>| {
                 let callback_response = callback_response.clone();
                 let callback_session_id = callback_session_id.clone();
                 let callback_tx = callback_tx.clone();

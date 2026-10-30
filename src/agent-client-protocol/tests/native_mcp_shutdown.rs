@@ -93,7 +93,7 @@ async fn joined_cleanup(stop: Stop) {
             runner: Mutex::new(Some(runner_tx)),
             runner_ack: Mutex::new(Some(ack_rx)),
         };
-        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+        let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             cx.build_session_cwd()?
                 .with_mcp_server(McpServer::new_service(
                     "cleanup",

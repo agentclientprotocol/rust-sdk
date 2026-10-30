@@ -59,7 +59,7 @@ impl<R: RunWithConnectionTo<Conductor> + 'static + Send> ConnectTo<Conductor>
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         agent_client_protocol::Proxy
-            .builder()
+            .v1()
             .name("echo-proxy")
             .with_mcp_server(self.mcp_server)
             .connect_to(client)

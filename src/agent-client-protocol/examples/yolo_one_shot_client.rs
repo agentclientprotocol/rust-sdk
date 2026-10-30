@@ -17,7 +17,8 @@ use agent_client_protocol::schema::v1::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, TextContent,
 };
-use agent_client_protocol::{AcpAgent, Agent, ConnectionTo};
+use agent_client_protocol::v1::ConnectionTo;
+use agent_client_protocol::{AcpAgent, Agent};
 use clap::Parser;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -44,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the client — AcpAgent implements ConnectTo, so it serves as the transport
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .on_receive_notification(
             async move |notification: SessionNotification, _cx| {
                 println!("{:?}", notification.update);

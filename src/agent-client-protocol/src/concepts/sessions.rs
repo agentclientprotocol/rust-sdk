@@ -6,10 +6,10 @@
 //!
 //! The examples below use the stable protocol v1 `SessionBuilder` and
 //! `ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
-//! through `Client.v2()` receive `V2ConnectionTo` and its `build_session*`,
-//! `V2SessionBuilder`, `resume_session*`, `V2ResumeSessionBuilder`, and
-//! command-only `V2Session` APIs. With `unstable_session_fork`, it also exposes
-//! `fork_session*` and `V2ForkSessionBuilder`. The v2 resume and fork helpers
+//! through `Client.v2()` receive `v2::ConnectionTo` and its `build_session*`,
+//! `v2::SessionBuilder`, `resume_session*`, `v2::ResumeSessionBuilder`, and
+//! command-only `v2::ActiveSession` APIs. With `unstable_session_fork`, it also exposes
+//! `fork_session*` and `v2::ForkSessionBuilder`. The v2 resume and fork helpers
 //! return builders and do not publish their requests until `start_session` or
 //! `on_proxy_session_start` is called. V2 prompt responses acknowledge
 //! acceptance independently; receive session-wide updates and interactive
@@ -22,7 +22,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session_cwd()?          // Use current working directory
 //!     .block_task()                // Mark as blocking
 //!     .run_until(async |session| {
@@ -41,7 +41,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session("/path/to/project")
 //!     .block_task()
 //!     .run_until(async |session| { Ok(()) })
@@ -55,14 +55,14 @@
 //! # Restoring a Session
 //!
 //! Stable protocol v1 direct clients can turn `session/load` and
-//! `session/resume` into a [`RestoredSession`](crate::RestoredSession) without
+//! `session/resume` into a [`OpenedSession`](crate::v1::OpenedSession) without
 //! manually installing session handlers. It contains both the [`ActiveSession`]
 //! and the complete operation-specific response:
 //!
 //! ```no_run
 //! # use agent_client_protocol::{Client, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! let restored = cx
 //!     .load_session("session-1", "/path/to/project")
 //!     .block_task()
@@ -99,7 +99,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! # cx.build_session_cwd()?.block_task()
 //! .run_until(async |mut session| {
 //!     // Send a prompt
@@ -129,9 +129,9 @@
 //!
 //! MCP attachment requires the `unstable_mcp_over_acp` feature. Standalone MCP
 //! servers remain available without it. Draft protocol v2 per-session
-//! attachment uses `V2SessionBuilder::with_mcp_server` for new sessions or
-//! `V2ResumeSessionBuilder::with_mcp_server` for resumed sessions. With
-//! `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server` provides the
+//! attachment uses `v2::SessionBuilder::with_mcp_server` for new sessions or
+//! `v2::ResumeSessionBuilder::with_mcp_server` for resumed sessions. With
+//! `unstable_session_fork`, `v2::ForkSessionBuilder::with_mcp_server` provides the
 //! same attachment for forked sessions. These APIs additionally require
 //! `unstable_protocol_v2`. The SDK installs the routes and initially polls the
 //! runners before publishing the setup request, so the agent can use them
@@ -145,7 +145,7 @@
 //! # use agent_client_protocol_rmcp::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # let my_mcp_server = McpServer::<Agent, _>::builder("tools").build();
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session_cwd()?
 //!     .with_mcp_server(my_mcp_server)?
 //!     .block_task()
@@ -168,7 +168,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol::schema::v1::NewSessionRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_receive_request(async |req: NewSessionRequest, responder, cx| {
 //!         cx.build_session_from(req)
 //!             .on_session_start(async |session| {
@@ -190,11 +190,11 @@
 //! order setup before messages already processed. See [Ordering](super::ordering)
 //! for details.
 //!
-//! For a draft v2 proxy, use `V2SessionBuilder::on_proxy_session_start` or
-//! `V2ResumeSessionBuilder::on_proxy_session_start` instead. The feature-gated
-//! `V2ForkSessionBuilder` exposes the same helper. Each forwards the complete
+//! For a draft v2 proxy, use `v2::SessionBuilder::on_proxy_session_start` or
+//! `v2::ResumeSessionBuilder::on_proxy_session_start` instead. The feature-gated
+//! `v2::ForkSessionBuilder` exposes the same helper. Each forwards the complete
 //! operation-specific response and then spawns the callback with an
-//! `OpenedV2Session`, so the callback keeps both the command-only session
+//! `v2::OpenedSession`, so the callback keeps both the command-only session
 //! handle and that exact response:
 //!
 //! ```rust,ignore
@@ -231,4 +231,4 @@
 //! - [Callbacks](super::callbacks) - Handle incoming requests
 //! - [Ordering](super::ordering) - Understand when to use `block_task` vs `on_*`
 //!
-//! [`ActiveSession`]: crate::ActiveSession
+//! [`ActiveSession`]: crate::v1::ActiveSession

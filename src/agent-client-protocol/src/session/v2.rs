@@ -6,11 +6,12 @@ use futures::{
 };
 
 use crate::{
-    Agent, Client, ConnectionTo, DynamicHandlerGuard, JsonRpcRequest, Responder, SentRequest, V2,
-    V2ConnectionTo,
+    Agent, Client, ConnectionTo as RawConnectionTo, DynamicHandlerGuard, JsonRpcRequest, Responder,
+    SentRequest, V2,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v2,
+    v2::ConnectionTo,
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -22,7 +23,7 @@ use super::{
 };
 
 async fn run_pending_session_setup<Counterpart, Run>(
-    connection: ConnectionTo<Counterpart>,
+    connection: RawConnectionTo<Counterpart>,
     run: Run,
     started_tx: oneshot::Sender<Result<(), crate::Error>>,
     promotion_rx: oneshot::Receiver<()>,
@@ -95,7 +96,7 @@ where
 }
 
 fn send_session_setup<Counterpart, Request, Run>(
-    connection: V2ConnectionTo<Counterpart>,
+    connection: ConnectionTo<Counterpart>,
     request: Request,
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
@@ -168,19 +169,19 @@ where
     }
 }
 
-impl<Counterpart> V2ConnectionTo<Counterpart>
+impl<Counterpart> ConnectionTo<Counterpart>
 where
     Counterpart: HasPeer<Agent>,
 {
     /// Build a draft protocol v2 `session/new` request.
-    pub fn build_session(&self, cwd: impl AsRef<Path>) -> V2SessionBuilder<Counterpart> {
-        V2SessionBuilder::new(self, v2::NewSessionRequest::new(cwd.as_ref()))
+    pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart> {
+        SessionBuilder::new(self, v2::NewSessionRequest::new(cwd.as_ref()))
     }
 
     /// Build a draft protocol v2 session using the current working directory.
     ///
     /// Returns an error if the current directory cannot be determined.
-    pub fn build_session_cwd(&self) -> Result<V2SessionBuilder<Counterpart>, crate::Error> {
+    pub fn build_session_cwd(&self) -> Result<SessionBuilder<Counterpart>, crate::Error> {
         let cwd = std::env::current_dir().map_err(|error| {
             crate::Error::internal_error().data(format!("cannot get current directory: {error}"))
         })?;
@@ -191,21 +192,21 @@ where
     pub fn build_session_from(
         &self,
         request: v2::NewSessionRequest,
-    ) -> V2SessionBuilder<Counterpart> {
-        V2SessionBuilder::new(self, request)
+    ) -> SessionBuilder<Counterpart> {
+        SessionBuilder::new(self, request)
     }
 
     /// Build an unstable draft protocol v2 `session/fork` request.
     ///
     /// This helper is available with the `unstable_session_fork` feature. Call
-    /// [`V2ForkSessionBuilder::start_session`] to publish the request and
+    /// [`ForkSessionBuilder::start_session`] to publish the request and
     /// obtain a command handle for the newly created fork.
     #[cfg(feature = "unstable_session_fork")]
     pub fn fork_session(
         &self,
         session_id: impl Into<v2::SessionId>,
         cwd: impl AsRef<Path>,
-    ) -> V2ForkSessionBuilder<Counterpart> {
+    ) -> ForkSessionBuilder<Counterpart> {
         self.fork_session_from(v2::ForkSessionRequest::new(session_id, cwd.as_ref()))
     }
 
@@ -213,25 +214,25 @@ where
     /// existing request.
     ///
     /// This helper is available with the `unstable_session_fork` feature. Call
-    /// [`V2ForkSessionBuilder::start_session`] to publish the request.
+    /// [`ForkSessionBuilder::start_session`] to publish the request.
     #[cfg(feature = "unstable_session_fork")]
     pub fn fork_session_from(
         &self,
         request: v2::ForkSessionRequest,
-    ) -> V2ForkSessionBuilder<Counterpart> {
-        V2ForkSessionBuilder::new(self, request)
+    ) -> ForkSessionBuilder<Counterpart> {
+        ForkSessionBuilder::new(self, request)
     }
 
     /// Build a draft protocol v2 `session/resume` request.
     ///
     /// Use [`Self::resume_session_from`] to request history replay or set
     /// other optional resume parameters. Call
-    /// [`V2ResumeSessionBuilder::start_session`] to publish the request.
+    /// [`ResumeSessionBuilder::start_session`] to publish the request.
     pub fn resume_session(
         &self,
         session_id: impl Into<v2::SessionId>,
         cwd: impl AsRef<Path>,
-    ) -> V2ResumeSessionBuilder<Counterpart> {
+    ) -> ResumeSessionBuilder<Counterpart> {
         self.resume_session_from(v2::ResumeSessionRequest::new(session_id, cwd.as_ref()))
     }
 
@@ -240,12 +241,12 @@ where
     /// Register typed session update handlers before connecting. When the
     /// request asks for replay, the agent sends those updates before the
     /// [`v2::ResumeSessionResponse`]. Call
-    /// [`V2ResumeSessionBuilder::start_session`] to publish the request.
+    /// [`ResumeSessionBuilder::start_session`] to publish the request.
     pub fn resume_session_from(
         &self,
         request: v2::ResumeSessionRequest,
-    ) -> V2ResumeSessionBuilder<Counterpart> {
-        V2ResumeSessionBuilder::new(self, request)
+    ) -> ResumeSessionBuilder<Counterpart> {
+        ResumeSessionBuilder::new(self, request)
     }
 }
 
@@ -253,30 +254,30 @@ where
 ///
 /// Protocol v2 acknowledges `session/prompt` independently from inbound
 /// session updates. Register typed [`v2::UpdateSessionNotification`] and
-/// session request handlers on [`crate::Builder`] before connecting, then use
-/// [`Self::start_session`] to create the command-only [`V2Session`] handle or
+/// session request handlers on [`v2::Builder`](crate::v2::Builder) before connecting, then use
+/// [`Self::start_session`] to create the command-only [`ActiveSession`] handle or
 /// `on_proxy_session_start` to forward setup through a proxy.
 ///
 /// With both the `unstable_protocol_v2` and `unstable_mcp_over_acp` features,
 /// `with_mcp_server` attaches an MCP server to the new session.
 #[must_use = "call `start_session` or `on_proxy_session_start` to send the `session/new` request"]
 #[derive(Debug)]
-pub struct V2SessionBuilder<Counterpart, Run = NullRun>
+pub struct SessionBuilder<Counterpart, Run = NullRun>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
 {
-    connection: V2ConnectionTo<Counterpart>,
+    connection: ConnectionTo<Counterpart>,
     request: v2::NewSessionRequest,
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
 }
 
-impl<Counterpart> V2SessionBuilder<Counterpart, NullRun>
+impl<Counterpart> SessionBuilder<Counterpart, NullRun>
 where
     Counterpart: HasPeer<Agent>,
 {
-    fn new(connection: &V2ConnectionTo<Counterpart>, request: v2::NewSessionRequest) -> Self {
+    fn new(connection: &ConnectionTo<Counterpart>, request: v2::NewSessionRequest) -> Self {
         Self {
             connection: connection.clone(),
             request,
@@ -286,7 +287,7 @@ where
     }
 }
 
-impl<Counterpart, Run> V2SessionBuilder<Counterpart, Run>
+impl<Counterpart, Run> SessionBuilder<Counterpart, Run>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
@@ -308,14 +309,14 @@ where
     pub fn with_mcp_server<McpRun>(
         mut self,
         mcp_server: McpServer<Counterpart, McpRun>,
-    ) -> Result<V2SessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
+    ) -> Result<SessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
     where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
         let (handler, mcp_run) = mcp_server.into_v2_handler_and_runner();
         self.dynamic_handler_registrations
             .push(handler.into_dynamic_handler(&mut self.request.mcp_servers, &self.connection)?);
-        Ok(V2SessionBuilder {
+        Ok(SessionBuilder {
             connection: self.connection,
             request: self.request,
             dynamic_handler_registrations: self.dynamic_handler_registrations,
@@ -356,17 +357,17 @@ where
     /// attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>, V2>
+    ) -> SentRequest<OpenedSession<Counterpart, v2::NewSessionResponse>, V2>
     where
         Run: 'static,
     {
         let session_connection = self.connection.clone();
         self.send_new_session(false).map(move |response| {
-            let session = V2Session {
+            let session = ActiveSession {
                 session_id: response.session_id.clone(),
                 connection: session_connection,
             };
-            Ok(OpenedV2Session { session, response })
+            Ok(OpenedSession { session, response })
         })
     }
 
@@ -375,7 +376,7 @@ where
     /// The downstream request is ordered and inherits cancellation from the
     /// upstream request. On success, this helper installs session routing before
     /// later inbound traffic is processed, forwards the complete response, and
-    /// spawns `op` with an [`OpenedV2Session`] containing the command-only
+    /// spawns `op` with an [`OpenedSession`] containing the command-only
     /// session handle plus the complete setup response. Inbound updates and
     /// interactive requests remain independent connection traffic.
     ///
@@ -389,7 +390,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedV2Session<Counterpart, v2::NewSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(OpenedSession<Counterpart, v2::NewSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
@@ -405,8 +406,8 @@ where
                     Err(error) => return responder.respond_with_error(error),
                 };
 
-                let opened = OpenedV2Session {
-                    session: V2Session {
+                let opened = OpenedSession {
+                    session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
                     },
@@ -424,7 +425,7 @@ where
 /// A successful fork creates a new independent session whose ID comes from the
 /// [`v2::ForkSessionResponse`]. Register typed
 /// [`v2::UpdateSessionNotification`] and interactive request handlers on
-/// [`crate::Builder`] before connecting, then use [`Self::start_session`] to
+/// [`v2::Builder`](crate::v2::Builder) before connecting, then use [`Self::start_session`] to
 /// obtain a command handle for the fork or `on_proxy_session_start` to forward
 /// setup through a proxy.
 ///
@@ -434,23 +435,23 @@ where
 #[cfg(feature = "unstable_session_fork")]
 #[must_use = "call `start_session` or `on_proxy_session_start` to send the `session/fork` request"]
 #[derive(Debug)]
-pub struct V2ForkSessionBuilder<Counterpart, Run = NullRun>
+pub struct ForkSessionBuilder<Counterpart, Run = NullRun>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
 {
-    connection: V2ConnectionTo<Counterpart>,
+    connection: ConnectionTo<Counterpart>,
     request: v2::ForkSessionRequest,
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
 }
 
 #[cfg(feature = "unstable_session_fork")]
-impl<Counterpart> V2ForkSessionBuilder<Counterpart, NullRun>
+impl<Counterpart> ForkSessionBuilder<Counterpart, NullRun>
 where
     Counterpart: HasPeer<Agent>,
 {
-    fn new(connection: &V2ConnectionTo<Counterpart>, request: v2::ForkSessionRequest) -> Self {
+    fn new(connection: &ConnectionTo<Counterpart>, request: v2::ForkSessionRequest) -> Self {
         Self {
             connection: connection.clone(),
             request,
@@ -461,7 +462,7 @@ where
 }
 
 #[cfg(feature = "unstable_session_fork")]
-impl<Counterpart, Run> V2ForkSessionBuilder<Counterpart, Run>
+impl<Counterpart, Run> ForkSessionBuilder<Counterpart, Run>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
@@ -484,14 +485,14 @@ where
     pub fn with_mcp_server<McpRun>(
         mut self,
         mcp_server: McpServer<Counterpart, McpRun>,
-    ) -> Result<V2ForkSessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
+    ) -> Result<ForkSessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
     where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
         let (handler, mcp_run) = mcp_server.into_v2_handler_and_runner();
         self.dynamic_handler_registrations
             .push(handler.into_dynamic_handler(&mut self.request.mcp_servers, &self.connection)?);
-        Ok(V2ForkSessionBuilder {
+        Ok(ForkSessionBuilder {
             connection: self.connection,
             request: self.request,
             dynamic_handler_registrations: self.dynamic_handler_registrations,
@@ -533,17 +534,17 @@ where
     /// attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ForkSessionResponse>, V2>
+    ) -> SentRequest<OpenedSession<Counterpart, v2::ForkSessionResponse>, V2>
     where
         Run: 'static,
     {
         let session_connection = self.connection.clone();
         self.send_fork_session(false).map(move |response| {
-            let session = V2Session {
+            let session = ActiveSession {
                 session_id: response.session_id.clone(),
                 connection: session_connection,
             };
-            Ok(OpenedV2Session { session, response })
+            Ok(OpenedSession { session, response })
         })
     }
 
@@ -553,7 +554,7 @@ where
     /// upstream request. On success, this helper obtains the new session ID
     /// from the response, installs session routing before later inbound traffic
     /// is processed, forwards the complete response, and spawns `op` with an
-    /// [`OpenedV2Session`] containing the fork's command handle and response.
+    /// [`OpenedSession`] containing the fork's command handle and response.
     /// Inbound updates and interactive requests remain independent connection
     /// traffic.
     ///
@@ -567,7 +568,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedV2Session<Counterpart, v2::ForkSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(OpenedSession<Counterpart, v2::ForkSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
@@ -583,8 +584,8 @@ where
                     Err(error) => return responder.respond_with_error(error),
                 };
 
-                let opened = OpenedV2Session {
-                    session: V2Session {
+                let opened = OpenedSession {
+                    session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
                     },
@@ -601,7 +602,7 @@ where
 ///
 /// Replay updates arrive before the resume response. Direct clients must
 /// register typed [`v2::UpdateSessionNotification`] and interactive request
-/// handlers on [`crate::Builder`] before connecting. Proxies should use
+/// handlers on [`v2::Builder`](crate::v2::Builder) before connecting. Proxies should use
 /// [`Self::on_proxy_session_start`], which makes downstream session routing
 /// ready before publishing the resume request.
 ///
@@ -610,22 +611,22 @@ where
 /// ready before the agent can send replay or its response.
 #[must_use = "call `start_session` or `on_proxy_session_start` to send the `session/resume` request"]
 #[derive(Debug)]
-pub struct V2ResumeSessionBuilder<Counterpart, Run = NullRun>
+pub struct ResumeSessionBuilder<Counterpart, Run = NullRun>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
 {
-    connection: V2ConnectionTo<Counterpart>,
+    connection: ConnectionTo<Counterpart>,
     request: v2::ResumeSessionRequest,
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
 }
 
-impl<Counterpart> V2ResumeSessionBuilder<Counterpart, NullRun>
+impl<Counterpart> ResumeSessionBuilder<Counterpart, NullRun>
 where
     Counterpart: HasPeer<Agent>,
 {
-    fn new(connection: &V2ConnectionTo<Counterpart>, request: v2::ResumeSessionRequest) -> Self {
+    fn new(connection: &ConnectionTo<Counterpart>, request: v2::ResumeSessionRequest) -> Self {
         Self {
             connection: connection.clone(),
             request,
@@ -635,7 +636,7 @@ where
     }
 }
 
-impl<Counterpart, Run> V2ResumeSessionBuilder<Counterpart, Run>
+impl<Counterpart, Run> ResumeSessionBuilder<Counterpart, Run>
 where
     Counterpart: HasPeer<Agent>,
     Run: RunWithConnectionTo<Counterpart>,
@@ -658,14 +659,14 @@ where
     pub fn with_mcp_server<McpRun>(
         mut self,
         mcp_server: McpServer<Counterpart, McpRun>,
-    ) -> Result<V2ResumeSessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
+    ) -> Result<ResumeSessionBuilder<Counterpart, ChainRun<Run, McpRun>>, crate::Error>
     where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
         let (handler, mcp_run) = mcp_server.into_v2_handler_and_runner();
         self.dynamic_handler_registrations
             .push(handler.into_dynamic_handler(&mut self.request.mcp_servers, &self.connection)?);
-        Ok(V2ResumeSessionBuilder {
+        Ok(ResumeSessionBuilder {
             connection: self.connection,
             request: self.request,
             dynamic_handler_registrations: self.dynamic_handler_registrations,
@@ -706,18 +707,18 @@ where
     /// consumed; setup errors clean up the pending attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>, V2>
+    ) -> SentRequest<OpenedSession<Counterpart, v2::ResumeSessionResponse>, V2>
     where
         Run: 'static,
     {
         let session_id = self.request.session_id.clone();
         let session_connection = self.connection.clone();
         self.send_resume_session(false).map(move |response| {
-            let session = V2Session {
+            let session = ActiveSession {
                 session_id,
                 connection: session_connection,
             };
-            Ok(OpenedV2Session { session, response })
+            Ok(OpenedSession { session, response })
         })
     }
 
@@ -730,7 +731,7 @@ where
     /// cancellation from the upstream request.
     ///
     /// On success, the helper forwards the complete response and spawns `op`
-    /// with an [`OpenedV2Session`] containing the command-only session handle
+    /// with an [`OpenedSession`] containing the command-only session handle
     /// plus that response. The callback runs outside the ordered response
     /// barrier, so it may wait for later connection traffic without
     /// deadlocking the dispatch loop.
@@ -742,7 +743,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedV2Session<Counterpart, v2::ResumeSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(OpenedSession<Counterpart, v2::ResumeSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_id = self.request.session_id.clone();
@@ -758,8 +759,8 @@ where
         self.send_resume_session(true)
             .forward_cancellation_from(responder.cancellation())
             .on_receiving_ok_result(responder, async move |response, responder| {
-                let opened = OpenedV2Session {
-                    session: V2Session {
+                let opened = OpenedSession {
+                    session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
                     },
@@ -775,25 +776,25 @@ where
 
 /// A newly available protocol v2 session and its operation-specific response.
 ///
-/// Keeping the response separate from [`V2Session`] avoids treating
+/// Keeping the response separate from [`ActiveSession`] avoids treating
 /// `session/new` setup data as mutable session state and lets each setup
 /// operation, including `session/resume`, retain its own complete response
 /// type.
 #[derive(Debug)]
-pub struct OpenedV2Session<Link, Response>
+pub struct OpenedSession<Link, Response>
 where
     Link: HasPeer<Agent>,
 {
-    session: V2Session<Link>,
+    session: ActiveSession<Link>,
     response: Response,
 }
 
-impl<Link, Response> OpenedV2Session<Link, Response>
+impl<Link, Response> OpenedSession<Link, Response>
 where
     Link: HasPeer<Agent>,
 {
     /// Access the command handle for the opened session.
-    pub fn session(&self) -> &V2Session<Link> {
+    pub fn session(&self) -> &ActiveSession<Link> {
         &self.session
     }
 
@@ -803,12 +804,12 @@ where
     }
 
     /// Split this result into the command handle and complete setup response.
-    pub fn into_parts(self) -> (V2Session<Link>, Response) {
+    pub fn into_parts(self) -> (ActiveSession<Link>, Response) {
         (self.session, self.response)
     }
 
     /// Consume this result and return only the command handle.
-    pub fn into_session(self) -> V2Session<Link> {
+    pub fn into_session(self) -> ActiveSession<Link> {
         self.session
     }
 }
@@ -818,17 +819,17 @@ where
 /// Inbound protocol traffic is intentionally not owned by this value. Receive
 /// authoritative [`v2::UpdateSessionNotification`] values and interactive
 /// requests such as [`v2::RequestPermissionRequest`] through typed handlers
-/// installed on [`crate::Builder`].
+/// installed on [`v2::Builder`](crate::v2::Builder).
 #[derive(Debug, Clone)]
-pub struct V2Session<Link>
+pub struct ActiveSession<Link>
 where
     Link: HasPeer<Agent>,
 {
     session_id: v2::SessionId,
-    connection: V2ConnectionTo<Link>,
+    connection: ConnectionTo<Link>,
 }
 
-impl<Link> V2Session<Link>
+impl<Link> ActiveSession<Link>
 where
     Link: HasPeer<Agent>,
 {
@@ -838,7 +839,7 @@ where
     }
 
     /// Access the underlying connection.
-    pub fn connection(&self) -> &V2ConnectionTo<Link> {
+    pub fn connection(&self) -> &ConnectionTo<Link> {
         &self.connection
     }
 

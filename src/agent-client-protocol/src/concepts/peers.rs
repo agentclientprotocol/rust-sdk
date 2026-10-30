@@ -19,7 +19,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! // As a client
 //! cx.send_request(InitializeRequest::new(ProtocolVersion::V1));
 //! # Ok(())
@@ -48,7 +48,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! # let req = MyRequest {};
 //! // These are equivalent for Client:
 //! let request = cx.send_request(req.clone());
@@ -74,7 +74,7 @@
 //! # use agent_client_protocol::{Proxy, Client, Agent, Conductor, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
-//! Proxy.builder()
+//! Proxy.v1()
 //!     // Receive a request from the client
 //!     .on_receive_request_from(Client, async |req: MyRequest, responder, cx| {
 //!         // Forward it to the agent

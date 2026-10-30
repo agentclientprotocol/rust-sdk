@@ -2,8 +2,9 @@
 
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
+use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportFrame, V2ConnectionTo,
+    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportFrame,
     schema::{ProtocolVersion, v2},
 };
 use futures::{StreamExt as _, channel::mpsc};
@@ -39,8 +40,7 @@ async fn assert_application_order(prepared: bool) {
     let client = Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<Agent>| {
+            async move |update: v2::UpdateSessionNotification, _connection: ConnectionTo<Agent>| {
                 updates_tx
                     .unbounded_send(ApplicationEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)

@@ -1879,7 +1879,7 @@ impl ConnectTo<Client> for Testy {
         client: impl ConnectTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error> {
         Agent
-            .builder()
+            .v1()
             .name("test-agent")
             .on_receive_request(
                 {

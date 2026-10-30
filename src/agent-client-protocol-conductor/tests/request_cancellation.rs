@@ -148,7 +148,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -200,7 +200,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
     let conductor_handle = tokio::spawn(async move {
         ConductorImpl::new_agent(
             "cancellation-conductor".to_string(),
-            ProxiesAndAgent::new(agent).proxy(Proxy.builder()),
+            ProxiesAndAgent::new(agent).proxy(Proxy.v1()),
         )
         .run(ByteStreams::new(
             conductor_write.compat_write(),
@@ -211,7 +211,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
 
     let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
                 async |cx| {
@@ -284,7 +284,7 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -340,7 +340,7 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
 
     tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .on_receive_request(
                 async move |request: SimpleRequest,
                             responder: Responder<SimpleResponse, V1>,
@@ -448,7 +448,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
     let (session_update_tx, mut session_update_rx) = mpsc::unbounded();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -549,7 +549,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
 
     let client_prompt_id = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .on_receive_request(
                 async move |_request: RequestPermissionRequest,
                             responder: Responder<RequestPermissionResponse, V1>,
@@ -678,7 +678,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -727,7 +727,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
     let conductor_handle = tokio::spawn(async move {
         ConductorImpl::new_agent(
             "cancellation-conductor".to_string(),
-            ProxiesAndAgent::new(agent).proxy(Proxy.builder()),
+            ProxiesAndAgent::new(agent).proxy(Proxy.v1()),
         )
         .run(ByteStreams::new(
             conductor_write.compat_write(),
@@ -738,7 +738,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
 
     let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
                 async |cx| {
@@ -801,7 +801,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -842,7 +842,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
             agent_client_protocol::on_receive_notification!(),
         );
 
-    let proxy = Proxy.builder().on_receive_request_from(
+    let proxy = Proxy.v1().on_receive_request_from(
         Client,
         async |request: NewSessionRequest,
                responder: Responder<NewSessionResponse, V1>,
@@ -870,7 +870,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
 
     let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
                 async |cx| {
@@ -933,7 +933,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
     let cancelled_mcp_server_id = Arc::new(Mutex::new(None::<McpServerAcpId>));
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |initialize: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(initialize.protocol_version))
@@ -1042,7 +1042,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
             agent_client_protocol::on_receive_notification!(),
         );
 
-    let proxy = Proxy.builder().on_receive_request_from(
+    let proxy = Proxy.v1().on_receive_request_from(
         Client,
         async move |request: NewSessionRequest,
                     responder: Responder<NewSessionResponse, V1>,
@@ -1077,7 +1077,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
 
     let client_result = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .on_receive_request(
                 async |request: RequestPermissionRequest,
                        responder: Responder<RequestPermissionResponse, V1>,
@@ -1253,7 +1253,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
     let cancel_gate = Arc::new(Mutex::new(Some(cancel_gate_rx)));
 
     let agent = Agent
-        .builder()
+        .v1()
         .on_receive_request(
             async |request: InitializeRequest, responder, _cx: ConnectionTo<Client>| {
                 responder.respond(InitializeResponse::new(request.protocol_version))
@@ -1310,7 +1310,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
             },
             agent_client_protocol::on_receive_notification!(),
         );
-    let proxy = Proxy.builder().with_mcp_server(McpServer::new(
+    let proxy = Proxy.v1().with_mcp_server(McpServer::new(
         ParkedMcpServer {
             started_tx,
             stopped_tx,
@@ -1335,7 +1335,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
 
     tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
                 async |cx| {
@@ -1387,7 +1387,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     let (parked_id_tx, mut parked_id_rx) = mpsc::unbounded();
     let parked_first = Arc::new(AtomicBool::new(false));
 
-    let agent = Agent.builder().on_receive_request(
+    let agent = Agent.v1().on_receive_request(
         {
             let parked_first = parked_first.clone();
             async move |initialize: InitializeRequest,
@@ -1435,7 +1435,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     let conductor_handle = tokio::spawn(async move {
         ConductorImpl::new_agent(
             "cancellation-conductor".to_string(),
-            ProxiesAndAgent::new(agent).proxy(Proxy.builder()),
+            ProxiesAndAgent::new(agent).proxy(Proxy.v1()),
         )
         .run(ByteStreams::new(
             conductor_write.compat_write(),
@@ -1446,7 +1446,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
 
     let client_request_id = tokio::time::timeout(Duration::from_secs(30), async move {
         Client
-            .builder()
+            .v1()
             .connect_with(
                 ByteStreams::new(editor_write.compat_write(), editor_read.compat()),
                 async |cx| {

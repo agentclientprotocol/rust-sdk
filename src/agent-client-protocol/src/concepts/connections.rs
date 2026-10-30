@@ -23,7 +23,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .name("my-client")
 //!     .connect_with(transport, async |cx| {
 //!         // Use `cx` to send requests and handle responses
@@ -44,7 +44,7 @@
 //! # use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 //! # use agent_client_protocol_test::StatusUpdate;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! // Send a request and wait for the response
 //! let response = cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
 //!     .block_task()
@@ -76,7 +76,7 @@
 //! ```
 //! # use agent_client_protocol::{Client, ConnectTo, Error};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_close(async |_cx| {
 //!         // Notify application-owned work here. Returning an error also
 //!         // terminates a still-running connect_with foreground.
@@ -118,7 +118,7 @@
 //! # use agent_client_protocol::{Client, ConnectTo, ConnectionTermination, Error};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), Error> {
 //! let (connection_tx, connection_rx) = futures::channel::oneshot::channel();
-//! let driver = Client.builder().connect_with(transport, async |cx| {
+//! let driver = Client.v1().connect_with(transport, async |cx| {
 //!     drop(connection_tx.send(cx.clone()));
 //!     // ... drive the session ...
 //!     Ok(())
@@ -160,7 +160,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! let response = cx.send_request(MyRequest {})
 //!     .block_task()
 //!     .await?;
@@ -180,7 +180,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::MyRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder().connect_with(transport, async |cx| {
+//! # Client.v1().connect_with(transport, async |cx| {
 //! cx.prepare_request(MyRequest {})
 //!     .on_receiving_result(async |result| {
 //!         match result {

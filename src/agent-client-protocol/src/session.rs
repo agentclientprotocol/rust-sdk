@@ -25,9 +25,7 @@ use crate::Raw;
 use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
 #[cfg(feature = "unstable_protocol_v2")]
-mod v2;
-#[cfg(feature = "unstable_protocol_v2")]
-pub use v2::*;
+pub(crate) mod v2;
 
 type SessionCleanup = Vec<Arc<dyn DynamicHandlerCleanup>>;
 
@@ -151,7 +149,7 @@ where
     /// Stable protocol v1 session builder for a new session request.
     ///
     /// With `unstable_protocol_v2`, a `Client.v2()` callback receives a
-    /// `V2ConnectionTo` with its own v2 `build_session` helper.
+    /// `v2::ConnectionTo` with its own v2 `build_session` helper.
     pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart, NullRun> {
         SessionBuilder::new(self, NewSessionRequest::new(cwd.as_ref()))
     }
@@ -192,7 +190,7 @@ where
         &self,
         session_id: impl Into<SessionId>,
         cwd: impl AsRef<Path>,
-    ) -> RestoreSessionBuilder<Counterpart, LoadSessionRequest> {
+    ) -> LoadSessionBuilder<Counterpart> {
         self.load_session_from(LoadSessionRequest::new(session_id, cwd.as_ref()))
     }
 
@@ -204,7 +202,7 @@ where
     pub fn load_session_from(
         &self,
         request: LoadSessionRequest,
-    ) -> RestoreSessionBuilder<Counterpart, LoadSessionRequest> {
+    ) -> LoadSessionBuilder<Counterpart> {
         RestoreSessionBuilder::new(self, request)
     }
 
@@ -218,7 +216,7 @@ where
         &self,
         session_id: impl Into<SessionId>,
         cwd: impl AsRef<Path>,
-    ) -> RestoreSessionBuilder<Counterpart, ResumeSessionRequest> {
+    ) -> ResumeSessionBuilder<Counterpart> {
         self.resume_session_from(ResumeSessionRequest::new(session_id, cwd.as_ref()))
     }
 
@@ -230,7 +228,7 @@ where
     pub fn resume_session_from(
         &self,
         request: ResumeSessionRequest,
-    ) -> RestoreSessionBuilder<Counterpart, ResumeSessionRequest> {
+    ) -> ResumeSessionBuilder<Counterpart> {
         RestoreSessionBuilder::new(self, request)
     }
 
@@ -398,6 +396,16 @@ where
     block_state: PhantomData<BlockState>,
 }
 
+/// Stable protocol v1 builder for a `session/load` request, returned by
+/// [`ConnectionTo::load_session`].
+pub type LoadSessionBuilder<Counterpart, BlockState = NonBlocking> =
+    RestoreSessionBuilder<Counterpart, LoadSessionRequest, BlockState>;
+
+/// Stable protocol v1 builder for a `session/resume` request, returned by
+/// [`ConnectionTo::resume_session`].
+pub type ResumeSessionBuilder<Counterpart, BlockState = NonBlocking> =
+    RestoreSessionBuilder<Counterpart, ResumeSessionRequest, BlockState>;
+
 impl<Counterpart, Request> RestoreSessionBuilder<Counterpart, Request, NonBlocking>
 where
     Counterpart: HasPeer<Agent>,
@@ -427,7 +435,7 @@ fn restored_session<Counterpart, Request>(
     session_id: SessionId,
     prepared: PreparedSession<Counterpart>,
     response: Request::Response,
-) -> RestoredSession<'static, Counterpart, Request::Response>
+) -> OpenedSession<'static, Counterpart, Request::Response>
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
@@ -441,7 +449,7 @@ where
         Vec::new(),
     );
 
-    RestoredSession { session, response }
+    OpenedSession { session, response }
 }
 
 fn on_restore_session_start<Counterpart, Request, F, Fut>(
@@ -451,7 +459,7 @@ fn on_restore_session_start<Counterpart, Request, F, Fut>(
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
-    F: FnOnce(RestoredSession<'static, Counterpart, Request::Response>) -> Fut + Send + 'static,
+    F: FnOnce(OpenedSession<'static, Counterpart, Request::Response>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     ensure_v1_session_protocol(&builder.connection)?;
@@ -484,7 +492,7 @@ where
 
 async fn start_restored_session<Counterpart, Request>(
     builder: RestoreSessionBuilder<Counterpart, Request, Blocking>,
-) -> Result<RestoredSession<'static, Counterpart, Request::Response>, crate::Error>
+) -> Result<OpenedSession<'static, Counterpart, Request::Response>, crate::Error>
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
@@ -527,9 +535,7 @@ where
     /// the returned session.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
-        F: FnOnce(RestoredSession<'static, Counterpart, LoadSessionResponse>) -> Fut
-            + Send
-            + 'static,
+        F: FnOnce(OpenedSession<'static, Counterpart, LoadSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         on_restore_session_start(self, op)
@@ -547,7 +553,7 @@ where
     /// The returned session receives subsequent session traffic.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
-        F: FnOnce(RestoredSession<'static, Counterpart, ResumeSessionResponse>) -> Fut
+        F: FnOnce(OpenedSession<'static, Counterpart, ResumeSessionResponse>) -> Fut
             + Send
             + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
@@ -568,7 +574,7 @@ where
     /// provisional session route.
     pub async fn start_session(
         self,
-    ) -> Result<RestoredSession<'static, Counterpart, LoadSessionResponse>, crate::Error> {
+    ) -> Result<OpenedSession<'static, Counterpart, LoadSessionResponse>, crate::Error> {
         start_restored_session(self).await
     }
 }
@@ -585,7 +591,7 @@ where
     /// provisional session route.
     pub async fn start_session(
         self,
-    ) -> Result<RestoredSession<'static, Counterpart, ResumeSessionResponse>, crate::Error> {
+    ) -> Result<OpenedSession<'static, Counterpart, ResumeSessionResponse>, crate::Error> {
         start_restored_session(self).await
     }
 }
@@ -597,7 +603,7 @@ where
 /// restore responses do not repeat it. Keeping the response separate preserves
 /// every operation-specific field without reconstructing it from session
 /// state.
-pub struct RestoredSession<'runner, Link, Response>
+pub struct OpenedSession<'runner, Link, Response>
 where
     Link: HasPeer<Agent>,
 {
@@ -605,7 +611,7 @@ where
     response: Response,
 }
 
-impl<'runner, Link, Response> RestoredSession<'runner, Link, Response>
+impl<'runner, Link, Response> OpenedSession<'runner, Link, Response>
 where
     Link: HasPeer<Agent>,
 {
@@ -635,14 +641,14 @@ where
     }
 }
 
-impl<Link, Response> std::fmt::Debug for RestoredSession<'_, Link, Response>
+impl<Link, Response> std::fmt::Debug for OpenedSession<'_, Link, Response>
 where
     Link: HasPeer<Agent>,
     Response: std::fmt::Debug,
 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("RestoredSession")
+            .debug_struct("OpenedSession")
             .field("session_id", self.session.session_id())
             .field("response", &self.response)
             .finish()
@@ -731,7 +737,7 @@ where
     /// # use agent_client_protocol::mcp_server::McpServer;
     /// # use agent_client_protocol_rmcp::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-    /// # Client.builder().connect_with(transport, async |cx| {
+    /// # Client.v1().connect_with(transport, async |cx| {
     /// # let mcp = McpServer::<Agent, _>::builder("tools").build();
     /// cx.build_session_cwd()?
     ///     .with_mcp_server(mcp)?
@@ -825,7 +831,7 @@ where
     /// # use agent_client_protocol::mcp_server::McpServer;
     /// # use agent_client_protocol_rmcp::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
-    /// Proxy.builder()
+    /// Proxy.v1()
     ///     .on_receive_request_from(Client, async |request: NewSessionRequest, responder, cx| {
     ///         let mcp = McpServer::<Conductor, _>::builder("tools").build();
     ///         cx.build_session_from(request)
@@ -1372,6 +1378,6 @@ fn ensure_v1_session_protocol<Counterpart: Role>(
 
     Err(crate::Error::invalid_request().data(
         "stable session builders use ACP protocol v1 types, but this is a protocol v2 connection; \
-         use the `V2ConnectionTo` supplied to `Client.v2()` callbacks",
+         use the `v2::ConnectionTo` supplied to `Client.v2()` callbacks",
     ))
 }

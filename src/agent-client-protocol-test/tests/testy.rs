@@ -40,7 +40,7 @@ async fn testy_handles_stable_agent_requests() -> Result<(), agent_client_protoc
     let agent_messages = Arc::new(Mutex::new(Vec::<String>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let agent_messages = Arc::clone(&agent_messages);
@@ -216,7 +216,7 @@ async fn testy_handles_stable_agent_requests() -> Result<(), agent_client_protoc
 async fn testy_reserves_loaded_session_ids_and_rejects_after_close()
 -> Result<(), agent_client_protocol::Error> {
     Client
-        .builder()
+        .v1()
         .connect_with(Testy::new(), async |cx| {
             cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
@@ -321,7 +321,7 @@ async fn testy_session_updates_scenario_emits_every_update_variant()
     let updates = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let updates = Arc::clone(&updates);
@@ -396,7 +396,7 @@ async fn testy_session_updates_scenario_emits_every_update_variant()
 async fn testy_full_scenario_returns_cancelled_after_session_cancel()
 -> Result<(), agent_client_protocol::Error> {
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, cx| {
                 cx.send_notification(CancelNotification::new(request.session_id.clone()))?;
@@ -492,7 +492,7 @@ async fn testy_full_scenario_stops_after_terminal_create_cancellation()
     let callback_requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let forbidden_updates = Arc::clone(&forbidden_updates);
@@ -583,7 +583,7 @@ async fn testy_full_scenario_stops_after_terminal_create_cancellation()
 async fn testy_callbacks_scenario_returns_cancelled_after_session_cancel()
 -> Result<(), agent_client_protocol::Error> {
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, cx| {
                 cx.send_notification(CancelNotification::new(request.session_id.clone()))?;
@@ -694,7 +694,7 @@ async fn testy_callbacks_scenario_cancels_pending_callback_request()
     let pending_permission = Arc::new(Mutex::new(None::<Responder<RequestPermissionResponse, V1>>));
 
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             {
                 let callbacks = Arc::clone(&callbacks);
@@ -755,7 +755,7 @@ async fn testy_callbacks_scenario_cancels_pending_callback_request()
 async fn testy_call_tool_prompt_observes_session_cancel() -> Result<(), agent_client_protocol::Error>
 {
     Client
-        .builder()
+        .v1()
         .connect_with(Testy::new(), async |cx| {
             cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
@@ -796,7 +796,7 @@ async fn testy_call_tool_prompt_observes_session_cancel() -> Result<(), agent_cl
 async fn testy_list_tools_prompt_observes_session_close() -> Result<(), agent_client_protocol::Error>
 {
     Client
-        .builder()
+        .v1()
         .connect_with(Testy::new(), async |cx| {
             cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
@@ -837,7 +837,7 @@ async fn testy_list_tools_prompt_observes_session_close() -> Result<(), agent_cl
 async fn testy_delete_cancels_in_flight_prompt_before_cleanup()
 -> Result<(), agent_client_protocol::Error> {
     Client
-        .builder()
+        .v1()
         .connect_with(Testy::new(), async |cx| {
             cx.send_request(InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()
@@ -898,7 +898,7 @@ async fn testy_delete_cancels_in_flight_prompt_before_cleanup()
 async fn testy_close_cancels_in_flight_prompt_before_cleanup()
 -> Result<(), agent_client_protocol::Error> {
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, cx| {
                 cx.send_request(CloseSessionRequest::new(request.session_id.clone()))
@@ -1012,7 +1012,7 @@ async fn testy_callbacks_stop_after_terminal_output_cancellation()
     let callbacks = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             {
                 let callbacks = Arc::clone(&callbacks);
@@ -1155,7 +1155,7 @@ async fn testy_uses_unique_message_ids_per_prompt_response()
     let message_ids = Arc::new(Mutex::new(Vec::<String>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let message_ids = Arc::clone(&message_ids);
@@ -1217,7 +1217,7 @@ async fn testy_repeated_scenarios_use_fresh_protocol_ids()
     let tool_call_statuses = Arc::new(Mutex::new(HashMap::<String, ToolCallStatus>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let message_ids = Arc::clone(&message_ids);
@@ -1333,7 +1333,7 @@ async fn testy_full_scenario_exercises_updates_and_callbacks()
     let completed_elicitations = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let builder = Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let updates = Arc::clone(&updates);
@@ -1670,7 +1670,7 @@ async fn testy_full_scenario_roots_paths_in_the_session_cwd()
     let terminal_cwds = Arc::new(Mutex::new(Vec::<Option<PathBuf>>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let resource_uris = Arc::clone(&resource_uris);
@@ -1854,7 +1854,7 @@ async fn testy_elicitations_prompt_exercises_all_elicitation_create_and_complete
     let completions = Arc::new(Mutex::new(Vec::<String>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_notification(
             {
                 let agent_messages = Arc::clone(&agent_messages);
@@ -2063,7 +2063,7 @@ async fn assert_form_elicitation_unsupported(
     let requests = Arc::new(Mutex::new(0_usize));
 
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             {
                 let requests = Arc::clone(&requests);
@@ -2115,7 +2115,7 @@ async fn testy_callbacks_return_invalid_params_when_url_elicitation_is_unsupport
     let requests = Arc::new(Mutex::new(Vec::<&'static str>::new()));
 
     Client
-        .builder()
+        .v1()
         .on_receive_request(
             async move |request: RequestPermissionRequest, responder, _cx| {
                 let option_id = request.options.first().map_or_else(

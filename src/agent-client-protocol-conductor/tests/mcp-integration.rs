@@ -68,7 +68,7 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error>
 
     // Run the client
     let result = agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-connector")
         .on_receive_notification(
             {

@@ -4,9 +4,10 @@
 use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::SessionMessage;
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcId, RawJsonRpcMessage, Responder, SessionMessage, TransportFrame, UntypedMessage,
+    RawJsonRpcId, RawJsonRpcMessage, Responder, TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
         LoadSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption,
@@ -109,7 +110,7 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
     let (done_tx, done_rx) = oneshot::channel();
 
     let client = Client
-        .builder()
+        .v1()
         .connect_with(transport, async move |connection| {
             connection
                 .load_session(client_session_id.clone(), "/restore/load")
@@ -178,7 +179,7 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
     let (transport, mut peer) = Channel::duplex();
 
     let client = Client
-        .builder()
+        .v1()
         .connect_with(transport, async move |connection| {
             let mut restored = connection
                 .resume_session(client_session_id.clone(), "/restore/resume")
@@ -243,7 +244,7 @@ async fn resume_session_from_preserves_the_existing_request() {
     let (transport, mut peer) = Channel::duplex();
 
     let client = Client
-        .builder()
+        .v1()
         .connect_with(transport, async move |connection| {
             let restored = connection
                 .resume_session_from(client_request)
@@ -283,7 +284,7 @@ async fn resume_session_from_preserves_the_existing_request() {
 #[tokio::test(flavor = "current_thread")]
 async fn restore_waits_for_routing_acknowledgment_before_publication() {
     let (handler_started_tx, mut handler_started_rx) = mpsc::unbounded();
-    let client = Client.builder().on_receive_request(
+    let client = Client.v1().on_receive_request(
         async move |_request: UntypedMessage,
                     _responder: Responder<serde_json::Value, V1>,
                     _connection: ConnectionTo<Agent>| {
@@ -347,7 +348,7 @@ async fn failed_restore_removes_routing_before_later_messages() {
     let (transport, mut peer) = Channel::duplex();
     let (barrier_tx, mut barrier_rx) = mpsc::unbounded();
 
-    let client = Client.builder().on_receive_notification(
+    let client = Client.v1().on_receive_notification(
         async move |_notification: DispatchBarrierNotification,
                     _connection: ConnectionTo<Agent>| {
             barrier_tx
@@ -428,7 +429,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
     let (barrier_tx, mut barrier_rx) = mpsc::unbounded();
     let (barrier_observed_tx, barrier_observed_rx) = oneshot::channel();
 
-    let client = Client.builder().on_receive_notification(
+    let client = Client.v1().on_receive_notification(
         async move |_notification: DispatchBarrierNotification,
                     _connection: ConnectionTo<Agent>| {
             barrier_tx

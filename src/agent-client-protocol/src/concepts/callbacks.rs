@@ -11,7 +11,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::{ValidateRequest, ValidateResponse};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_receive_request(async |req: ValidateRequest, responder, cx| {
 //!         // Process the request
 //!         let is_valid = req.data.len() > 0;
@@ -39,7 +39,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::StatusUpdate;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_receive_notification(async |notif: StatusUpdate, cx| {
 //!         println!("Status: {}", notif.message);
 //!         Ok(())
@@ -57,7 +57,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::{MyRequest, MyResponse};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder()
+//! # Client.v1()
 //! #   .on_receive_request(async |req: MyRequest, responder, cx| {
 //! // Send a successful response
 //! responder.respond(MyResponse { status: "ok".into() })?;
@@ -74,7 +74,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::{MyRequest, MyResponse};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! # Client.builder()
+//! # Client.v1()
 //! #   .on_receive_request(async |req: MyRequest, responder, cx| {
 //! responder.respond_with_error(agent_client_protocol::Error::invalid_params())?;
 //! # Ok(())
@@ -98,7 +98,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::{ValidateRequest, ValidateResponse, ExecuteRequest, ExecuteResponse};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_receive_request(async |req: ValidateRequest, responder, cx| {
 //!         // Handle validation requests
 //!         responder.respond(ValidateResponse { is_valid: true, error: None })

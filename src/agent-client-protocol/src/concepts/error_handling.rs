@@ -21,7 +21,7 @@
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol_test::{ValidateRequest, ValidateResponse};
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
-//! Client.builder()
+//! Client.v1()
 //!     .on_receive_request(async |request: ValidateRequest, responder, _cx| {
 //!         if request.data.is_empty() {
 //!             // Send error to peer, keep connection alive

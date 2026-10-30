@@ -89,7 +89,7 @@ async fn discover(native: bool, backend_result: Value) -> Value {
         } else {
             McpServer::new(Connector(backend_result), NullRun)
         };
-        let client = tokio::spawn(Client.builder().connect_with(transport, async move |cx| {
+        let client = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             cx.build_session_cwd()?
                 .with_mcp_server(server)?
                 .block_task()

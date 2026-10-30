@@ -77,7 +77,7 @@ impl ConnectTo<Conductor> for InitComponent {
         let config2 = Arc::clone(&config);
 
         Proxy
-            .builder()
+            .v1()
             .name("init-component")
             // Handle InitializeProxyRequest (we're a proxy)
             .on_receive_request_from(
@@ -129,7 +129,7 @@ async fn run_test_with_components(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(
@@ -261,7 +261,7 @@ impl ConnectTo<Conductor> for BadProxy {
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         Proxy
-            .builder()
+            .v1()
             .name("bad-proxy")
             .on_receive_request_from(
                 Client,
@@ -295,7 +295,7 @@ async fn run_bad_proxy_test(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     agent_client_protocol::Client
-        .builder()
+        .v1()
         .name("editor-to-connector")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent(

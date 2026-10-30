@@ -37,7 +37,7 @@ fn router(v1_hits: Arc<AtomicUsize>, v2_hits: Arc<AtomicUsize>) -> ProxyProtocol
 }
 
 fn v1_proxy(v1_hits: Arc<AtomicUsize>) -> impl ConnectTo<Conductor> {
-    Proxy.builder().on_receive_request_from(
+    Proxy.v1().on_receive_request_from(
         Client,
         async move |request: InitializeProxyRequest, responder, _cx| {
             v1_hits.fetch_add(1, Ordering::SeqCst);

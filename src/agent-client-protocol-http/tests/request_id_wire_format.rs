@@ -40,7 +40,7 @@ const IDS: &[&str] = &[
 /// A v1 agent that answers `_test/echo` with `{}` and, for `_test/callback`,
 /// sends `_test/echo` to the client and forwards its answer.
 fn agent() -> impl ConnectTo<Client> {
-    Agent.builder().on_receive_request(
+    Agent.v1().on_receive_request(
         async |request: UntypedMessage, responder: Responder<Value, V1>, cx| match request.method()
         {
             "initialize" => responder.respond(json!({ "protocolVersion": 1 })),

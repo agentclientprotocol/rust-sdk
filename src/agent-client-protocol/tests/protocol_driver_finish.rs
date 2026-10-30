@@ -37,7 +37,7 @@ struct FiniteClient;
 impl ConnectTo<Agent> for FiniteClient {
     async fn connect_to(self, agent: impl ConnectTo<Client>) -> Result<(), Error> {
         Client
-            .builder()
+            .v1()
             .connect_with(agent, async |cx| {
                 let response = cx
                     .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
@@ -57,7 +57,7 @@ impl ConnectTo<Client> for FiniteAgent {
     async fn connect_to(self, client: impl ConnectTo<Agent>) -> Result<(), Error> {
         let (initialized, mut initialization) = mpsc::unbounded();
         Agent
-            .builder()
+            .v1()
             .on_receive_request(
                 async move |request: v1::InitializeRequest, responder, _cx| {
                     assert_eq!(request.protocol_version, ProtocolVersion::V1);
@@ -83,7 +83,7 @@ impl ConnectTo<Conductor> for FiniteProxy {
     async fn connect_to(self, conductor: impl ConnectTo<Proxy>) -> Result<(), Error> {
         let (initialized, mut initialization) = mpsc::unbounded();
         Proxy
-            .builder()
+            .v1()
             .on_receive_request_from(
                 Client,
                 async move |request: InitializeProxyRequest, responder, _cx| {

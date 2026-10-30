@@ -2,8 +2,9 @@
 
 use std::{path::PathBuf, time::Duration};
 
+use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Client, Error, V2ConnectionTo,
+    Client, Error,
     schema::{ProtocolVersion, v1, v2},
 };
 use agent_client_protocol_test::testy::{Testy, TestyCommand, TestyScenario};
@@ -73,7 +74,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
                 update_tx
                     .send(TestEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)
@@ -278,7 +279,7 @@ async fn testy_v2_prompt_acceptance_is_independent_from_cancellation_completion(
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
                 update_tx
                     .send(TestEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)
@@ -351,7 +352,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
                 update_tx
                     .send(TestEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)
@@ -446,7 +447,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
 #[tokio::test(flavor = "current_thread")]
 async fn testy_router_keeps_the_v1_implementation_available() {
     Client
-        .builder()
+        .v1()
         .connect_with(Testy::new().protocol_router(), async |connection| {
             let initialize = connection
                 .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
@@ -662,7 +663,7 @@ async fn testy_v2_rejects_empty_prompt_without_inserting_it() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
                 update_tx
                     .send(TestEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)
@@ -724,7 +725,7 @@ async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
         .v2()
         .on_receive_notification(
             async move |update: v2::UpdateSessionNotification,
-                        _connection: V2ConnectionTo<agent_client_protocol::Agent>| {
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
                 event_tx
                     .send(TestEvent::Update(Box::new(update)))
                     .map_err(Error::into_internal_error)

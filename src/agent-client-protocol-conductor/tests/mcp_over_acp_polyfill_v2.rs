@@ -10,8 +10,9 @@ use std::{
     },
 };
 
+use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Client, Conductor, ConnectTo, Proxy, V2ConnectionTo,
+    Agent, Client, Conductor, ConnectTo, Proxy,
     schema::{ProtocolVersion, v2},
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
@@ -183,7 +184,7 @@ async fn run(
     ids: Arc<Mutex<Vec<String>>>,
     count: Arc<AtomicUsize>,
     cancelled: Arc<AtomicUsize>,
-    editor: impl AsyncFnOnce(V2ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
+    editor: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);

@@ -50,7 +50,7 @@ impl ConnectTo<Conductor> for PassthroughProxy {
         client: impl ConnectTo<Proxy>,
     ) -> Result<(), agent_client_protocol::Error> {
         Proxy
-            .builder()
+            .v1()
             .name("passthrough-proxy")
             .on_receive_request_from(
                 Client,
@@ -105,7 +105,7 @@ impl ConnectTo<Client> for RecordingAgent {
         let prompt_meta = self.prompt_meta;
 
         Agent
-            .builder()
+            .v1()
             .name("recording-agent")
             .on_receive_request(
                 async |request: InitializeRequest, responder, _cx| {
@@ -145,7 +145,7 @@ async fn run_with_conductor(
         agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     Client
-        .builder()
+        .v1()
         .name("editor")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent("conductor", components)

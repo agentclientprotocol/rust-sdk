@@ -5,14 +5,12 @@ use futures::{StreamExt as _, future};
 #[cfg(feature = "unstable_protocol_v2")]
 use serde::{Serialize, de::DeserializeOwned};
 
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::DynConnectTo;
 use crate::Raw;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::RawJsonRpcId;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
+use crate::jsonrpc::{TransportFrame, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
 use crate::schema::METHOD_INITIALIZE_PROXY;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -26,7 +24,9 @@ use crate::{
     Channel, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
     RawJsonRpcResponse as RpcResponse,
 };
-use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::{ConnectTo, DynConnectTo};
+use crate::{ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
 #[derive(serde::Deserialize)]
 struct NewSessionResponseEnvelope {
@@ -42,10 +42,6 @@ pub struct Client;
 
 impl Role for Client {
     type Counterpart = Agent;
-
-    fn builder(self) -> Builder<Self> {
-        Builder::new(self).v1_client()
-    }
 
     fn default_handle_dispatch_from(
         &self,
@@ -68,12 +64,14 @@ impl Role for Client {
 }
 
 impl Client {
-    /// Create a connection builder for a client.
+    /// Create a client builder that uses the ACP protocol v1 API.
     ///
-    /// Typed handlers on this builder receive [`V1`](crate::V1) request
-    /// handles.
-    pub fn builder(self) -> Builder<Client, NullHandler, NullRun, crate::NullClose, crate::V1> {
-        <Self as Role>::builder(self).into_protocol()
+    /// Callbacks receive a [`v1::ConnectionTo`](crate::v1::ConnectionTo) and
+    /// typed handlers receive v1 request handles. With the
+    /// `unstable_protocol_v2` feature, use `Client::v2` for a protocol v2
+    /// client, or `Client::protocol_connector` to support both.
+    pub fn v1(self) -> crate::v1::Builder<Client> {
+        Builder::new(self).v1_client().into_protocol()
     }
 
     /// Create a client builder that requires an ACP protocol v2 agent.
@@ -84,8 +82,8 @@ impl Client {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> V2Builder<Client, NullHandler, NullRun> {
-        self.builder().v2_client()
+    pub fn v2(self) -> crate::v2::Builder<Client> {
+        Builder::new(self).v2_client()
     }
 
     /// Create a connector that chooses between configured protocol implementations.
@@ -104,18 +102,6 @@ impl Client {
     #[must_use]
     pub fn protocol_connector(self) -> ClientProtocolConnector {
         ClientProtocolConnector::new()
-    }
-
-    /// Connect to `agent` and run `main_fn` with the [`ConnectionTo`].
-    /// Returns the result of `main_fn` (or an error if something goes wrong).
-    ///
-    /// Equivalent to `self.builder().connect_with(agent, main_fn)`.
-    pub async fn connect_with<R>(
-        self,
-        agent: impl ConnectTo<Client>,
-        main_fn: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<R, crate::Error>,
-    ) -> Result<R, crate::Error> {
-        self.builder().connect_with(agent, main_fn).await
     }
 }
 
@@ -294,10 +280,6 @@ pub struct Agent;
 impl Role for Agent {
     type Counterpart = Client;
 
-    fn builder(self) -> Builder<Self> {
-        Builder::new(self).v1_agent()
-    }
-
     fn role_id(&self) -> RoleId {
         RoleId::from_singleton(self)
     }
@@ -329,12 +311,14 @@ impl Role for Agent {
 }
 
 impl Agent {
-    /// Create a connection builder for an agent.
+    /// Create an agent builder that uses the ACP protocol v1 API.
     ///
-    /// Typed handlers on this builder receive [`V1`](crate::V1) request
-    /// handles.
-    pub fn builder(self) -> Builder<Agent, NullHandler, NullRun, crate::NullClose, crate::V1> {
-        <Self as Role>::builder(self).into_protocol()
+    /// Callbacks receive a [`v1::ConnectionTo`](crate::v1::ConnectionTo) and
+    /// typed handlers receive v1 request handles. With the
+    /// `unstable_protocol_v2` feature, use `Agent::v2` for a protocol v2
+    /// agent, or `Agent::protocol_router` to serve both.
+    pub fn v1(self) -> crate::v1::Builder<Agent> {
+        Builder::new(self).v1_agent().into_protocol()
     }
 
     /// Create an agent builder that uses the ACP protocol v2 API.
@@ -357,8 +341,8 @@ impl Agent {
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> V2Builder<Agent, NullHandler, NullRun> {
-        self.builder().v2_agent()
+    pub fn v2(self) -> crate::v2::Builder<Agent> {
+        Builder::new(self).v2_agent()
     }
 
     /// Create a router that chooses between configured protocol implementations.
@@ -1534,7 +1518,7 @@ impl Proxy {
     ///
     /// Typed handlers on this builder receive [`V1`](crate::V1) request
     /// handles.
-    pub fn builder(self) -> Builder<Proxy, NullHandler, NullRun, crate::NullClose, crate::V1> {
+    pub fn v1(self) -> crate::v1::Builder<Proxy> {
         Builder::new(self).into_protocol()
     }
 
@@ -1544,14 +1528,14 @@ impl Proxy {
     /// `initialize`: it selects v2 for a request for v2 or newer, keeping what
     /// parses under v2 for a newer request, and rejects a request below v2
     /// with `-32022`.
-    /// Fluent callbacks receive [`crate::V2ConnectionTo<Conductor>`], while
+    /// Fluent callbacks receive [`v2::ConnectionTo<Conductor>`](crate::v2::ConnectionTo), while
     /// low-level custom handlers and runners retain the protocol-neutral
     /// [`ConnectionTo`] interface.
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
-    pub fn v2(self) -> V2Builder<Proxy, NullHandler, NullRun> {
-        self.builder().v2_proxy()
+    pub fn v2(self) -> crate::v2::Builder<Proxy> {
+        Builder::new(self).v2_proxy()
     }
 
     /// Create a router that chooses between configured proxy implementations.
