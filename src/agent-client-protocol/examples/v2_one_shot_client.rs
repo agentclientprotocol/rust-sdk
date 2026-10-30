@@ -200,22 +200,58 @@ impl AgentTextProjection {
         self.messages.entry(message_id).or_default()
     }
 
+    /// Render the agent's messages as text. Content this terminal client
+    /// cannot show is replaced by a placeholder rather than silently dropped.
     fn text(&self) -> String {
         self.order
             .iter()
             .filter_map(|message_id| self.messages.get(message_id))
             .flatten()
-            .filter_map(|content| match content {
-                v2::ContentBlock::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
+            .map(content_text)
             .collect()
+    }
+}
+
+fn content_text(content: &v2::ContentBlock) -> std::borrow::Cow<'_, str> {
+    match content {
+        v2::ContentBlock::Text(text) => text.text.as_str().into(),
+        v2::ContentBlock::Image(image) => format!("[image: {}]", image.mime_type).into(),
+        v2::ContentBlock::Audio(audio) => format!("[audio: {}]", audio.mime_type).into(),
+        v2::ContentBlock::ResourceLink(link) => format!(
+            "[resource: {} <{}>]",
+            link.title.as_deref().unwrap_or(&link.name),
+            link.uri
+        )
+        .into(),
+        v2::ContentBlock::Resource(_) => "[embedded resource]".into(),
+        _ => "[unsupported content]".into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_that_cannot_be_rendered_gets_a_placeholder() {
+        let message_id = v2::MessageId::new("message-1");
+        let mut projection = AgentTextProjection::default();
+        projection.apply(v2::SessionUpdate::AgentMessage(
+            v2::AgentMessage::new(message_id).content(vec![
+                "see ".into(),
+                v2::ContentBlock::Image(v2::ImageContent::new("aGk=", "image/png")),
+                v2::ContentBlock::ResourceLink(v2::ResourceLink::new(
+                    "notes.md",
+                    "file:///notes.md",
+                )),
+            ]),
+        ));
+
+        assert_eq!(
+            projection.text(),
+            "see [image: image/png][resource: notes.md <file:///notes.md>]"
+        );
+    }
 
     #[test]
     fn agent_message_snapshots_patch_accumulated_chunks() {
