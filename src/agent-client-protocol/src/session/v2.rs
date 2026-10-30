@@ -922,12 +922,25 @@ where
     /// message ID. Prompt responses need not precede the close response.
     ///
     /// Existing clones of this local command handle are not invalidated, but
-    /// the session is no longer active: the agent rejects later commands for it,
-    /// and a repeated close, with `-32002` (resource not found).
+    /// the session is no longer active: the agent rejects later commands for it
+    /// with `-32002` (resource not found).
+    ///
+    /// Closing is idempotent. An agent should answer a close of an unknown or
+    /// already-closed session with success, and an older agent may answer
+    /// `-32002` instead, so this helper resolves a `-32002` response as a
+    /// successful, empty [`v2::CloseSessionResponse`]. Other errors are
+    /// returned unchanged.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/session-setup#closing-active-sessions>.
     pub fn close(&self) -> SentRequest<v2::CloseSessionResponse> {
         self.connection
             .send_request_to(Agent, v2::CloseSessionRequest::new(self.session_id.clone()))
+            .recover_error(|error| {
+                if error.code == crate::ErrorCode::ResourceNotFound {
+                    Ok(v2::CloseSessionResponse::new())
+                } else {
+                    Err(error)
+                }
+            })
     }
 }

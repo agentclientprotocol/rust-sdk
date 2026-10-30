@@ -932,6 +932,8 @@ async fn v2_session_commands_cover_configuration_and_close() {
     let updated_config_option = v2::SessionConfigOption::boolean("thinking", "Thinking", true);
     let set_response = v2::SetSessionConfigOptionResponse::new(vec![updated_config_option]);
     let agent_set_response = set_response.clone();
+    let close_count = Arc::new(Mutex::new(0_usize));
+    let agent_close_count = close_count.clone();
 
     let agent = Agent
         .v2()
@@ -966,11 +968,21 @@ async fn v2_session_commands_cover_configuration_and_close() {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async |request: v2::CloseSessionRequest,
-                   responder: Responder<v2::CloseSessionResponse>,
-                   _connection: V2ConnectionTo<Client>| {
+            async move |request: v2::CloseSessionRequest,
+                        responder: Responder<v2::CloseSessionResponse>,
+                        _connection: V2ConnectionTo<Client>| {
                 assert_eq!(request.session_id, v2::SessionId::new("command-session"));
-                responder.respond(v2::CloseSessionResponse::new())
+                let mut count = agent_close_count.lock().unwrap();
+                *count += 1;
+                match *count {
+                    1 => responder.respond(v2::CloseSessionResponse::new()),
+                    // An agent predating idempotent close reports the closed
+                    // session as not found.
+                    2 => responder.respond_with_error(Error::session_not_found(
+                        request.session_id.0.clone(),
+                    )),
+                    _ => responder.respond_with_error(Error::invalid_params()),
+                }
             },
             agent_client_protocol::on_receive_request!(),
         );
@@ -1002,6 +1014,18 @@ async fn v2_session_commands_cover_configuration_and_close() {
             session.close().block_task().await?,
             v2::CloseSessionResponse::new()
         );
+        // Closing is idempotent: `-32002` resolves as success.
+        assert_eq!(
+            session.close().block_task().await?,
+            v2::CloseSessionResponse::new()
+        );
+        // Other errors are still reported.
+        let error = session
+            .close()
+            .block_task()
+            .await
+            .expect_err("only -32002 is treated as a successful close");
+        assert_eq!(error.code, ErrorCode::InvalidParams);
         Ok(())
     });
 

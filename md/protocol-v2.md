@@ -189,8 +189,10 @@ V2 deliberately separates prompt submission from session observation:
   leaves the configuration unchanged. A successful response is the
   authoritative replacement option set for the requesting client, even though
   a duplicate `config_option_update` notification for the same change may
-  arrive before it. `close` returns the complete close response. Mutable
-  configuration is not cached on the command handle.
+  arrive before it. `close` returns the complete close response. Closing is
+  idempotent, so `close` also resolves a `-32002` response (an unknown or
+  already-closed session) as success. Mutable configuration is not cached on
+  the command handle.
 
 Install connection handlers before `session/new`, `session/resume`, and
 feature-gated `session/fork` requests. This is especially important before
