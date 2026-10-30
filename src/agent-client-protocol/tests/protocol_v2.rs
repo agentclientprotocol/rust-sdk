@@ -2508,6 +2508,11 @@ async fn protocol_router_rejection_flushes_with_trailing_malformed_input() -> Re
         response["error"]["data"],
         serde_json::json!({ "requested": 1, "supported": [2] })
     );
+    // The connection stays uninitialized and open, so the malformed input
+    // that follows is answered too.
+    let response = read_wire_json(&mut client_reader).await?;
+    assert_eq!(response["id"], Value::Null);
+    assert_eq!(response["error"]["code"], -32700);
 
     agent_task
         .await
@@ -3123,6 +3128,9 @@ async fn protocol_router_mismatch_flushes_without_starting_application() -> Resu
                 "data": { "requested": 1, "supported": [2] },
             })
         );
+        // A failed initialize leaves the connection open for a retry; the
+        // router finishes once the client closes it.
+        drop(client_writer);
         tokio::time::timeout(tokio::time::Duration::from_secs(10), agent_task)
             .await
             .map_err(Error::into_internal_error)?
@@ -3585,5 +3593,175 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
         .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
         .clone();
     assert_eq!(received_ids, vec![(v1::RequestId::Null, None)]);
+    Ok(())
+}
+
+/// Write raw JSON-RPC values to an agent and return its next wire response.
+async fn exchange_wire_json(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    reader: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    values: &[Value],
+) -> Result<Value, Error> {
+    for value in values {
+        write_wire_json(writer, value).await?;
+    }
+    read_wire_json(reader).await
+}
+
+fn wire_request(id: impl Serialize, method: &str, params: Value) -> Value {
+    serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
+}
+
+fn wire_notification(method: &str, params: Value) -> Value {
+    serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn protocol_router_accepts_initialize_again_after_a_rejection() -> Result<(), Error> {
+    let agent = Agent
+        .protocol_router()
+        .with_v2(v2_agent_with_session("v2-session"));
+    let (mut writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(agent.connect_to(transport));
+    let mut reader = tokio::io::BufReader::new(client_reader);
+
+    // Notifications before initialization are ignored, and the client can
+    // correct a rejected initialize by sending another one.
+    let rejected = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[
+            wire_notification("_com.example/early", serde_json::json!({})),
+            wire_request(
+                1,
+                "initialize",
+                json_value(v1_initialize_request(ProtocolVersion::V1))?,
+            ),
+        ],
+    )
+    .await?;
+    assert_eq!(rejected["id"], 1, "{rejected}");
+    assert_eq!(rejected["error"]["code"], -32022, "{rejected}");
+
+    let rejected = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[wire_request(2, "initialize", serde_json::json!({}))],
+    )
+    .await?;
+    assert_eq!(rejected["id"], 2, "{rejected}");
+    assert_eq!(rejected["error"]["code"], -32602, "{rejected}");
+
+    let initialized = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[wire_request(
+            3,
+            "initialize",
+            json_value(v2_initialize_request(ProtocolVersion::V2))?,
+        )],
+    )
+    .await?;
+    assert_eq!(initialized["id"], 3, "{initialized}");
+    assert_eq!(initialized["result"]["protocolVersion"], 2, "{initialized}");
+
+    let session = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[wire_request(
+            4,
+            "session/new",
+            json_value(v2::NewSessionRequest::new(cwd()?))?,
+        )],
+    )
+    .await?;
+    assert_eq!(session["result"]["sessionId"], "v2-session", "{session}");
+
+    drop(writer);
+    agent_task.await.map_err(Error::into_internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_ignores_notifications_before_initialization() -> Result<(), Error> {
+    let (mut writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(v2_agent_with_session("v2-session").connect_to(transport));
+    let mut reader = tokio::io::BufReader::new(client_reader);
+
+    // Neither notification is answered: the first response on the wire is
+    // the initialize response.
+    let initialized = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[
+            wire_notification(
+                "session/cancel",
+                serde_json::json!({ "sessionId": "unknown" }),
+            ),
+            wire_notification("_com.example/early", serde_json::json!({})),
+            wire_request(
+                1,
+                "initialize",
+                json_value(v2_initialize_request(ProtocolVersion::V2))?,
+            ),
+        ],
+    )
+    .await?;
+    assert_eq!(initialized["id"], 1, "{initialized}");
+    assert_eq!(initialized["result"]["protocolVersion"], 2, "{initialized}");
+
+    drop(writer);
+    agent_task.await.map_err(Error::into_internal_error)??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_ignores_unknown_notifications_and_cancellations() -> Result<(), Error> {
+    let (mut writer, server_reader) = tokio::io::duplex(4096);
+    let (server_writer, client_reader) = tokio::io::duplex(4096);
+    let transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
+    let agent_task = tokio::spawn(v2_agent_with_session("v2-session").connect_to(transport));
+    let mut reader = tokio::io::BufReader::new(client_reader);
+
+    let initialized = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[wire_request(
+            1,
+            "initialize",
+            json_value(v2_initialize_request(ProtocolVersion::V2))?,
+        )],
+    )
+    .await?;
+    assert_eq!(initialized["id"], 1, "{initialized}");
+
+    // `$/cancel_request` for an unknown or already answered request, unknown
+    // `$/` notifications, and custom notifications get no response. The next
+    // response on the wire answers the following request.
+    let session = exchange_wire_json(
+        &mut writer,
+        &mut reader,
+        &[
+            wire_notification("$/cancel_request", serde_json::json!({ "requestId": 99 })),
+            wire_notification("$/cancel_request", serde_json::json!({ "requestId": 1 })),
+            wire_notification("$/future_protocol_message", serde_json::json!({})),
+            wire_notification("_com.example/status", serde_json::json!({})),
+            wire_request(
+                2,
+                "session/new",
+                json_value(v2::NewSessionRequest::new(cwd()?))?,
+            ),
+        ],
+    )
+    .await?;
+    assert_eq!(session["id"], 2, "{session}");
+    assert_eq!(session["result"]["sessionId"], "v2-session", "{session}");
+
+    drop(writer);
+    agent_task.await.map_err(Error::into_internal_error)??;
     Ok(())
 }

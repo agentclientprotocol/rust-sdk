@@ -383,6 +383,11 @@ impl Agent {
     /// `null` id that would select v2 is rejected with `-32600`, like any
     /// other invalid first request.
     ///
+    /// A rejected first message, including a version mismatch (`-32022`),
+    /// leaves the connection uninitialized and open: the client may send
+    /// `initialize` again, for example after correcting its parameters.
+    /// Notifications before initialization are ignored.
+    ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
     #[cfg(feature = "unstable_protocol_v2")]
@@ -435,28 +440,38 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             v2: self.v2.is_some(),
         };
         let mut client = RunningProtocolPeer::new(client);
+        // A failed initialize leaves the connection uninitialized, and the
+        // client may send `initialize` again. Answer each rejected frame and
+        // keep reading until an initialize selects a configured version.
         let (first_frame, client, selected) = loop {
             let Some((mut frame, next_client)) = client.next_frame().await? else {
                 return Ok(());
             };
+            client = next_client;
             let message = match initialize_message_mut(&mut frame) {
                 Ok(Some(message)) => message,
-                Ok(None) => {
-                    client = next_client;
+                Ok(None) => continue,
+                Err(error) => {
+                    send_initialize_error(&client.tx, &frame, error)?;
                     continue;
                 }
-                Err(error) => return reject_initialize(next_client, &frame, error).await,
             };
             let selected = match select_agent_protocol(message, supported) {
                 Ok(selected) => selected,
-                Err(error) => return reject_initialize(next_client, &frame, error).await,
+                Err(error) => {
+                    send_initialize_error(&client.tx, &frame, error)?;
+                    continue;
+                }
             };
-            break (frame, next_client, selected);
+            if !selected.is_configured(supported) {
+                send_initialize_error(&client.tx, &frame, selected.unsupported_error(supported))?;
+                continue;
+            }
+            break (frame, client, selected);
         };
-        let Some(agent) = selected.take_agent(self) else {
-            let error = selected.unsupported_error(supported);
-            return reject_initialize(client, &first_frame, error).await;
-        };
+        let agent = selected
+            .take_agent(self)
+            .expect("the router only selects a configured implementation");
 
         let agent = RunningProtocolPeer::new(agent);
         agent.send_frame(first_frame)?;
@@ -477,6 +492,13 @@ impl SelectedProtocol {
         match self {
             Self::V1 => agent.v1,
             Self::V2 => agent.v2,
+        }
+    }
+
+    fn is_configured(self, supported: SupportedProtocols) -> bool {
+        match self {
+            Self::V1 => supported.v1,
+            Self::V2 => supported.v2,
         }
     }
 

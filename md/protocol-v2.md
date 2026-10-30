@@ -497,8 +497,12 @@ A v2-only endpoint rejects a v1 request without requiring v2's Client identity
 or manufacturing a higher-version success response. The error code is
 `-32022`, and its data contains `requested` and the endpoint's `supported`
 versions. This diagnostic is separate from malformed initialization parameters,
-which remain `-32602`. The router preserves response IDs and batch framing,
-flushes the rejection, and closes without starting the selected application.
+which remain `-32602`. The router preserves response IDs and batch framing
+and does not start an application. A failed initialize leaves the connection
+uninitialized and open, so the client may send `initialize` again, for
+example with a supported version or corrected parameters. Notifications that
+arrive before initialization are ignored. The proxy protocol router, whose
+`_proxy/initialize` comes from the conductor, still closes after a rejection.
 
 Custom endpoints can construct the same wire error with
 `agent_client_protocol::util::unsupported_protocol_version(requested, supported)`.
@@ -511,8 +515,8 @@ definitions.
 the core crate without default features, so v1 negotiation does not depend on
 whether the draft v2 API is compiled in.
 
-Clients should close after a version mismatch and display the supported
-versions. A successful downgrade must also be checked against the Client's
+Clients that cannot use any supported version should close after a version
+mismatch and display the supported versions. A successful downgrade must also be checked against the Client's
 actual supported versions, because advertising a latest version does not imply
 support for every older version.
 

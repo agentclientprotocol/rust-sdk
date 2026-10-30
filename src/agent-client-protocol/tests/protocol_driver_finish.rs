@@ -252,11 +252,14 @@ async fn client_connector_cancels_opaque_driver_after_final_frame() -> Result<()
     Ok(())
 }
 
+// The agent router keeps a connection open after a rejected initialize so the
+// client can retry. The proxy router still finishes after rejecting the
+// conductor's `_proxy/initialize`, so it exercises the rejection drain.
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_initialize_flushes_lines_without_input_eof() -> Result<(), Error> {
     let frames = run_over_lines(
-        Agent.protocol_router().with_v1(Agent.builder()),
-        "initialize",
+        Proxy.protocol_router().with_v1(Proxy.builder()),
+        "_proxy/initialize",
         json!({}),
     )
     .await?;
@@ -272,7 +275,7 @@ async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Resu
         let input_guard = tx;
         input_guard
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
-                "initialize".into(),
+                "_proxy/initialize".into(),
                 json!({}),
                 v1::RequestId::Number(7),
             )?))
@@ -319,9 +322,9 @@ async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Resu
             ),
         };
         let mut router = Box::pin(
-            Agent
+            Proxy
                 .protocol_router()
-                .with_v1(Agent.builder())
+                .with_v1(Proxy.builder())
                 .connect_to(adapter),
         );
 
