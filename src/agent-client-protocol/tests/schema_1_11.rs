@@ -48,13 +48,13 @@ fn acted_on_session_setup_lists_reject_invalid_params() {
         let mut params = json!({ "cwd": "/repo", "mcpServers": [] });
         params[field] = malformed;
         let error = v1::ClientRequest::parse_message("session/new", &params).unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
         #[cfg(feature = "unstable_protocol_v2")]
         {
             use agent_client_protocol::schema::v2;
             let error = v2::ClientRequest::parse_message("session/new", &params).unwrap_err();
-            assert_eq!(error.code, ErrorCode::InvalidParams);
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         }
     }
 
@@ -80,7 +80,7 @@ fn acted_on_session_setup_lists_reject_invalid_params() {
             &json!({ "sessionId": "session-1", "cwd": "/repo", "replayFrom": "start" }),
         )
         .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
     }
 }
 

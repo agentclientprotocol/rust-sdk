@@ -193,7 +193,7 @@ fn callback_failure_releases_the_barrier_and_fails_the_task() {
     fixture.next_message();
     let acknowledgment = fixture.route(id, Ok(json!({}))).unwrap();
     let error = futures::executor::block_on(fixture.next_task().run_for_test()).unwrap_err();
-    assert_eq!(error.code, crate::ErrorCode::InvalidParams);
+    assert_eq!(error.code, crate::ErrorCode::INVALID_PARAMS);
     futures::executor::block_on(acknowledgment).unwrap();
 }
 

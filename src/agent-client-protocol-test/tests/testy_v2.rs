@@ -170,7 +170,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 .expect_err("closed v2 sessions should reject prompts");
             assert_eq!(
                 closed_prompt.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
             );
             assert_eq!(
                 closed_prompt.data,
@@ -432,7 +432,7 @@ async fn testy_v2_close_cancels_active_work_before_responding() {
                 .expect_err("close should leave the session inactive");
             assert_eq!(
                 prompt_error.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
             );
             Ok(())
         });
@@ -504,7 +504,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 .expect_err("prompting an unknown v2 session should fail");
             assert_eq!(
                 prompt_error.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
             );
             assert_eq!(
                 prompt_error.data,
@@ -537,7 +537,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 let error = error.expect_err("a relative cwd must be rejected");
                 assert_eq!(
                     error.code,
-                    agent_client_protocol::ErrorCode::InvalidParams,
+                    agent_client_protocol::ErrorCode::INVALID_PARAMS,
                     "{method}"
                 );
             }
@@ -552,7 +552,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 .expect_err("resuming an unknown v2 session should fail");
             assert_eq!(
                 resume_error.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
             );
 
             let mcp_server = v2::McpServer::Http(v2::McpServerHttp::new(
@@ -568,7 +568,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 .expect_err("unadvertised MCP transports should be rejected");
             assert_eq!(
                 new_session_error.code,
-                agent_client_protocol::ErrorCode::InvalidParams
+                agent_client_protocol::ErrorCode::INVALID_PARAMS
             );
             assert!(
                 connection
@@ -587,7 +587,7 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 .expect_err("Testy v2 never issues a nextCursor, so every cursor is invalid");
             assert_eq!(
                 cursor_error.code,
-                agent_client_protocol::ErrorCode::InvalidParams
+                agent_client_protocol::ErrorCode::INVALID_PARAMS
             );
             Ok(())
         })
@@ -632,7 +632,7 @@ async fn testy_v2_rejects_unadvertised_prompt_content() {
                 .block_task()
                 .await
                 .expect_err("an unadvertised image block should be rejected");
-            assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+            assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
 
             connection
                 .send_request(v2::PromptRequest::new(
@@ -688,7 +688,7 @@ async fn testy_v2_rejects_empty_prompt_without_inserting_it() {
                 .block_task()
                 .await
                 .expect_err("an empty prompt should be rejected");
-            assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+            assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
 
             let accepted = connection
                 .send_request(v2::PromptRequest::new(
@@ -812,7 +812,7 @@ async fn testy_v2_holds_prompts_during_active_work() {
                 .expect_err("a withdrawn held prompt is never inserted");
             assert_eq!(
                 error.code,
-                agent_client_protocol::ErrorCode::RequestCancelled
+                agent_client_protocol::ErrorCode::REQUEST_CANCELLED
             );
 
             // `session/cancel` answers held prompts received before it with
@@ -824,7 +824,7 @@ async fn testy_v2_holds_prompts_during_active_work() {
                 .expect_err("session/cancel cancels held prompts");
             assert_eq!(
                 error.code,
-                agent_client_protocol::ErrorCode::RequestCancelled
+                agent_client_protocol::ErrorCode::REQUEST_CANCELLED
             );
 
             // A prompt received after `session/cancel` is not cancelled by it.

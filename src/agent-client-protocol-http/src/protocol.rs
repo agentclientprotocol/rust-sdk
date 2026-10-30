@@ -37,7 +37,7 @@ pub(crate) fn batch_rejection(frame: &agent_client_protocol::TransportFrame) -> 
     let agent_client_protocol::TransportFrame::Malformed { raw, error } = frame else {
         return None;
     };
-    if error.code != agent_client_protocol::ErrorCode::InvalidRequest
+    if error.code != agent_client_protocol::ErrorCode::INVALID_REQUEST
         || !raw.trim_start().starts_with('[')
     {
         return None;

@@ -8485,7 +8485,7 @@ mod tests {
 
         let error = futures::executor::block_on(sent.block_task())
             .expect_err("the hook failure should replace the successful response");
-        assert_eq!(error.code, crate::ErrorCode::InternalError);
+        assert_eq!(error.code, crate::ErrorCode::INTERNAL_ERROR);
         assert_eq!(error.data, Some(serde_json::json!("response hook failed")));
     }
 
@@ -8669,7 +8669,7 @@ mod tests {
                 result
             }))
             .expect_err("the peer error should survive the ordered transform");
-        assert_eq!(error.code, crate::ErrorCode::InvalidParams);
+        assert_eq!(error.code, crate::ErrorCode::INVALID_PARAMS);
 
         let acknowledgment = acknowledgment
             .lock()
@@ -8718,7 +8718,7 @@ mod tests {
         );
         let error = futures::executor::block_on(sent.block_task())
             .expect_err("the readiness error should reach the request consumer");
-        assert_eq!(error.code, crate::ErrorCode::InternalError);
+        assert_eq!(error.code, crate::ErrorCode::INTERNAL_ERROR);
         assert_eq!(error.data, Some(serde_json::json!("readiness failed")));
         assert!(!hook_ran.load(Ordering::Acquire));
     }

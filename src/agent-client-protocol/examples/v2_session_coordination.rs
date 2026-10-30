@@ -15,7 +15,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    AcpAgent, Agent, Client, ConnectTo, Error, ErrorCode, Responder, V2ConnectionTo,
+    AcpAgent, Agent, Client, ConnectTo, Error, Responder, V2ConnectionTo,
     schema::{ProtocolVersion, v2},
 };
 use clap::Parser;
@@ -357,7 +357,7 @@ impl Driver {
                     // Closing is idempotent: `-32002` means the session is
                     // already closed, which is the outcome this effect wants.
                     let result = match result {
-                        Err(error) if error.code == ErrorCode::ResourceNotFound => {
+                        Err(error) if error.code == v2::ErrorCode::ResourceNotFound => {
                             Ok(v2::CloseSessionResponse::new())
                         }
                         result => result,

@@ -550,10 +550,10 @@ arrive before initialization are ignored. The proxy protocol router, whose
 with `-32022` but closes after a rejection.
 
 Custom endpoints can construct the same wire error with
-`agent_client_protocol::util::unsupported_protocol_version(requested, supported)`.
+`schema::v2::Error::unsupported_protocol_version(requested, supported).into()`.
 The code is defined by v2 negotiation, not by a change to the v1 protocol.
-The shared SDK error model can preserve it as an unknown numeric code, so a
-legacy v1 client can handle the initialization error without new v1 schema
+The SDK's version-neutral `Error` carries any numeric code, so a v1 client
+receives the initialization error as an unknown code without new v1 schema
 definitions.
 
 `just test` runs the negotiation tests in both the all-features workspace and
@@ -818,8 +818,9 @@ Draft v2 type changes:
   for `-32022`, `SessionNotFoundErrorData` for `-32002`, or any other JSON.
   `v2::Error::resource_not_found()` no longer takes a `uri`; use
   `session_not_found(session_id)` for a missing session.
-  `util::unsupported_protocol_version` builds the typed data. An error
-  response's `id` may be `null`.
+  `v2::Error::unsupported_protocol_version` builds the typed data; convert
+  either into the SDK's `Error` with `.into()`. An error response's `id` may
+  be `null`.
 - `UsageUpdate.cost` is a `MaybeUndefined<Cost>` patch field: omitted leaves
   the cost unchanged, `null` clears it, and a value replaces it.
   `Cost.currency` is any unit string, not only an ISO 4217 code.

@@ -972,9 +972,10 @@ fn select_configured_protocol(
     requested: ProtocolVersion,
     supported: SupportedProtocols,
 ) -> Result<SelectedProtocol, crate::Error> {
-    supported
-        .select(requested)
-        .ok_or_else(|| crate::util::unsupported_protocol_version(requested, &supported.versions()))
+    supported.select(requested).ok_or_else(|| {
+        crate::schema::v2::Error::unsupported_protocol_version(requested, &supported.versions())
+            .into()
+    })
 }
 
 #[cfg(feature = "unstable_protocol_v2")]

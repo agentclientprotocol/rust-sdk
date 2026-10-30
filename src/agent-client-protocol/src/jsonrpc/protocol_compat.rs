@@ -816,11 +816,13 @@ mod imp {
             // negotiates `initialize`. V1 retains its original
             // fallback-to-latest bootstrap. Only v2 endpoints reject a version
             // below their supported range.
+            #[cfg(feature = "unstable_protocol_v2")]
             if mode.api == ProtocolVersionKind::V2 && requested < mode.api.as_protocol_version() {
-                return Err(crate::util::unsupported_protocol_version(
+                return Err(crate::schema::v2::Error::unsupported_protocol_version(
                     requested,
                     &[mode.api.as_protocol_version()],
-                ));
+                )
+                .into());
             }
             if mode.api == ProtocolVersionKind::V1 && requested > ProtocolVersion::V1 {
                 message.params = serde_json::Value::Object(super::normalize_v1_initialize_request(
@@ -1552,10 +1554,11 @@ mod imp {
 
         #[test]
         fn initialize_negotiation_keeps_failures_as_errors() -> Result<(), crate::Error> {
-            let remote = crate::util::unsupported_protocol_version(
+            let remote: crate::Error = crate::schema::v2::Error::unsupported_protocol_version(
                 ProtocolVersion::V2,
                 &[ProtocolVersion::V1],
-            );
+            )
+            .into();
             let (compat, result) = v2_client_receiving(true, Err(remote.clone()))?;
             assert_eq!(result, Err(remote));
             assert_eq!(

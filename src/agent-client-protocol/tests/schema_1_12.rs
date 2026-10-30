@@ -53,7 +53,7 @@ fn malformed_system_prompts_are_invalid_params_not_silently_omitted() {
             v1::NewSessionRequest::parse_message("session/new", &params)
                 .unwrap_err()
                 .code,
-            ErrorCode::InvalidParams
+            ErrorCode::INVALID_PARAMS
         );
         #[cfg(feature = "unstable_protocol_v2")]
         assert_eq!(
@@ -63,7 +63,7 @@ fn malformed_system_prompts_are_invalid_params_not_silently_omitted() {
             )
             .unwrap_err()
             .code,
-            ErrorCode::InvalidParams
+            ErrorCode::INVALID_PARAMS
         );
     }
 }

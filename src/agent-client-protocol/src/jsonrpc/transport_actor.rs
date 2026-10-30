@@ -346,7 +346,7 @@ mod tests {
             panic!("expected one retained invalid response");
         };
 
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
             panic!("expected one invalid-request error");
         };
 
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
     }
 
     #[test]
@@ -380,7 +380,7 @@ mod tests {
                 panic!("expected one invalid-request error for {line}");
             };
             assert_eq!(raw, line);
-            assert_eq!(error.code, ErrorCode::InvalidRequest);
+            assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
         }
     }
 
@@ -391,7 +391,7 @@ mod tests {
         };
 
         assert_eq!(raw, "[");
-        assert_eq!(error.code, ErrorCode::ParseError);
+        assert_eq!(error.code, ErrorCode::PARSE_ERROR);
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         };
 
         assert_eq!(raw, "17");
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
     }
 
     #[tokio::test]

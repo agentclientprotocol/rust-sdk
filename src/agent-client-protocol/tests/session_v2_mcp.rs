@@ -917,7 +917,7 @@ async fn immediate_v2_mcp_runner_failure_does_not_publish_or_close_connection() 
                     .block_task()
                     .await
                     .expect_err("the runner should reject setup before publication");
-                assert_eq!(error.code, ErrorCode::InternalError);
+                assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
                 assert_eq!(error.data, Some(json!("runner failed before publication")));
 
                 connector_dropped_rx
@@ -1009,7 +1009,7 @@ async fn immediate_v2_resume_mcp_runner_failure_does_not_publish_or_close_connec
                     .block_task()
                     .await
                     .expect_err("the runner should reject resume before publication");
-                assert_eq!(error.code, ErrorCode::InternalError);
+                assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
                 assert_eq!(error.data, Some(json!("runner failed before publication")));
 
                 connector_dropped_rx
@@ -1114,7 +1114,7 @@ async fn rejected_v2_session_stops_prestarted_mcp_attachment() -> Result<(), Err
                     .block_task()
                     .await
                     .expect_err("the agent should reject session/new");
-                assert_eq!(error.code, ErrorCode::InvalidParams);
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
                 runner_dropped_rx
                     .await
@@ -1213,7 +1213,7 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
                     .block_task()
                     .await
                     .expect_err("the agent should reject session/resume");
-                assert_eq!(error.code, ErrorCode::InvalidParams);
+                assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
 
                 runner_dropped_rx
                     .await
@@ -1271,7 +1271,7 @@ async fn v2_session_builder_rejects_duplicate_mcp_server_names() -> Result<(), E
         else {
             panic!("a duplicate MCP server name must be rejected before publication");
         };
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         Ok(())
     });
 

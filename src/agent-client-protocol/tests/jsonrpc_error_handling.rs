@@ -114,8 +114,8 @@ async fn raw_peer_errors_are_interpreted_only_at_typed_acp_dispatch() {
     tokio::task::LocalSet::new()
         .run_until(async {
             for (code, expected_code) in [
-                (-32000, agent_client_protocol::ErrorCode::AuthRequired),
-                (12345, agent_client_protocol::ErrorCode::Other(12345)),
+                (-32000, agent_client_protocol::ErrorCode::AUTH_REQUIRED),
+                (12345, agent_client_protocol::ErrorCode::new(12345)),
             ] {
                 for data in [
                     None,
@@ -477,7 +477,7 @@ async fn test_unknown_method() {
                             // Should be "method not found" or similar error
                             assert!(matches!(
                                 err.code,
-                                agent_client_protocol::ErrorCode::MethodNotFound
+                                agent_client_protocol::ErrorCode::METHOD_NOT_FOUND
                             ));
                         }
                         Ok(())
@@ -575,7 +575,7 @@ async fn test_handler_returns_error() {
                         if let Err(err) = result {
                             assert!(matches!(
                                 err.code,
-                                agent_client_protocol::ErrorCode::InternalError
+                                agent_client_protocol::ErrorCode::INTERNAL_ERROR
                             ));
                         }
                         Ok(())
@@ -676,7 +676,7 @@ async fn test_missing_required_params() {
                         if let Err(err) = result {
                             assert!(matches!(
                                 err.code,
-                                agent_client_protocol::ErrorCode::InvalidParams
+                                agent_client_protocol::ErrorCode::INVALID_PARAMS
                             )); // JSONRPC_INVALID_PARAMS
                         }
                         Ok(())
