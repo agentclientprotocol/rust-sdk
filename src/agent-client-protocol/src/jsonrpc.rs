@@ -961,6 +961,40 @@ where
     }
 }
 
+impl<
+    Host: Role,
+    Handler: HandleDispatchFrom<Host::Counterpart>,
+    Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close>
+{
+    /// Disable all automatic ACP protocol-version tracking and validation.
+    ///
+    /// This is a low-level escape hatch for protocol-routing infrastructure
+    /// that inspects and validates raw initialize requests and responses
+    /// itself before selecting a version-specific implementation, and for
+    /// version-agnostic forwarders such as the conductor, which leave version
+    /// validation to the endpoints. It also disables the version checks
+    /// applied to messages after initialization.
+    ///
+    /// This method is deliberately available only on builders whose callbacks
+    /// receive raw [`ConnectionTo`] values. Applications should normally use
+    /// [`Client::builder`](crate::Client::builder),
+    /// [`Agent::builder`](crate::Agent::builder),
+    /// [`Proxy::builder`](crate::Proxy::builder), or, with the
+    /// `unstable_protocol_v2` feature, `Client::v2`, `Agent::v2`, or
+    /// `Proxy::v2` instead.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Client;
+    /// let _ = Client.v2().without_acp_version_guard();
+    /// ```
+    pub fn without_acp_version_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::disabled();
+        self
+    }
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 impl<
     Host: Role,
@@ -1003,30 +1037,6 @@ impl<
             on_close: self.on_close,
             context: PhantomData,
         }
-    }
-
-    /// Disable all automatic ACP protocol-version tracking and validation.
-    ///
-    /// This is a low-level escape hatch for protocol-routing infrastructure
-    /// that inspects and validates raw initialize requests and responses
-    /// itself before selecting a version-specific implementation. It also
-    /// disables the version checks applied to messages after initialization.
-    ///
-    /// This method is deliberately available only on builders whose callbacks
-    /// receive raw [`ConnectionTo`] values. Applications should normally use
-    /// [`Client::builder`](crate::Client::builder),
-    /// [`Agent::builder`](crate::Agent::builder),
-    /// [`Proxy::builder`](crate::Proxy::builder), [`Client::v2`](crate::Client::v2),
-    /// [`Agent::v2`](crate::Agent::v2), or [`Proxy::v2`](crate::Proxy::v2)
-    /// instead.
-    ///
-    /// ```compile_fail
-    /// # use agent_client_protocol::Client;
-    /// let _ = Client.v2().without_acp_version_guard();
-    /// ```
-    pub fn without_acp_version_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::disabled();
-        self
     }
 
     /// Keep this builder's stable v1 guard unless the peer's first

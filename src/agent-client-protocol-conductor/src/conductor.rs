@@ -112,6 +112,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "unstable_protocol_v2")]
 use agent_client_protocol::UntypedMessage;
+use agent_client_protocol::schema::METHOD_INITIALIZE_PROXY;
 #[cfg(feature = "unstable_protocol_v2")]
 use agent_client_protocol::schema::ProtocolVersion;
 #[cfg(feature = "unstable_protocol_v2")]
@@ -292,8 +293,6 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             instantiator: Some(self.instantiator),
             #[cfg(feature = "unstable_protocol_v2")]
             initialization: InitializationState::Pending(self.instantiator),
-            #[cfg(feature = "unstable_protocol_v2")]
-            protocol_v2: false,
             proxies: Vec::default(),
             successor: Arc::new(agent_client_protocol::util::internal_error(
                 "successor not initialized",
@@ -402,13 +401,6 @@ where
     /// The explicit initialization lifecycle used by the multi-version router.
     #[cfg(feature = "unstable_protocol_v2")]
     initialization: InitializationState<Host::Instantiator>,
-
-    /// Whether the client selected protocol v2 during initialization.
-    ///
-    /// Every other connection runs the same v1 code as a build without the
-    /// `unstable_protocol_v2` feature.
-    #[cfg(feature = "unstable_protocol_v2")]
-    protocol_v2: bool,
 
     /// The chain of proxies before the agent (if any).
     ///
@@ -671,7 +663,6 @@ where
         // forward to the conductor's own successor (via client connection)
         if target_component_index < self.proxies.len() {
             self.forward_message_from_client_to_proxy(target_component_index, message)
-                .await
         } else {
             assert_eq!(target_component_index, self.proxies.len());
 
@@ -724,7 +715,6 @@ where
                         self.initialization = InitializationState::Ready;
                         return Ok(Some(message));
                     }
-                    self.protocol_v2 = true;
                     match host
                         .initialize_with_outcome(message, client, instantiator, self)
                         .await?
@@ -795,16 +785,10 @@ where
         // passes through messages but which can trigger the
         // tracing events.
         if self.trace_handle.is_some() && num_proxies == 0 {
-            // The pass-through proxy speaks the selected protocol version, so
-            // a v1 chain uses the same stable v1 proxy as a build without the
-            // `unstable_protocol_v2` feature.
-            let trace_proxy = DynConnectTo::new(Proxy.builder());
-            #[cfg(feature = "unstable_protocol_v2")]
-            let trace_proxy = if self.protocol_v2 {
-                DynConnectTo::new(Proxy.v2())
-            } else {
-                trace_proxy
-            };
+            // The pass-through proxy forwards untyped messages, so one
+            // guard-less proxy serves every protocol version. The endpoints
+            // validate the selected version themselves.
+            let trace_proxy = DynConnectTo::new(Proxy.builder().without_acp_version_guard());
 
             self.connect_to_proxy(
                 &client,
@@ -929,7 +913,14 @@ where
             )
     }
 
-    async fn forward_message_from_client_to_proxy(
+    /// Forward a message from the client (or the previous proxy) to the proxy
+    /// with index `target_component_index`.
+    ///
+    /// Forwarding is untyped and the same for every protocol version:
+    /// `_proxy/initialize` has the same wire shape in v1 and v2, so the
+    /// conductor never parses or re-serializes forwarded messages, and fields
+    /// it does not know survive.
+    fn forward_message_from_client_to_proxy(
         &mut self,
         target_component_index: usize,
         message: Dispatch,
@@ -940,126 +931,65 @@ where
             "forward_message_to_proxy"
         );
 
-        // Only a protocol v2 chain takes the raw path. A v1 chain runs the
-        // same typed code as a build without the `unstable_protocol_v2`
-        // feature.
-        #[cfg(feature = "unstable_protocol_v2")]
-        if self.protocol_v2 {
-            return self.forward_v2_message_from_client_to_proxy(target_component_index, message);
-        }
-
-        MatchDispatch::new(message)
-            .if_request(async |_request: InitializeProxyRequest, responder| {
-                responder.respond_with_error(
-                    agent_client_protocol::Error::invalid_request()
-                        .data("initialize/proxy requests are only sent by the conductor"),
-                )
-            })
-            .await
-            .if_request(async |request: InitializeRequest, responder| {
-                // The pattern for `Initialize` messages is a bit subtle.
-                // Proxies receive incoming `Initialize` messages as if they
-                // were a client. The conductor (us) intercepts these and
-                // converts them to an `InitializeProxyRequest`.
-                //
-                // The proxy will then initialize itself and forward an `Initialize`
-                // request to its successor.
-                let sent = self.proxies[target_component_index]
-                    .send_request(InitializeProxyRequest::from(request));
-                // The request is rewritten, so `forward_response_to` cannot be
-                // used here; wire up cancellation forwarding explicitly to
-                // keep `initialize` cancellable like every other forwarded
-                // request.
-                let sent = sent.forward_cancellation_from(responder.cancellation());
-                sent.on_receiving_result(async move |result| {
-                    tracing::debug!(
-                        ok = result.is_ok(),
-                        "got initialize_proxy response from proxy"
-                    );
-                    responder.respond_with_result(result)
-                })
-            })
-            .await
-            .otherwise(async |message| {
-                self.proxies[target_component_index].send_proxied_message(message)
-            })
-            .await
-    }
-
-    /// Raw forwarding to a proxy in a protocol v2 chain, preserving the v2
-    /// wire shape.
-    #[cfg(feature = "unstable_protocol_v2")]
-    fn forward_v2_message_from_client_to_proxy(
-        &mut self,
-        target_component_index: usize,
-        message: Dispatch,
-    ) -> Result<(), agent_client_protocol::Error> {
+        let proxy = &self.proxies[target_component_index];
         match message {
             Dispatch::Request(request, responder)
-                if request.method() == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY =>
+                if request.method() == METHOD_INITIALIZE_PROXY =>
             {
-                responder.respond_with_error(
-                    agent_client_protocol::Error::invalid_request()
-                        .data("initialize/proxy requests are only sent by the conductor"),
-                )
+                responder.respond_with_error(initialize_proxy_from_outside())
             }
             Dispatch::Request(mut request, responder)
                 if InitializeRequest::matches_method(request.method()) =>
             {
-                request.method = agent_client_protocol::schema::METHOD_INITIALIZE_PROXY.to_string();
-                let sent = self.proxies[target_component_index].send_request(request);
-                let sent = sent.forward_cancellation_from(responder.cancellation());
-                sent.on_receiving_result(async move |result| {
-                    tracing::debug!(
-                        ok = result.is_ok(),
-                        "got initialize_proxy response from proxy"
-                    );
-                    responder.respond_with_result(result)
-                })
+                // Proxies receive incoming `initialize` messages as if they
+                // were a client. The conductor (us) renames them to
+                // `_proxy/initialize`, keeping the params untouched. The proxy
+                // then initializes itself and forwards an `initialize` request
+                // to its successor.
+                request.method = METHOD_INITIALIZE_PROXY.to_string();
+                // The request is rewritten, so `forward_response_to` cannot be
+                // used here; wire up cancellation forwarding explicitly to
+                // keep `initialize` cancellable like every other forwarded
+                // request.
+                proxy
+                    .send_request(request)
+                    .forward_cancellation_from(responder.cancellation())
+                    .on_receiving_result(async move |result| {
+                        tracing::debug!(
+                            ok = result.is_ok(),
+                            "got initialize_proxy response from proxy"
+                        );
+                        responder.respond_with_result(result)
+                    })
             }
-            message => self.proxies[target_component_index].send_proxied_message(message),
+            message => proxy.send_proxied_message(message),
         }
     }
+}
 
-    /// Invoked when sending a message from the conductor to the agent that it manages.
-    /// This is called by `self.successor`'s [`ConductorSuccessor::send_message`]
-    /// method when `Link = ConductorToClient` (i.e., the conductor is not itself
-    /// running as a proxy).
-    async fn forward_message_to_agent(
-        &mut self,
-        _client_connection: ConnectionTo<Host::Counterpart>,
-        message: Dispatch,
-        agent_connection: ConnectionTo<Agent>,
-    ) -> Result<(), Error> {
-        // Only a protocol v2 chain takes the raw path; see
-        // `forward_message_from_client_to_proxy`.
-        #[cfg(feature = "unstable_protocol_v2")]
-        if self.protocol_v2 {
-            return match message {
-                Dispatch::Request(request, responder)
-                    if request.method()
-                        == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY =>
-                {
-                    responder.respond_with_error(
-                        agent_client_protocol::Error::invalid_request()
-                            .data("initialize/proxy requests are only sent by the conductor"),
-                    )
-                }
-                message => agent_connection.send_proxied_message_to(Agent, message),
-            };
+/// Invoked when sending a message from the conductor to the agent that it manages.
+/// This is called by the runner's successor's [`ConductorSuccessor::send_message`]
+/// method when `Link = ConductorToClient` (i.e., the conductor is not itself
+/// running as a proxy).
+///
+/// Like `ConductorRunner::forward_message_from_client_to_proxy`, this forwards
+/// untyped messages unchanged for every protocol version.
+fn forward_message_to_agent(
+    message: Dispatch,
+    agent_connection: &ConnectionTo<Agent>,
+) -> Result<(), Error> {
+    match message {
+        Dispatch::Request(request, responder) if request.method() == METHOD_INITIALIZE_PROXY => {
+            responder.respond_with_error(initialize_proxy_from_outside())
         }
-
-        MatchDispatch::new(message)
-            .if_request(async |_request: InitializeProxyRequest, responder| {
-                responder.respond_with_error(
-                    agent_client_protocol::Error::invalid_request()
-                        .data("initialize/proxy requests are only sent by the conductor"),
-                )
-            })
-            .await
-            .otherwise(async |message| agent_connection.send_proxied_message_to(Agent, message))
-            .await
+        message => agent_connection.send_proxied_message_to(Agent, message),
     }
+}
+
+/// The error for a `_proxy/initialize` request that arrives from outside the
+/// conductor: only the conductor initializes its proxies.
+fn initialize_proxy_from_outside() -> Error {
+    Error::invalid_request().data("initialize/proxy requests are only sent by the conductor")
 }
 
 /// Identifies a component in the conductor's chain for tracing purposes.
@@ -1924,15 +1854,10 @@ impl ConductorSuccessor<Agent> for ConnectionTo<Agent> {
     fn send_message<'a>(
         &self,
         message: Dispatch,
-        connection: ConnectionTo<Client>,
-        runner: &'a mut ConductorRunner<Agent>,
+        _connection: ConnectionTo<Client>,
+        _runner: &'a mut ConductorRunner<Agent>,
     ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>> {
-        let connection_to_agent = self.clone();
-        Box::pin(async move {
-            debug!("Proxy mode: forwarding successor message to conductor's successor");
-            runner
-                .forward_message_to_agent(connection, message, connection_to_agent)
-                .await
-        })
+        debug!("Agent mode: forwarding successor message to the agent");
+        Box::pin(std::future::ready(forward_message_to_agent(message, self)))
     }
 }

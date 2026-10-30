@@ -63,14 +63,10 @@ impl WirePeer {
     }
 }
 
-fn typed_value<T: serde::Serialize + serde::de::DeserializeOwned>(value: &Value) -> Value {
-    let typed: T = serde_json::from_value(value.clone()).expect("value parses as the v1 type");
-    serde_json::to_value(typed).expect("v1 type serializes")
-}
-
 /// A stable v1 proxy's default forwarding: `_proxy/initialize` and
-/// `session/new` go through the typed v1 path, and session notifications for
-/// the new session are routed back to the client.
+/// `session/new` are forwarded untyped, so fields the SDK does not know
+/// survive in both directions, and session notifications for the new session
+/// are routed back to the client.
 #[tokio::test(flavor = "current_thread")]
 async fn v1_proxy_default_forwarding_is_feature_independent() {
     // The test plays the conductor.
@@ -80,7 +76,7 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
         v1::InitializeRequest::new(ProtocolVersion::V1),
     ))
     .expect("serialize _proxy/initialize");
-    initialize_params["_unknownRequestField"] = json!("dropped by the typed v1 path");
+    initialize_params["_unknownRequestField"] = json!("kept by untyped forwarding");
     conductor.send(&json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -93,11 +89,9 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     assert_eq!(forwarded["params"]["method"], "initialize");
     let forwarded_initialize = &forwarded["params"]["params"];
     assert_eq!(
-        *forwarded_initialize,
-        typed_value::<v1::InitializeRequest>(&initialize_params),
-        "the proxy forwards the typed v1 initialize request"
+        *forwarded_initialize, initialize_params,
+        "the proxy forwards the initialize params unchanged"
     );
-    assert!(forwarded_initialize.get("_unknownRequestField").is_none());
 
     let mut initialize_response =
         serde_json::to_value(v1::InitializeResponse::new(ProtocolVersion::V1))
@@ -111,9 +105,8 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     let response = conductor.recv().await;
     assert_eq!(response["id"], 1);
     assert_eq!(
-        response["result"],
-        typed_value::<v1::InitializeResponse>(&initialize_response),
-        "the proxy returns the typed v1 initialize response"
+        response["result"], initialize_response,
+        "the proxy returns the initialize response unchanged"
     );
 
     let new_session_params = json!({
@@ -131,9 +124,8 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     assert_eq!(forwarded["method"], "_proxy/successor");
     assert_eq!(forwarded["params"]["method"], "session/new");
     assert_eq!(
-        forwarded["params"]["params"],
-        typed_value::<v1::NewSessionRequest>(&new_session_params),
-        "the proxy forwards the typed v1 session/new request"
+        forwarded["params"]["params"], new_session_params,
+        "the proxy forwards the session/new request unchanged"
     );
 
     let new_session_response = json!({
@@ -148,9 +140,8 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     let response = conductor.recv().await;
     assert_eq!(response["id"], 2);
     assert_eq!(
-        response["result"],
-        typed_value::<v1::NewSessionResponse>(&new_session_response),
-        "the proxy returns the typed v1 session/new response"
+        response["result"], new_session_response,
+        "the proxy returns the session/new response unchanged"
     );
 
     // The successor's update for the new session reaches the client.

@@ -11,11 +11,12 @@ use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
+use crate::schema::METHOD_INITIALIZE_PROXY;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::InitializeRequest;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::RequestId;
-use crate::schema::v1::{InitializeRequest, SessionId};
-use crate::schema::v1::{NewSessionRequest, NewSessionResponse};
-use crate::schema::{InitializeProxyRequest, METHOD_INITIALIZE_PROXY};
+use crate::schema::v1::SessionId;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
@@ -26,7 +27,6 @@ use crate::{
 };
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
-#[cfg(feature = "unstable_protocol_v2")]
 #[derive(serde::Deserialize)]
 struct NewSessionResponseEnvelope {
     #[serde(rename = "sessionId")]
@@ -1716,65 +1716,19 @@ impl Role for Conductor {
         message: Dispatch,
         cx: ConnectionTo<Conductor>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        // Default forwarding is chosen by the connection's protocol version at
-        // runtime, never by the `unstable_protocol_v2` feature: a v1 (or
-        // guard-less) proxy forwards exactly as it does without the feature,
-        // and only a protocol v2 proxy uses the raw v2 forwarding.
-        #[cfg(feature = "unstable_protocol_v2")]
-        if cx.is_acp_v2() {
-            return forward_v2_proxy_dispatch(message, cx).await;
-        }
-
-        MatchDispatchFrom::new(message, &cx)
-            .if_request_from(Client, async |_req: InitializeRequest, responder| {
-                responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                    "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
-                )))
-            })
-            .await
-            .if_request_from(
-                Client,
-                async |request: InitializeProxyRequest, responder| {
-                    let InitializeProxyRequest { initialize } = request;
-                    cx.send_ordered_request_to(Agent, initialize)
-                        .forward_response_to(responder)
-                },
-            )
-            .await
-            .if_request_from(Client, async |request: NewSessionRequest, responder| {
-                let sent = cx.send_ordered_request_to(Agent, request);
-                let sent = sent.forward_cancellation_from(responder.cancellation());
-                sent.on_receiving_result({
-                    let cx = cx.clone();
-                    async move |result| {
-                        if let Ok(NewSessionResponse { session_id, .. }) = &result {
-                            cx.add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
-                                .detach();
-                        }
-                        responder.respond_with_result(result)
-                    }
-                })
-            })
-            .await
-            .if_dispatch_from(Client, async |message: Dispatch| {
-                cx.send_proxied_message_to(Agent, message)
-            })
-            .await
-            .if_dispatch_from(Agent, async |message: Dispatch| {
-                cx.send_proxied_message_to(Client, message)
-            })
-            .await
-            .done()
+        forward_proxy_dispatch(message, cx).await
     }
 }
 
-/// Default forwarding for a protocol v2 proxy.
+/// Default forwarding for a proxy.
 ///
-/// The v1 path parses and re-serializes v1 types. This path forwards untyped
-/// messages so the v2 wire shape is preserved; the connection's v2 guard has
-/// already validated them.
-#[cfg(feature = "unstable_protocol_v2")]
-async fn forward_v2_proxy_dispatch(
+/// `_proxy/initialize` has the same wire shape in every protocol version, so
+/// one untyped path serves v1 and v2 proxies alike. Messages are forwarded
+/// without being parsed and re-serialized, so fields this SDK does not know
+/// survive. The connection's protocol guard, if any, has already validated
+/// them. A `session/new` response installs the session's update routing from
+/// its raw `sessionId`.
+async fn forward_proxy_dispatch(
     message: Dispatch,
     cx: ConnectionTo<Conductor>,
 ) -> Result<Handled<Dispatch>, crate::Error> {

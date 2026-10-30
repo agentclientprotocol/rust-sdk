@@ -112,9 +112,8 @@ async fn v1_chain_is_feature_independent() {
             .expect("serialize initialize response");
     expected_response["_unknownResponseField"] = json!(true);
     assert_eq!(
-        response["result"],
-        typed_value::<v1::InitializeResponse>(&expected_response),
-        "the v1 chain returns the typed v1 initialize response"
+        response["result"], expected_response,
+        "the chain returns the agent's initialize response unchanged"
     );
     assert_eq!(
         *instantiated_version.lock().expect("version lock"),
@@ -132,8 +131,8 @@ async fn v1_chain_is_feature_independent() {
     assert_eq!(response["id"], 2, "{response}");
     assert_eq!(
         response["result"],
-        json!({ "sessionId": "v1-session" }),
-        "the v1 proxy returns the typed v1 session/new response"
+        json!({ "sessionId": "v1-session", "_unknownResponseField": true }),
+        "the chain returns the agent's session/new response unchanged"
     );
 
     let received = received.lock().expect("received lock").clone();
@@ -148,10 +147,11 @@ async fn v1_chain_is_feature_independent() {
             ),
             (
                 "session/new".to_string(),
-                typed_value::<v1::NewSessionRequest>(&json!({
+                json!({
                     "cwd": "/v1-equivalence",
                     "mcpServers": [],
-                })),
+                    "_unknownRequestField": true,
+                }),
             ),
         ],
         "the agent receives typed v1 requests"
