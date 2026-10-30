@@ -1,5 +1,5 @@
 use crate::jsonrpc::{
-    HandleDispatchFrom, Handled, IntoHandled, JsonRpcResponse, Protocol, V1, protocol,
+    HandleDispatchFrom, Handled, IntoHandled, JsonRpcResponse, Protocol, protocol,
 };
 
 use crate::role::{HasPeer, Role, handle_incoming_dispatch};
@@ -41,10 +41,10 @@ impl<Counterpart: Role> HandleDispatchFrom<Counterpart> for NullHandler {
 pub struct RequestHandler<
     Counterpart: Role,
     Peer: Role,
+    P,
     Req: JsonRpcRequest = UntypedMessage,
     F = (),
     ToFut = (),
-    P = V1,
 > {
     counterpart: Counterpart,
     peer: Peer,
@@ -54,7 +54,7 @@ pub struct RequestHandler<
 }
 
 impl<Counterpart: Role, Peer: Role, Req: JsonRpcRequest, F, ToFut, P>
-    RequestHandler<Counterpart, Peer, Req, F, ToFut, P>
+    RequestHandler<Counterpart, Peer, P, Req, F, ToFut>
 {
     /// Creates a new request handler
     pub fn new(counterpart: Counterpart, peer: Peer, handler: F, to_future_hack: ToFut) -> Self {
@@ -69,7 +69,7 @@ impl<Counterpart: Role, Peer: Role, Req: JsonRpcRequest, F, ToFut, P>
 }
 
 impl<Counterpart: Role, Peer: Role, Req, F, T, ToFut, P> HandleDispatchFrom<Counterpart>
-    for RequestHandler<Counterpart, Peer, Req, F, ToFut, P>
+    for RequestHandler<Counterpart, Peer, P, Req, F, ToFut>
 where
     Counterpart: HasPeer<Peer>,
     Req: JsonRpcRequest,
@@ -176,10 +176,10 @@ where
 pub struct NotificationHandler<
     Counterpart: Role,
     Peer: Role,
+    P,
     Notif: JsonRpcNotification = UntypedMessage,
     F = (),
     ToFut = (),
-    P = V1,
 > {
     counterpart: Counterpart,
     peer: Peer,
@@ -189,7 +189,7 @@ pub struct NotificationHandler<
 }
 
 impl<Counterpart: Role, Peer: Role, Notif: JsonRpcNotification, F, ToFut, P>
-    NotificationHandler<Counterpart, Peer, Notif, F, ToFut, P>
+    NotificationHandler<Counterpart, Peer, P, Notif, F, ToFut>
 {
     /// Creates a new notification handler
     pub fn new(counterpart: Counterpart, peer: Peer, handler: F, to_future_hack: ToFut) -> Self {
@@ -204,7 +204,7 @@ impl<Counterpart: Role, Peer: Role, Notif: JsonRpcNotification, F, ToFut, P>
 }
 
 impl<Counterpart: Role, Peer: Role, Notif, F, T, ToFut, P> HandleDispatchFrom<Counterpart>
-    for NotificationHandler<Counterpart, Peer, Notif, F, ToFut, P>
+    for NotificationHandler<Counterpart, Peer, P, Notif, F, ToFut>
 where
     Counterpart: HasPeer<Peer>,
     Notif: JsonRpcNotification,
@@ -302,11 +302,11 @@ where
 pub struct MessageHandler<
     Counterpart: Role,
     Peer: Role,
+    P,
     Req: JsonRpcRequest = UntypedMessage,
     Notif: JsonRpcNotification = UntypedMessage,
     F = (),
     ToFut = (),
-    P = V1,
 > {
     counterpart: Counterpart,
     peer: Peer,
@@ -316,7 +316,7 @@ pub struct MessageHandler<
 }
 
 impl<Counterpart: Role, Peer: Role, Req: JsonRpcRequest, Notif: JsonRpcNotification, F, ToFut, P>
-    MessageHandler<Counterpart, Peer, Req, Notif, F, ToFut, P>
+    MessageHandler<Counterpart, Peer, P, Req, Notif, F, ToFut>
 {
     /// Creates a new message handler
     pub fn new(counterpart: Counterpart, peer: Peer, handler: F, to_future_hack: ToFut) -> Self {
@@ -331,7 +331,7 @@ impl<Counterpart: Role, Peer: Role, Req: JsonRpcRequest, Notif: JsonRpcNotificat
 }
 
 impl<Counterpart: Role, Peer: Role, Req: JsonRpcRequest, Notif: JsonRpcNotification, F, T, ToFut, P>
-    HandleDispatchFrom<Counterpart> for MessageHandler<Counterpart, Peer, Req, Notif, F, ToFut, P>
+    HandleDispatchFrom<Counterpart> for MessageHandler<Counterpart, Peer, P, Req, Notif, F, ToFut>
 where
     Counterpart: HasPeer<Peer>,
     P: Protocol,

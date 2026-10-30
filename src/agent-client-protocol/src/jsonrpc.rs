@@ -1359,7 +1359,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = MessageHandler::<_, _, _, _, _, _, P>::new(
+        let handler = MessageHandler::<_, _, P, _, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1436,7 +1436,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = RequestHandler::<_, _, _, _, _, P>::new(
+        let handler = RequestHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1506,7 +1506,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::<_, _, _, _, _, P>::new(
+        let handler = NotificationHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1559,7 +1559,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = MessageHandler::<_, _, _, _, _, _, P>::new(
+        let handler = MessageHandler::<_, _, P, _, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,
@@ -1620,7 +1620,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = RequestHandler::<_, _, _, _, _, P>::new(
+        let handler = RequestHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,
@@ -1662,7 +1662,7 @@ impl<
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::<_, _, _, _, _, P>::new(
+        let handler = NotificationHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,

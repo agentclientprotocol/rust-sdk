@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 
 use crate::{
     ConnectionTo,
-    jsonrpc::{Protocol, V1, protocol},
+    jsonrpc::{Protocol, protocol},
     role::Role,
 };
 
@@ -37,7 +37,7 @@ impl<Counterpart: Role> HandleConnectionClose<Counterpart> for NullClose {
     }
 }
 
-pub(crate) struct CloseCallback<F, P = V1> {
+pub(crate) struct CloseCallback<F, P> {
     callback: F,
     protocol: PhantomData<fn() -> P>,
 }

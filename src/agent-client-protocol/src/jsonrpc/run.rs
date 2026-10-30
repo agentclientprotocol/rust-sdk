@@ -13,7 +13,7 @@ use futures::future::{Either, select};
 
 use crate::{
     ConnectionTo,
-    jsonrpc::{Protocol, V1, protocol},
+    jsonrpc::{Protocol, protocol},
     role::Role,
 };
 
@@ -156,7 +156,7 @@ async fn finish_runner_after_error<R: Role>(
 }
 
 /// A RunIn created from a closure via [`with_spawned`](crate::Builder::with_spawned).
-pub struct SpawnedRun<F, P = V1> {
+pub struct SpawnedRun<F, P> {
     task_fn: F,
     location: &'static std::panic::Location<'static>,
     protocol: PhantomData<fn() -> P>,
