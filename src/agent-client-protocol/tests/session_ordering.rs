@@ -1,5 +1,6 @@
 use std::{path::Path, time::Duration};
 
+use agent_client_protocol::V1;
 use agent_client_protocol::{
     ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
     SessionMessage, TransportFrame,
@@ -126,7 +127,7 @@ mod callback_future_lifetimes {
     fn on_proxy_session_start_accepts_non_static_callback_future<'a>(
         connection: &ConnectionTo<Conductor>,
         request: NewSessionRequest,
-        responder: Responder<NewSessionResponse>,
+        responder: Responder<NewSessionResponse, V1>,
         _scope: &'a str,
     ) -> Result<(), agent_client_protocol::Error> {
         connection
@@ -191,7 +192,7 @@ async fn active_session_preserves_config_options_from_new_session_response() {
 
     let agent = Agent.builder().on_receive_request(
         async move |_request: NewSessionRequest,
-                    responder: Responder<NewSessionResponse>,
+                    responder: Responder<NewSessionResponse, V1>,
                     _connection: ConnectionTo<Client>| {
             responder.respond(agent_response.clone())
         },
@@ -228,7 +229,7 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
         .builder()
         .on_receive_request(
             async move |_request: NewSessionRequest,
-                        responder: Responder<NewSessionResponse>,
+                        responder: Responder<NewSessionResponse, V1>,
                         _connection: ConnectionTo<Client>| {
                 responder.respond(NewSessionResponse::new(new_session_id.clone()))
             },
@@ -236,7 +237,7 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
         )
         .on_receive_request(
             async move |request: PromptRequest,
-                        responder: Responder<PromptResponse>,
+                        responder: Responder<PromptResponse, V1>,
                         connection: ConnectionTo<Client>| {
                 assert_eq!(request.session_id, prompt_session_id);
                 connection.send_notification(SessionNotification::new(
@@ -412,7 +413,7 @@ async fn start_session_installs_routing_before_later_message() {
 async fn start_session_returns_session_new_error_without_closing_connection() {
     let agent = Agent.builder().on_receive_request(
         async |request: NewSessionRequest,
-               responder: Responder<NewSessionResponse>,
+               responder: Responder<NewSessionResponse, V1>,
                _connection: ConnectionTo<Client>| {
             if request.cwd == Path::new("/rejected") {
                 responder.respond_with_error(

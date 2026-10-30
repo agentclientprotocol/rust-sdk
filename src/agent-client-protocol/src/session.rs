@@ -20,7 +20,7 @@ use crate::{
     util::{MatchDispatch, MatchDispatchFrom},
 };
 
-use crate::V1;
+use crate::Raw;
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::{jsonrpc::run::ChainRun, mcp_server::McpServer};
 
@@ -466,7 +466,7 @@ where
     let routing_ready = connection.dynamic_handler_barrier();
 
     connection
-        .send_ordered_request_to_after::<V1, _, _, _>(Agent, request, routing_ready)
+        .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .on_receiving_result({
             let connection = connection.clone();
             async move |result| {
@@ -502,7 +502,7 @@ where
     let session_connection = connection.clone();
 
     connection
-        .send_ordered_request_to_after::<V1, _, _, _>(Agent, request, routing_ready)
+        .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .block_task_with_ordered_result(move |result| {
             let response = result?;
             Ok(restored_session::<_, Request>(
@@ -784,7 +784,7 @@ where
         ))?;
 
         connection
-            .send_ordered_request_to::<V1, _, _>(Agent, request)
+            .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
                 async move |result| {
@@ -852,7 +852,7 @@ where
     /// later cannot retroactively order this setup before messages the loop already processed.
     pub fn on_proxy_session_start<F, Fut>(
         self,
-        responder: Responder<NewSessionResponse>,
+        responder: Responder<NewSessionResponse, crate::V1>,
         op: F,
     ) -> Result<(), crate::Error>
     where
@@ -881,7 +881,7 @@ where
         ))?;
 
         // Send the "new session" request to the agent.
-        let sent = connection.send_ordered_request_to::<V1, _, _>(Agent, request);
+        let sent = connection.send_ordered_request_to::<Raw, _, _>(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -1021,7 +1021,7 @@ where
 
         let session_connection = connection.clone();
         connection
-            .send_ordered_request_to::<V1, _, _>(Agent, request)
+            .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .block_task_with_ordered_result(move |result| {
                 let response = result?;
                 session_connection.attach_session(response, dynamic_handler_registrations)
@@ -1048,7 +1048,7 @@ where
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn start_session_proxy(
         self,
-        responder: Responder<NewSessionResponse>,
+        responder: Responder<NewSessionResponse, crate::V1>,
     ) -> Result<SessionId, crate::Error>
     where
         Counterpart: HasPeer<Client>,
@@ -1157,7 +1157,7 @@ where
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
-            .send_ordered_request_to::<V1, _, _>(
+            .send_ordered_request_to::<Raw, _, _>(
                 Agent,
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
             )

@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, Lines, Proxy, Responder,
     UntypedMessage,
@@ -27,7 +28,7 @@ type Received = Arc<Mutex<Vec<(String, Value)>>>;
 fn recording_v1_agent(received: Received) -> impl ConnectTo<Client> {
     Agent.builder().on_receive_request(
         async move |request: UntypedMessage,
-                    responder: Responder<Value>,
+                    responder: Responder<Value, V1>,
                     _cx: ConnectionTo<Client>| {
             received
                 .lock()

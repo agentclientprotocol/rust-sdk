@@ -10,7 +10,7 @@ use agent_client_protocol::schema::v1::{
     StopReason, TextContent,
 };
 use agent_client_protocol::util::MatchDispatch;
-use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage};
+use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage, V1};
 use std::path::PathBuf;
 
 /// Converts a `ContentBlock` to its string representation.
@@ -92,7 +92,7 @@ pub async fn prompt_with_callback(
     Client
         .builder()
         .on_receive_dispatch(
-            async |message: Dispatch<UntypedMessage, UntypedMessage>, _cx| {
+            async |message: Dispatch<UntypedMessage, UntypedMessage, V1>, _cx| {
                 tracing::trace!(method = message.method(), "received");
                 Ok(Handled::No {
                     message,

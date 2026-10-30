@@ -49,7 +49,7 @@ use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 use crate::jsonrpc::protocol::HandleId;
 #[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol::V2;
-pub use crate::jsonrpc::protocol::{Protocol, V1};
+pub use crate::jsonrpc::protocol::{Protocol, Raw, V1};
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
@@ -631,12 +631,12 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::Dispatch;
+/// # use agent_client_protocol::{Dispatch, V1};
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // on_receive_dispatch receives requests, notifications, and responses
-/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification>, _cx| {
+/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification, V1>, _cx| {
 ///     match msg {
 ///         Dispatch::Request(req, responder) => {
 ///             responder.respond(InitializeResponse::make())
@@ -833,9 +833,18 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Protocol version
+///
+/// `P` is the [`Protocol`] marker of the request handles that typed handlers
+/// receive and of the connection type callbacks receive. `Client.builder()`,
+/// `Agent.builder()` and `Proxy.builder()` return [`V1`] builders, the v2
+/// builders use `V2`, and [`Builder::new`], other roles and
+/// [`without_acp_version_guard`](Builder::without_acp_version_guard) use the
+/// version-neutral default, [`Raw`].
 #[must_use]
 #[derive(Debug)]
-pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose, P = V1>
+pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose, P = Raw>
 where
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
@@ -919,7 +928,7 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close>
+> Builder<Host, Handler, Runner, Close, Raw>
 {
     /// Disable all automatic ACP protocol-version tracking and validation.
     ///
@@ -930,8 +939,10 @@ impl<
     /// validation to the endpoints. It also disables the version checks
     /// applied to messages after initialization.
     ///
-    /// This method is deliberately available only on builders whose callbacks
-    /// receive raw [`ConnectionTo`] values. Applications should normally use
+    /// This method is deliberately available only on [`Raw`] and [`V1`]
+    /// builders, whose callbacks receive raw [`ConnectionTo`] values. It
+    /// returns a [`Raw`] builder: handlers registered afterwards receive
+    /// version-neutral request handles. Applications should normally use
     /// [`Client::builder`](crate::Client::builder),
     /// [`Agent::builder`](crate::Agent::builder),
     /// [`Proxy::builder`](crate::Proxy::builder), or, with the
@@ -948,48 +959,19 @@ impl<
     }
 }
 
-#[cfg(feature = "unstable_protocol_v2")]
 impl<
     Host: Role,
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close>
+> Builder<Host, Handler, Runner, Close, V1>
 {
-    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_agent(),
-            on_close: self.on_close,
-            protocol: PhantomData,
-        }
-    }
-
-    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_client(),
-            on_close: self.on_close,
-            protocol: PhantomData,
-        }
-    }
-
-    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_proxy(),
-            on_close: self.on_close,
-            protocol: PhantomData,
-        }
+    /// Disable all automatic ACP protocol-version tracking and validation,
+    /// and return a [`Raw`] builder.
+    ///
+    /// See [`Builder::without_acp_version_guard`] on [`Raw`] builders.
+    pub fn without_acp_version_guard(self) -> Builder<Host, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().without_acp_version_guard()
     }
 }
 
@@ -998,19 +980,68 @@ impl<
     Handler: HandleDispatchFrom<Agent>,
     Runner: RunWithConnectionTo<Agent>,
     Close: HandleConnectionClose<Agent>,
-> Builder<Client, Handler, Runner, Close>
+> Builder<Client, Handler, Runner, Close, Raw>
 {
-    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    /// Apply protocol-v2 wire validation while keeping version-neutral
+    /// callbacks.
     ///
     /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. The guarded child must still send and receive the
-    /// `initialize` round trip; a router that consumes initialization itself
-    /// must use [`Builder::without_acp_version_guard`] for the selected child.
-    /// Most clients should use [`Client::v2`](crate::Client::v2), which also
-    /// exposes the version-typed [`V2ConnectionTo`] API.
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
+    /// and [`Raw`] request handles in its callbacks. The guarded child must still send and receive the `initialize` round trip. A router that
+    /// consumes initialization itself must use
+    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// code should use [`Client::v2`](crate::Client::v2), which also exposes
+    /// the version-typed [`V2ConnectionTo`] API.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Client;
+    /// let _ = Client.v2().with_v2_protocol_guard();
+    /// ```
     pub fn with_v2_protocol_guard(mut self) -> Self {
         self.protocol_mode = ProtocolMode::v2_client();
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Agent>,
+    Runner: RunWithConnectionTo<Agent>,
+    Close: HandleConnectionClose<Agent>,
+> Builder<Client, Handler, Runner, Close, V1>
+{
+    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
+    ///
+    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
+    pub fn with_v2_protocol_guard(self) -> Builder<Client, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().with_v2_protocol_guard()
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Client>,
+    Runner: RunWithConnectionTo<Client>,
+    Close: HandleConnectionClose<Client>,
+> Builder<Agent, Handler, Runner, Close, Raw>
+{
+    /// Apply protocol-v2 wire validation while keeping version-neutral
+    /// callbacks.
+    ///
+    /// This is intended for protocol-routing infrastructure that has already
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
+    /// and [`Raw`] request handles in its callbacks. The guarded child must still receive and answer the `initialize` request. A router that
+    /// consumes initialization itself must use
+    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// code should use [`Agent::v2`](crate::Agent::v2), which also exposes
+    /// the version-typed [`V2ConnectionTo`] API.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Agent;
+    /// let _ = Agent.v2().with_v2_protocol_guard();
+    /// ```
+    pub fn with_v2_protocol_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_agent();
         self
     }
 }
@@ -1020,20 +1051,13 @@ impl<
     Handler: HandleDispatchFrom<Client>,
     Runner: RunWithConnectionTo<Client>,
     Close: HandleConnectionClose<Client>,
-> Builder<Agent, Handler, Runner, Close>
+> Builder<Agent, Handler, Runner, Close, V1>
 {
-    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
     ///
-    /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. The guarded child must still receive and answer the
-    /// `initialize` request; a router that consumes initialization itself must
-    /// use [`Builder::without_acp_version_guard`] for the selected child. Most
-    /// agents should use [`Agent::v2`](crate::Agent::v2), which also exposes the
-    /// version-typed [`V2ConnectionTo`] API.
-    pub fn with_v2_protocol_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_agent();
-        self
+    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
+    pub fn with_v2_protocol_guard(self) -> Builder<Agent, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().with_v2_protocol_guard()
     }
 }
 
@@ -1049,6 +1073,41 @@ impl<
     pub fn name(mut self, name: impl ToString) -> Self {
         self.name = Some(name.to_string());
         self
+    }
+
+    /// The same builder with callbacks for protocol `Q`. Handlers already
+    /// registered keep their own protocol.
+    pub(crate) fn into_protocol<Q: Protocol>(self) -> Builder<Host, Handler, Runner, Close, Q> {
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            runner: self.runner,
+            protocol_mode: self.protocol_mode,
+            on_close: self.on_close,
+            protocol: PhantomData,
+        }
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_agent();
+        builder
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_client();
+        builder
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_proxy();
+        builder
     }
 
     pub(crate) fn v1_agent(mut self) -> Self {
@@ -1244,10 +1303,10 @@ impl<
     ///
     /// ```no_run
     /// # use agent_client_protocol_test::*;
-    /// # use agent_client_protocol::Dispatch;
+    /// # use agent_client_protocol::{Dispatch, V1};
     /// # async fn example() -> Result<(), agent_client_protocol::Error> {
     /// # let connection = mock_connection();
-    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate>, _cx| {
+    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate, V1>, _cx| {
     ///     match message {
     ///         Dispatch::Request(req, responder) => {
     ///             // Handle request and send response
@@ -4241,7 +4300,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     {
         match message {
             Dispatch::Request(request, responder) => self
-                .send_ordered_request_to::<V1, _, _>(peer, request)
+                .send_ordered_request_to::<Raw, _, _>(peer, request)
                 .forward_response_to(responder),
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
@@ -4911,15 +4970,19 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 ///
 /// # Protocol version
 ///
-/// `P` is the [`Protocol`] of the connection the request arrived on. It is
-/// [`V1`] unless the handler was registered on a v2 builder, and selects the
-/// type [`id`](Self::id) returns. [`raw_id`](Self::raw_id) returns the
-/// version-neutral wire ID.
+/// `P` is the [`Protocol`] marker and selects the type [`id`](Self::id)
+/// returns. Typed handlers on `Client.builder()`, `Agent.builder()` and
+/// `Proxy.builder()` receive [`V1`] responders and those on the v2 builders
+/// receive `V2` responders. The version-neutral raw dispatch layer
+/// ([`HandleDispatchFrom`], [`MatchDispatch`](crate::util::MatchDispatch))
+/// uses the default, [`Raw`]. [`raw_id`](Self::raw_id) returns the wire ID
+/// whatever the marker; [`into_protocol`](Responder::into_protocol) and
+/// [`into_raw`](Self::into_raw) convert between markers.
 ///
 /// [`Error::request_cancelled`]: crate::Error::request_cancelled
 /// [`Error::internal_error`]: crate::Error::internal_error
 #[must_use]
-pub struct Responder<T: JsonRpcResponse = serde_json::Value, P: Protocol = V1> {
+pub struct Responder<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> {
     /// The method of the request.
     method: String,
 
@@ -5011,7 +5074,7 @@ impl<T: JsonRpcResponse, P: Protocol> std::fmt::Debug for Responder<T, P> {
     }
 }
 
-impl Responder<serde_json::Value> {
+impl Responder<serde_json::Value, Raw> {
     /// Create a new request context for an incoming request.
     ///
     /// The response will be serialized to JSON and sent over the wire.
@@ -5038,7 +5101,7 @@ impl Responder<serde_json::Value> {
         };
         Self {
             method,
-            id: HandleId::v1(id),
+            id: HandleId::raw_layer(id),
             destination,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 send_raw_message(
@@ -5180,7 +5243,7 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
     /// The same responder for protocol `Q`. Fails only if the request ID is
     /// `null` and `Q` does not allow it, which cannot happen for requests
     /// received on a connection that speaks `Q`.
-    pub(crate) fn into_protocol<Q: Protocol>(self) -> Result<Responder<T, Q>, crate::Error> {
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<Responder<T, Q>, crate::Error> {
         Ok(Responder {
             method: self.method,
             id: self.id.into_protocol()?,
@@ -5190,12 +5253,52 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
         })
     }
 
+    /// The same responder with a version-neutral [`Raw`] request ID, for
+    /// code that is not tied to one protocol version, such as a
+    /// [`HandleDispatchFrom`] implementation. This never fails.
+    pub fn into_raw(self) -> Responder<T, Raw> {
+        Responder {
+            method: self.method,
+            id: self.id.into_raw(),
+            destination: self.destination,
+            send_fn: self.send_fn,
+            drop_guard: self.drop_guard,
+        }
+    }
+
     fn reply_target(&self) -> RequestReplyTarget {
         RequestReplyTarget {
             id: self.id.raw().clone(),
             method: self.method.clone(),
             destination: self.destination.clone(),
         }
+    }
+}
+
+impl<T: JsonRpcResponse> Responder<T, Raw> {
+    /// Convert this version-neutral responder to protocol `Q`'s responder,
+    /// for example to pass a responder from a [`HandleDispatchFrom`] or
+    /// [`MatchDispatch`](crate::util::MatchDispatch) handler to a v2 session
+    /// helper.
+    ///
+    /// Only the request ID's type changes. It fails only when `Q` does not
+    /// allow the ID: protocol v2 rejects `null` with the Invalid Request
+    /// error (`-32600`) that a v2 connection sends for a `null` request ID.
+    /// That cannot happen for a request received on a v2 connection, which
+    /// rejects such requests before dispatch. On failure the responder is
+    /// dropped, which answers the request with an error.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{Error, Responder, V1, schema::v1};
+    /// # fn example(responder: Responder<v1::PromptResponse>) -> Result<(), Error> {
+    /// let responder: Responder<v1::PromptResponse, V1> = responder.into_protocol()?;
+    /// let id: &v1::RequestId = responder.id();
+    /// # let _ = id;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn into_protocol<Q: Protocol>(self) -> Result<Responder<T, Q>, crate::Error> {
+        self.retag()
     }
 }
 
@@ -5220,7 +5323,7 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
 /// `P` is the [`Protocol`] marker that types [`id`](Self::id); see
 /// [`Responder`].
 #[must_use]
-pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value, P: Protocol = V1> {
+pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> {
     /// The method of the original request.
     method: String,
 
@@ -5281,7 +5384,7 @@ impl ResponseRouter<serde_json::Value> {
         let hook_method = method.clone();
         Self {
             method,
-            id: HandleId::v1(id),
+            id: HandleId::raw_layer(id),
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 let response = match response {
@@ -5352,7 +5455,7 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
     /// The same router for protocol `Q`. Fails only if the request ID is not
     /// allowed by `Q`, which cannot happen because the SDK never assigns
     /// `null` to requests it sends.
-    pub(crate) fn into_protocol<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
         Ok(ResponseRouter {
             method: self.method,
             id: self.id.into_protocol()?,
@@ -5360,6 +5463,18 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
             send_fn: self.send_fn,
             reply_target: self.reply_target,
         })
+    }
+
+    /// The same router with a version-neutral [`Raw`] request ID. This never
+    /// fails.
+    pub fn into_raw(self) -> ResponseRouter<T, Raw> {
+        ResponseRouter {
+            method: self.method,
+            id: self.id.into_raw(),
+            role_id: self.role_id,
+            send_fn: self.send_fn,
+            reply_target: self.reply_target,
+        }
     }
 
     /// Return a new ResponseRouter that expects a response of type U.
@@ -5403,6 +5518,16 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
         self.route_with_result(Err(error))
+    }
+}
+
+impl<T: JsonRpcResponse> ResponseRouter<T, Raw> {
+    /// Convert this version-neutral router to protocol `Q`'s router.
+    ///
+    /// Only the request ID's type changes. The SDK never assigns `null` to
+    /// requests it sends, so this succeeds for every marker.
+    pub fn into_protocol<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
+        self.retag()
     }
 }
 
@@ -5516,14 +5641,14 @@ pub trait JsonRpcRequest: JsonRpcMessage {
 /// The request context's response type matches the request's response type.
 ///
 /// `P` is the [`Protocol`] marker of the request handles. Typed handlers on
-/// the v2 builders receive `Dispatch<Req, Notif, V2>`; everything else,
-/// including the version-neutral [`HandleDispatchFrom`] layer, uses the
-/// default [`V1`] and can read the wire ID with [`raw_id`](Self::raw_id).
+/// v1 builders receive `Dispatch<Req, Notif, V1>` and those on v2 builders
+/// `Dispatch<Req, Notif, V2>`. The version-neutral [`HandleDispatchFrom`]
+/// layer uses the default, [`Raw`], whose `id()` is the wire ID.
 #[derive(Debug)]
 pub enum Dispatch<
     Req: JsonRpcRequest = UntypedMessage,
     Notif: JsonRpcNotification = UntypedMessage,
-    P: Protocol = V1,
+    P: Protocol = Raw,
 > {
     /// Incoming request and the context where the response should be sent.
     Request(Req, Responder<Req::Response, P>),
@@ -5634,18 +5759,25 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req,
     ///
     /// Fails only for a request whose `null` ID `Q` does not allow, which
     /// cannot happen for a message received on a connection that speaks `Q`.
-    pub(crate) fn into_protocol<Q: Protocol>(
-        self,
-    ) -> Result<Dispatch<Req, Notif, Q>, crate::Error> {
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<Dispatch<Req, Notif, Q>, crate::Error> {
         Ok(match self {
+            Dispatch::Request(request, responder) => Dispatch::Request(request, responder.retag()?),
+            Dispatch::Notification(notification) => Dispatch::Notification(notification),
+            Dispatch::Response(result, router) => Dispatch::Response(result, router.retag()?),
+        })
+    }
+
+    /// The same dispatch with version-neutral [`Raw`] request handles, for
+    /// example to hand a typed dispatch to a [`HandleDispatchFrom`]
+    /// implementation. This never fails.
+    pub fn into_raw(self) -> Dispatch<Req, Notif, Raw> {
+        match self {
             Dispatch::Request(request, responder) => {
-                Dispatch::Request(request, responder.into_protocol()?)
+                Dispatch::Request(request, responder.into_raw())
             }
             Dispatch::Notification(notification) => Dispatch::Notification(notification),
-            Dispatch::Response(result, router) => {
-                Dispatch::Response(result, router.into_protocol()?)
-            }
-        })
+            Dispatch::Response(result, router) => Dispatch::Response(result, router.into_raw()),
+        }
     }
 
     fn handler_error_target(&self) -> Option<HandlerErrorTarget> {
@@ -5670,6 +5802,18 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req,
             Dispatch::Notification(msg) => msg.method(),
             Dispatch::Response(_, cx) => cx.method(),
         }
+    }
+}
+
+impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif, Raw> {
+    /// Convert this version-neutral dispatch to protocol `Q`'s request
+    /// handles.
+    ///
+    /// See [`Responder::into_protocol`]: this fails only for a request whose
+    /// `null` ID `Q` does not allow, with the Invalid Request error
+    /// (`-32600`).
+    pub fn into_protocol<Q: Protocol>(self) -> Result<Dispatch<Req, Notif, Q>, crate::Error> {
+        self.retag()
     }
 }
 
@@ -6044,13 +6188,13 @@ impl JsonRpcNotification for UntypedMessage {}
 ///
 /// # Protocol version
 ///
-/// `P` is the [`Protocol`] of the connection handle that sent the request:
-/// [`V1`] for [`ConnectionTo`], `V2` for `V2ConnectionTo`. It selects the type
-/// [`id`](Self::id) returns.
+/// `P` is the [`Protocol`] marker of the connection handle that sent the
+/// request: [`Raw`] for the version-neutral [`ConnectionTo`], `V2` for
+/// `V2ConnectionTo`. It selects the type [`id`](Self::id) returns.
 #[must_use = "dropping a SentRequest asks the peer to cancel the request and \
               discards the response; consume it with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
-pub struct SentRequest<T, P: Protocol = V1> {
+pub struct SentRequest<T, P: Protocol = Raw> {
     id: HandleId<P>,
     method: String,
     task_tx: TaskTx,
@@ -6103,7 +6247,7 @@ pub struct SentRequest<T, P: Protocol = V1> {
 /// [`SentRequest`].
 #[must_use = "a prepared request is not sent until consumed with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
-pub struct PreparedRequest<T, P: Protocol = V1> {
+pub struct PreparedRequest<T, P: Protocol = Raw> {
     sent: SentRequest<T, P>,
     publication: RequestPublication,
 }
@@ -8360,14 +8504,14 @@ mod tests {
     #[test]
     fn handle_ids_are_typed_by_protocol_and_match_the_wire_id() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let v1_sent = connection.send_request_to(
+        let raw_sent = connection.send_request_to(
             crate::role::UntypedRole,
             UntypedMessage::new("probe", serde_json::json!({}))
                 .expect("test request should serialize"),
         );
-        let v1_id: &crate::schema::v1::RequestId = v1_sent.id();
-        assert_eq!(&RawJsonRpcId::from(v1_id.clone()), v1_sent.raw_id());
-        v1_sent.detach();
+        let raw_sent_id: &RawJsonRpcId = raw_sent.id();
+        assert_eq!(raw_sent_id, raw_sent.raw_id());
+        raw_sent.detach();
 
         let v2_connection = V2ConnectionTo { inner: connection };
         let sent = v2_connection.send_request_to(
@@ -8405,7 +8549,7 @@ mod tests {
     fn response_hook_runs_when_success_is_routed_before_consumption() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after::<V1, _, _, _>(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("hooked", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8440,7 +8584,7 @@ mod tests {
     fn response_hook_skips_errors_but_outlives_a_dropped_consumer() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let peer_error_hook_ran = Arc::new(AtomicBool::new(false));
-        let peer_error = connection.send_request_to_with_response_hook_after::<V1, _, _, _>(
+        let peer_error = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("peer-error", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8466,7 +8610,7 @@ mod tests {
         assert!(!peer_error_hook_ran.load(Ordering::Acquire));
 
         let dropped_hook_ran = Arc::new(AtomicBool::new(false));
-        let dropped = connection.send_request_to_with_response_hook_after::<V1, _, _, _>(
+        let dropped = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("dropped", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8493,7 +8637,7 @@ mod tests {
     #[test]
     fn response_hook_failure_replaces_the_success_result() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_request_to_with_response_hook_after::<V1, _, _, _>(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("hook-failure", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8517,7 +8661,7 @@ mod tests {
     fn ordered_request_waits_for_readiness_before_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let (ready_tx, ready_rx) = oneshot::channel();
-        let sent = connection.send_ordered_request_to_after::<V1, _, _, _>(
+        let sent = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("after-ready", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8565,7 +8709,7 @@ mod tests {
     #[test]
     fn foreground_finish_settles_unready_requests_and_preserves_ready_output_fifo() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
-        let unready = connection.send_ordered_request_to_after::<V1, _, _, _>(
+        let unready = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("unready", serde_json::json!({})).unwrap(),
             future::pending(),
@@ -8578,12 +8722,12 @@ mod tests {
             },
         )
         .unwrap();
-        let ready = connection.send_ordered_request_to_after::<V1, _, _, _>(
+        let ready = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ready", serde_json::json!({})).unwrap(),
             future::ready(Ok(())),
         );
-        let unready_after = connection.send_ordered_request_to_after::<V1, _, _, _>(
+        let unready_after = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("unready-after", serde_json::json!({})).unwrap(),
             future::pending(),
@@ -8652,7 +8796,7 @@ mod tests {
     #[test]
     fn ordered_blocking_transform_precedes_response_acknowledgment() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_ordered_request_to::<V1, _, _>(
+        let sent = connection.send_ordered_request_to::<Raw, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ordered-transform", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8709,7 +8853,7 @@ mod tests {
     fn outgoing_request_readiness_failure_rejects_without_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after::<V1, _, _, _>(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("never-published", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8765,7 +8909,7 @@ mod tests {
             ProtocolMode::disabled(),
         );
 
-        let sent = connection.send_ordered_request_to::<V1, _, _>(
+        let sent = connection.send_ordered_request_to::<Raw, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ordered", serde_json::json!({}))
                 .expect("test request should serialize"),

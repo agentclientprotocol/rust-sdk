@@ -118,7 +118,7 @@ where
                                     tracing::trace!(
                                         "RequestHandler::handle_request: parse completed"
                                     );
-                                    let typed_responder = responder.cast().into_protocol::<P>()?;
+                                    let typed_responder = responder.cast().retag::<P>()?;
                                     let result = (self.to_future_hack)(
                                         &mut self.handler,
                                         req,
@@ -137,7 +137,7 @@ where
                                             Ok(Handled::No {
                                                 message: Dispatch::Request(
                                                     untyped,
-                                                    responder.erase_to_json().into_protocol()?,
+                                                    responder.erase_to_json().into_raw(),
                                                 ),
                                                 retry,
                                             })
@@ -368,7 +368,7 @@ where
                 Ok(typed_dispatch) => {
                     let result = (self.to_future_hack)(
                         &mut self.handler,
-                        typed_dispatch.into_protocol::<P>()?,
+                        typed_dispatch.retag::<P>()?,
                         protocol::connection_from_raw::<P, _>(connection),
                     )
                     .await?;
@@ -382,7 +382,7 @@ where
                             Ok(Handled::No {
                                 message: Dispatch::Request(
                                     untyped,
-                                    responder.erase_to_json().into_protocol()?,
+                                    responder.erase_to_json().into_raw(),
                                 ),
                                 retry,
                             })
@@ -409,7 +409,7 @@ where
                             Ok(Handled::No {
                                 message: Dispatch::Response(
                                     untyped_result,
-                                    responder.erase_to_json().into_protocol()?,
+                                    responder.erase_to_json().into_raw(),
                                 ),
                                 retry,
                             })

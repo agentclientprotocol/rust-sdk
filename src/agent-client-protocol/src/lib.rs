@@ -157,7 +157,7 @@ pub use jsonrpc::{
     Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionTermination,
     ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose, HandleDispatchFrom,
     Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage, JsonRpcNotification,
-    JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler, PreparedRequest, Protocol,
+    JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler, PreparedRequest, Protocol, Raw,
     RawJsonRpcError, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcParams, RawJsonRpcRequest,
     RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportFrame, UntypedMessage, V1,
     is_connection_terminated, is_incoming_transport_closed,

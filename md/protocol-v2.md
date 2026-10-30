@@ -413,11 +413,12 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `Proxy.v2()` and `V2ConnectionTo` use `V2`, so their `id()` returns a
   `schema::v2::RequestId`, for example to match an elicitation's `requestId`.
   It never fails, because the SDK rejects `null` IDs on v2 connections and
-  never assigns `null` itself. The default marker is `V1`, whose `id()`
-  returns `schema::v1::RequestId`. Every handle also has `raw_id()`, which
-  returns the version-neutral `RawJsonRpcId`. Low-level `HandleDispatchFrom`
-  and `MatchDispatch` handlers are not tied to a version: they receive
-  default-marker handles and should use `raw_id()`.
+  never assigns `null` itself. v1 builders use `V1`. Low-level
+  `HandleDispatchFrom` and `MatchDispatch` handlers are not tied to a version:
+  they receive handles with the default `Raw` marker, whose `id()` is the
+  version-neutral `RawJsonRpcId`. Convert one to a v2 handle with
+  `into_protocol::<V2>()`, for example to call `on_proxy_session_start` from a
+  raw router. Every handle also has `raw_id()`.
 - Closures registered on a v2 builder that spell out the responder type need
   the marker: `responder: Responder<v2::PromptResponse, V2>`. Unannotated
   closure parameters are inferred.

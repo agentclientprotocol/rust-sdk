@@ -18,13 +18,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::DynConnectTo;
+use agent_client_protocol::V1;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelRequestNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     McpRequestId, McpServer as SchemaMcpServer, McpServerAcpId, MessageMcpNotification,
     MessageMcpRequest, MessageMcpResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptRequest, PromptResponse, RequestId, RequestPermissionOutcome,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate, StopReason, ToolCallUpdate, ToolCallUpdateFields,
 };
@@ -34,6 +34,7 @@ use agent_client_protocol::{
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
 };
+use agent_client_protocol::{DynConnectTo, RawJsonRpcId};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -156,10 +157,12 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
         )
         .on_receive_request(
             async move |request: SimpleRequest,
-                        responder: Responder<SimpleResponse>,
+                        responder: Responder<SimpleResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 if request.message == "park" {
-                    parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_id_tx
+                        .unbounded_send(responder.raw_id().clone())
+                        .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -180,7 +183,9 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -288,7 +293,7 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
         )
         .on_receive_request(
             async |request: SimpleRequest,
-                   responder: Responder<SimpleResponse>,
+                   responder: Responder<SimpleResponse, V1>,
                    cx: ConnectionTo<Client>| {
                 if request.message == "trigger reverse cancel" {
                     let connection = cx.clone();
@@ -338,10 +343,12 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
             .builder()
             .on_receive_request(
                 async move |request: SimpleRequest,
-                            responder: Responder<SimpleResponse>,
+                            responder: Responder<SimpleResponse, V1>,
                             cx: ConnectionTo<Agent>| {
                     assert_eq!(request.message, "park");
-                    parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_id_tx
+                        .unbounded_send(responder.raw_id().clone())
+                        .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -357,7 +364,9 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
             )
             .on_receive_notification(
                 async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Agent>| {
-                    client_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                    client_cancel_tx
+                        .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                        .unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -455,7 +464,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         )
         .on_receive_request(
             async move |request: PromptRequest,
-                        responder: Responder<PromptResponse>,
+                        responder: Responder<PromptResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 let text = prompt_text(&request);
                 if text != "park" {
@@ -468,7 +477,9 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
                     return responder.respond(PromptResponse::new(StopReason::EndTurn));
                 }
 
-                prompt_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                prompt_id_tx
+                    .unbounded_send(responder.raw_id().clone())
+                    .unwrap();
                 let cancellation = responder.cancellation();
                 let connection = cx.clone();
                 cx.spawn(async move {
@@ -513,7 +524,9 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -539,10 +552,10 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
             .builder()
             .on_receive_request(
                 async move |_request: RequestPermissionRequest,
-                            responder: Responder<RequestPermissionResponse>,
+                            responder: Responder<RequestPermissionResponse, V1>,
                             cx: ConnectionTo<Agent>| {
                     permission_id_tx
-                        .unbounded_send(responder.id().clone())
+                        .unbounded_send(responder.raw_id().clone())
                         .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
@@ -572,7 +585,9 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
             )
             .on_receive_notification(
                 async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Agent>| {
-                    client_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                    client_cancel_tx
+                        .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                        .unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -672,10 +687,12 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
         )
         .on_receive_request(
             async move |request: NewSessionRequest,
-                        responder: Responder<NewSessionResponse>,
+                        responder: Responder<NewSessionResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 if request.cwd.ends_with("park-session") {
-                    parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_id_tx
+                        .unbounded_send(responder.raw_id().clone())
+                        .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -694,7 +711,9 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -791,10 +810,12 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
         )
         .on_receive_request(
             async move |request: NewSessionRequest,
-                        responder: Responder<NewSessionResponse>,
+                        responder: Responder<NewSessionResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 if request.cwd.ends_with("park-session") {
-                    parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_id_tx
+                        .unbounded_send(responder.raw_id().clone())
+                        .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -813,7 +834,9 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -822,7 +845,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
     let proxy = Proxy.builder().on_receive_request_from(
         Client,
         async |request: NewSessionRequest,
-               responder: Responder<NewSessionResponse>,
+               responder: Responder<NewSessionResponse, V1>,
                cx: ConnectionTo<Conductor>| {
             cx.build_session_from(request)
                 .on_proxy_session_start(responder, async |_session_id| Ok::<(), Error>(()))
@@ -923,7 +946,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                 let parked_id_tx = parked_id_tx.clone();
                 let probe_barrier_tx = probe_barrier_tx.clone();
                 async move |request: NewSessionRequest,
-                            responder: Responder<NewSessionResponse>,
+                            responder: Responder<NewSessionResponse, V1>,
                             cx: ConnectionTo<Client>| {
                     let cancelled_mcp_server_id = cancelled_mcp_server_id.clone();
                     let parked_id_tx = parked_id_tx.clone();
@@ -935,7 +958,9 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
                             .lock()
                             .expect("cancelled MCP ID mutex poisoned") =
                             Some(advertised_mcp_server_id);
-                        parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                        parked_id_tx
+                            .unbounded_send(responder.raw_id().clone())
+                            .unwrap();
                         let cancellation = responder.cancellation();
                         cx.spawn(async move {
                             let response = cancellation
@@ -1009,7 +1034,9 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -1018,7 +1045,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
     let proxy = Proxy.builder().on_receive_request_from(
         Client,
         async move |request: NewSessionRequest,
-                    responder: Responder<NewSessionResponse>,
+                    responder: Responder<NewSessionResponse, V1>,
                     cx: ConnectionTo<Conductor>| {
             let mcp_server = McpServer::new(
                 TrackingMcpServer {
@@ -1053,7 +1080,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
             .builder()
             .on_receive_request(
                 async |request: RequestPermissionRequest,
-                       responder: Responder<RequestPermissionResponse>,
+                       responder: Responder<RequestPermissionResponse, V1>,
                        _cx: ConnectionTo<Agent>| {
                     assert_eq!(request.session_id, SessionId::new("normal-session"));
                     responder.respond(RequestPermissionResponse::new(
@@ -1123,8 +1150,8 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
 
 #[derive(Clone)]
 struct ParkedMcpServer {
-    started_tx: mpsc::UnboundedSender<RequestId>,
-    stopped_tx: mpsc::UnboundedSender<RequestId>,
+    started_tx: mpsc::UnboundedSender<RawJsonRpcId>,
+    stopped_tx: mpsc::UnboundedSender<RawJsonRpcId>,
     dropped_tx: mpsc::UnboundedSender<()>,
     late_tx: mpsc::UnboundedSender<ConnectionTo<role::mcp::Client>>,
 }
@@ -1173,7 +1200,7 @@ impl ConnectTo<role::mcp::Client> for ParkedMcpComponent {
                 async move |_request: McpParkRequest,
                             responder: Responder<McpParkResponse>,
                             cx: ConnectionTo<role::mcp::Client>| {
-                    let id = responder.id().clone();
+                    let id = responder.raw_id().clone();
                     let stopped = ProbeOnDrop {
                         sender: stopped_tx.clone(),
                         value: Some(id.clone()),
@@ -1235,7 +1262,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
         )
         .on_receive_request(
             async move |request: NewSessionRequest,
-                        responder: Responder<NewSessionResponse>,
+                        responder: Responder<NewSessionResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 let server_id = advertised_mcp_server_id(&request);
                 responder.respond(NewSessionResponse::new(SessionId::new(
@@ -1325,7 +1352,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
                     assert_ne!(outer_id, backend_id, "JSON-RPC IDs must be hop-local");
                     assert_eq!(
                         backend_id,
-                        RequestId::Str("logical-mcp-request".to_owned()),
+                        RawJsonRpcId::Str("logical-mcp-request".to_owned()),
                         "the inner MCP ID must survive the proxy unchanged"
                     );
                     cancel_gate_tx
@@ -1364,10 +1391,12 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
         {
             let parked_first = parked_first.clone();
             async move |initialize: InitializeRequest,
-                        responder: Responder<InitializeResponse>,
+                        responder: Responder<InitializeResponse, V1>,
                         cx: ConnectionTo<Client>| {
                 if !parked_first.swap(true, Ordering::SeqCst) {
-                    parked_id_tx.unbounded_send(responder.id().clone()).unwrap();
+                    parked_id_tx
+                        .unbounded_send(responder.raw_id().clone())
+                        .unwrap();
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
                         let response = cancellation
@@ -1390,7 +1419,9 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     // separately so the request handler above can keep its captures.
     let agent = agent.on_receive_notification(
         async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-            agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+            agent_cancel_tx
+                .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                .unwrap();
             Ok(())
         },
         agent_client_protocol::on_receive_notification!(),

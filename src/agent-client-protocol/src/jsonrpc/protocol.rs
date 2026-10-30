@@ -12,7 +12,7 @@ use crate::schema::v1;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v2;
 
-/// An ACP protocol version, as a type.
+/// The protocol version of a request handle or builder, as a type.
 ///
 /// The request handles ([`Responder`](crate::Responder),
 /// [`ResponseRouter`](crate::ResponseRouter), [`SentRequest`](crate::SentRequest),
@@ -23,28 +23,36 @@ use crate::schema::v2;
 ///
 /// | Marker | `RequestId` | `Connection<Counterpart>` |
 /// | --- | --- | --- |
-/// | [`V1`] (the default) | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`ConnectionTo`] |
+/// | [`Raw`] (the default) | [`RawJsonRpcId`] | [`ConnectionTo`] |
+/// | [`V1`] | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`ConnectionTo`] |
 /// | `V2` (`unstable_protocol_v2`) | `schema::v2::RequestId` | `V2ConnectionTo` |
 ///
-/// Handles created by `Client.builder()`, `Agent.builder()` and
-/// `Proxy.builder()` use [`V1`], so v1 code never names the marker. Handles
-/// created by the v2 builders (`Client.v2()`, `Agent.v2()`, `Proxy.v2()`) and
-/// by `V2ConnectionTo` use `V2`.
+/// - Typed handlers on `Client.builder()`, `Agent.builder()` and
+///   `Proxy.builder()` receive [`V1`] handles.
+/// - Typed handlers on `Client.v2()`, `Agent.v2()` and `Proxy.v2()`, and
+///   requests sent through `V2ConnectionTo`, use `V2`.
+/// - Everything that is not tied to one version uses [`Raw`]: the
+///   [`HandleDispatchFrom`](crate::HandleDispatchFrom) layer,
+///   [`MatchDispatch`](crate::util::MatchDispatch), builders whose version
+///   guard is disabled, and requests sent through [`ConnectionTo`].
 ///
-/// Every handle also has a version-neutral `raw_id()` that returns the
-/// [`RawJsonRpcId`] exactly as it appears on the wire. Low-level handlers that
-/// are not tied to one version ([`HandleDispatchFrom`](crate::HandleDispatchFrom),
-/// [`MatchDispatch`](crate::util::MatchDispatch)) receive the default [`V1`]
-/// handles and should use `raw_id()`.
+/// Every handle also has `raw_id()`, which returns the wire ID as a
+/// [`RawJsonRpcId`] whatever the marker. A [`Raw`] handle converts to a typed
+/// one with `into_protocol`, and any handle converts back with `into_raw`.
 ///
 /// ```
-/// use agent_client_protocol::{RawJsonRpcId, Responder, schema::v1};
+/// use agent_client_protocol::{RawJsonRpcId, Responder, V1, schema::v1};
 ///
-/// fn log_request(responder: &Responder<v1::PromptResponse>) {
-///     // `Responder<T>` is `Responder<T, V1>`.
+/// fn log_request(responder: &Responder<v1::PromptResponse, V1>) {
 ///     let id: &v1::RequestId = responder.id();
 ///     let wire_id: &RawJsonRpcId = responder.raw_id();
 ///     assert_eq!(RawJsonRpcId::from(id.clone()), *wire_id);
+/// }
+///
+/// fn log_raw_request(responder: &Responder<v1::PromptResponse>) {
+///     // `Responder<T>` is `Responder<T, Raw>`.
+///     let id: &RawJsonRpcId = responder.id();
+///     # let _ = id;
 /// }
 /// ```
 ///
@@ -59,7 +67,7 @@ use crate::schema::v2;
 /// ```
 ///
 /// This trait is sealed: the SDK defines one marker per supported protocol
-/// version.
+/// version, plus [`Raw`].
 #[allow(private_bounds)]
 pub trait Protocol: sealed::Sealed + Copy + Debug + Default + Send + Sync + 'static {
     /// The request ID type of this protocol version.
@@ -111,7 +119,36 @@ pub(crate) fn connection_from_raw<P: Protocol, Counterpart: Role>(
     <P as sealed::Sealed>::connection_from_raw(connection)
 }
 
-/// ACP protocol version 1, the default protocol marker.
+/// The version-neutral protocol marker of the raw dispatch layer, and the
+/// default.
+///
+/// `id()` on a `Raw` handle returns the [`RawJsonRpcId`] exactly as it
+/// appears on the wire, which may be `null`. See [`Protocol`].
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Raw;
+
+impl sealed::Sealed for Raw {
+    fn connection_from_raw<Counterpart: Role>(
+        connection: ConnectionTo<Counterpart>,
+    ) -> ConnectionTo<Counterpart> {
+        connection
+    }
+
+    fn request_id_from_raw(id: &RawJsonRpcId) -> Result<RawJsonRpcId, crate::Error> {
+        Ok(id.clone())
+    }
+
+    fn request_id_from_string(id: String) -> RawJsonRpcId {
+        RawJsonRpcId::Str(id)
+    }
+}
+
+impl Protocol for Raw {
+    type RequestId = RawJsonRpcId;
+    type Connection<Counterpart: Role> = ConnectionTo<Counterpart>;
+}
+
+/// ACP protocol version 1.
 ///
 /// See [`Protocol`].
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -207,13 +244,19 @@ impl<P: Protocol> HandleId<P> {
     pub(crate) fn into_protocol<Q: Protocol>(self) -> Result<HandleId<Q>, crate::Error> {
         HandleId::from_raw(self.raw)
     }
+
+    /// The same ID in the raw dispatch layer.
+    pub(crate) fn into_raw(self) -> HandleId<Raw> {
+        HandleId::raw_layer(self.raw)
+    }
 }
 
-impl HandleId<V1> {
-    /// The v1 ID of any wire ID; v1 allows every JSON-RPC ID.
-    pub(crate) fn v1(raw: RawJsonRpcId) -> Self {
+impl HandleId<Raw> {
+    /// The ID of a message in the raw dispatch layer, which allows every
+    /// JSON-RPC ID.
+    pub(crate) fn raw_layer(raw: RawJsonRpcId) -> Self {
         Self {
-            typed: raw.clone().into(),
+            typed: raw.clone(),
             raw,
         }
     }

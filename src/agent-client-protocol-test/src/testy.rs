@@ -38,7 +38,7 @@ use agent_client_protocol::schema::v1::{
     StringPropertySchema,
 };
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, Responder, SentRequest,
+    Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, Responder, SentRequest, V1,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -419,7 +419,7 @@ impl Testy {
     fn handle_initialize(
         &self,
         request: InitializeRequest,
-        responder: Responder<InitializeResponse>,
+        responder: Responder<InitializeResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         self.lock_state()
             .client_elicitation_capabilities
@@ -449,7 +449,7 @@ impl Testy {
     fn handle_authenticate(
         &self,
         request: AuthenticateRequest,
-        responder: Responder<AuthenticateResponse>,
+        responder: Responder<AuthenticateResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         let method_id = request.method_id.to_string();
         if method_id != TESTY_AGENT_AUTH_METHOD_ID {
@@ -463,7 +463,7 @@ impl Testy {
 
     fn handle_logout(
         &self,
-        responder: Responder<LogoutResponse>,
+        responder: Responder<LogoutResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         self.lock_state().authenticated_methods.clear();
         responder.respond(LogoutResponse::new())
@@ -472,7 +472,7 @@ impl Testy {
     fn handle_list_sessions(
         &self,
         request: ListSessionsRequest,
-        responder: Responder<ListSessionsResponse>,
+        responder: Responder<ListSessionsResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         // Testy returns every session in one page and never issues a
         // `nextCursor`, so any cursor a client sends is invalid.
@@ -502,7 +502,7 @@ impl Testy {
     fn handle_delete_session(
         &self,
         request: DeleteSessionRequest,
-        responder: Responder<DeleteSessionResponse>,
+        responder: Responder<DeleteSessionResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         let (remove_session, did_cancel) = {
             let mut state = self.lock_state();
@@ -525,7 +525,7 @@ impl Testy {
     fn handle_close_session(
         &self,
         request: CloseSessionRequest,
-        responder: Responder<CloseSessionResponse>,
+        responder: Responder<CloseSessionResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         let (remove_session, did_cancel) = {
             let mut state = self.lock_state();
@@ -554,7 +554,7 @@ impl Testy {
     fn handle_set_mode(
         &self,
         request: SetSessionModeRequest,
-        responder: Responder<SetSessionModeResponse>,
+        responder: Responder<SetSessionModeResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         if !is_supported_mode_id(&request.mode_id) {
             return responder.respond_with_error(invalid_params(format!(
@@ -578,7 +578,7 @@ impl Testy {
     fn handle_set_config_option(
         &self,
         request: SetSessionConfigOptionRequest,
-        responder: Responder<SetSessionConfigOptionResponse>,
+        responder: Responder<SetSessionConfigOptionResponse, V1>,
     ) -> Result<(), agent_client_protocol::Error> {
         if !is_supported_config_id(&request.config_id) {
             return responder.respond_with_error(invalid_params(format!(
@@ -615,7 +615,7 @@ impl Testy {
     async fn process_prompt(
         &self,
         request: PromptRequest,
-        responder: Responder<PromptResponse>,
+        responder: Responder<PromptResponse, V1>,
         connection: ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();

@@ -9,6 +9,7 @@
 
 use std::{io, time::Duration};
 
+use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled, Lines,
     Proxy, Role, UntypedMessage,
@@ -215,7 +216,7 @@ async fn v1_client_retries_unhandled_session_messages() {
     let mut captured_tx = Some(captured_tx);
     let client = Client.builder().on_receive_request(
         async move |request: UntypedMessage,
-                    responder: agent_client_protocol::Responder<Value>,
+                    responder: agent_client_protocol::Responder<Value, V1>,
                     cx: ConnectionTo<Agent>| {
             assert_eq!(request.method(), "_test/register_session_handler");
             cx.add_dynamic_handler(CaptureUpdate(captured_tx.take()))?

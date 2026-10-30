@@ -218,7 +218,13 @@ pub fn process(data: &str) -> Result<String, crate::Error> {
 }
 
 // Helper to create a mock connection for examples
-pub fn mock_connection() -> Builder<Client> {
+pub fn mock_connection() -> Builder<
+    Client,
+    agent_client_protocol::NullHandler,
+    agent_client_protocol::NullRun,
+    agent_client_protocol::NullClose,
+    agent_client_protocol::V1,
+> {
     Client.builder()
 }
 

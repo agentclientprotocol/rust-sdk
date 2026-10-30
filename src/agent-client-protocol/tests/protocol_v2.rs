@@ -23,7 +23,7 @@ use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
@@ -3105,6 +3105,64 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
     assert_eq!(
         received_ids,
         vec![(RawJsonRpcId::Null, v1::RequestId::Null)]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_responders_convert_to_v2_responders_unless_the_id_is_null() -> Result<(), Error> {
+    let converted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent
+        .builder()
+        .without_acp_version_guard()
+        .on_receive_request(
+            {
+                let converted = converted.clone();
+                async move |_request: UntypedMessage,
+                            responder: agent_client_protocol::Responder<Value>,
+                            _cx| {
+                    let raw_id: RawJsonRpcId = responder.id().clone();
+                    let result =
+                        responder
+                            .into_protocol::<agent_client_protocol::V2>()
+                            .map(|responder| {
+                                let v2_id = responder.id().clone();
+                                responder.respond(json!({})).map(|()| v2_id)
+                            });
+                    converted
+                        .lock()
+                        .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
+                        .push((raw_id, result.map(Result::ok).map_err(|e| e.code)));
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("agent owns a connection driver"));
+
+    let response =
+        raw_v2_response(&mut channel, RawJsonRpcId::Number(7), "_probe", json!({})).await?;
+    assert_eq!(response["id"], 7, "{response}");
+    assert_eq!(response["result"], json!({}), "{response}");
+    let response = raw_v2_response(&mut channel, RawJsonRpcId::Null, "_probe", json!({})).await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert!(response.get("error").is_some(), "{response}");
+    task.abort();
+
+    let converted = converted
+        .lock()
+        .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
+        .clone();
+    assert_eq!(
+        converted,
+        vec![
+            (RawJsonRpcId::Number(7), Ok(Some(v2::RequestId::Number(7)))),
+            (
+                RawJsonRpcId::Null,
+                Err(agent_client_protocol::ErrorCode::INVALID_REQUEST)
+            ),
+        ]
     );
     Ok(())
 }

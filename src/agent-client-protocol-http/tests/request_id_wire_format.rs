@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, ConnectionDriver, Responder, TransportFrame, UntypedMessage,
+    V1,
 };
 use agent_client_protocol_http::{AcpHttpServer, HttpClient};
 use futures::StreamExt as _;
@@ -40,7 +41,8 @@ const IDS: &[&str] = &[
 /// sends `_test/echo` to the client and forwards its answer.
 fn agent() -> impl ConnectTo<Client> {
     Agent.builder().on_receive_request(
-        async |request: UntypedMessage, responder: Responder<Value>, cx| match request.method() {
+        async |request: UntypedMessage, responder: Responder<Value, V1>, cx| match request.method()
+        {
             "initialize" => responder.respond(json!({ "protocolVersion": 1 })),
             "_test/echo" => responder.respond(json!({})),
             "_test/callback" => cx
