@@ -114,11 +114,17 @@
 //! ## Protocol Versions
 //!
 //! The conductor selects the chain's protocol version from the first
-//! `initialize` request, then forwards every version through one untyped path:
-//! `proxy/initialize` has the same wire shape in v1 and v2, so the conductor
-//! only renames `initialize` to `proxy/initialize` for the first proxy and
-//! otherwise forwards messages unchanged. Its connections have no protocol
-//! version guard; the endpoints validate the selected version's traffic.
+//! `initialize` request as an agent would, then forwards every version through
+//! one untyped path: `proxy/initialize` has the same wire shape in v1 and v2,
+//! so the conductor only renames `initialize` to `proxy/initialize` for the
+//! first proxy and otherwise forwards messages unchanged. Its connections have
+//! no protocol version guard; the endpoints validate the traffic.
+//!
+//! Proxies negotiate `proxy/initialize` the way agents negotiate `initialize`,
+//! so the selected version is an upper bound: a proxy that supports only a
+//! lower version initializes the rest of the chain with it, and the
+//! `initialize` response the client receives carries the version the whole
+//! chain accepted.
 
 use std::sync::Arc;
 
@@ -147,10 +153,17 @@ use tracing::{debug, info};
 /// Instantiators ([`InstantiateProxiesAndAgent`] and [`InstantiateProxies`])
 /// receive this request and return it, possibly modified, together with the
 /// chain's components. The conductor selects the version before
-/// instantiation: a conductor acting as an agent selects v2 for a request for
-/// v2 or newer (with the `unstable_protocol_v2` feature) and v1 otherwise; a
-/// conductor acting as a proxy accepts exactly the version its own conductor
-/// selected.
+/// instantiation, as an agent does: v2 for a request for v2 or newer (with the
+/// `unstable_protocol_v2` feature) and v1 otherwise. A conductor acting as a
+/// proxy negotiates its `proxy/initialize` the same way.
+///
+/// The selected version is the highest the chain may speak. The conductor
+/// forwards the request at that version, and each proxy negotiates its
+/// `proxy/initialize` like an agent, so a proxy that supports only a lower
+/// version initializes its successor with that lower version. The version in
+/// the `initialize` response that reaches the client is the one every
+/// component accepted; a component that cannot accept it rejects the
+/// initialization instead.
 ///
 /// If the instantiator returns the request unchanged and the client asked for
 /// exactly the selected version, the conductor forwards the client's original
@@ -1477,6 +1490,18 @@ pub trait ConductorHostRole: sealed::Sealed + Role<Counterpart: HasPeer<Client>>
     ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send;
 }
 
+/// Select the highest version this build supports at or below `requested`,
+/// as an agent does, keeping v1's fallback-to-latest rule for a request below
+/// v1.
+fn select_like_an_agent(requested: ProtocolVersion) -> ProtocolVersion {
+    #[cfg(feature = "unstable_protocol_v2")]
+    if requested >= ProtocolVersion::V2 {
+        return ProtocolVersion::V2;
+    }
+    let _ = requested;
+    ProtocolVersion::V1
+}
+
 mod sealed {
     /// Prevents implementations of [`super::ConductorHostRole`] outside this crate.
     pub trait Sealed {}
@@ -1500,12 +1525,7 @@ impl ConductorHostRole for Agent {
         &self,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
-        #[cfg(feature = "unstable_protocol_v2")]
-        if requested >= ProtocolVersion::V2 {
-            return Ok(ProtocolVersion::V2);
-        }
-        let _ = requested;
-        Ok(ProtocolVersion::V1)
+        Ok(select_like_an_agent(requested))
     }
 
     async fn instantiate(
@@ -1583,22 +1603,14 @@ impl ConductorHostRole for Proxy {
         METHOD_INITIALIZE_PROXY
     }
 
-    /// Like any proxy, accept exactly the version the outer conductor
-    /// selected, if this build supports it.
+    /// Like any proxy, negotiate `proxy/initialize` as an agent negotiates
+    /// `initialize`: select the highest supported version at or below the
+    /// requested one, keeping v1's fallback-to-latest rule below v1.
     fn select_protocol_version(
         &self,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
-        #[cfg(feature = "unstable_protocol_v2")]
-        if requested == ProtocolVersion::V2 {
-            return Ok(ProtocolVersion::V2);
-        }
-        if requested == ProtocolVersion::V1 {
-            return Ok(ProtocolVersion::V1);
-        }
-        Err(Error::invalid_request().data(format!(
-            "unsupported ACP protocol version {requested}; the conductor selects a proxy's protocol version, and this proxy does not support it"
-        )))
+        Ok(select_like_an_agent(requested))
     }
 
     async fn instantiate(

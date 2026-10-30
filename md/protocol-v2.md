@@ -287,19 +287,23 @@ the connection handler with an explicit buffering and subscriber policy.
 ## Conductor and proxy initialization
 
 Proxy authors should make the version boundary explicit. `Proxy.builder()` is
-the stable v1 builder, while `Proxy.v2()` is v2-only and requires
-`proxy/initialize` to select protocol v2. A proxy built for one version rejects
-the other version instead of parsing it through a permissive schema.
+the stable v1 builder, while `Proxy.v2()` is v2-only. A proxy negotiates
+`proxy/initialize` exactly as an agent of the same version negotiates
+`initialize`: a v1 proxy selects v1 for every request, keeping only what
+parses under v1 for a newer one; a v2 proxy selects v2 for a request for v2 or
+newer, keeping only what parses under v2 for a newer one, and rejects a
+request below v2 with `-32022`. A proxy never parses one version's request
+through a permissive schema for another.
 
 When one component must expose independently authored v1 and v2 proxies,
 compose them with
-`Proxy.protocol_router().with_v1(v1_proxy).with_v2(v2_proxy)`. The conductor
-has already selected and canonicalized the protocol before
-`proxy/initialize`, so the proxy router requires an exact v1 or v2 match,
-preserves the complete initial transport frame, and does not downgrade or
-convert later traffic. Anything other than a request for exactly v2 is handed
-unchanged to a configured v1 implementation, so a v1 conductor sees the v1
-proxy alone.
+`Proxy.protocol_router().with_v1(v1_proxy).with_v2(v2_proxy)`. The proxy
+router selects an implementation from `proxy/initialize` exactly as
+`Agent.protocol_router()` does from `initialize`: a request for v2 or newer
+selects v2, and with a v1 implementation configured everything else goes to
+v1, which negotiates it as it would alone. It hands over the complete,
+unchanged initial transport frame for a request for exactly the selected
+version and does not convert later traffic.
 
 Components implementing their own raw version selector can use
 `Proxy.builder().without_acp_version_guard()` and keep protocol-neutral
@@ -319,7 +323,7 @@ the SDK selects v2 behavior from the connection's protocol version at runtime.
 The conductor forwards both versions through one untyped path that does not
 depend on the feature or on the selected version. Its connections to the
 client and to the final agent have no version guard; the endpoints validate
-the traffic of the version the conductor selected. The conductor rejects a
+the traffic of the version the chain negotiated. The conductor rejects a
 `proxy/initialize` that arrives from outside, renames the client's
 `initialize` to `proxy/initialize` for the first proxy without touching its
 params (the proxy restores the ordinary method before the request reaches the
@@ -334,8 +338,15 @@ feature, a request for v2 or newer selects v2; every other request selects v1,
 keeping v1's fallback-to-latest rule. A request for a newer version than the
 selected one keeps only what parses under the selected version, as the SDK's
 own agents negotiate (`agent_client_protocol::util::initialize_params_for_version`).
-A conductor acting as a proxy accepts exactly the version its own conductor
-selected.
+A conductor acting as a proxy negotiates its `proxy/initialize` the same way.
+
+The conductor's selection is the highest version the chain may speak, and it
+forwards the request at that version. Because each proxy negotiates like an
+agent, a proxy that supports only a lower version initializes the rest of the
+chain with that version, and the `initialize` response that reaches the client
+carries the version every component accepted. A component that cannot accept
+it, such as a v2-only agent behind a v1-only proxy, rejects the
+initialization, and the client sees the error.
 
 Proxy implementations use
 `agent_client_protocol::schema::v2::InitializeProxyRequest`. Its response is the
@@ -535,7 +546,8 @@ start an application. A failed initialize leaves the connection
 uninitialized and open, so the client may send `initialize` again, for
 example with a supported version or corrected parameters. Notifications that
 arrive before initialization are ignored. The proxy protocol router, whose
-`proxy/initialize` comes from the conductor, still closes after a rejection.
+`proxy/initialize` comes from the conductor, also answers a version mismatch
+with `-32022` but closes after a rejection.
 
 Custom endpoints can construct the same wire error with
 `agent_client_protocol::util::unsupported_protocol_version(requested, supported)`.
@@ -555,11 +567,12 @@ support for every older version.
 
 ### Proxy and client routing
 
-The proxy protocol router reads `proxy/initialize` after the conductor has
-selected the chain's wire version. It therefore requires an exact configured
-v1 or v2 implementation instead of negotiating or downgrading. It validates
-the selected schema, then hands the complete, unchanged initial frame to that
-strict implementation.
+The proxy protocol router negotiates `proxy/initialize` like the agent
+protocol router negotiates `initialize`: it selects the highest configured
+version at or below the requested one, rewrites a request for a newer version
+to keep what parses under the selected one, and hands the initial frame to
+that implementation. A request for exactly the selected version is validated
+and handed over unchanged.
 
 Clients use a connector because fallback may require opening a new transport.
 Both client implementations and the agent transport are factories:

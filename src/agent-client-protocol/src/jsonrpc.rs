@@ -8081,39 +8081,28 @@ mod tests {
 
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
-    fn proxy_builders_select_exact_proxy_protocol_guards() -> Result<(), crate::Error> {
+    fn proxy_builders_negotiate_proxy_initialize_like_agents() -> Result<(), crate::Error> {
         use crate::schema::ProtocolVersion;
 
-        for (mode, selected, unsupported) in [
-            (
-                Proxy.builder().protocol_mode,
-                ProtocolVersion::V1,
-                ProtocolVersion::V2,
-            ),
-            (
-                Proxy.v2().protocol_mode,
-                ProtocolVersion::V2,
-                ProtocolVersion::V1,
-            ),
-        ] {
-            assert_eq!(mode.api_protocol_version(), Some(selected));
+        // A v1 proxy selects v1 for a newer request.
+        let mode = Proxy.builder().protocol_mode;
+        assert_eq!(mode.api_protocol_version(), Some(ProtocolVersion::V1));
+        let request = ProtocolCompat::new(mode).incoming_message(UntypedMessage::new(
+            "proxy/initialize",
+            serde_json::json!({ "protocolVersion": ProtocolVersion::V2 }),
+        )?)?;
+        assert_eq!(request.params()["protocolVersion"], serde_json::json!(1));
 
-            let error = ProtocolCompat::new(mode)
-                .incoming_message(UntypedMessage::new(
-                    "proxy/initialize",
-                    serde_json::json!({ "protocolVersion": unsupported }),
-                )?)
-                .expect_err("a proxy builder must reject the other protocol version");
-            let data = error
-                .data
-                .as_ref()
-                .and_then(|data| data.as_str())
-                .unwrap_or_default();
-            assert!(
-                data.contains(&format!("only supports ACP protocol version {selected}")),
-                "{error:?}"
-            );
-        }
+        // A v2 proxy supports no version at or below v1.
+        let mode = Proxy.v2().protocol_mode;
+        assert_eq!(mode.api_protocol_version(), Some(ProtocolVersion::V2));
+        let error = ProtocolCompat::new(mode)
+            .incoming_message(UntypedMessage::new(
+                "proxy/initialize",
+                serde_json::json!({ "protocolVersion": ProtocolVersion::V1 }),
+            )?)
+            .expect_err("a v2 proxy builder must reject v1");
+        assert_eq!(i32::from(error.code), -32022);
 
         Ok(())
     }

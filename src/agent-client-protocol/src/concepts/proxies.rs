@@ -18,14 +18,16 @@
 //!
 //! `Proxy::builder` creates a stable protocol v1 proxy. With the
 //! `unstable_protocol_v2` feature, `Proxy.v2()` creates a v2-only proxy whose
-//! fluent callbacks receive `V2ConnectionTo<Conductor>`. The builder
-//! validates `proxy/initialize` and later traffic against the selected
-//! version.
+//! fluent callbacks receive `V2ConnectionTo<Conductor>`. Each builder
+//! negotiates `proxy/initialize` the way an agent of its version negotiates
+//! `initialize`, so a v1 proxy answers a newer request as v1, then validates
+//! later traffic against the negotiated version.
 //!
 //! Use `Proxy.protocol_router()` to package separate v1 and v2 implementations
-//! behind one `ConnectTo<Conductor>` component. It dispatches the
-//! conductor-selected `proxy/initialize` version exactly and performs no
-//! cross-version conversion.
+//! behind one `ConnectTo<Conductor>` component. Like `Agent.protocol_router()`,
+//! it selects the highest configured version at or below the one
+//! `proxy/initialize` requests, and performs no cross-version conversion of
+//! later traffic.
 //!
 //! Low-level infrastructure implementing custom raw version routing can use
 //! `Proxy.builder().without_acp_version_guard()`. Disabling the guard is an

@@ -209,27 +209,50 @@ async fn standalone_v1_ignores_unparsable_newer_initialization_params() -> Resul
     Ok(())
 }
 
+/// A v1 proxy negotiates `proxy/initialize` exactly as a v1 agent negotiates
+/// `initialize`: every request selects v1, and a newer request keeps what
+/// parses under v1.
 #[tokio::test(flavor = "current_thread")]
-async fn standalone_v1_proxy_requires_exact_selected_version() -> Result<(), Error> {
-    for requested in [0, 2, 3] {
-        let (mut channel, driver) =
-            ConnectTo::<agent_client_protocol::Conductor>::into_channel_and_future(
-                agent_client_protocol::Proxy.builder(),
+async fn standalone_v1_proxy_negotiates_like_a_v1_agent() -> Result<(), Error> {
+    for requested in [0_u16, 1, 2, 3, u16::MAX] {
+        let proxy = agent_client_protocol::Proxy
+            .builder()
+            .on_receive_request_from(
+                Client,
+                async move |request: agent_client_protocol::schema::InitializeProxyRequest,
+                            responder,
+                            _cx| {
+                    assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);
+                    if requested >= 2 {
+                        assert_eq!(
+                            request
+                                .initialize
+                                .client_info
+                                .as_ref()
+                                .map(|info| info.name.as_str()),
+                            Some("newer-client")
+                        );
+                    }
+                    responder.respond(v1::InitializeResponse::new(
+                        request.initialize.protocol_version,
+                    ))
+                },
+                agent_client_protocol::on_receive_request!(),
             );
+        let (mut channel, driver) =
+            ConnectTo::<agent_client_protocol::Conductor>::into_channel_and_future(proxy);
         let task = tokio::spawn(driver.expect("proxy owns a driver"));
-        let response = request(
-            &mut channel,
-            1,
-            "proxy/initialize",
-            json!({ "protocolVersion": requested }),
-        )
-        .await?;
-        assert_eq!(response["error"]["code"], -32600);
-        assert!(
-            response["error"]["data"]
-                .as_str()
-                .is_some_and(|data| data.contains("only supports ACP protocol version 1"))
-        );
+        let params = if requested < 2 {
+            json!({ "protocolVersion": requested, "clientCapabilities": {} })
+        } else {
+            json!({
+                "protocolVersion": requested,
+                "info": { "name": "newer-client", "version": "1" },
+                "capabilities": { "_future": true },
+            })
+        };
+        let response = request(&mut channel, 1, "proxy/initialize", params).await?;
+        assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
         task.abort();
     }
     Ok(())
