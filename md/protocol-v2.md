@@ -774,9 +774,7 @@ Client projections should also follow these rules:
 Draft v2 type changes:
 
 - JSON-RPC batching is removed from v2, and `schema::v2::JsonRpcBatch` no
-  longer exists. The SDK dropped batch support in both protocol versions:
-  every connection answers a JSON array with a single `-32600` error with
-  `id: null` (see [JSON-RPC batches](#json-rpc-batches)).
+  longer exists.
 - `Error.data` is typed as `ErrorData`: `UnsupportedProtocolVersionErrorData`
   for `-32022`, `SessionNotFoundErrorData` for `-32002`, or any other JSON.
   `v2::Error::resource_not_found()` no longer takes a `uri`; use
