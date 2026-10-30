@@ -49,27 +49,40 @@ Lazy construction allows an `InstantiateProxiesAndAgent` or
 `InstantiateProxies` implementation to inspect and, when appropriate, adjust
 the initialize request before choosing components.
 
-With the conductor crate's `unstable_protocol_v2` feature, initialization
-selects the v1 or v2 schema from the raw `protocolVersion` before
-deserialization. This prevents v2 `info`, `capabilities`, metadata, and future
-extension fields from being interpreted as a permissive v1 request and dropped.
-A request for v2 or a later compatible version selects v2. An exact v2 request
-whose typed value is unchanged keeps its original raw parameters, including
-unknown extensions; a request for a later version is canonicalized through the
-v2 schema. Every other first message runs exactly the v1 conductor of a build
-without the feature, including its v1 connection guard, v1's
-fallback-to-latest rule, and typed v1 forwarding, so enabling the feature
-never changes what a v1 client sees.
+Initialization selects the protocol version from the raw `protocolVersion`
+before deserialization, so v2 `info`, `capabilities`, metadata, and future
+extension fields are never interpreted as a permissive v1 request. With the
+conductor crate's `unstable_protocol_v2` feature, a request for v2 or newer
+selects v2; every other request selects v1, keeping v1's fallback-to-latest
+rule. A request for a newer version than the selected one keeps only what
+parses under the selected version. A conductor in proxy mode accepts exactly
+the version its own conductor selected. The instantiator receives a
+`SelectedInitializeRequest` for the selected version. An unchanged request for
+exactly the selected version keeps its original raw parameters, including
+unknown extensions; a modified typed request is serialized as the new
+authoritative payload, while its `protocolVersion` remains pinned to the
+selected version.
+
 The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
-proxy vectors can carry either selected schema, but each supplied component
-must support that version. Use `Agent.protocol_router()` or
-`Proxy.protocol_router()` when a static component has separate implementations.
-Custom instantiators can implement the
-feature-gated `instantiate_v2_proxies_and_agent` or `instantiate_v2_proxies`
-method; their default implementation rejects v2 with a JSON-RPC response and
-leaves the connection in a failed state that rejects later traffic. A modified
-typed request is serialized as the new authoritative payload, while its
-`protocolVersion` remains pinned to the implementation the conductor selected.
+proxy vectors use their components for every version, so each supplied
+component must support the selected version. Use `Agent.protocol_router()` or
+`Proxy.protocol_router()` when a static component has separate
+implementations. A custom instantiator rejects a version it does not support
+(for example with `SelectedInitializeRequest::into_v1`); the error answers the
+`initialize` request and leaves the connection in a failed state that rejects
+later traffic. A first message that is not a valid initialization is answered
+with an error and leaves the conductor uninitialized, so the client can retry.
+
+## Forwarding
+
+Forwarding is the same for every protocol version and does not depend on the
+feature: `_proxy/initialize` has the same wire shape in v1 and v2. The
+conductor rejects a `_proxy/initialize` that arrives from outside, renames
+`initialize` to `_proxy/initialize` for the first proxy with its params
+untouched, and forwards everything else unchanged, without parsing or
+re-serializing it. The conductor's connections to its client and to the final
+agent, and the pass-through proxy it inserts for tracing, have no protocol
+version guard; the endpoints validate the traffic of the selected version.
 
 ## Agent and Proxy Modes
 
@@ -144,10 +157,9 @@ ConductorImpl::new_agent("conductor", components)
 ```
 
 `ConductorImpl::new_proxy` accepts an `InstantiateProxies` implementation for
-the nested-proxy case. Both modes can use dynamic instantiator closures when
-the chain depends on v1 initialization data. A custom instantiator type can
-implement both initialization methods when dynamic selection is also needed for
-v2.
+the nested-proxy case. Both modes can use dynamic instantiator closures that
+receive the `SelectedInitializeRequest` when the chain depends on
+initialization data.
 
 ## MCP Compatibility
 

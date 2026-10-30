@@ -46,14 +46,13 @@ use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 #[cfg(feature = "unstable_protocol_v2")]
+pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
+pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
+#[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol_compat::{
     InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
 };
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
-#[cfg(feature = "unstable_protocol_v2")]
-pub(crate) use crate::jsonrpc::protocol_compat::{
-    normalize_newer_v2_initialize_request, normalize_v1_initialize_request,
-};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
@@ -1037,24 +1036,6 @@ impl<
             on_close: self.on_close,
             context: PhantomData,
         }
-    }
-
-    /// Keep this builder's stable v1 guard unless the peer's first
-    /// initialization requests ACP protocol v2 or newer.
-    ///
-    /// This is intended for version-routing infrastructure, such as the
-    /// conductor, that serves both versions on one connection. A v1 peer gets
-    /// exactly the behavior of the v1 builder. When the first incoming
-    /// `initialize` (or `_proxy/initialize` for a proxy) requests v2 or newer,
-    /// the guard is disabled for the rest of the connection, as with
-    /// [`Self::without_acp_version_guard`], and the infrastructure validates
-    /// v2 traffic itself. Builders without a v1 guard are unchanged.
-    ///
-    /// Requires the `unstable_protocol_v2` crate feature.
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub fn with_v1_guard_unless_v2_initialize(mut self) -> Self {
-        self.protocol_mode = self.protocol_mode.defer_to_v2();
-        self
     }
 }
 

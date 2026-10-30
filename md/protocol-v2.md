@@ -305,30 +305,37 @@ Components implementing their own raw version selector can use
 `Proxy.builder().without_acp_version_guard()` and keep protocol-neutral
 `ConnectionTo` callbacks. This disables the SDK's automatic version guard and
 is not a substitute for selecting `Proxy.v2()` in an ordinary v2 proxy
-implementation. A proxy's default forwarding is chosen by its builder, never by
-the crate feature: only a `Proxy.v2()` connection forwards untyped v2 messages,
-and every other proxy, including one without the guard, keeps the stable v1
-forwarding.
+implementation. A proxy's default forwarding is the same for every builder and
+every protocol version: `_proxy/initialize` has the same wire shape in v1 and
+v2, so the proxy forwards untyped messages, and fields the SDK does not know
+survive. After a forwarded `session/new` succeeds, the proxy reads the raw
+`sessionId` from the response and routes that session's updates back to the
+client.
 
 The `unstable_protocol_v2` feature only adds v2 items. Enabling it never
 changes how a v1 connection behaves: where one code path serves both versions,
 the SDK selects v2 behavior from the connection's protocol version at runtime.
-Version-routing infrastructure that serves both versions on one connection can
-use `Builder::with_v1_guard_unless_v2_initialize`, which keeps the v1 guard
-unless the first initialization requests v2.
 
-Enable `unstable_protocol_v2` on `agent-client-protocol-conductor` to carry a v2
-connection through a conductor proxy chain. The conductor inspects the raw
-`protocolVersion` before parsing initialization, rewrites ordinary `initialize`
-to `_proxy/initialize` without reserializing its parameters, and restores the
-ordinary method before the request reaches the final agent. For an exact v2
-request, `info`, `capabilities`, metadata, and unknown extension fields
-therefore retain their wire shape across conductor-controlled rewrites. A proxy
-implementation can still deliberately replace the request it forwards.
+The conductor forwards both versions through one untyped path that does not
+depend on the feature or on the selected version. Its connections to the
+client and to the final agent have no version guard; the endpoints validate
+the traffic of the version the conductor selected. The conductor rejects a
+`_proxy/initialize` that arrives from outside, renames the client's
+`initialize` to `_proxy/initialize` for the first proxy without touching its
+params (the proxy restores the ordinary method before the request reaches the
+final agent), and forwards everything else unchanged. `info`, `capabilities`,
+metadata, and unknown extension fields therefore retain their wire shape
+across conductor-controlled rewrites in both versions. A proxy implementation
+can still deliberately replace the request it forwards.
 
-An exact v2 request can retain unknown raw fields, while a request for a later
-compatible version is canonicalized through the selected v2 schema before
-component instantiation.
+Before it instantiates the chain, the conductor selects the version from the
+raw `protocolVersion`: with the conductor crate's `unstable_protocol_v2`
+feature, a request for v2 or newer selects v2; every other request selects v1,
+keeping v1's fallback-to-latest rule. A request for a newer version than the
+selected one keeps only what parses under the selected version, as the SDK's
+own agents negotiate (`agent_client_protocol::util::initialize_params_for_version`).
+A conductor acting as a proxy accepts exactly the version its own conductor
+selected.
 
 Proxy implementations use
 `agent_client_protocol::schema::v2::InitializeProxyRequest`. Its response is the
@@ -338,15 +345,13 @@ schema, but each supplied component must support that version. Use
 `Agent.protocol_router()` or `Proxy.protocol_router()` when a static component
 has separate implementations.
 Custom `InstantiateProxiesAndAgent` and `InstantiateProxies` implementations
-opt into v2 by implementing their feature-gated v2 method. The default rejects
-v2 rather than interpreting it as v1. Returning the initialize request
+receive a `SelectedInitializeRequest` whose variant is the selected version,
+and reject the versions they do not support (for example with
+`SelectedInitializeRequest::into_v1`). Returning the initialize request
 unchanged preserves its complete raw parameters for an exact-version request,
 including unknown extensions. Returning a modified typed request makes that
 serialized request authoritative. The conductor pins `protocolVersion` to its
-selected implementation even if an instantiator attempts to change it, and
-validates the final agent's initialize response against that selection.
-The proxy connection also routes v2 `session/new` requests and responses
-without interpreting them as v1 payloads.
+selected version even if an instantiator attempts to change it.
 
 ### MCP compatibility polyfill
 
