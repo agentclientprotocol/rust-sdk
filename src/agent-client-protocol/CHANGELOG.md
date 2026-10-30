@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.6.0...v5.0.0) - 2026-10-30
+
+### Added
+
+- *(acp)* [**breaking**] v1 connection type, SessionSetup, and the v5 migration guide ([#472](https://github.com/agentclientprotocol/rust-sdk/pull/472))
+- *(acp)* [**breaking**] version-neutral Builder::new and v1::schema / v2::schema ([#470](https://github.com/agentclientprotocol/rust-sdk/pull/470))
+- *(rmcp)* [**breaking**] move the rmcp integration behind a versioned rmcp_3 feature ([#471](https://github.com/agentclientprotocol/rust-sdk/pull/471))
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+- *(acp)* [**breaking**] version-neutral raw JSON-RPC request IDs ([#466](https://github.com/agentclientprotocol/rust-sdk/pull/466))
+- *(acp)* [**breaking**] version-neutral SDK Error with conversions to v1 and v2 schema errors ([#465](https://github.com/agentclientprotocol/rust-sdk/pull/465))
+- *(acp)* negotiate proxy/initialize versions like initialize ([#464](https://github.com/agentclientprotocol/rust-sdk/pull/464))
+- *(acp)* [**breaking**] answer dropped request responders with an error ([#462](https://github.com/agentclientprotocol/rust-sdk/pull/462))
+- [**breaking**] breaking cleanups for the next major release ([#461](https://github.com/agentclientprotocol/rust-sdk/pull/461))
+- *(acp)* [**breaking**] rename proxy methods to proxy/initialize and proxy/successor ([#460](https://github.com/agentclientprotocol/rust-sdk/pull/460))
+- *(acp)* [**breaking**] keep v1 independent of unstable_protocol_v2; version-agnostic conductor and proxies ([#459](https://github.com/agentclientprotocol/rust-sdk/pull/459))
+- *(acp)* [**breaking**] remove JSON-RPC batch support ([#454](https://github.com/agentclientprotocol/rust-sdk/pull/454))
+- update to agent-client-protocol-schema 1.14.0 ([#453](https://github.com/agentclientprotocol/rust-sdk/pull/453))
+- *(acp)* expose protocol-v2 request IDs on request handles and responders ([#451](https://github.com/agentclientprotocol/rust-sdk/pull/451))
+
+### Fixed
+
+- *(test)* reject empty v2 prompts in Testy and simple_agent_v2 ([#463](https://github.com/agentclientprotocol/rust-sdk/pull/463))
+- *(acp)* return session/new errors from start_session ([#428](https://github.com/agentclientprotocol/rust-sdk/pull/428))
+- *(acp)* shut agent processes down gracefully ([#457](https://github.com/agentclientprotocol/rust-sdk/pull/457))
+- *(acp)* reject proxy MCP server names that collide with the client's ([#456](https://github.com/agentclientprotocol/rust-sdk/pull/456))
+- follow the remaining ACP schema 1.13 rules in Testy, examples, and docs ([#452](https://github.com/agentclientprotocol/rust-sdk/pull/452))
+- reject unadvertised v2 prompt content in Testy and the v2 example ([#450](https://github.com/agentclientprotocol/rust-sdk/pull/450))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.5.0...v3.6.0) - 2026-10-28
 
 ### Added

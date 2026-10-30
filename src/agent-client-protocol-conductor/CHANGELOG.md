@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.6.0...agent-client-protocol-conductor-v5.0.0) - 2026-10-30
+
+### Added
+
+- *(acp)* [**breaking**] v1 connection type, SessionSetup, and the v5 migration guide ([#472](https://github.com/agentclientprotocol/rust-sdk/pull/472))
+- *(acp)* [**breaking**] version-neutral Builder::new and v1::schema / v2::schema ([#470](https://github.com/agentclientprotocol/rust-sdk/pull/470))
+- *(rmcp)* [**breaking**] move the rmcp integration behind a versioned rmcp_3 feature ([#471](https://github.com/agentclientprotocol/rust-sdk/pull/471))
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+- *(acp)* [**breaking**] version-neutral raw JSON-RPC request IDs ([#466](https://github.com/agentclientprotocol/rust-sdk/pull/466))
+- *(acp)* [**breaking**] version-neutral SDK Error with conversions to v1 and v2 schema errors ([#465](https://github.com/agentclientprotocol/rust-sdk/pull/465))
+- *(acp)* negotiate proxy/initialize versions like initialize ([#464](https://github.com/agentclientprotocol/rust-sdk/pull/464))
+- *(acp)* [**breaking**] rename proxy methods to proxy/initialize and proxy/successor ([#460](https://github.com/agentclientprotocol/rust-sdk/pull/460))
+- *(acp)* [**breaking**] keep v1 independent of unstable_protocol_v2; version-agnostic conductor and proxies ([#459](https://github.com/agentclientprotocol/rust-sdk/pull/459))
+- *(acp)* [**breaking**] remove JSON-RPC batch support ([#454](https://github.com/agentclientprotocol/rust-sdk/pull/454))
+
+### Fixed
+
+- *(acp)* reject proxy MCP server names that collide with the client's ([#456](https://github.com/agentclientprotocol/rust-sdk/pull/456))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.5.0...agent-client-protocol-conductor-v3.6.0) - 2026-10-28
 
 ### Fixed
