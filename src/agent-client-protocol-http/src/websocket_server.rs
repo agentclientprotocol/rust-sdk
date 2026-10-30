@@ -156,6 +156,11 @@ where
 {
     let frame = TransportFrame::parse_json(&text);
     crate::diagnostics::inbound(&frame, text.len(), "WebSocket");
+    // JSON-RPC batches are not supported. Answer an array with one invalid
+    // request error and forward none of its entries.
+    if let Some(rejection) = crate::protocol::batch_rejection(&frame) {
+        return send_outbound_text(ws_tx, rejection, connection_id).await;
+    }
     if connection.send_frame_to_agent(frame).is_err() {
         error!(connection_id = %connection_id, "Agent channel closed");
         drain_outbound_until_closed(ws_tx, outbound_rx, closed, connection_id).await;
@@ -230,7 +235,7 @@ where
 mod tests {
     use agent_client_protocol::{
         Channel, ConnectionDriver, RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse,
-        TransportBatch, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
+        TransportFrame, schema::v1::RequestId,
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};
@@ -274,49 +279,9 @@ mod tests {
                                 ))
                                 .unwrap();
                         }
-                        TransportFrame::Batch(_) => panic!("expected a single JSON-RPC frame"),
                     }
                 }
                 Ok(())
-            });
-
-            (transport, Some(future))
-        }
-    }
-
-    struct BatchAgentFactory {
-        forwarded: mpsc::UnboundedSender<Vec<String>>,
-    }
-
-    impl AgentFactory for BatchAgentFactory {
-        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
-            let (mut agent, transport) = Channel::duplex();
-            let forwarded = self.forwarded.clone();
-            let future = ConnectionDriver::new(async move {
-                let Some(TransportFrame::Batch(batch)) = agent.rx.next().await else {
-                    panic!("expected one batch frame");
-                };
-                let mut methods = Vec::new();
-                let mut responses = Vec::new();
-                for entry in batch.entries() {
-                    let TransportBatchEntry::Message(RawJsonRpcMessage::Request(request)) = entry
-                    else {
-                        panic!("expected a request batch entry");
-                    };
-                    methods.push(request.method.to_string());
-                    responses.push(RawJsonRpcMessage::response(
-                        request.id.clone(),
-                        Ok(json!({ "ok": true })),
-                    ));
-                }
-                forwarded.send(methods).unwrap();
-                let responses =
-                    TransportBatch::from_messages(responses).expect("responses are non-empty");
-                agent
-                    .tx
-                    .unbounded_send(TransportFrame::Batch(responses))
-                    .unwrap();
-                std::future::pending::<agent_client_protocol::Result<()>>().await
             });
 
             (transport, Some(future))
@@ -670,9 +635,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_forwards_batch_as_one_frame_and_emits_grouped_response() {
+    async fn websocket_batch_gets_one_invalid_request_error_and_is_not_forwarded() {
         let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
-        let registry = Arc::new(ConnectionRegistry::new(Arc::new(BatchAgentFactory {
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
             forwarded: forwarded_tx,
         })));
         let app = Router::new().route(
@@ -692,18 +657,8 @@ mod tests {
         });
         let (mut client, _) = connect_async(format!("ws://{addr}/acp")).await.unwrap();
         let batch = json!([
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "custom/first",
-                "params": {}
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "custom/second",
-                "params": {}
-            }
+            { "jsonrpc": "2.0", "id": 1, "method": "custom/first", "params": {} },
+            { "jsonrpc": "2.0", "method": "custom/second", "params": {} }
         ]);
 
         client
@@ -711,11 +666,6 @@ mod tests {
             .await
             .unwrap();
 
-        let methods = timeout(Duration::from_secs(1), forwarded_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(methods, ["custom/first", "custom/second"]);
         let frame = timeout(Duration::from_secs(1), client.next())
             .await
             .unwrap()
@@ -725,10 +675,27 @@ mod tests {
             panic!("expected text frame: {frame:?}");
         };
         let response = serde_json::from_str::<serde_json::Value>(&text).unwrap();
-        let entries = response.as_array().expect("response should remain a batch");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["id"], 1);
-        assert_eq!(entries[1]["id"], 2);
+        assert_eq!(response["id"], serde_json::Value::Null, "{response}");
+        assert_eq!(response["error"]["code"], -32600, "{response}");
+
+        // None of the entries reached the agent; the next message does.
+        let notification =
+            RawJsonRpcMessage::notification("test/after".to_string(), json!({})).unwrap();
+        client
+            .send(ClientWsMessage::Text(
+                serde_json::to_string(&notification).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+        let forwarded = timeout(Duration::from_secs(1), forwarded_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            forwarded,
+            RawJsonRpcMessage::Notification(notification)
+                if notification.method.as_ref() == "test/after"
+        ));
 
         server.abort();
     }

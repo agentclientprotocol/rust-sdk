@@ -100,9 +100,11 @@ JSON-RPC batches in both protocol v1 and v2 mode. Entries are handled independen
 grouped into one response array, notification-only batches produce no reply, and an empty array
 produces one standalone `Invalid Request` response. Malformed entries that are response-shaped but
 not call-shaped are ignored because JSON-RPC responses must not themselves receive responses. The
-SDK does not initiate batches of requests or notifications. See
-[Transport Architecture](./transport-architecture.md#json-rpc-batch-behavior) for the full framing
-contract.
+SDK does not initiate batches of requests or notifications.
+
+> Batch support was later removed: `TransportFrame::Batch`, `TransportBatch`, and
+> `TransportBatchEntry` no longer exist, and every connection answers a JSON array with a single
+> `Invalid Request` error. See [Transport Architecture](./transport-architecture.md#json-rpc-batches).
 
 Dropping a `Responder` for one request in a batch now produces an `Internal Error` fallback after
 dispatch completes, allowing completed sibling responses to flush. A handler error overrides the

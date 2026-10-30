@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use agent_client_protocol::{
-    Channel, ConnectionTo, Error, RawJsonRpcMessage, RequestCancellationHandle, TransportBatch,
-    TransportFrame, UntypedMessage, role::UntypedRole,
+    Channel, ConnectionTo, Error, RawJsonRpcMessage, RequestCancellationHandle, TransportFrame,
+    UntypedMessage, role::UntypedRole,
 };
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -16,7 +16,7 @@ use futures::{
 use serde_json::json;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn external_prepared_callback_holds_following_batch_entry_and_eof() {
+async fn external_prepared_callback_holds_following_message_and_eof() {
     for result in [
         Ok(json!({"value": 42})),
         Err(Error::invalid_params()),
@@ -82,15 +82,14 @@ async fn external_prepared_callback_holds_following_batch_entry_and_eof() {
                 panic!("expected publication after selecting the callback");
             };
             assert_eq!(request.method.as_ref(), "prepared");
-            peer.tx
-                .unbounded_send(TransportFrame::Batch(
-                    TransportBatch::from_messages([
-                        RawJsonRpcMessage::response(request.id, result),
-                        RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
-                    ])
-                    .unwrap(),
-                ))
-                .unwrap();
+            for message in [
+                RawJsonRpcMessage::response(request.id, result),
+                RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
+            ] {
+                peer.tx
+                    .unbounded_send(TransportFrame::Single(message))
+                    .unwrap();
+            }
             drop(peer.tx);
             let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(notification))) =
                 peer.rx.next().await
@@ -113,7 +112,7 @@ async fn external_prepared_callback_holds_following_batch_entry_and_eof() {
             driver.unwrap().unwrap();
         })
         .await
-        .expect("ordered callback did not release the batch and EOF");
+        .expect("ordered callback did not release the following message and EOF");
     }
 }
 
@@ -203,15 +202,14 @@ async fn prepared_cancellation_handle_survives_publication_and_preserves_callbac
                 panic!("expected the cancellation barrier");
             };
             assert_eq!(boundary.method.as_ref(), "after-cancellation");
-            peer.tx
-                .unbounded_send(TransportFrame::Batch(
-                    TransportBatch::from_messages([
-                        RawJsonRpcMessage::response(request.id, result),
-                        RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
-                    ])
-                    .unwrap(),
-                ))
-                .unwrap();
+            for message in [
+                RawJsonRpcMessage::response(request.id, result),
+                RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
+            ] {
+                peer.tx
+                    .unbounded_send(TransportFrame::Single(message))
+                    .unwrap();
+            }
             drop(peer.tx);
             assert!(
                 peer.rx.next().await.is_none(),
@@ -341,15 +339,14 @@ async fn detached_requests_retain_explicit_cancellation_control() {
                     "after-cancellation",
                     "cloned handles must emit exactly one cancellation"
                 );
-                peer.tx
-                    .unbounded_send(TransportFrame::Batch(
-                        TransportBatch::from_messages([
-                            RawJsonRpcMessage::response(request.id, result),
-                            RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
-                        ])
-                        .unwrap(),
-                    ))
-                    .unwrap();
+                for message in [
+                    RawJsonRpcMessage::response(request.id, result),
+                    RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
+                ] {
+                    peer.tx
+                        .unbounded_send(TransportFrame::Single(message))
+                        .unwrap();
+                }
                 let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
                     peer.rx.next().await
                 else {
@@ -569,15 +566,14 @@ async fn external_blocking_request_publishes_before_polling_without_holding_disp
             panic!("expected notification after the request");
         };
         assert_eq!(notification.method.as_ref(), "after-request");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    RawJsonRpcMessage::response(request.id, Ok(json!({"value": 42}))),
-                    RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
-                ])
-                .unwrap(),
-            ))
-            .unwrap();
+        for message in [
+            RawJsonRpcMessage::response(request.id, Ok(json!({"value": 42}))),
+            RawJsonRpcMessage::notification("following".into(), json!({})).unwrap(),
+        ] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .unwrap();
+        }
         drop(peer.tx);
         assert!(
             peer.rx.next().await.is_none(),

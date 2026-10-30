@@ -28,7 +28,7 @@ record prompts, tool arguments, or credentials. Serde parse failures are logged
 by category (and position, for syntax errors) rather than their reason text.
 
 Only the transport-level TRACE events (`Received JSON-RPC message`, `Sending
-JSON-RPC message`, `Sending JSON-RPC batch`, and `Relaying invalid JSON-RPC
+JSON-RPC message`, and `Relaying invalid JSON-RPC
 value`) record complete messages. They redact every value of an `env` or
 `headers` field (MCP server declarations in session setup, terminal auth
 methods, terminal creation, and provider configuration), keeping the names, and

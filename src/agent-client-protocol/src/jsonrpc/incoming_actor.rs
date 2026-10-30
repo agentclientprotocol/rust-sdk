@@ -25,13 +25,12 @@ use crate::jsonrpc::Responder;
 use crate::jsonrpc::ResponseDestination;
 use crate::jsonrpc::ResponseDispatch;
 use crate::jsonrpc::ResponseRouter;
-use crate::jsonrpc::TransportBatchEntry;
 use crate::jsonrpc::TransportFrame;
 use crate::jsonrpc::dynamic_handler::DynHandleDispatchFrom;
 use crate::jsonrpc::dynamic_handler::DynamicHandlerMessage;
 use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
-use crate::jsonrpc::{is_response_only_shape, raw_is_response_only_shape};
+use crate::jsonrpc::raw_is_response_only_shape;
 
 use crate::role::Role;
 use crate::schema::v1::RequestId;
@@ -154,8 +153,7 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
             }
 
             IncomingProtocolMsg::Transport(frame) => {
-                let (entries, batch_completion) = frame_entries(frame);
-                for (message, destination) in entries {
+                if let Some((message, destination)) = frame_entry(frame) {
                     match message {
                         Ok(RawJsonRpcMessage::Request(request)) => {
                             tracing::trace!(method = %request.method, id = ?request.id, "Handling request");
@@ -306,21 +304,14 @@ pub(super) async fn incoming_protocol_actor<Counterpart: Role>(
                                 error = ?crate::util::redacted_error(error.code),
                                 "Invalid transport input, sending error response"
                             );
-                            let destination = destination.expect(
-                                "invalid request input outside a response batch has a destination",
-                            );
+                            let destination = destination
+                                .expect("invalid request input has a response destination");
                             send_raw_message(
                                 &connection.message_tx,
                                 OutgoingMessage::UncorrelatedErrorResponse { error, destination },
                             )?;
                         }
                     }
-                }
-                if let Some(completion) = batch_completion {
-                    send_raw_message(
-                        &connection.message_tx,
-                        OutgoingMessage::BatchDispatchComplete { completion },
-                    )?;
                 }
             }
         }
@@ -342,9 +333,6 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
             for pending_message in std::mem::take(pending_messages) {
                 tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
                 let reply_target = pending_message.handler_error_target();
-                let handler_attempt = reply_target
-                    .as_ref()
-                    .and_then(|target| target.begin_handler_attempt(&connection.message_tx));
                 let method = pending_message.method().to_string();
                 match handler
                     .dyn_handle_dispatch_from(pending_message, connection.clone())
@@ -365,7 +353,6 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
                         handle_handler_error(connection, reply_target, method, err)?;
                     }
                 }
-                drop(handler_attempt);
             }
             *pending_messages = new_pending_messages;
 
@@ -390,68 +377,25 @@ enum IncomingProtocolMsg<Counterpart: Role> {
     DynamicHandler(DynamicHandlerMessage<Counterpart>),
 }
 
-fn frame_entries(
+/// The message carried by one transport frame and where its response goes.
+///
+/// A malformed response-shaped value is dropped. Any other malformed value,
+/// including an unsupported JSON-RPC batch array, is answered with its error.
+fn frame_entry(
     frame: TransportFrame,
-) -> (
-    Vec<(
-        Result<RawJsonRpcMessage, crate::Error>,
-        Option<ResponseDestination>,
-    )>,
-    Option<super::BatchDispatchCompletion>,
-) {
-    let entries: Vec<Result<RawJsonRpcMessage, crate::Error>> = match frame {
+) -> Option<(
+    Result<RawJsonRpcMessage, crate::Error>,
+    Option<ResponseDestination>,
+)> {
+    match frame {
         TransportFrame::Single(message) => {
             let destination = matches!(&message, RawJsonRpcMessage::Request(_))
                 .then(ResponseDestination::individual);
-            return (vec![(Ok(message), destination)], None);
+            Some((Ok(message), destination))
         }
-        TransportFrame::Malformed { raw, error } => {
-            if raw_is_response_only_shape(&raw) {
-                return (Vec::new(), None);
-            }
-            return (
-                vec![(Err(error), Some(ResponseDestination::individual()))],
-                None,
-            );
-        }
-        TransportFrame::Batch(batch) => batch
-            .into_entries()
-            .filter_map(|entry| match entry {
-                TransportBatchEntry::Message(message) => Some(Ok(message)),
-                TransportBatchEntry::Malformed { raw, error } => {
-                    (!is_response_only_shape(&raw)).then_some(Err(error))
-                }
-            })
-            .collect(),
-    };
-
-    let response_count = entries
-        .iter()
-        .filter(|entry| message_requires_response(entry))
-        .count();
-    if response_count == 0 {
-        return (
-            entries.into_iter().map(|entry| (entry, None)).collect(),
-            None,
-        );
+        TransportFrame::Malformed { raw, error } => (!raw_is_response_only_shape(&raw))
+            .then(|| (Err(error), Some(ResponseDestination::individual()))),
     }
-
-    let (mut destinations, completion) = ResponseDestination::batch(response_count);
-    (
-        entries
-            .into_iter()
-            .map(|entry| {
-                let destination = message_requires_response(&entry)
-                    .then(|| destinations.next().expect("one destination per batch call"));
-                (entry, destination)
-            })
-            .collect(),
-        Some(completion),
-    )
-}
-
-fn message_requires_response(message: &Result<RawJsonRpcMessage, crate::Error>) -> bool {
-    matches!(message, Ok(RawJsonRpcMessage::Request(_)) | Err(_))
 }
 
 /// Dispatches a JSON-RPC request to the handler.
@@ -529,9 +473,6 @@ async fn dispatch_dispatch<Counterpart: Role>(
     let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
     let error_target = dispatch.handler_error_target();
-    let _handler_attempt = error_target
-        .as_ref()
-        .and_then(|target| target.begin_handler_attempt(&connection.message_tx));
 
     match request_cancellations.cancel_if_requested(&dispatch) {
         Ok(true) => {

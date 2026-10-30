@@ -86,9 +86,7 @@
 //!
 //! Send at most one response per request. If a handler responds and then
 //! returns an error, the first response wins and the duplicate completion is
-//! ignored. Dropping a responder from a batch produces an automatic Internal
-//! Error so sibling responses are not stranded; dropping the responder for an
-//! individual request sends no response.
+//! ignored. Dropping a responder sends no response.
 //!
 //! # Multiple Handlers
 //!

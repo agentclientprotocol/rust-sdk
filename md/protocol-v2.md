@@ -17,12 +17,11 @@ state over a real stdio connection.
 
 ## JSON-RPC batches
 
-Batch framing is a shared JSON-RPC transport feature, not a v2-only protocol
-feature. Both v1 and v2 accept incoming batches, preserve them through relays,
-and group replies into one response array. The SDK does not originate batches
-of requests or notifications. See [Transport Architecture: JSON-RPC Batch
-Behavior](./transport-architecture.md#json-rpc-batch-behavior) for the complete
-rules.
+Protocol v2 removed JSON-RPC batching, and the SDK no longer supports it in
+either protocol version. Every connection answers an incoming JSON array with a
+single `-32600` (`Invalid Request`) error with `id: null` and processes none of
+its entries. The SDK never sends a batch. See [Transport Architecture: JSON-RPC
+Batches](./transport-architecture.md#json-rpc-batches).
 
 By default, `Client.builder()`, `Agent.builder()`, and `Proxy.builder()`
 continue to expose the stable v1 API. To use the v2 API for a connection,
@@ -495,10 +494,11 @@ not convert messages between v1 and v2 after routing. The selected
 implementation owns the connection: a repeated `initialize` is forwarded to it
 and never re-routed, so it is evaluated against the selected version. A v2
 implementation rejects a repeat that requests v1 with `-32600`, and a v1
-implementation selects v1 for a repeat that requests a newer version. For compatibility, the
-initial frame may be a batch whose first call-shaped entry is `initialize`. The
-router preserves the complete frame when handing it to the selected
-implementation. Response-only frames before initialization are ignored.
+implementation selects v1 for a repeat that requests a newer version. The
+router preserves the complete initial frame when handing it to the selected
+implementation. A batched first `initialize` gets one `-32600` error with
+`id: null`, and the client may send `initialize` again. Response-only frames
+before initialization are ignored.
 
 ### Version mismatch errors
 
@@ -506,8 +506,8 @@ A v2-only endpoint rejects a v1 request without requiring v2's Client identity
 or manufacturing a higher-version success response. The error code is
 `-32022`, and its data contains `requested` and the endpoint's `supported`
 versions. This diagnostic is separate from malformed initialization parameters,
-which remain `-32602`. The router preserves response IDs and batch framing
-and does not start an application. A failed initialize leaves the connection
+which remain `-32602`. The router answers with the request's ID and does not
+start an application. A failed initialize leaves the connection
 uninitialized and open, so the client may send `initialize` again, for
 example with a supported version or corrected parameters. Notifications that
 arrive before initialization are ignored. The proxy protocol router, whose
@@ -774,7 +774,9 @@ Client projections should also follow these rules:
 Draft v2 type changes:
 
 - JSON-RPC batching is removed from v2, and `schema::v2::JsonRpcBatch` no
-  longer exists.
+  longer exists. The SDK dropped batch support in both protocol versions:
+  every connection answers a JSON array with a single `-32600` error with
+  `id: null` (see [JSON-RPC batches](#json-rpc-batches)).
 - `Error.data` is typed as `ErrorData`: `UnsupportedProtocolVersionErrorData`
   for `-32022`, `SessionNotFoundErrorData` for `-32002`, or any other JSON.
   `v2::Error::resource_not_found()` no longer takes a `uri`; use

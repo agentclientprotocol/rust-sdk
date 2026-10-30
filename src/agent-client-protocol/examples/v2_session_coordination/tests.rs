@@ -1,8 +1,6 @@
 use std::{future::Future, time::Duration};
 
-use agent_client_protocol::{
-    Channel, RawJsonRpcMessage, TransportBatch, TransportFrame, schema::v1::RequestId,
-};
+use agent_client_protocol::{Channel, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId};
 use serde_json::{Value, json};
 
 use super::*;
@@ -40,17 +38,21 @@ impl Peer {
             .unwrap();
     }
 
+    /// Queue consecutive messages before the client can process any of them.
+    fn send_all(&self, messages: impl IntoIterator<Item = RawJsonRpcMessage>) {
+        for message in messages {
+            self.0
+                .tx
+                .unbounded_send(TransportFrame::Single(message))
+                .unwrap();
+        }
+    }
+
     fn replay_and_respond(&self, id: RequestId, session: &str, text: &str) {
-        self.0
-            .tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    update(session, text),
-                    RawJsonRpcMessage::response(id, Ok(json!({}))),
-                ])
-                .unwrap(),
-            ))
-            .unwrap();
+        self.send_all([
+            update(session, text),
+            RawJsonRpcMessage::response(id, Ok(json!({}))),
+        ]);
     }
 
     async fn initialize(&mut self) {
@@ -226,16 +228,10 @@ async fn abandoned_resume_is_drained_and_closed_before_fresh_replay() {
             peer.replay_and_respond(old, SESSION, "hello");
             let close = peer.request("session/close", Some(SESSION)).await;
             // Pre-close traffic must also drain before installing a new recipient.
-            peer.0
-                .tx
-                .unbounded_send(TransportFrame::Batch(
-                    TransportBatch::from_messages([
-                        update(SESSION, "closing"),
-                        RawJsonRpcMessage::response(close, Ok(json!({}))),
-                    ])
-                    .unwrap(),
-                ))
-                .unwrap();
+            peer.send_all([
+                update(SESSION, "closing"),
+                RawJsonRpcMessage::response(close, Ok(json!({}))),
+            ]);
             let fresh = peer.request("session/resume", Some(SESSION)).await;
             peer.replay_and_respond(fresh, SESSION, "hello");
             peer.finish(&[SESSION], done).await;
@@ -275,16 +271,10 @@ async fn delayed_close_blocks_only_its_session() {
             let other = peer.request("session/resume", Some(OTHER)).await;
             peer.replay_and_respond(other, OTHER, "other");
             release_close.await.unwrap();
-            peer.0
-                .tx
-                .unbounded_send(TransportFrame::Batch(
-                    TransportBatch::from_messages([
-                        update(OTHER, "+live"),
-                        RawJsonRpcMessage::response(close, Ok(json!({}))),
-                    ])
-                    .unwrap(),
-                ))
-                .unwrap();
+            peer.send_all([
+                update(OTHER, "+live"),
+                RawJsonRpcMessage::response(close, Ok(json!({}))),
+            ]);
             let fresh = peer.request("session/resume", Some(SESSION)).await;
             peer.replay_and_respond(fresh, SESSION, "fresh");
             peer.finish(&[SESSION, OTHER], done).await;

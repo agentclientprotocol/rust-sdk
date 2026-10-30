@@ -9,10 +9,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::DynConnectTo;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::jsonrpc::{
-    TransportBatch, TransportBatchEntry, TransportFrame, V2Builder, is_response_only_shape,
-    raw_is_response_only_shape,
-};
+use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
 #[cfg(not(feature = "unstable_protocol_v2"))]
 use crate::schema::InitializeProxyRequest;
@@ -974,21 +971,6 @@ fn send_initialize_error(
         }
     }
 
-    fn response_for_entry(
-        entry: &TransportBatchEntry,
-        initialize_error: &crate::Error,
-    ) -> Option<RawJsonRpcMessage> {
-        match entry {
-            TransportBatchEntry::Message(message) => {
-                response_for_message(message, initialize_error)
-            }
-            TransportBatchEntry::Malformed { raw, error } if !is_response_only_shape(raw) => Some(
-                RawJsonRpcMessage::response(RequestId::Null, Err(error.clone())),
-            ),
-            TransportBatchEntry::Malformed { .. } => None,
-        }
-    }
-
     let response = match frame {
         TransportFrame::Single(entry) => {
             let Some(response) = response_for_message(entry, &error) else {
@@ -1003,16 +985,6 @@ fn send_initialize_error(
             ))
         }
         TransportFrame::Malformed { .. } => return Ok(()),
-        TransportFrame::Batch(batch) => {
-            let responses = batch
-                .entries()
-                .filter_map(|entry| response_for_entry(entry, &error))
-                .collect::<Vec<_>>();
-            let Some(responses) = TransportBatch::from_messages(responses) else {
-                return Ok(());
-            };
-            TransportFrame::Batch(responses)
-        }
     };
 
     tx.unbounded_send(response)
@@ -1176,8 +1148,6 @@ fn initialize_message(frame: TransportFrame) -> Result<RawJsonRpcMessage, crate:
     match frame {
         TransportFrame::Single(message) => Ok(message),
         TransportFrame::Malformed { error, .. } => Err(error),
-        TransportFrame::Batch(_) => Err(crate::Error::invalid_request()
-            .data("ACP initialize request and response messages must be sent individually")),
     }
 }
 
@@ -1190,17 +1160,6 @@ fn initialize_message_mut(
         TransportFrame::Single(entry) => Ok(Some(entry)),
         TransportFrame::Malformed { raw, .. } if raw_is_response_only_shape(raw) => Ok(None),
         TransportFrame::Malformed { error, .. } => Err(error.clone()),
-        TransportFrame::Batch(batch) => {
-            for entry in batch.entries_mut() {
-                match entry {
-                    TransportBatchEntry::Message(RawJsonRpcMessage::Response(_)) => {}
-                    TransportBatchEntry::Message(message) => return Ok(Some(message)),
-                    TransportBatchEntry::Malformed { raw, .. } if is_response_only_shape(raw) => {}
-                    TransportBatchEntry::Malformed { error, .. } => return Err(error.clone()),
-                }
-            }
-            Ok(None)
-        }
     }
 }
 

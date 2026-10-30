@@ -285,24 +285,12 @@ async fn preserves_the_complete_initial_transport_frame() -> Result<(), Error> {
         let router_task = tokio::spawn(router.connect_to(conductor_transport));
         let mut proxy_reader = BufReader::new(proxy_reader);
 
-        let initialize = serde_json::json!([
-            {
-                "jsonrpc": "2.0",
-                "id": 99,
-                "result": null,
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "_proxy/initialize",
-                "params": initialize_params_with_extensions(protocol_version)?,
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "_future/notification",
-                "params": { "preserved": true },
-            },
-        ]);
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "_proxy/initialize",
+            "params": initialize_params_with_extensions(protocol_version)?,
+        });
         write_wire_json(&mut conductor_writer, &initialize).await?;
         assert_eq!(read_wire_json(&mut proxy_reader).await?, initialize);
 

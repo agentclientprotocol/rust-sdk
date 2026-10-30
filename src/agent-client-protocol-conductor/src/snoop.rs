@@ -149,7 +149,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn tracing_preserves_json_rpc_batch_frames() {
+    async fn tracing_relays_one_error_for_a_json_rpc_batch() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let incoming_count = Arc::new(AtomicUsize::new(0));
@@ -199,16 +199,18 @@ mod tests {
                 let mut line = String::new();
                 tokio::time::timeout(TIMEOUT, peer_reader.read_line(&mut line))
                     .await
-                    .expect("timed out waiting for traced batch response")
-                    .expect("batch response read should succeed");
+                    .expect("timed out waiting for the batch rejection")
+                    .expect("batch rejection read should succeed");
                 let response: Value =
                     serde_json::from_str(line.trim()).expect("response should be valid JSON");
-                let responses = response
-                    .as_array()
-                    .expect("tracing must preserve one response array");
-                assert_eq!(responses.len(), 2);
-                assert_eq!(incoming_count.load(Ordering::SeqCst), 2);
-                assert_eq!(outgoing_count.load(Ordering::SeqCst), 2);
+                // Batches are not supported: the array is one malformed value,
+                // answered with a single error, and none of its entries is
+                // dispatched or observed as a message. Only the error
+                // response is observed.
+                assert_eq!(response["id"], Value::Null, "{response}");
+                assert_eq!(response["error"]["code"], -32600, "{response}");
+                assert_eq!(incoming_count.load(Ordering::SeqCst), 1);
+                assert_eq!(outgoing_count.load(Ordering::SeqCst), 0);
 
                 drop(peer_writer);
                 drop(peer_reader);

@@ -1469,11 +1469,11 @@ async fn v2_agent_rejects_invalid_request_ids_on_the_wire() -> Result<(), Error>
         assert_eq!(response["id"], Value::Null, "{response}");
         assert_eq!(response["error"]["code"], -32600, "{response}");
 
-        // The same id inside a batch is rejected per entry.
+        // A batch holding the request is rejected as a whole.
         write_wire_json(&mut writer, &Value::Array(vec![request])).await?;
         let response = read_wire_json(&mut reader).await?;
-        assert_eq!(response[0]["id"], Value::Null, "{response}");
-        assert_eq!(response[0]["error"]["code"], -32600, "{response}");
+        assert_eq!(response["id"], Value::Null, "{response}");
+        assert_eq!(response["error"]["code"], -32600, "{response}");
     }
 
     // None of the rejections began initialization.
@@ -1648,83 +1648,6 @@ async fn protocol_router_ignores_unparsable_newer_initialize_params() -> Result<
     .await?;
     assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
     task.abort();
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn v2_agent_can_retry_after_batched_initialize_responder_is_dropped() -> Result<(), Error> {
-    use tokio::io::{AsyncWriteExt as _, BufReader};
-
-    let initialize_count = Arc::new(AtomicUsize::new(0));
-    let initialize_counter = Arc::clone(&initialize_count);
-    let agent = Agent.v2().on_receive_request(
-        async move |initialize: v2::InitializeRequest, responder, _cx| {
-            if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                drop(responder);
-                Ok(())
-            } else {
-                responder.respond(v2_initialize_response_with_session(
-                    initialize.protocol_version,
-                ))
-            }
-        },
-        agent_client_protocol::on_receive_request!(),
-    );
-
-    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-    let (server_writer, client_reader) = tokio::io::duplex(4096);
-    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
-    let agent_task = tokio::spawn(agent.connect_to(server_transport));
-    let mut client_reader = BufReader::new(client_reader);
-
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!([{
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": json_value(v2_initialize_request(ProtocolVersion::V2))?,
-        }]),
-    )
-    .await?;
-
-    let abandoned = read_wire_json(&mut client_reader).await?;
-    let abandoned = abandoned
-        .as_array()
-        .and_then(|responses| responses.first())
-        .ok_or_else(|| Error::internal_error().data("expected initialize error batch"))?;
-    assert_eq!(abandoned["id"], 1);
-    assert_eq!(abandoned["error"]["code"], -32603);
-    assert!(
-        abandoned["error"]["data"]
-            .as_str()
-            .is_some_and(|data| data.contains("dropped its responder")),
-        "{abandoned:?}"
-    );
-
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "initialize",
-            "params": json_value(v2_initialize_request(ProtocolVersion::V2))?,
-        }),
-    )
-    .await?;
-
-    let retry = read_wire_json(&mut client_reader).await?;
-    assert_eq!(retry["id"], 2);
-    assert_eq!(retry["result"]["protocolVersion"], 2);
-    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
     Ok(())
 }
 
@@ -2521,59 +2444,6 @@ async fn protocol_router_rejection_flushes_with_trailing_malformed_input() -> Re
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn protocol_router_ignores_retained_response_batch_before_initialize() -> Result<(), Error> {
-    use tokio::io::{AsyncWriteExt as _, BufReader};
-
-    let v1_agent = Agent.builder().on_receive_request(
-        async |initialize: v1::InitializeRequest, responder, _cx| {
-            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
-        },
-        agent_client_protocol::on_receive_request!(),
-    );
-    let agent = Agent.protocol_router().with_v1(v1_agent);
-
-    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-    let (server_writer, client_reader) = tokio::io::duplex(4096);
-    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
-    let agent_task = tokio::spawn(agent.connect_to(server_transport));
-    let mut client_reader = BufReader::new(client_reader);
-
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!([{
-            "jsonrpc": "2.0",
-            "id": 99,
-            "result": null,
-            "error": { "code": -32603, "message": "Internal error" },
-        }]),
-    )
-    .await?;
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": json_value(v1_initialize_request(ProtocolVersion::V1))?,
-        }),
-    )
-    .await?;
-
-    let response = read_wire_json(&mut client_reader).await?;
-    assert_eq!(response["id"], 1);
-    assert!(response.get("result").is_some(), "{response:?}");
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn protocol_router_ignores_retained_standalone_response_before_initialize()
 -> Result<(), Error> {
     use tokio::io::{AsyncWriteExt as _, BufReader};
@@ -2628,50 +2498,6 @@ async fn protocol_router_ignores_retained_standalone_response_before_initialize(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn protocol_router_rejection_does_not_answer_malformed_response_entries() -> Result<(), Error>
-{
-    use tokio::io::{AsyncWriteExt as _, BufReader};
-
-    let agent = Agent.protocol_router().with_v1(Agent.builder());
-    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-    let (server_writer, client_reader) = tokio::io::duplex(4096);
-    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
-    let agent_task = tokio::spawn(agent.connect_to(server_transport));
-    let mut client_reader = BufReader::new(client_reader);
-
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!([
-            17,
-            {
-                "jsonrpc": "2.0",
-                "id": 99,
-                "result": null,
-                "error": { "code": -32603, "message": "Internal error" },
-            }
-        ]),
-    )
-    .await?;
-
-    let response = read_wire_json(&mut client_reader).await?;
-    let responses = response
-        .as_array()
-        .expect("invalid batch entry should receive a response array");
-    assert_eq!(responses.len(), 1);
-    assert!(responses[0]["id"].is_null());
-    assert_eq!(responses[0]["error"]["code"], -32600);
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn protocol_router_preserves_same_version_initialize_frames() -> Result<(), Error> {
     use tokio::io::{AsyncWriteExt as _, BufReader};
 
@@ -2695,19 +2521,12 @@ async fn protocol_router_preserves_same_version_initialize_frames() -> Result<()
         let router_task = tokio::spawn(router.connect_to(router_transport));
         let mut agent_reader = BufReader::new(agent_reader);
 
-        let initialize = serde_json::json!([
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": initialize_params_with_extensions(protocol_version)?,
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "_future/notification",
-                "params": { "preserved": true },
-            },
-        ]);
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": initialize_params_with_extensions(protocol_version)?,
+        });
         write_wire_json(&mut client_writer, &initialize).await?;
         assert_eq!(read_wire_json(&mut agent_reader).await?, initialize);
 
@@ -2728,345 +2547,10 @@ async fn protocol_router_preserves_same_version_initialize_frames() -> Result<()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn protocol_router_validates_same_version_initialize_before_batch_dispatch()
--> Result<(), Error> {
-    use tokio::io::{AsyncWriteExt as _, BufReader};
-
-    let initialize_handler_ran = Arc::new(AtomicBool::new(false));
-    let initialize_handler_flag = Arc::clone(&initialize_handler_ran);
-    let sibling_handler_ran = Arc::new(AtomicBool::new(false));
-    let sibling_handler_flag = Arc::clone(&sibling_handler_ran);
-    let agent = Agent.protocol_router().with_v2(
-        Agent
-            .v2()
-            .on_receive_request(
-                async move |initialize: v2::InitializeRequest, responder, _cx| {
-                    initialize_handler_flag.store(true, Ordering::SeqCst);
-                    responder.respond(v2_initialize_response_with_session(
-                        initialize.protocol_version,
-                    ))
-                },
-                agent_client_protocol::on_receive_request!(),
-            )
-            .on_receive_request(
-                async move |_request: v2::ListSessionsRequest, responder, _cx| {
-                    sibling_handler_flag.store(true, Ordering::SeqCst);
-                    responder.respond(v2::ListSessionsResponse::new(Vec::new()))
-                },
-                agent_client_protocol::on_receive_request!(),
-            ),
-    );
-
-    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-    let (server_writer, client_reader) = tokio::io::duplex(4096);
-    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
-    let agent_task = tokio::spawn(agent.connect_to(server_transport));
-    let mut client_reader = BufReader::new(client_reader);
-
-    write_wire_json(
-        &mut client_writer,
-        &serde_json::json!([
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": { "protocolVersion": 2 },
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "session/list",
-                "params": {},
-            },
-        ]),
-    )
-    .await?;
-
-    let response = read_wire_json(&mut client_reader).await?;
-    let responses = response
-        .as_array()
-        .expect("rejected initialize batch should receive a response array");
-    assert_eq!(responses.len(), 2);
-    assert_eq!(responses[0]["id"], 1);
-    assert_eq!(responses[1]["id"], 2);
-    assert_eq!(responses[0]["error"]["code"], -32602);
-    assert_eq!(responses[1]["error"]["code"], -32602);
-    assert!(!initialize_handler_ran.load(Ordering::SeqCst));
-    assert!(!sibling_handler_ran.load(Ordering::SeqCst));
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn protocol_router_relays_invalid_batch_members_to_external_v1_agent() -> Result<(), Error> {
-    use tokio::io::{AsyncWriteExt as _, BufReader};
-
-    let (mut client_writer, router_reader) = tokio::io::duplex(4096);
-    let (router_writer, client_reader) = tokio::io::duplex(4096);
-    let router_transport = ByteStreams::new(router_writer.compat_write(), router_reader.compat());
-
-    let (router_to_agent_writer, agent_reader) = tokio::io::duplex(4096);
-    let (mut agent_writer, agent_to_router_reader) = tokio::io::duplex(4096);
-    let external_agent_transport = ByteStreams::new(
-        router_to_agent_writer.compat_write(),
-        agent_to_router_reader.compat(),
-    );
-    let router = Agent.protocol_router().with_v1(external_agent_transport);
-    let router_task = tokio::spawn(router.connect_to(router_transport));
-
-    let mut client_reader = BufReader::new(client_reader);
-    let mut agent_reader = BufReader::new(agent_reader);
-
-    let initialize = serde_json::json!([
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": json_value(v1_initialize_request(ProtocolVersion::V1))?,
-        },
-        17,
-    ]);
-    write_wire_json(&mut client_writer, &initialize).await?;
-    assert_eq!(read_wire_json(&mut agent_reader).await?, initialize);
-
-    let initialize_response = serde_json::json!([
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {},
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": { "code": -32600, "message": "Invalid Request" },
-        },
-    ]);
-    write_wire_json(&mut agent_writer, &initialize_response).await?;
-    assert_eq!(
-        read_wire_json(&mut client_reader).await?,
-        initialize_response
-    );
-
-    let mixed_batch = serde_json::json!([
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "session/list",
-            "params": {},
-        },
-        17,
-    ]);
-    write_wire_json(&mut client_writer, &mixed_batch).await?;
-    assert_eq!(read_wire_json(&mut agent_reader).await?, mixed_batch);
-
-    let batch_response = serde_json::json!([
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "result": { "sessions": [] },
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": null,
-            "error": { "code": -32600, "message": "Invalid Request" },
-        },
-    ]);
-    write_wire_json(&mut agent_writer, &batch_response).await?;
-    assert_eq!(read_wire_json(&mut client_reader).await?, batch_response);
-
-    let invalid_standalone = serde_json::json!(17);
-    write_wire_json(&mut client_writer, &invalid_standalone).await?;
-    assert_eq!(read_wire_json(&mut agent_reader).await?, invalid_standalone);
-
-    let invalid_standalone_response = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": null,
-        "error": { "code": -32600, "message": "Invalid Request" },
-    });
-    write_wire_json(&mut agent_writer, &invalid_standalone_response).await?;
-    assert_eq!(
-        read_wire_json(&mut client_reader).await?,
-        invalid_standalone_response
-    );
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    router_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn v2_protocol_router_accepts_inbound_json_rpc_batches() -> Result<(), Error> {
-    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
-
-    let notifications = Arc::new(AtomicUsize::new(0));
-    let received_notifications = Arc::clone(&notifications);
-    let v2_agent = Agent
-        .v2()
-        .on_receive_request(
-            async |initialize: v2::InitializeRequest, responder, _cx| {
-                responder.respond(v2_initialize_response_with_session(
-                    initialize.protocol_version,
-                ))
-            },
-            agent_client_protocol::on_receive_request!(),
-        )
-        .on_receive_notification(
-            async move |notification: v2::CancelSessionNotification, _cx| {
-                assert_eq!(notification.session_id.0.as_ref(), "batch-session");
-                received_notifications.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-            agent_client_protocol::on_receive_notification!(),
-        )
-        .on_receive_request(
-            async |_request: v2::ListSessionsRequest, responder, _cx| {
-                responder.respond(v2::ListSessionsResponse::new(Vec::new()))
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
-    let agent = Agent.protocol_router().with_v2(v2_agent);
-
-    let (mut client_writer, server_reader) = tokio::io::duplex(4096);
-    let (server_writer, client_reader) = tokio::io::duplex(4096);
-    let server_transport = ByteStreams::new(server_writer.compat_write(), server_reader.compat());
-    let agent_task = tokio::spawn(agent.connect_to(server_transport));
-    let mut client_reader = BufReader::new(client_reader);
-
-    let initialize = serde_json::json!([{
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": json_value(v2_initialize_request(ProtocolVersion::V2))?,
-    }]);
-    client_writer
-        .write_all(format!("{initialize}\n").as_bytes())
-        .await
-        .map_err(Error::into_internal_error)?;
-    client_writer
-        .flush()
-        .await
-        .map_err(Error::into_internal_error)?;
-
-    let mut line = String::new();
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(10),
-        client_reader.read_line(&mut line),
-    )
-    .await
-    .map_err(Error::into_internal_error)?
-    .map_err(Error::into_internal_error)?;
-    let initialize_response: Value =
-        serde_json::from_str(line.trim()).map_err(Error::into_internal_error)?;
-    let initialize_responses = initialize_response
-        .as_array()
-        .ok_or_else(|| Error::internal_error().data("expected initialize response array"))?;
-    assert_eq!(initialize_responses.len(), 1);
-    assert_eq!(initialize_responses[0]["id"], 1);
-    assert!(initialize_responses[0].get("result").is_some());
-
-    let batch = serde_json::json!([
-        {
-            "jsonrpc": "2.0",
-            "method": "session/cancel",
-            "params": { "sessionId": "batch-session" },
-        },
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "session/list",
-            "params": {},
-        },
-    ]);
-    client_writer
-        .write_all(format!("{batch}\n").as_bytes())
-        .await
-        .map_err(Error::into_internal_error)?;
-    client_writer
-        .flush()
-        .await
-        .map_err(Error::into_internal_error)?;
-
-    line.clear();
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(10),
-        client_reader.read_line(&mut line),
-    )
-    .await
-    .map_err(Error::into_internal_error)?
-    .map_err(Error::into_internal_error)?;
-    let batch_response: Value =
-        serde_json::from_str(line.trim()).map_err(Error::into_internal_error)?;
-    let responses = batch_response
-        .as_array()
-        .ok_or_else(|| Error::internal_error().data("expected v2 batch response array"))?;
-    assert_eq!(responses.len(), 1);
-    assert_eq!(responses[0]["id"], 2);
-    assert_eq!(responses[0]["result"]["sessions"], serde_json::json!([]));
-    assert_eq!(notifications.load(Ordering::SeqCst), 1);
-
-    let standalone = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "session/list",
-        "params": {},
-    });
-    client_writer
-        .write_all(format!("{standalone}\n").as_bytes())
-        .await
-        .map_err(Error::into_internal_error)?;
-    client_writer
-        .flush()
-        .await
-        .map_err(Error::into_internal_error)?;
-
-    line.clear();
-    tokio::time::timeout(
-        tokio::time::Duration::from_secs(10),
-        client_reader.read_line(&mut line),
-    )
-    .await
-    .map_err(Error::into_internal_error)?
-    .map_err(Error::into_internal_error)?;
-    let standalone_response: Value =
-        serde_json::from_str(line.trim()).map_err(Error::into_internal_error)?;
-    assert!(standalone_response.is_object());
-    assert_eq!(standalone_response["id"], 3);
-    assert_eq!(
-        standalone_response["result"]["sessions"],
-        serde_json::json!([])
-    );
-
-    client_writer
-        .shutdown()
-        .await
-        .map_err(Error::into_internal_error)?;
-    agent_task
-        .await
-        .map_err(agent_client_protocol::util::internal_error)??;
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn protocol_router_mismatch_flushes_without_starting_application() -> Result<(), Error> {
     use tokio::io::BufReader;
 
-    for batched in [false, true] {
+    {
         let started = Arc::new(AtomicBool::new(false));
         let runner_started = started.clone();
         let handler_started = started.clone();
@@ -3097,28 +2581,8 @@ async fn protocol_router_mismatch_flushes_without_starting_application() -> Resu
             "method": "initialize",
             "params": { "protocolVersion": 1, "clientCapabilities": {} },
         });
-        let request = if batched {
-            serde_json::json!([
-                initialize,
-                {
-                    "jsonrpc": "2.0",
-                    "id": "session-id",
-                    "method": "session/new",
-                    "params": { "cwd": cwd()?, "mcpServers": [] },
-                },
-            ])
-        } else {
-            initialize
-        };
-        write_wire_json(&mut client_writer, &request).await?;
-        let wire_response = read_wire_json(&mut client_reader).await?;
-        let initialize_response = if batched {
-            assert_eq!(wire_response[1]["id"], "session-id");
-            assert_eq!(wire_response[1]["error"]["code"], -32022);
-            &wire_response[0]
-        } else {
-            &wire_response
-        };
+        write_wire_json(&mut client_writer, &initialize).await?;
+        let initialize_response = &read_wire_json(&mut client_reader).await?;
         assert_eq!(initialize_response["id"], "initialize-id");
         assert_eq!(
             initialize_response["error"],

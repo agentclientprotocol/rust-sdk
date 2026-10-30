@@ -8,7 +8,7 @@
 use agent_client_protocol::{
     Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
     JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage, Responder,
-    SentRequest, TransportBatch, TransportFrame, role::UntypedRole,
+    SentRequest, TransportFrame, role::UntypedRole,
 };
 use futures::channel::{mpsc, oneshot};
 use futures::{AsyncRead, AsyncWrite, StreamExt as _};
@@ -431,16 +431,16 @@ async fn unconsumed_response_does_not_block_following_message() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn ordered_callback_installs_dynamic_handler_before_later_batch_entry() {
-    assert_callback_installs_handler_before_batch_entry(false).await;
+async fn ordered_callback_installs_dynamic_handler_before_later_message() {
+    assert_callback_installs_handler_before_later_message(false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn prepared_callback_installs_dynamic_handler_before_later_batch_entry() {
-    assert_callback_installs_handler_before_batch_entry(true).await;
+async fn prepared_callback_installs_dynamic_handler_before_later_message() {
+    assert_callback_installs_handler_before_later_message(true).await;
 }
 
-async fn assert_callback_installs_handler_before_batch_entry(prepared: bool) {
+async fn assert_callback_installs_handler_before_later_message(prepared: bool) {
     let (transport, mut peer) = Channel::duplex();
     let (notification_tx, mut notification_rx) = mpsc::unbounded();
 
@@ -494,11 +494,11 @@ async fn assert_callback_installs_handler_before_batch_entry(prepared: bool) {
                 .expect("notification should serialize"),
         )
         .expect("notification should form valid JSON-RPC parameters");
-        let batch = TransportBatch::from_messages([response, notification])
-            .expect("test batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept the response batch");
+        for message in [response, notification] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept the queued messages");
+        }
 
         while peer.rx.next().await.is_some() {}
         Ok::<(), agent_client_protocol::Error>(())
@@ -508,7 +508,7 @@ async fn assert_callback_installs_handler_before_batch_entry(prepared: bool) {
         futures::try_join!(client, peer)
     })
     .await
-    .expect("dynamic handler was not installed before the later batch entry")
+    .expect("dynamic handler was not installed before the later message")
     .expect("connection failed");
 }
 
