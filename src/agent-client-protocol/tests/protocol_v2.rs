@@ -13,17 +13,17 @@ use std::{
 use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
-    ConnectTo, ConnectionContext, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose,
-    HandleDispatchFrom, InitializeOutcome, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, NullHandler, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role,
-    RunWithConnectionTo, SelectedInitializeResponse, TransportFrame, UntypedMessage, UntypedRole,
-    V2Builder, V2ConnectionTo,
+    ConnectTo, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose, HandleDispatchFrom,
+    InitializeOutcome, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+    NullHandler, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, RunWithConnectionTo,
+    SelectedInitializeResponse, TransportFrame, UntypedMessage, UntypedRole, V2Builder,
+    V2ConnectionTo,
 };
 use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::Testy;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
@@ -80,20 +80,20 @@ fn assert_version_mismatch(error: &Error, requested: u16, supported: &[u16]) {
 }
 
 #[allow(dead_code)]
-fn spawn_child_from_generic_context<R, Context>(
+fn spawn_child_from_generic_context<R, P>(
     parent: &ConnectionTo<UntypedRole>,
     builder: Builder<
         R,
         impl HandleDispatchFrom<R::Counterpart> + 'static,
         impl RunWithConnectionTo<R::Counterpart> + 'static,
         impl HandleConnectionClose<R::Counterpart> + 'static,
-        Context,
+        P,
     >,
     transport: impl ConnectTo<R> + 'static,
-) -> Result<Context::Connection<R::Counterpart>, Error>
+) -> Result<P::Connection<R::Counterpart>, Error>
 where
     R: Role,
-    Context: ConnectionContext,
+    P: agent_client_protocol::Protocol,
 {
     parent.spawn_connection_with_context(builder, transport)
 }
@@ -2972,7 +2972,7 @@ async fn v2_request_ids_match_between_prepared_requests_and_responders() -> Resu
                     received_ids
                         .lock()
                         .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
-                        .push((responder.id().clone(), responder.v2_id()));
+                        .push((responder.raw_id().clone(), responder.id().clone()));
                     responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
                         "v2-request-id-session",
                     )))
@@ -2989,11 +2989,11 @@ async fn v2_request_ids_match_between_prepared_requests_and_responders() -> Resu
                 .await?;
 
             let prepared = cx.prepare_request(v2::NewSessionRequest::new(cwd()?));
-            let prepared_id: v2::RequestId = prepared.v2_id().clone();
+            let prepared_id: v2::RequestId = prepared.id().clone();
             assert_eq!(
                 json_value(&prepared_id)?,
-                json_value(prepared.id())?,
-                "the v2 id is the same id as the v1-typed accessor"
+                json_value(prepared.raw_id())?,
+                "the typed v2 id is the same id as the raw accessor"
             );
             prepared.block_task().await?;
             Ok(prepared_id)
@@ -3010,12 +3010,12 @@ async fn v2_request_ids_match_between_prepared_requests_and_responders() -> Resu
         )));
     };
     assert_eq!(json_value(&prepared_id)?, json_value(wire_id)?);
-    assert_eq!(responder_v2_id.as_ref(), Some(&prepared_id));
+    assert_eq!(responder_v2_id, &prepared_id);
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
+async fn v2_responder_id_is_the_wire_request_id() -> Result<(), Error> {
     let received_ids = Arc::new(std::sync::Mutex::new(Vec::new()));
     let agent = Agent.v2().on_receive_request(
         {
@@ -3024,7 +3024,7 @@ async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
                 received_ids
                     .lock()
                     .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
-                    .push(responder.v2_id());
+                    .push(responder.id().clone());
                 responder.respond(v2_initialize_response_with_session(
                     initialize.protocol_version,
                 ))
@@ -3061,8 +3061,8 @@ async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
     assert_eq!(
         received_ids,
         vec![
-            Some(v2::RequestId::Number(7)),
-            Some(v2::RequestId::Str("initialize-again".into())),
+            v2::RequestId::Number(7),
+            v2::RequestId::Str("initialize-again".into()),
         ]
     );
     Ok(())
@@ -3078,7 +3078,7 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
                 received_ids
                     .lock()
                     .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
-                    .push((responder.id().clone(), responder.v2_id()));
+                    .push((responder.raw_id().clone(), responder.id().clone()));
                 responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
             }
         },
@@ -3102,7 +3102,68 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
         .lock()
         .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
         .clone();
-    assert_eq!(received_ids, vec![(RawJsonRpcId::Null, None)]);
+    assert_eq!(
+        received_ids,
+        vec![(RawJsonRpcId::Null, v1::RequestId::Null)]
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn raw_responders_convert_to_v2_responders_unless_the_id_is_null() -> Result<(), Error> {
+    let converted = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let agent = Agent
+        .builder()
+        .without_acp_version_guard()
+        .on_receive_request(
+            {
+                let converted = converted.clone();
+                async move |_request: UntypedMessage,
+                            responder: agent_client_protocol::Responder<Value>,
+                            _cx| {
+                    let raw_id: RawJsonRpcId = responder.id().clone();
+                    let result =
+                        responder
+                            .into_protocol::<agent_client_protocol::V2>()
+                            .map(|responder| {
+                                let v2_id = responder.id().clone();
+                                responder.respond(json!({})).map(|()| v2_id)
+                            });
+                    converted
+                        .lock()
+                        .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
+                        .push((raw_id, result.map(Result::ok).map_err(|e| e.code)));
+                    Ok(())
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("agent owns a connection driver"));
+
+    let response =
+        raw_v2_response(&mut channel, RawJsonRpcId::Number(7), "_probe", json!({})).await?;
+    assert_eq!(response["id"], 7, "{response}");
+    assert_eq!(response["result"], json!({}), "{response}");
+    let response = raw_v2_response(&mut channel, RawJsonRpcId::Null, "_probe", json!({})).await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert!(response.get("error").is_some(), "{response}");
+    task.abort();
+
+    let converted = converted
+        .lock()
+        .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
+        .clone();
+    assert_eq!(
+        converted,
+        vec![
+            (RawJsonRpcId::Number(7), Ok(Some(v2::RequestId::Number(7)))),
+            (
+                RawJsonRpcId::Null,
+                Err(agent_client_protocol::ErrorCode::INVALID_REQUEST)
+            ),
+        ]
+    );
     Ok(())
 }
 

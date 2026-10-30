@@ -2,7 +2,7 @@
 
 use super::{TestyCommand, TestyScenario, parse_command};
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, RequestCancellation, Responder, V2ConnectionTo,
+    Agent, Client, ConnectTo, RequestCancellation, Responder, V2, V2ConnectionTo,
     schema::{ProtocolVersion, v2 as acp},
 };
 use std::{
@@ -471,7 +471,7 @@ impl V2Testy {
     fn run_inserted_prompt(
         &self,
         request: acp::PromptRequest,
-        responder: Responder<acp::PromptResponse>,
+        responder: Responder<acp::PromptResponse, V2>,
         connection: &V2ConnectionTo<Client>,
     ) -> Result<(), agent_client_protocol::Error> {
         let session_id = request.session_id.clone();
@@ -518,7 +518,7 @@ impl ConnectTo<Client> for V2Testy {
             .name("test-agent-v2")
             .on_receive_request(
                 async |request: acp::InitializeRequest,
-                       responder: Responder<acp::InitializeResponse>,
+                       responder: Responder<acp::InitializeResponse, V2>,
                        _connection: V2ConnectionTo<Client>| {
                     responder.respond(V2Testy::initialize_response(request.protocol_version))
                 },
@@ -528,7 +528,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::NewSessionRequest,
-                                responder: Responder<acp::NewSessionResponse>,
+                                responder: Responder<acp::NewSessionResponse, V2>,
                                 _connection: V2ConnectionTo<Client>| {
                         match agent.create_session(request) {
                             Ok(session_id) => {
@@ -544,7 +544,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::ListSessionsRequest,
-                                responder: Responder<acp::ListSessionsResponse>,
+                                responder: Responder<acp::ListSessionsResponse, V2>,
                                 _connection: V2ConnectionTo<Client>| {
                         // Testy returns every session in one page and never issues a
                         // `nextCursor`, so any cursor a client sends is invalid.
@@ -569,7 +569,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::ResumeSessionRequest,
-                                responder: Responder<acp::ResumeSessionResponse>,
+                                responder: Responder<acp::ResumeSessionResponse, V2>,
                                 connection: V2ConnectionTo<Client>| {
                         let replay = match agent.resume_session(&request) {
                             Ok(replay) => replay,
@@ -607,7 +607,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::CloseSessionRequest,
-                                responder: Responder<acp::CloseSessionResponse>,
+                                responder: Responder<acp::CloseSessionResponse, V2>,
                                 connection: V2ConnectionTo<Client>| {
                         if !agent.close_session(&request.session_id) {
                             return responder.respond(acp::CloseSessionResponse::new());
@@ -627,7 +627,7 @@ impl ConnectTo<Client> for V2Testy {
                 {
                     let agent = self.clone();
                     async move |request: acp::PromptRequest,
-                                responder: Responder<acp::PromptResponse>,
+                                responder: Responder<acp::PromptResponse, V2>,
                                 connection: V2ConnectionTo<Client>| {
                         match agent.admit_prompt(&request.session_id, &request.prompt) {
                             Err(error) => responder.respond_with_error(error),

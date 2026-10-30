@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use agent_client_protocol::V1;
 use agent_client_protocol::schema::v1::{
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
@@ -690,7 +691,7 @@ async fn testy_callbacks_scenario_returns_cancelled_after_session_cancel()
 async fn testy_callbacks_scenario_cancels_pending_callback_request()
 -> Result<(), agent_client_protocol::Error> {
     let callbacks = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let pending_permission = Arc::new(Mutex::new(None::<Responder<RequestPermissionResponse>>));
+    let pending_permission = Arc::new(Mutex::new(None::<Responder<RequestPermissionResponse, V1>>));
 
     Client
         .builder()

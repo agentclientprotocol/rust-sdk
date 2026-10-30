@@ -6,7 +6,7 @@ use futures::{
 };
 
 use crate::{
-    Agent, Client, ConnectionTo, DynamicHandlerGuard, JsonRpcRequest, Responder, SentRequest,
+    Agent, Client, ConnectionTo, DynamicHandlerGuard, JsonRpcRequest, Responder, SentRequest, V2,
     V2ConnectionTo,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
     role::{HasPeer, acp::ProxySessionMessages},
@@ -100,7 +100,7 @@ fn send_session_setup<Counterpart, Request, Run>(
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
     ordered: bool,
-) -> SentRequest<Request::Response>
+) -> SentRequest<Request::Response, V2>
 where
     Counterpart: HasPeer<Agent>,
     Request: JsonRpcRequest + 'static,
@@ -113,7 +113,7 @@ where
         if ordered {
             raw_connection.send_ordered_request_to(Agent, request)
         } else {
-            raw_connection.send_request_to(Agent, request)
+            connection.send_request_to(Agent, request)
         }
     } else {
         let handlers_ready = raw_connection.dynamic_handler_barrier();
@@ -323,7 +323,7 @@ where
         })
     }
 
-    fn send_new_session(self, ordered: bool) -> SentRequest<v2::NewSessionResponse>
+    fn send_new_session(self, ordered: bool) -> SentRequest<v2::NewSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -354,7 +354,9 @@ where
     /// promotes them to the connection lifetime, independently from how this
     /// request handle is consumed. Setup errors clean up the pending
     /// attachment.
-    pub fn start_session(self) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>>
+    pub fn start_session(
+        self,
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::NewSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -381,7 +383,7 @@ where
     /// for later connection traffic without deadlocking the dispatch loop.
     pub fn on_proxy_session_start<F, Fut>(
         self,
-        responder: Responder<v2::NewSessionResponse>,
+        responder: Responder<v2::NewSessionResponse, V2>,
         op: F,
     ) -> Result<(), crate::Error>
     where
@@ -497,7 +499,7 @@ where
         })
     }
 
-    fn send_fork_session(self, ordered: bool) -> SentRequest<v2::ForkSessionResponse>
+    fn send_fork_session(self, ordered: bool) -> SentRequest<v2::ForkSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -529,7 +531,9 @@ where
     /// promotes them to the connection lifetime independently from how this
     /// request handle is consumed; setup errors clean up the pending
     /// attachment.
-    pub fn start_session(self) -> SentRequest<OpenedV2Session<Counterpart, v2::ForkSessionResponse>>
+    pub fn start_session(
+        self,
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ForkSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -557,7 +561,7 @@ where
     /// for later connection traffic without deadlocking the dispatch loop.
     pub fn on_proxy_session_start<F, Fut>(
         self,
-        responder: Responder<v2::ForkSessionResponse>,
+        responder: Responder<v2::ForkSessionResponse, V2>,
         op: F,
     ) -> Result<(), crate::Error>
     where
@@ -669,7 +673,7 @@ where
         })
     }
 
-    fn send_resume_session(self, ordered: bool) -> SentRequest<v2::ResumeSessionResponse>
+    fn send_resume_session(self, ordered: bool) -> SentRequest<v2::ResumeSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -702,7 +706,7 @@ where
     /// consumed; setup errors clean up the pending attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>>
+    ) -> SentRequest<OpenedV2Session<Counterpart, v2::ResumeSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -732,7 +736,7 @@ where
     /// deadlocking the dispatch loop.
     pub fn on_proxy_session_start<F, Fut>(
         mut self,
-        responder: Responder<v2::ResumeSessionResponse>,
+        responder: Responder<v2::ResumeSessionResponse, V2>,
         op: F,
     ) -> Result<(), crate::Error>
     where
@@ -843,7 +847,7 @@ where
     /// A successful response only acknowledges that the agent accepted the
     /// prompt. The accepted user message, output, state changes, and completion
     /// arrive independently through [`v2::UpdateSessionNotification`].
-    pub fn send_prompt(&self, prompt: impl ToString) -> SentRequest<v2::PromptResponse> {
+    pub fn send_prompt(&self, prompt: impl ToString) -> SentRequest<v2::PromptResponse, V2> {
         self.send_prompt_blocks(vec![prompt.to_string().into()])
     }
 
@@ -862,7 +866,7 @@ where
     pub fn send_prompt_blocks(
         &self,
         prompt: Vec<v2::ContentBlock>,
-    ) -> SentRequest<v2::PromptResponse> {
+    ) -> SentRequest<v2::PromptResponse, V2> {
         self.connection.send_request_to(
             Agent,
             v2::PromptRequest::new(self.session_id.clone(), prompt),
@@ -915,7 +919,7 @@ where
         &self,
         config_id: impl Into<v2::SessionConfigId>,
         value: impl Into<v2::SessionConfigOptionValue>,
-    ) -> SentRequest<v2::SetSessionConfigOptionResponse> {
+    ) -> SentRequest<v2::SetSessionConfigOptionResponse, V2> {
         self.connection.send_request_to(
             Agent,
             v2::SetSessionConfigOptionRequest::new(self.session_id.clone(), config_id, value),
@@ -943,7 +947,7 @@ where
     /// returned unchanged.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/session-setup#closing-active-sessions>.
-    pub fn close(&self) -> SentRequest<v2::CloseSessionResponse> {
+    pub fn close(&self) -> SentRequest<v2::CloseSessionResponse, V2> {
         self.connection
             .send_request_to(Agent, v2::CloseSessionRequest::new(self.session_id.clone()))
             .recover_error(|error| {

@@ -7,6 +7,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::DynConnectTo;
+use crate::Raw;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::RawJsonRpcId;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
@@ -68,8 +69,11 @@ impl Role for Client {
 
 impl Client {
     /// Create a connection builder for a client.
-    pub fn builder(self) -> Builder<Client, NullHandler, NullRun> {
-        <Self as Role>::builder(self)
+    ///
+    /// Typed handlers on this builder receive [`V1`](crate::V1) request
+    /// handles.
+    pub fn builder(self) -> Builder<Client, NullHandler, NullRun, crate::NullClose, crate::V1> {
+        <Self as Role>::builder(self).into_protocol()
     }
 
     /// Create a client builder that requires an ACP protocol v2 agent.
@@ -326,8 +330,11 @@ impl Role for Agent {
 
 impl Agent {
     /// Create a connection builder for an agent.
-    pub fn builder(self) -> Builder<Agent, NullHandler, NullRun> {
-        <Self as Role>::builder(self)
+    ///
+    /// Typed handlers on this builder receive [`V1`](crate::V1) request
+    /// handles.
+    pub fn builder(self) -> Builder<Agent, NullHandler, NullRun, crate::NullClose, crate::V1> {
+        <Self as Role>::builder(self).into_protocol()
     }
 
     /// Create an agent builder that uses the ACP protocol v2 API.
@@ -1524,8 +1531,11 @@ impl Proxy {
     /// wire validation. Protocol-routing infrastructure that deliberately
     /// selects a version itself can disable the guard with
     /// `Builder::without_acp_version_guard`.
-    pub fn builder(self) -> Builder<Proxy, NullHandler, NullRun> {
-        Builder::new(self)
+    ///
+    /// Typed handlers on this builder receive [`V1`](crate::V1) request
+    /// handles.
+    pub fn builder(self) -> Builder<Proxy, NullHandler, NullRun, crate::NullClose, crate::V1> {
+        Builder::new(self).into_protocol()
     }
 
     /// Create a proxy builder that uses the ACP protocol v2 API.
@@ -1723,12 +1733,12 @@ async fn forward_proxy_dispatch(
             if request.method() == METHOD_INITIALIZE_PROXY =>
         {
             request.method = "initialize".to_string();
-            cx.send_ordered_request_to(Agent, request)
+            cx.send_ordered_request_to::<Raw, _, _>(Agent, request)
                 .forward_response_to(responder)?;
             return Ok(Handled::Yes);
         }
         Dispatch::Request(request, responder) if request.method() == "session/new" => {
-            let sent = cx.send_ordered_request_to(Agent, request);
+            let sent = cx.send_ordered_request_to::<Raw, _, _>(Agent, request);
             // The dynamic-handler hook below means we cannot use
             // `forward_response_to`, so wire up cancellation forwarding
             // explicitly to keep `session/new` cancellable like every

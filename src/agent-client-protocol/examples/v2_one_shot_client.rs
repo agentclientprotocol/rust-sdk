@@ -15,7 +15,7 @@
 use std::{collections::HashMap, str::FromStr};
 
 use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
-use agent_client_protocol::{AcpAgent, Agent, Client, Error, Responder, V2ConnectionTo};
+use agent_client_protocol::{AcpAgent, Agent, Client, Error, Responder, V2, V2ConnectionTo};
 use clap::Parser;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .on_receive_request(
             async move |request: v2::RequestPermissionRequest,
-                        responder: Responder<v2::RequestPermissionResponse>,
+                        responder: Responder<v2::RequestPermissionResponse, V2>,
                         connection: V2ConnectionTo<Agent>| {
                 responder.respond(reject_permission(&request, &connection)?)
             },

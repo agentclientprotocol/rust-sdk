@@ -12,8 +12,9 @@ use crate::schema::v2;
 /// `null`.
 ///
 /// This is the ID of [`RawJsonRpcMessage`](crate::RawJsonRpcMessage) and its
-/// requests and responses, and of the SDK's request and response handles,
-/// whichever ACP version the connection speaks. It keeps the wire form: `1`
+/// requests and responses, whichever ACP version the connection speaks. The
+/// SDK's request handles return it from `raw_id()`; their `id()` returns the
+/// request ID type of their [`Protocol`](crate::Protocol) version. It keeps the wire form: `1`
 /// and `"1"` are different IDs, and integers are kept exactly across the
 /// whole 64-bit signed range, which is the range every ACP schema version
 /// accepts. Other numbers are not valid IDs.

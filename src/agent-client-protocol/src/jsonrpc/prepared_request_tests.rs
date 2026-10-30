@@ -13,7 +13,7 @@ fn preparation_configuration_and_drop_send_nothing() {
         .forward_cancellation_from(cancellation)
         .map(|response| Ok(response.to_string()));
     assert_eq!(request.method(), "prepared");
-    assert!(!fixture.pending_replies.contains(request.id()));
+    assert!(!fixture.pending_replies.contains(request.raw_id()));
     let handle = request.cancellation_handle();
     handle.cancel().unwrap();
     drop(handle.clone());
@@ -28,7 +28,7 @@ fn preparation_configuration_and_drop_send_nothing() {
 fn blocking_publishes_before_polling_and_drop_cancels() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let response = prepared.block_task();
     fixture
         .connection
@@ -65,7 +65,7 @@ fn blocking_maps_the_response_without_holding_dispatch() {
         .connection
         .prepare_request(request())
         .map(|value| Ok(value["value"].as_u64().unwrap()));
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let response = prepared.block_task();
     fixture.next_message();
     assert!(fixture.route(id, Ok(json!({"value": 42}))).is_none());
@@ -77,7 +77,7 @@ fn blocking_maps_the_response_without_holding_dispatch() {
 fn detach_publishes_without_ordering_or_automatic_cancellation() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let handle = prepared.cancellation_handle();
     prepared.detach().unwrap();
     fixture.next_message();
@@ -102,13 +102,13 @@ fn detached_handles_preserve_once_only_control_until_response_routing() {
             let mut fixture = Fixture::new();
             let (id, handle) = if eager {
                 let sent = fixture.connection.send_request(request());
-                let id = sent.id().clone();
+                let id = sent.raw_id().clone();
                 let handle = sent.cancellation_handle();
                 sent.detach();
                 (id, handle)
             } else {
                 let prepared = fixture.connection.prepare_request(request());
-                let id = prepared.id().clone();
+                let id = prepared.raw_id().clone();
                 let handle = prepared.cancellation_handle();
                 prepared.detach().unwrap();
                 (id, handle)
@@ -162,7 +162,7 @@ fn callback_ordering_is_installed_before_publication_and_task_polling() {
     ] {
         let mut fixture = Fixture::new();
         let prepared = fixture.connection.prepare_request(request());
-        let id = prepared.id().clone();
+        let id = prepared.raw_id().clone();
         let handle = prepared.cancellation_handle();
         let expected = result.clone();
         prepared
@@ -186,7 +186,7 @@ fn callback_ordering_is_installed_before_publication_and_task_polling() {
 fn callback_failure_releases_the_barrier_and_fails_the_task() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     prepared
         .on_receiving_result(async |_| Err(crate::Error::invalid_params()))
         .unwrap();
@@ -201,7 +201,7 @@ fn callback_failure_releases_the_barrier_and_fails_the_task() {
 fn task_registration_failure_does_not_publish_or_cancel() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let handle = prepared.cancellation_handle();
     fixture.task_rx.close();
     assert!(prepared.on_receiving_result(async |_| Ok(())).is_err());
@@ -225,7 +225,7 @@ fn publication_failures_reach_each_consumer_without_cancellation() {
             } else {
                 fixture.connection.prepare_request(request())
             };
-            let id = prepared.id().clone();
+            let id = prepared.raw_id().clone();
             let handle = prepared.cancellation_handle();
             match failure {
                 Failure::Serialization => {}
@@ -316,7 +316,7 @@ fn forwarding_and_success_callbacks_preserve_ordering_and_peer_errors() {
                 ResponseDestination::individual(),
             );
             let prepared = fixture.connection.prepare_request(request());
-            let id = prepared.id().clone();
+            let id = prepared.raw_id().clone();
             if success_callback {
                 prepared
                     .on_receiving_ok_result(responder, async |value, responder| {
@@ -347,7 +347,7 @@ fn consumer_waits_for_publication_before_forwarding_cancellation() {
         .connection
         .prepare_request(request())
         .forward_cancellation_from(cancellation);
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let handle = prepared.cancellation_handle();
     let published_tx = prepared.register_consumer(async |_| Ok(())).unwrap();
     let mut task = Box::pin(fixture.next_task().run_for_test());
@@ -384,7 +384,7 @@ fn consumer_destruction_before_publication_cannot_overtake_or_lose_cancellation(
         for poll_before_drop in [false, true] {
             let mut fixture = Fixture::new();
             let prepared = fixture.connection.prepare_request(request());
-            let id = prepared.id().clone();
+            let id = prepared.raw_id().clone();
             let published_tx = prepared.register_consumer(async |_| Ok(())).unwrap();
             let mut task = Box::pin(fixture.next_task().run_for_test());
             if poll_before_drop {
@@ -420,7 +420,7 @@ fn consumer_destruction_before_publication_cannot_overtake_or_lose_cancellation(
 fn response_before_consumer_handoff_keeps_cancellation_disarmed() {
     let mut fixture = Fixture::new();
     let prepared = fixture.connection.prepare_request(request());
-    let id = prepared.id().clone();
+    let id = prepared.raw_id().clone();
     let published_tx = prepared.register_consumer(async |_| Ok(())).unwrap();
     drop(fixture.next_task());
     prepared.publication.publish().unwrap();
@@ -443,7 +443,7 @@ fn publication_activation_preserves_cancellation_and_settlement() {
     for outcome in [Outcome::Pending, Outcome::Response, Outcome::Eof] {
         let mut fixture = Fixture::new();
         let prepared = fixture.connection.prepare_request(request());
-        let id = prepared.id().clone();
+        let id = prepared.raw_id().clone();
         let handle = prepared.cancellation_handle();
         let PreparedRequest { sent, publication } = prepared;
         let RequestPublication {

@@ -119,9 +119,9 @@ Because the two used to be the same type, some code imported `Error` from
 
 ## A version-neutral `RawJsonRpcId`
 
-The raw JSON-RPC layer and the request handles used `schema::v1::RequestId`
-as their ID type, even on v2 connections. They now use the SDK's own
-`agent_client_protocol::RawJsonRpcId`, the same on every protocol version:
+The raw JSON-RPC layer used `schema::v1::RequestId` as its ID type, even on
+v2 connections. It now uses the SDK's own `agent_client_protocol::RawJsonRpcId`,
+the same on every protocol version:
 
 ```rust,ignore
 pub enum RawJsonRpcId {
@@ -142,8 +142,9 @@ and `"1"` stay distinct, and integers keep the full 64-bit signed range.
 | `RawJsonRpcMessage::Request(schema::v1::Request<RawJsonRpcParams>)` | `RawJsonRpcMessage::Request(RawJsonRpcRequest)`, with the same `id`, `method` and `params` fields |
 | `RawJsonRpcResponse`, an alias of `schema::v1::Response<Value, Box<RawJsonRpcError>>` | `RawJsonRpcResponse`, the SDK's own enum with the same `Result { id, result }` and `Error { id, error }` variants and `new` |
 | `RawJsonRpcMessage::response_id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
-| `id()` on `Responder`, `ResponseRouter`, `SentRequest` and `PreparedRequest` returned `&v1::RequestId` | returns `&RawJsonRpcId` |
-| `Dispatch::id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
+
+The request handles keep a typed `id()`; see
+[Request handles are typed by protocol version](#request-handles-are-typed-by-protocol-version).
 
 `RawJsonRpcMessage::request`, `RawJsonRpcMessage::response` and
 `RawJsonRpcResponse::new` take `impl Into<RawJsonRpcId>`, so passing a
@@ -154,18 +155,20 @@ and `"1"` stay distinct, and integers keep the full 64-bit signed range.
 ### Updating your code
 
 Replace `schema::v1::RequestId` with `RawJsonRpcId` where you build or match
-raw messages or store handle IDs:
+raw messages, or store IDs from the raw dispatch layer or from several protocol
+versions:
 
 ```rust,ignore
 use agent_client_protocol::{RawJsonRpcId, RawJsonRpcMessage};
 
 // Before
 let request = RawJsonRpcMessage::request(method, params, v1::RequestId::Number(1))?;
-let pending: HashMap<v1::RequestId, Route> = HashMap::new();
+let mut pending: HashMap<v1::RequestId, Route> = HashMap::new();
 
 // After
 let request = RawJsonRpcMessage::request(method, params, RawJsonRpcId::Number(1))?;
-let pending: HashMap<RawJsonRpcId, Route> = HashMap::new();
+let mut pending: HashMap<RawJsonRpcId, Route> = HashMap::new();
+pending.insert(responder.raw_id().clone(), route);
 ```
 
 Where a schema type needs a request ID, such as `v1::CancelRequestNotification`
@@ -175,12 +178,160 @@ and from `v1::RequestId`, and from `v2::RequestId`. Converting to
 (`-32600`) a v2 connection sends for a `null` request ID:
 
 ```rust,ignore
-let v1_id = v1::RequestId::from(responder.id().clone());
 let raw_id = RawJsonRpcId::from(cancel.request_id);
-let v2_id = v2::RequestId::try_from(responder.id().clone())?;
+let v1_id = v1::RequestId::from(raw_id.clone());
+let v2_id = v2::RequestId::try_from(raw_id)?;
 ```
 
-The `v2_id()` accessors are unchanged.
+## Request handles are typed by protocol version
+
+`Responder`, `ResponseRouter`, `SentRequest`, `PreparedRequest`, `Dispatch`
+and `Builder` take a protocol marker as their last type parameter. The
+markers implement the sealed `agent_client_protocol::Protocol` trait, and the
+marker selects the type that `id()` returns:
+
+| Marker | Used by | `id()` |
+| --- | --- | --- |
+| `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, builders without a version guard, `Builder::new` | `&RawJsonRpcId` |
+| `V1` | typed handlers on `Client.builder()`, `Agent.builder()`, `Proxy.builder()` | `&schema::v1::RequestId` |
+| `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `V2ConnectionTo` | `&schema::v2::RequestId` |
+
+`Dispatch::id()` returns an `Option` of the same type. A `V2` `id()` never
+fails: the SDK rejects `null` request IDs on v2 connections and never assigns
+`null` itself.
+
+Every handle also has `raw_id()`, which returns the ID as a `&RawJsonRpcId`
+whatever the marker (`Option<&RawJsonRpcId>` on `Dispatch`).
+
+### The raw dispatch layer is version-neutral
+
+`HandleDispatchFrom`, `MatchDispatch`/`MatchDispatchFrom`, dynamic handlers,
+`Role::default_handle_dispatch_from` and requests sent through `ConnectionTo`
+are not tied to one protocol version. Their handles use the `Raw` marker,
+which is the default, so `Dispatch`, `Responder<T>` and `SentRequest<T>`
+written without a marker are the raw ones, and their `id()` returns
+`&RawJsonRpcId`:
+
+```rust,ignore
+// Before (3.x): id() was a v1::RequestId even on v2 connections
+impl HandleDispatchFrom<Client> for MyRouter {
+    async fn handle_dispatch_from(&mut self, message: Dispatch, cx: ConnectionTo<Client>)
+        -> Result<Handled<Dispatch>, Error>
+    {
+        let id: Option<&v1::RequestId> = message.id();
+        ...
+    }
+}
+
+// After: the signature is unchanged, and id() is the wire ID
+        let id: Option<&RawJsonRpcId> = message.id();
+```
+
+Code that stored these IDs as `v1::RequestId` switches to `RawJsonRpcId`, or
+converts with `v1::RequestId::from(id.clone())`.
+
+### Typed handlers on v1 builders
+
+Typed handlers on `Client.builder()`, `Agent.builder()` and `Proxy.builder()`
+receive `V1` handles, so `id()` still returns `&schema::v1::RequestId`.
+Closures whose parameters are not annotated need no change. Where the handle
+type is spelled out, add the marker, because the default is now `Raw`:
+
+```rust,ignore
+use agent_client_protocol::{Dispatch, Responder, V1};
+
+// Before
+Agent.builder().on_receive_request(
+    async |request: PromptRequest, responder: Responder<PromptResponse>, cx| { ... },
+    on_receive_request!(),
+)
+// After
+Agent.builder().on_receive_request(
+    async |request: PromptRequest, responder: Responder<PromptResponse, V1>, cx| { ... },
+    on_receive_request!(),
+)
+
+// Likewise for on_receive_dispatch
+async |message: Dispatch<PromptRequest, SessionNotification, V1>, cx| { ... }
+```
+
+`Client.builder()`, `Agent.builder()` and `Proxy.builder()` return
+`Builder<_, _, _, _, V1>`; code that names that type adds the marker too.
+`Builder::new`, other roles' builders, and
+`without_acp_version_guard()` / `with_v2_protocol_guard()` (which now return
+a `Raw` builder) use `Raw`. The v1 session helpers that take a responder,
+such as `SessionBuilder::on_proxy_session_start`, take a `Responder<_, V1>`.
+
+### v2 code
+
+The `v2_id()` accessors are removed. `id()` on handles from the v2 builders and
+`V2ConnectionTo` returns the v2 ID directly:
+
+```rust,ignore
+// Before
+let id: Option<v2::RequestId> = responder.v2_id();
+let id: &v2::RequestId = sent.v2_id();
+
+// After
+let id: &v2::RequestId = responder.id();
+let id: &v2::RequestId = sent.id();
+```
+
+Closures registered on a v2 builder whose parameters are not annotated need
+no change. Where a v2 handle type is spelled out, add the marker:
+
+```rust,ignore
+use agent_client_protocol::{Responder, SentRequest, V2};
+
+// Before
+async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse>, cx| { ... }
+fn send(session: &V2Session<Agent>) -> SentRequest<v2::PromptResponse> { ... }
+
+// After
+async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse, V2>, cx| { ... }
+fn send(session: &V2Session<Agent>) -> SentRequest<v2::PromptResponse, V2> { ... }
+```
+
+### Getting a typed handle from the raw layer
+
+`Responder`, `ResponseRouter` and `Dispatch` with the `Raw` marker convert
+to a typed marker with `into_protocol`. Only the ID's type changes. It fails
+only for a `null` ID on `V2`, with the Invalid Request error (`-32600`) a v2
+connection sends for such a request; a request received on a v2 connection
+never has one. Any handle converts back with the infallible `into_raw`:
+
+```rust,ignore
+MatchDispatchFrom::new(message, &cx)
+    .if_request_from(Client, async |request: v2::NewSessionRequest, responder| {
+        // `responder` is a `Responder<_, Raw>`; the v2 helper wants `V2`.
+        let responder = responder.into_protocol::<V2>()?;
+        v2_cx.build_session_from(request).on_proxy_session_start(responder, op)
+    })
+    .await
+```
+
+Helpers that accept handles of several versions can take the marker as a
+type parameter:
+
+```rust,ignore
+fn respond<P: agent_client_protocol::Protocol>(responder: Responder<MyResponse, P>) { ... }
+```
+
+### Forwarding between versions
+
+`SentRequest::forward_response_to`, `on_receiving_ok_result` (and the
+`PreparedRequest` equivalents) accept a responder of any marker, and
+`send_proxied_message` / `send_proxied_message_to` accept a `Dispatch` of any
+marker, so forwarding between connections needs no conversion.
+
+### Renamed builder context types
+
+The hidden `ConnectionContext` trait and its `RawConnectionContext` and
+`V2ConnectionContext` implementations are replaced by `Protocol`, `Raw`, `V1`
+and `V2`. `Protocol::Connection<Counterpart>` is the connection type builder
+callbacks receive (`ConnectionTo` for `Raw` and `V1`, `V2ConnectionTo` for
+`V2`), so code generic over a builder's context changes
+`Context: ConnectionContext` to `P: Protocol`.
 
 ## Proxy method names
 

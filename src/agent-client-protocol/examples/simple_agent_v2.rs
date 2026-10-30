@@ -220,7 +220,7 @@ impl EchoAgent {
     fn run_inserted_prompt(
         &self,
         request: v2::PromptRequest,
-        responder: Responder<v2::PromptResponse>,
+        responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
         connection: &V2ConnectionTo<Client>,
     ) -> Result<()> {
         let user_message_id = self.next_message_id("user-message");
@@ -467,7 +467,7 @@ async fn main() -> Result<()> {
         .name("simple-agent-v2")
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
                    _connection: V2ConnectionTo<Client>| {
                 responder.respond(
                     v2::InitializeResponse::new(
@@ -485,7 +485,10 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::NewSessionRequest,
-                            responder: Responder<v2::NewSessionResponse>,
+                            responder: Responder<
+                    v2::NewSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Client>| {
                     let session_id = match agent.create_session(request) {
                         Ok(session_id) => session_id,
@@ -510,7 +513,10 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::ListSessionsRequest,
-                            responder: Responder<v2::ListSessionsResponse>,
+                            responder: Responder<
+                    v2::ListSessionsResponse,
+                    agent_client_protocol::V2,
+                >,
                             _connection: V2ConnectionTo<Client>| {
                     // Every session fits in one page and no `nextCursor` is ever
                     // issued, so any cursor a client sends is invalid.
@@ -533,7 +539,10 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<v2::ResumeSessionResponse>,
+                            responder: Responder<
+                    v2::ResumeSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Client>| {
                     let history = match agent.resume_session(&request) {
                         Ok(history) => history,
@@ -568,7 +577,10 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::CloseSessionRequest,
-                            responder: Responder<v2::CloseSessionResponse>,
+                            responder: Responder<
+                    v2::CloseSessionResponse,
+                    agent_client_protocol::V2,
+                >,
                             connection: V2ConnectionTo<Client>| {
                     if !agent.close(&request.session_id) {
                         return responder.respond(v2::CloseSessionResponse::new());
@@ -588,7 +600,7 @@ async fn main() -> Result<()> {
             {
                 let agent = agent.clone();
                 async move |request: v2::PromptRequest,
-                            responder: Responder<v2::PromptResponse>,
+                            responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
                             connection: V2ConnectionTo<Client>| {
                     match agent.admit_prompt(&request.session_id, &request.prompt) {
                         Err(error) => responder.respond_with_error(error),

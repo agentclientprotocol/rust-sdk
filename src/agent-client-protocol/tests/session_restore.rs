@@ -3,6 +3,7 @@
 
 use std::{future::pending, path::PathBuf, time::Duration};
 
+use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
     RawJsonRpcId, RawJsonRpcMessage, Responder, SessionMessage, TransportFrame, UntypedMessage,
@@ -284,7 +285,7 @@ async fn restore_waits_for_routing_acknowledgment_before_publication() {
     let (handler_started_tx, mut handler_started_rx) = mpsc::unbounded();
     let client = Client.builder().on_receive_request(
         async move |_request: UntypedMessage,
-                    _responder: Responder<serde_json::Value>,
+                    _responder: Responder<serde_json::Value, V1>,
                     _connection: ConnectionTo<Agent>| {
             handler_started_tx
                 .unbounded_send(())

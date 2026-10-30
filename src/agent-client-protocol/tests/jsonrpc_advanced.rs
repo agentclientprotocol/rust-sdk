@@ -572,7 +572,7 @@ async fn test_map_response_to_application_types() {
                         );
                         assert_eq!(scoped_response.method(), "ping");
                         assert!(matches!(
-                            scoped_response.id(),
+                            scoped_response.raw_id(),
                             agent_client_protocol::RawJsonRpcId::Str(id)
                                 if !id.is_empty()
                         ));

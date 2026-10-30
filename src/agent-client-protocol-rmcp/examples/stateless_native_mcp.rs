@@ -4,7 +4,7 @@
 //!   --features unstable_protocol_v2,unstable_mcp_over_acp
 
 use agent_client_protocol::{
-    Agent, Client, Error, Responder, V2ConnectionTo,
+    Agent, Client, Error, Responder, V2, V2ConnectionTo,
     mcp_server::McpServer,
     schema::{ProtocolVersion, v2},
 };
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Error> {
         .v2()
         .on_receive_request(
             async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+                   responder: Responder<v2::InitializeResponse, V2>,
                    _cx: V2ConnectionTo<Client>| {
                 responder.respond(
                     v2::InitializeResponse::new(
@@ -66,7 +66,7 @@ async fn main() -> Result<(), Error> {
         )
         .on_receive_request(
             async move |request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse>,
+                        responder: Responder<v2::NewSessionResponse, V2>,
                         cx: V2ConnectionTo<Client>| {
                 let [v2::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
                     return Err(Error::invalid_params().data("expected one native server"));

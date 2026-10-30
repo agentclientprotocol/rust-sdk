@@ -30,6 +30,7 @@ mod incoming_actor;
 mod outgoing_actor;
 #[cfg(test)]
 mod prepared_request_tests;
+pub(crate) mod protocol;
 mod protocol_compat;
 mod raw_error;
 pub(crate) mod raw_id;
@@ -45,6 +46,10 @@ pub use crate::jsonrpc::handlers::NullHandler;
 use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
+use crate::jsonrpc::protocol::HandleId;
+#[cfg(feature = "unstable_protocol_v2")]
+pub use crate::jsonrpc::protocol::V2;
+pub use crate::jsonrpc::protocol::{Protocol, Raw, V1};
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
@@ -530,77 +535,10 @@ where
     }
 }
 
-/// Selects the connection context exposed by a [`Builder`]'s callbacks.
-///
-/// This trait is an implementation detail of the typed builder aliases. It is
-/// public so the callback connection type remains expressible in public API
-/// signatures.
-#[doc(hidden)]
-#[allow(private_bounds)]
-pub trait ConnectionContext: connection_context::Sealed + Send + Sync + 'static {
-    /// The connection type exposed to callbacks for `Counterpart`.
-    type Connection<Counterpart: Role>: Clone + Send + Sync + 'static;
-}
-
-mod connection_context {
-    use super::{ConnectionContext, ConnectionTo, Role};
-
-    pub trait Sealed {
-        fn from_raw<Counterpart: Role>(
-            connection: ConnectionTo<Counterpart>,
-        ) -> <Self as ConnectionContext>::Connection<Counterpart>
-        where
-            Self: ConnectionContext;
-    }
-
-    pub(crate) fn from_raw<Context: ConnectionContext, Counterpart: Role>(
-        connection: ConnectionTo<Counterpart>,
-    ) -> Context::Connection<Counterpart> {
-        <Context as Sealed>::from_raw(connection)
-    }
-}
-
-/// The default callback context used by stable and low-level builders.
-#[doc(hidden)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct RawConnectionContext;
-
-impl connection_context::Sealed for RawConnectionContext {
-    fn from_raw<Counterpart: Role>(
-        connection: ConnectionTo<Counterpart>,
-    ) -> <Self as ConnectionContext>::Connection<Counterpart> {
-        connection
-    }
-}
-
-impl ConnectionContext for RawConnectionContext {
-    type Connection<Counterpart: Role> = ConnectionTo<Counterpart>;
-}
-
-/// The callback context used by ACP protocol v2 builders.
-#[cfg(feature = "unstable_protocol_v2")]
-#[doc(hidden)]
-#[derive(Copy, Clone, Debug, Default)]
-pub struct V2ConnectionContext;
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl connection_context::Sealed for V2ConnectionContext {
-    fn from_raw<Counterpart: Role>(
-        connection: ConnectionTo<Counterpart>,
-    ) -> <Self as ConnectionContext>::Connection<Counterpart> {
-        V2ConnectionTo { inner: connection }
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl ConnectionContext for V2ConnectionContext {
-    type Connection<Counterpart: Role> = V2ConnectionTo<Counterpart>;
-}
-
 /// A JSON-RPC connection builder whose callbacks receive [`V2ConnectionTo`].
 #[cfg(feature = "unstable_protocol_v2")]
 pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullClose> =
-    Builder<Host, Handler, Runner, Close, V2ConnectionContext>;
+    Builder<Host, Handler, Runner, Close, V2>;
 
 /// A JSON-RPC connection that can act as either a server, client, or both.
 ///
@@ -693,12 +631,12 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::Dispatch;
+/// # use agent_client_protocol::{Dispatch, V1};
 /// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // on_receive_dispatch receives requests, notifications, and responses
-/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification>, _cx| {
+/// connection.on_receive_dispatch(async |msg: Dispatch<InitializeRequest, SessionNotification, V1>, _cx| {
 ///     match msg {
 ///         Dispatch::Request(req, responder) => {
 ///             responder.respond(InitializeResponse::make())
@@ -895,19 +833,23 @@ pub type V2Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullCl
 /// # Ok(())
 /// # }
 /// ```
+///
+/// # Protocol version
+///
+/// `P` is the [`Protocol`] marker of the request handles that typed handlers
+/// receive and of the connection type callbacks receive. `Client.builder()`,
+/// `Agent.builder()` and `Proxy.builder()` return [`V1`] builders, the v2
+/// builders use `V2`, and [`Builder::new`], other roles and
+/// [`without_acp_version_guard`](Builder::without_acp_version_guard) use the
+/// version-neutral default, [`Raw`].
 #[must_use]
 #[derive(Debug)]
-pub struct Builder<
-    Host: Role,
-    Handler = NullHandler,
-    Runner = NullRun,
-    Close = NullClose,
-    Context = RawConnectionContext,
-> where
+pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose, P = Raw>
+where
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-    Context: ConnectionContext,
+    P: Protocol,
 {
     /// My role.
     host: Host,
@@ -927,8 +869,9 @@ pub struct Builder<
     /// Handler run when the incoming transport reaches clean EOF.
     on_close: Close,
 
-    /// Selects the connection type exposed to user callbacks.
-    context: PhantomData<fn() -> Context>,
+    /// The protocol version of the callbacks: their connection type and the
+    /// request handles they receive.
+    protocol: PhantomData<fn() -> P>,
 }
 
 fn default_protocol_mode<Host: Role>() -> ProtocolMode {
@@ -957,7 +900,7 @@ impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
             runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 }
@@ -975,7 +918,7 @@ where
             runner: NullRun,
             protocol_mode: default_protocol_mode::<Host>(),
             on_close: NullClose,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 }
@@ -985,7 +928,7 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close>
+> Builder<Host, Handler, Runner, Close, Raw>
 {
     /// Disable all automatic ACP protocol-version tracking and validation.
     ///
@@ -996,8 +939,10 @@ impl<
     /// validation to the endpoints. It also disables the version checks
     /// applied to messages after initialization.
     ///
-    /// This method is deliberately available only on builders whose callbacks
-    /// receive raw [`ConnectionTo`] values. Applications should normally use
+    /// This method is deliberately available only on [`Raw`] and [`V1`]
+    /// builders, whose callbacks receive raw [`ConnectionTo`] values. It
+    /// returns a [`Raw`] builder: handlers registered afterwards receive
+    /// version-neutral request handles. Applications should normally use
     /// [`Client::builder`](crate::Client::builder),
     /// [`Agent::builder`](crate::Agent::builder),
     /// [`Proxy::builder`](crate::Proxy::builder), or, with the
@@ -1014,48 +959,19 @@ impl<
     }
 }
 
-#[cfg(feature = "unstable_protocol_v2")]
 impl<
     Host: Role,
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close>
+> Builder<Host, Handler, Runner, Close, V1>
 {
-    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_agent(),
-            on_close: self.on_close,
-            context: PhantomData,
-        }
-    }
-
-    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_client(),
-            on_close: self.on_close,
-            context: PhantomData,
-        }
-    }
-
-    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
-        Builder {
-            host: self.host,
-            name: self.name,
-            handler: self.handler,
-            runner: self.runner,
-            protocol_mode: ProtocolMode::v2_proxy(),
-            on_close: self.on_close,
-            context: PhantomData,
-        }
+    /// Disable all automatic ACP protocol-version tracking and validation,
+    /// and return a [`Raw`] builder.
+    ///
+    /// See [`Builder::without_acp_version_guard`] on [`Raw`] builders.
+    pub fn without_acp_version_guard(self) -> Builder<Host, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().without_acp_version_guard()
     }
 }
 
@@ -1064,19 +980,68 @@ impl<
     Handler: HandleDispatchFrom<Agent>,
     Runner: RunWithConnectionTo<Agent>,
     Close: HandleConnectionClose<Agent>,
-> Builder<Client, Handler, Runner, Close>
+> Builder<Client, Handler, Runner, Close, Raw>
 {
-    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    /// Apply protocol-v2 wire validation while keeping version-neutral
+    /// callbacks.
     ///
     /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. The guarded child must still send and receive the
-    /// `initialize` round trip; a router that consumes initialization itself
-    /// must use [`Builder::without_acp_version_guard`] for the selected child.
-    /// Most clients should use [`Client::v2`](crate::Client::v2), which also
-    /// exposes the version-typed [`V2ConnectionTo`] API.
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
+    /// and [`Raw`] request handles in its callbacks. The guarded child must still send and receive the `initialize` round trip. A router that
+    /// consumes initialization itself must use
+    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// code should use [`Client::v2`](crate::Client::v2), which also exposes
+    /// the version-typed [`V2ConnectionTo`] API.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Client;
+    /// let _ = Client.v2().with_v2_protocol_guard();
+    /// ```
     pub fn with_v2_protocol_guard(mut self) -> Self {
         self.protocol_mode = ProtocolMode::v2_client();
+        self
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Agent>,
+    Runner: RunWithConnectionTo<Agent>,
+    Close: HandleConnectionClose<Agent>,
+> Builder<Client, Handler, Runner, Close, V1>
+{
+    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
+    ///
+    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
+    pub fn with_v2_protocol_guard(self) -> Builder<Client, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().with_v2_protocol_guard()
+    }
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+impl<
+    Handler: HandleDispatchFrom<Client>,
+    Runner: RunWithConnectionTo<Client>,
+    Close: HandleConnectionClose<Client>,
+> Builder<Agent, Handler, Runner, Close, Raw>
+{
+    /// Apply protocol-v2 wire validation while keeping version-neutral
+    /// callbacks.
+    ///
+    /// This is intended for protocol-routing infrastructure that has already
+    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
+    /// and [`Raw`] request handles in its callbacks. The guarded child must still receive and answer the `initialize` request. A router that
+    /// consumes initialization itself must use
+    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// code should use [`Agent::v2`](crate::Agent::v2), which also exposes
+    /// the version-typed [`V2ConnectionTo`] API.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Agent;
+    /// let _ = Agent.v2().with_v2_protocol_guard();
+    /// ```
+    pub fn with_v2_protocol_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::v2_agent();
         self
     }
 }
@@ -1086,20 +1051,13 @@ impl<
     Handler: HandleDispatchFrom<Client>,
     Runner: RunWithConnectionTo<Client>,
     Close: HandleConnectionClose<Client>,
-> Builder<Agent, Handler, Runner, Close>
+> Builder<Agent, Handler, Runner, Close, V1>
 {
-    /// Apply protocol-v2 wire validation while retaining raw callback contexts.
+    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
     ///
-    /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values in
-    /// its callbacks. The guarded child must still receive and answer the
-    /// `initialize` request; a router that consumes initialization itself must
-    /// use [`Builder::without_acp_version_guard`] for the selected child. Most
-    /// agents should use [`Agent::v2`](crate::Agent::v2), which also exposes the
-    /// version-typed [`V2ConnectionTo`] API.
-    pub fn with_v2_protocol_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_agent();
-        self
+    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
+    pub fn with_v2_protocol_guard(self) -> Builder<Agent, Handler, Runner, Close, Raw> {
+        self.into_protocol::<Raw>().with_v2_protocol_guard()
     }
 }
 
@@ -1108,13 +1066,48 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-    Context: ConnectionContext,
-> Builder<Host, Handler, Runner, Close, Context>
+    P: Protocol,
+> Builder<Host, Handler, Runner, Close, P>
 {
     /// Set the "name" of this connection -- used only for debugging logs.
     pub fn name(mut self, name: impl ToString) -> Self {
         self.name = Some(name.to_string());
         self
+    }
+
+    /// The same builder with callbacks for protocol `Q`. Handlers already
+    /// registered keep their own protocol.
+    pub(crate) fn into_protocol<Q: Protocol>(self) -> Builder<Host, Handler, Runner, Close, Q> {
+        Builder {
+            host: self.host,
+            name: self.name,
+            handler: self.handler,
+            runner: self.runner,
+            protocol_mode: self.protocol_mode,
+            on_close: self.on_close,
+            protocol: PhantomData,
+        }
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_agent(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_agent();
+        builder
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_client(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_client();
+        builder
+    }
+
+    #[cfg(feature = "unstable_protocol_v2")]
+    pub(crate) fn v2_proxy(self) -> V2Builder<Host, Handler, Runner, Close> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v2_proxy();
+        builder
     }
 
     pub(crate) fn v1_agent(mut self) -> Self {
@@ -1157,14 +1150,14 @@ impl<
             impl HandleDispatchFrom<Host::Counterpart>,
             impl RunWithConnectionTo<Host::Counterpart>,
             impl HandleConnectionClose<Host::Counterpart>,
-            Context,
+            P,
         >,
     ) -> Builder<
         Host,
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
         impl HandleConnectionClose<Host::Counterpart>,
-        Context,
+        P,
     > {
         let Builder {
             name: other_name,
@@ -1172,7 +1165,7 @@ impl<
             runner: other_runner,
             protocol_mode: other_protocol_mode,
             on_close: other_on_close,
-            context: _,
+            protocol: _,
             host: _,
         } = other;
         Builder {
@@ -1185,7 +1178,7 @@ impl<
             runner: ChainRun::new(self.runner, other_runner),
             protocol_mode: self.protocol_mode.merge(other_protocol_mode),
             on_close: ChainedClose::new(self.on_close, other_on_close),
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 
@@ -1196,7 +1189,7 @@ impl<
     pub fn with_handler(
         self,
         handler: impl HandleDispatchFrom<Host::Counterpart>,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context> {
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P> {
         Builder {
             host: self.host,
             name: self.name,
@@ -1204,7 +1197,7 @@ impl<
             runner: self.runner,
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 
@@ -1212,7 +1205,7 @@ impl<
     pub fn with_runner<Run1>(
         self,
         runner: Run1,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, Context>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, P>
     where
         Run1: RunWithConnectionTo<Host::Counterpart>,
     {
@@ -1223,7 +1216,7 @@ impl<
             runner: ChainRun::new(self.runner, runner),
             protocol_mode: self.protocol_mode,
             on_close: self.on_close,
-            context: PhantomData,
+            protocol: PhantomData,
         }
     }
 
@@ -1232,13 +1225,13 @@ impl<
     pub fn with_spawned<F, Fut>(
         self,
         task: F,
-    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, Context>
+    ) -> Builder<Host, Handler, impl RunWithConnectionTo<Host::Counterpart>, Close, P>
     where
-        F: FnOnce(Context::Connection<Host::Counterpart>) -> Fut + Send,
+        F: FnOnce(P::Connection<Host::Counterpart>) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let location = Location::caller();
-        self.with_runner(SpawnedRun::<_, Context>::new(location, task))
+        self.with_runner(SpawnedRun::<_, P>::new(location, task))
     }
 
     /// Run a callback when the incoming transport reaches clean EOF.
@@ -1281,9 +1274,9 @@ impl<
     pub fn on_close<F, Fut>(
         self,
         callback: F,
-    ) -> Builder<Host, Handler, Runner, impl HandleConnectionClose<Host::Counterpart>, Context>
+    ) -> Builder<Host, Handler, Runner, impl HandleConnectionClose<Host::Counterpart>, P>
     where
-        F: FnOnce(Context::Connection<Host::Counterpart>) -> Fut + Send,
+        F: FnOnce(P::Connection<Host::Counterpart>) -> Fut + Send,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         Builder {
@@ -1292,8 +1285,8 @@ impl<
             handler: self.handler,
             runner: self.runner,
             protocol_mode: self.protocol_mode,
-            on_close: ChainedClose::new(self.on_close, CloseCallback::<_, Context>::new(callback)),
-            context: PhantomData,
+            on_close: ChainedClose::new(self.on_close, CloseCallback::<_, P>::new(callback)),
+            protocol: PhantomData,
         }
     }
 
@@ -1310,10 +1303,10 @@ impl<
     ///
     /// ```no_run
     /// # use agent_client_protocol_test::*;
-    /// # use agent_client_protocol::Dispatch;
+    /// # use agent_client_protocol::{Dispatch, V1};
     /// # async fn example() -> Result<(), agent_client_protocol::Error> {
     /// # let connection = mock_connection();
-    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate>, _cx| {
+    /// connection.on_receive_dispatch(async |message: Dispatch<MyRequest, StatusUpdate, V1>, _cx| {
     ///     match message {
     ///         Dispatch::Request(req, responder) => {
     ///             // Handle request and send response
@@ -1347,26 +1340,26 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Req: JsonRpcRequest,
         Notif: JsonRpcNotification,
         F: AsyncFnMut(
-                Dispatch<Req, Notif>,
-                Context::Connection<Host::Counterpart>,
+                Dispatch<Req, Notif, P>,
+                P::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
-        T: IntoHandled<Dispatch<Req, Notif>>,
+        T: IntoHandled<Dispatch<Req, Notif, P>>,
         ToFut: Fn(
                 &mut F,
-                Dispatch<Req, Notif>,
-                Context::Connection<Host::Counterpart>,
+                Dispatch<Req, Notif, P>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = MessageHandler::<_, _, _, _, _, _, Context>::new(
+        let handler = MessageHandler::<_, _, P, _, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1379,7 +1372,7 @@ impl<
     ///
     /// Your handler receives three arguments:
     /// 1. The request (type `Req`)
-    /// 2. A [`Responder<Req::Response>`] for sending the response
+    /// 2. A [`Responder<Req::Response, P>`] for sending the response
     /// 3. The builder-selected connection context for the peer that sent the
     ///    request (`ConnectionTo` by default, or `V2ConnectionTo` for a
     ///    `V2Builder`)
@@ -1424,26 +1417,26 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         F: AsyncFnMut(
                 Req,
-                Responder<Req::Response>,
-                Context::Connection<Host::Counterpart>,
+                Responder<Req::Response, P>,
+                P::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
-        T: IntoHandled<(Req, Responder<Req::Response>)>,
+        T: IntoHandled<(Req, Responder<Req::Response, P>)>,
         ToFut: Fn(
                 &mut F,
                 Req,
-                Responder<Req::Response>,
-                Context::Connection<Host::Counterpart>,
+                Responder<Req::Response, P>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = RequestHandler::<_, _, _, _, _, Context>::new(
+        let handler = RequestHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1499,22 +1492,21 @@ impl<
         self,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Host::Counterpart>,
         Notif: JsonRpcNotification,
-        F: AsyncFnMut(Notif, Context::Connection<Host::Counterpart>) -> Result<T, crate::Error>
-            + Send,
-        T: IntoHandled<(Notif, Context::Connection<Host::Counterpart>)>,
+        F: AsyncFnMut(Notif, P::Connection<Host::Counterpart>) -> Result<T, crate::Error> + Send,
+        T: IntoHandled<(Notif, P::Connection<Host::Counterpart>)>,
         ToFut: Fn(
                 &mut F,
                 Notif,
-                Context::Connection<Host::Counterpart>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::<_, _, _, _, _, Context>::new(
+        let handler = NotificationHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             self.host.counterpart(),
             op,
@@ -1550,24 +1542,24 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
-                Dispatch<Req, Notif>,
-                Context::Connection<Host::Counterpart>,
+                Dispatch<Req, Notif, P>,
+                P::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
-        T: IntoHandled<Dispatch<Req, Notif>>,
+        T: IntoHandled<Dispatch<Req, Notif, P>>,
         ToFut: Fn(
                 &mut F,
-                Dispatch<Req, Notif>,
-                Context::Connection<Host::Counterpart>,
+                Dispatch<Req, Notif, P>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = MessageHandler::<_, _, _, _, _, _, Context>::new(
+        let handler = MessageHandler::<_, _, P, _, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,
@@ -1609,26 +1601,26 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Peer>,
         F: AsyncFnMut(
                 Req,
-                Responder<Req::Response>,
-                Context::Connection<Host::Counterpart>,
+                Responder<Req::Response, P>,
+                P::Connection<Host::Counterpart>,
             ) -> Result<T, crate::Error>
             + Send,
-        T: IntoHandled<(Req, Responder<Req::Response>)>,
+        T: IntoHandled<(Req, Responder<Req::Response, P>)>,
         ToFut: Fn(
                 &mut F,
                 Req,
-                Responder<Req::Response>,
-                Context::Connection<Host::Counterpart>,
+                Responder<Req::Response, P>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = RequestHandler::<_, _, _, _, _, Context>::new(
+        let handler = RequestHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,
@@ -1657,21 +1649,20 @@ impl<
         peer: Peer,
         op: F,
         to_future_hack: ToFut,
-    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, Context>
+    ) -> Builder<Host, impl HandleDispatchFrom<Host::Counterpart>, Runner, Close, P>
     where
         Host::Counterpart: HasPeer<Peer>,
-        F: AsyncFnMut(Notif, Context::Connection<Host::Counterpart>) -> Result<T, crate::Error>
-            + Send,
-        T: IntoHandled<(Notif, Context::Connection<Host::Counterpart>)>,
+        F: AsyncFnMut(Notif, P::Connection<Host::Counterpart>) -> Result<T, crate::Error> + Send,
+        T: IntoHandled<(Notif, P::Connection<Host::Counterpart>)>,
         ToFut: Fn(
                 &mut F,
                 Notif,
-                Context::Connection<Host::Counterpart>,
+                P::Connection<Host::Counterpart>,
             ) -> crate::BoxFuture<'_, Result<T, crate::Error>>
             + Send
             + Sync,
     {
-        let handler = NotificationHandler::<_, _, _, _, _, Context>::new(
+        let handler = NotificationHandler::<_, _, P, _, _, _>::new(
             self.host.counterpart(),
             peer,
             op,
@@ -1796,11 +1787,11 @@ impl<
     pub async fn connect_with<R>(
         self,
         transport: impl ConnectTo<Host> + 'static,
-        main_fn: impl AsyncFnOnce(Context::Connection<Host::Counterpart>) -> Result<R, crate::Error>,
+        main_fn: impl AsyncFnOnce(P::Connection<Host::Counterpart>) -> Result<R, crate::Error>,
     ) -> Result<R, crate::Error> {
         let (_, future) =
             self.into_connection_and_future(transport, false, async move |connection| {
-                main_fn(connection_context::from_raw::<Context, _>(connection)).await
+                main_fn(protocol::connection_from_raw::<P, _>(connection)).await
             });
         future.await
     }
@@ -1822,7 +1813,7 @@ impl<
             host: me,
             protocol_mode,
             on_close,
-            context: _,
+            protocol: _,
         } = self;
 
         let (outgoing_tx, outgoing_rx) = mpsc::unbounded();
@@ -2095,7 +2086,7 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close, RawConnectionContext>
+> Builder<Host, Handler, Runner, Close, V1>
 {
     /// Add an MCP server to protocol v1 session setup requests proxied through
     /// this connection.
@@ -2113,7 +2104,7 @@ impl<
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
         Close,
-        RawConnectionContext,
+        V1,
     >
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
@@ -2129,7 +2120,7 @@ impl<
     Handler: HandleDispatchFrom<Host::Counterpart>,
     Runner: RunWithConnectionTo<Host::Counterpart>,
     Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close, V2ConnectionContext>
+> Builder<Host, Handler, Runner, Close, V2>
 {
     /// Add an MCP server to protocol v2 session setup requests proxied through
     /// this connection.
@@ -2159,7 +2150,7 @@ impl<
         impl HandleDispatchFrom<Host::Counterpart>,
         impl RunWithConnectionTo<Host::Counterpart>,
         Close,
-        V2ConnectionContext,
+        V2,
     >
     where
         Host::Counterpart: HasPeer<Agent> + HasPeer<Client>,
@@ -2169,13 +2160,13 @@ impl<
     }
 }
 
-impl<R, H, Run, Close, Context> ConnectTo<R::Counterpart> for Builder<R, H, Run, Close, Context>
+impl<R, H, Run, Close, P> ConnectTo<R::Counterpart> for Builder<R, H, Run, Close, P>
 where
     R: Role,
     H: HandleDispatchFrom<R::Counterpart> + 'static,
     Run: RunWithConnectionTo<R::Counterpart> + 'static,
     Close: HandleConnectionClose<R::Counterpart> + 'static,
-    Context: ConnectionContext,
+    P: Protocol,
 {
     async fn connect_to(self, client: impl ConnectTo<R>) -> Result<(), crate::Error> {
         Builder::connect_to(self, client).await
@@ -2264,39 +2255,8 @@ impl ResponseOrdering {
     }
 }
 
-// TODO(breaking): v1 and v2 connections share `PreparedRequest`, `SentRequest`,
-// `ResponseRouter`, `Responder` and `Dispatch`, so their `id()` reports the
-// version-neutral `RawJsonRpcId`, which allows `null`, and v2 users need the
-// separate `v2_id()` accessors. Give the handles a protocol marker whose `id()`
-// returns that version's request ID, then remove the `v2_id()` accessors and
-// `OutgoingRequestId`.
-
-/// The JSON-RPC ID the SDK assigns to a request it sends.
-///
-/// The SDK never assigns `null`, so the ID is always representable as a
-/// protocol-v2 ID. Both forms are stored so the borrowing v2 accessors on
-/// [`SentRequest`], [`PreparedRequest`] and [`ResponseRouter`] stay
-/// infallible.
-#[derive(Clone, Debug)]
-struct OutgoingRequestId {
-    id: RawJsonRpcId,
-    #[cfg(feature = "unstable_protocol_v2")]
-    v2_id: crate::schema::v2::RequestId,
-}
-
-impl OutgoingRequestId {
-    fn generate() -> Self {
-        let id = Uuid::new_v4().to_string();
-        Self {
-            #[cfg(feature = "unstable_protocol_v2")]
-            v2_id: crate::schema::v2::RequestId::Str(id.clone()),
-            id: RawJsonRpcId::Str(id),
-        }
-    }
-}
-
 struct PendingReply {
-    id: OutgoingRequestId,
+    id: RawJsonRpcId,
     method: String,
     role_id: RoleId,
     sender: oneshot::Sender<ResponsePayload>,
@@ -3290,8 +3250,8 @@ impl V2ConnectionTo<Agent> {
     pub fn send_initialize(
         &self,
         request: crate::schema::v2::InitializeRequest,
-    ) -> SentRequest<InitializeOutcome> {
-        let mut prepared = self.inner.prepare_request_to_with_options(
+    ) -> SentRequest<InitializeOutcome, V2> {
+        let mut prepared = self.inner.prepare_request_to_with_options::<V2, _, _>(
             self.inner.counterpart(),
             protocol_compat::InitializeNegotiation(request),
             None,
@@ -3370,24 +3330,28 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     /// # }
     /// ```
     #[track_caller]
-    pub fn spawn_connection<R: Role, Context: ConnectionContext>(
+    pub fn spawn_connection<R: Role, P: Protocol>(
         &self,
         builder: Builder<
             R,
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
-            Context,
+            P,
         >,
         transport: impl ConnectTo<R> + 'static,
-    ) -> Result<Context::Connection<R::Counterpart>, crate::Error> {
+    ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
         self.inner.spawn_connection_with_context(builder, transport)
     }
 
     /// Send a request or notification and forward its response appropriately.
-    pub fn send_proxied_message<Req: JsonRpcRequest<Response: Send>, Notif: JsonRpcNotification>(
+    pub fn send_proxied_message<
+        Req: JsonRpcRequest<Response: Send>,
+        Notif: JsonRpcNotification,
+        Q: Protocol,
+    >(
         &self,
-        message: Dispatch<Req, Notif>,
+        message: Dispatch<Req, Notif, Q>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -3401,10 +3365,11 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
         Notif: JsonRpcNotification,
+        Q: Protocol,
     >(
         &self,
         peer: Peer,
-        message: Dispatch<Req, Notif>,
+        message: Dispatch<Req, Notif, Q>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
@@ -3413,11 +3378,11 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     }
 
     /// Send an outgoing request to the default counterpart peer.
-    pub fn send_request<Req: JsonRpcRequest>(&self, request: Req) -> SentRequest<Req::Response>
+    pub fn send_request<Req: JsonRpcRequest>(&self, request: Req) -> SentRequest<Req::Response, V2>
     where
         Counterpart: HasPeer<Counterpart>,
     {
-        self.inner.send_request(request)
+        self.send_request_to(self.inner.counterpart(), request)
     }
 
     /// Send an outgoing request to a specific peer.
@@ -3425,11 +3390,12 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         &self,
         peer: Peer,
         request: Req,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, V2>
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.inner.send_request_to(peer, request)
+        self.inner
+            .send_request_to_with_options(peer, request, false, None, None)
     }
 
     /// Prepare a request without sending it until response handling is selected.
@@ -3438,11 +3404,11 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     pub fn prepare_request<Req: JsonRpcRequest>(
         &self,
         request: Req,
-    ) -> PreparedRequest<Req::Response>
+    ) -> PreparedRequest<Req::Response, V2>
     where
         Counterpart: HasPeer<Counterpart>,
     {
-        self.inner.prepare_request(request)
+        self.prepare_request_to(self.inner.counterpart(), request)
     }
 
     /// Prepare a request to a specific peer without sending it.
@@ -3452,11 +3418,12 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
         &self,
         peer: Peer,
         request: Req,
-    ) -> PreparedRequest<Req::Response>
+    ) -> PreparedRequest<Req::Response, V2>
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.inner.prepare_request_to(peer, request)
+        self.inner
+            .prepare_request_to_with_options(peer, request, None, None)
     }
 
     /// Send an outgoing notification to the default counterpart peer.
@@ -4186,10 +4153,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// # Returns
     ///
-    /// The child builder may select any callback context. For example, this
-    /// method can spawn a `V2Builder`, whose callbacks receive
-    /// `V2ConnectionTo`, while preserving this method's existing raw return
-    /// type and single explicit role parameter.
+    /// The child builder may use any [`Protocol`]. For example, this method
+    /// can spawn a `V2Builder`, whose callbacks receive `V2ConnectionTo`,
+    /// while preserving this method's existing raw return type and single
+    /// explicit role parameter.
     ///
     /// When a raw parent also needs the builder-selected child handle, use the
     /// protocol-v2 `spawn_connection_with_context` method.
@@ -4223,7 +4190,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
-            impl ConnectionContext,
+            impl Protocol,
         >,
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
@@ -4256,30 +4223,30 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// ```
     #[cfg(feature = "unstable_protocol_v2")]
     #[track_caller]
-    pub fn spawn_connection_with_context<R: Role, Context: ConnectionContext>(
+    pub fn spawn_connection_with_context<R: Role, P: Protocol>(
         &self,
         builder: Builder<
             R,
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
-            Context,
+            P,
         >,
         transport: impl ConnectTo<R> + 'static,
-    ) -> Result<Context::Connection<R::Counterpart>, crate::Error> {
+    ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
         let connection = self.spawn_connection_raw(builder, transport)?;
-        Ok(connection_context::from_raw::<Context, _>(connection))
+        Ok(protocol::connection_from_raw::<P, _>(connection))
     }
 
     #[track_caller]
-    fn spawn_connection_raw<R: Role, Context: ConnectionContext>(
+    fn spawn_connection_raw<R: Role, P: Protocol>(
         &self,
         builder: Builder<
             R,
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
-            Context,
+            P,
         >,
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
@@ -4293,9 +4260,13 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// The request context's response type matches the request's response type,
     /// enabling type-safe message forwarding.
-    pub fn send_proxied_message<Req: JsonRpcRequest<Response: Send>, Notif: JsonRpcNotification>(
+    pub fn send_proxied_message<
+        Req: JsonRpcRequest<Response: Send>,
+        Notif: JsonRpcNotification,
+        Q: Protocol,
+    >(
         &self,
-        message: Dispatch<Req, Notif>,
+        message: Dispatch<Req, Notif, Q>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -4318,17 +4289,18 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Peer: Role,
         Req: JsonRpcRequest<Response: Send>,
         Notif: JsonRpcNotification,
+        Q: Protocol,
     >(
         &self,
         peer: Peer,
-        message: Dispatch<Req, Notif>,
+        message: Dispatch<Req, Notif, Q>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
     {
         match message {
             Dispatch::Request(request, responder) => self
-                .send_ordered_request_to(peer, request)
+                .send_ordered_request_to::<Raw, _, _>(peer, request)
                 .forward_response_to(responder),
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
@@ -4488,6 +4460,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// from how the returned request is eventually consumed.
     #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn send_request_to_with_response_hook_after<
+        P: Protocol,
         Peer: Role,
         Req: JsonRpcRequest,
         BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
@@ -4497,7 +4470,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         request: Req,
         before_send: BeforeSend,
         response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4517,6 +4490,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Send an ordered request with readiness and valid-success hooks.
     #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn send_ordered_request_to_with_response_hook_after<
+        P: Protocol,
         Peer: Role,
         Req: JsonRpcRequest,
         BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
@@ -4526,7 +4500,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         request: Req,
         before_send: BeforeSend,
         response_hook: impl FnOnce(&Req::Response) -> Result<(), crate::Error> + Send + 'static,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4549,11 +4523,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// queue, closing the race between a fast peer response and the immediate
     /// [`SentRequest::on_receiving_result`] call. Callers must consume the
     /// returned request with a callback-style method without yielding.
-    pub(crate) fn send_ordered_request_to<Peer: Role, Req: JsonRpcRequest>(
+    pub(crate) fn send_ordered_request_to<P: Protocol, Peer: Role, Req: JsonRpcRequest>(
         &self,
         peer: Peer,
         request: Req,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4567,6 +4541,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// setup paths that must acknowledge local routing before the peer can
     /// observe the request.
     pub(crate) fn send_ordered_request_to_after<
+        P: Protocol,
         Peer: Role,
         Req: JsonRpcRequest,
         BeforeSend: Future<Output = Result<(), crate::Error>> + Send + 'static,
@@ -4575,7 +4550,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         peer: Peer,
         request: Req,
         before_send: BeforeSend,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4588,14 +4563,14 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         )
     }
 
-    fn send_request_to_with_options<Peer: Role, Req: JsonRpcRequest>(
+    fn send_request_to_with_options<P: Protocol, Peer: Role, Req: JsonRpcRequest>(
         &self,
         peer: Peer,
         request: Req,
         ordered: bool,
         readiness: Option<RequestReadiness>,
         response_route_hook: Option<ResponseRouteHook>,
-    ) -> SentRequest<Req::Response>
+    ) -> SentRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
@@ -4603,26 +4578,26 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             .into_sent_request(ordered)
     }
 
-    fn prepare_request_to_with_options<Peer: Role, Req: JsonRpcRequest>(
+    fn prepare_request_to_with_options<P: Protocol, Peer: Role, Req: JsonRpcRequest>(
         &self,
         peer: Peer,
         request: Req,
         readiness: Option<RequestReadiness>,
         response_route_hook: Option<ResponseRouteHook>,
-    ) -> PreparedRequest<Req::Response>
+    ) -> PreparedRequest<Req::Response, P>
     where
         Counterpart: HasPeer<Peer>,
     {
         let method = request.method().to_string();
-        let id = OutgoingRequestId::generate();
+        let id = HandleId::<P>::generated(Uuid::new_v4().to_string());
         let (response_tx, response_rx) = oneshot::channel();
         let response_ordering = ResponseOrdering::default();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
         let cancellation =
-            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.id.clone());
+            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.raw().clone());
         let pending_reply = PendingReply {
-            id: id.clone(),
+            id: id.raw().clone(),
             method: method.clone(),
             role_id,
             sender: response_tx,
@@ -4637,7 +4612,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             request
                 .to_untyped_message()
                 .map(|untyped| OutgoingMessage::Request {
-                    id: id.id.clone(),
+                    id: id.raw().clone(),
                     method: method.clone(),
                     untyped,
                     remote_style,
@@ -4993,15 +4968,26 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 /// `initialize` responder fails initialization just as an explicit error
 /// would.
 ///
+/// # Protocol version
+///
+/// `P` is the [`Protocol`] marker and selects the type [`id`](Self::id)
+/// returns. Typed handlers on `Client.builder()`, `Agent.builder()` and
+/// `Proxy.builder()` receive [`V1`] responders and those on the v2 builders
+/// receive `V2` responders. The version-neutral raw dispatch layer
+/// ([`HandleDispatchFrom`], [`MatchDispatch`](crate::util::MatchDispatch))
+/// uses the default, [`Raw`]. [`raw_id`](Self::raw_id) returns the wire ID
+/// whatever the marker; [`into_protocol`](Responder::into_protocol) and
+/// [`into_raw`](Self::into_raw) convert between markers.
+///
 /// [`Error::request_cancelled`]: crate::Error::request_cancelled
 /// [`Error::internal_error`]: crate::Error::internal_error
 #[must_use]
-pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
+pub struct Responder<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> {
     /// The method of the request.
     method: String,
 
     /// The `id` of the message we are replying to.
-    id: RawJsonRpcId,
+    id: HandleId<P>,
 
     /// Where the response is sent; it is completed at most once.
     destination: ResponseDestination,
@@ -5078,7 +5064,7 @@ impl Drop for ResponderDropGuard {
     }
 }
 
-impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
+impl<T: JsonRpcResponse, P: Protocol> std::fmt::Debug for Responder<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Responder")
             .field("method", &self.method)
@@ -5088,7 +5074,7 @@ impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
     }
 }
 
-impl Responder<serde_json::Value> {
+impl Responder<serde_json::Value, Raw> {
     /// Create a new request context for an incoming request.
     ///
     /// The response will be serialized to JSON and sent over the wire.
@@ -5115,7 +5101,7 @@ impl Responder<serde_json::Value> {
         };
         Self {
             method,
-            id,
+            id: HandleId::raw_layer(id),
             destination,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 send_raw_message(
@@ -5131,11 +5117,13 @@ impl Responder<serde_json::Value> {
             drop_guard,
         }
     }
+}
 
+impl<P: Protocol> Responder<serde_json::Value, P> {
     /// Cast this request context to a different response type.
     ///
     /// The provided type `T` will be serialized to JSON before sending.
-    pub fn cast<T: JsonRpcResponse>(self) -> Responder<T> {
+    pub fn cast<T: JsonRpcResponse>(self) -> Responder<T, P> {
         self.wrap_params(move |method, value| match value {
             Ok(value) => T::into_json(value, method),
             Err(e) => Err(e),
@@ -5143,30 +5131,30 @@ impl Responder<serde_json::Value> {
     }
 }
 
-impl<T: JsonRpcResponse> Responder<T> {
+impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
     /// Method of the incoming request
     #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
-    /// ID of the incoming request.
+    /// ID of the incoming request, as this responder's protocol version
+    /// types it.
+    ///
+    /// On a [`V2`](crate::Protocol) responder this is never `null`: the SDK
+    /// rejects v2 requests with a `null` ID before dispatch.
     #[must_use]
-    pub fn id(&self) -> &RawJsonRpcId {
-        &self.id
+    pub fn id(&self) -> &P::RequestId {
+        self.id.typed()
     }
 
-    /// ID of the incoming request as a protocol-v2 request ID.
+    /// ID of the incoming request exactly as it appeared on the wire.
     ///
-    /// Returns `None` only when the request has a `null` ID. Protocol v2 does
-    /// not allow `null` request IDs and the SDK rejects them before dispatch
-    /// on connections that negotiated v2, so this is always `Some` for
-    /// requests received on a v2 connection. A `null` ID can only reach a
-    /// handler on a v1 connection.
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// This is the same ID as [`id`](Self::id), in the version-neutral form
+    /// used by routers, forwarders and tracing.
     #[must_use]
-    pub fn v2_id(&self) -> Option<crate::schema::v2::RequestId> {
-        self.id.clone().try_into().ok()
+    pub fn raw_id(&self) -> &RawJsonRpcId {
+        self.id.raw()
     }
 
     /// Returns the cancellation marker for this request.
@@ -5189,12 +5177,12 @@ impl<T: JsonRpcResponse> Responder<T> {
     /// Convert to a `Responder` that expects a JSON value
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
-    pub fn erase_to_json(self) -> Responder<serde_json::Value> {
+    pub fn erase_to_json(self) -> Responder<serde_json::Value, P> {
         self.wrap_params(|method, value| T::from_value(method, value?))
     }
 
     /// Return a new Responder with a different method name.
-    pub fn wrap_method(self, method: String) -> Responder<T> {
+    pub fn wrap_method(self, method: String) -> Responder<T, P> {
         Responder {
             method,
             id: self.id,
@@ -5211,7 +5199,7 @@ impl<T: JsonRpcResponse> Responder<T> {
     pub fn wrap_params<U: JsonRpcResponse>(
         self,
         wrap_fn: impl FnOnce(&str, Result<U, crate::Error>) -> Result<T, crate::Error> + Send + 'static,
-    ) -> Responder<U> {
+    ) -> Responder<U, P> {
         let method = self.method.clone();
         let send_fn = self.send_fn;
         Responder {
@@ -5252,12 +5240,65 @@ impl<T: JsonRpcResponse> Responder<T> {
         self.respond_with_result(Err(error))
     }
 
+    /// The same responder for protocol `Q`. Fails only if the request ID is
+    /// `null` and `Q` does not allow it, which cannot happen for requests
+    /// received on a connection that speaks `Q`.
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<Responder<T, Q>, crate::Error> {
+        Ok(Responder {
+            method: self.method,
+            id: self.id.into_protocol()?,
+            destination: self.destination,
+            send_fn: self.send_fn,
+            drop_guard: self.drop_guard,
+        })
+    }
+
+    /// The same responder with a version-neutral [`Raw`] request ID, for
+    /// code that is not tied to one protocol version, such as a
+    /// [`HandleDispatchFrom`] implementation. This never fails.
+    pub fn into_raw(self) -> Responder<T, Raw> {
+        Responder {
+            method: self.method,
+            id: self.id.into_raw(),
+            destination: self.destination,
+            send_fn: self.send_fn,
+            drop_guard: self.drop_guard,
+        }
+    }
+
     fn reply_target(&self) -> RequestReplyTarget {
         RequestReplyTarget {
-            id: self.id.clone(),
+            id: self.id.raw().clone(),
             method: self.method.clone(),
             destination: self.destination.clone(),
         }
+    }
+}
+
+impl<T: JsonRpcResponse> Responder<T, Raw> {
+    /// Convert this version-neutral responder to protocol `Q`'s responder,
+    /// for example to pass a responder from a [`HandleDispatchFrom`] or
+    /// [`MatchDispatch`](crate::util::MatchDispatch) handler to a v2 session
+    /// helper.
+    ///
+    /// Only the request ID's type changes. It fails only when `Q` does not
+    /// allow the ID: protocol v2 rejects `null` with the Invalid Request
+    /// error (`-32600`) that a v2 connection sends for a `null` request ID.
+    /// That cannot happen for a request received on a v2 connection, which
+    /// rejects such requests before dispatch. On failure the responder is
+    /// dropped, which answers the request with an error.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{Error, Responder, V1, schema::v1};
+    /// # fn example(responder: Responder<v1::PromptResponse>) -> Result<(), Error> {
+    /// let responder: Responder<v1::PromptResponse, V1> = responder.into_protocol()?;
+    /// let id: &v1::RequestId = responder.id();
+    /// # let _ = id;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn into_protocol<Q: Protocol>(self) -> Result<Responder<T, Q>, crate::Error> {
+        self.retag()
     }
 }
 
@@ -5278,13 +5319,16 @@ impl<T: JsonRpcResponse> Responder<T> {
 /// request still counts as settled: routing a response this far disarms the
 /// originating [`SentRequest`]'s drop-time auto-cancellation even if the router
 /// is never invoked, since the peer has already answered.
+///
+/// `P` is the [`Protocol`] marker that types [`id`](Self::id); see
+/// [`Responder`].
 #[must_use]
-pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
+pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value, P: Protocol = Raw> {
     /// The method of the original request.
     method: String,
 
     /// The `id` of the original request.
-    id: OutgoingRequestId,
+    id: HandleId<P>,
 
     /// The RoleId to which the original request was sent
     /// (and hence from which the reply is expected).
@@ -5297,11 +5341,11 @@ pub struct ResponseRouter<T: JsonRpcResponse = serde_json::Value> {
     reply_target: ResponseReplyTarget,
 }
 
-impl<T: JsonRpcResponse> std::fmt::Debug for ResponseRouter<T> {
+impl<T: JsonRpcResponse, P: Protocol> std::fmt::Debug for ResponseRouter<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResponseRouter")
             .field("method", &self.method)
-            .field("id", &self.id.id)
+            .field("id", &self.id)
             .field("response_type", &std::any::type_name::<T>())
             .finish_non_exhaustive()
     }
@@ -5325,7 +5369,7 @@ impl ResponseRouter<serde_json::Value> {
             accepts_lower_initialize_version: _,
         } = pending_reply;
         let reply_target = ResponseReplyTarget {
-            id: id.id.clone(),
+            id: id.clone(),
             method: method.clone(),
             sender: Arc::new(Mutex::new(Some(sender))),
             ordering,
@@ -5340,7 +5384,7 @@ impl ResponseRouter<serde_json::Value> {
         let hook_method = method.clone();
         Self {
             method,
-            id,
+            id: HandleId::raw_layer(id),
             role_id,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 let response = match response {
@@ -5356,11 +5400,13 @@ impl ResponseRouter<serde_json::Value> {
             reply_target,
         }
     }
+}
 
+impl<P: Protocol> ResponseRouter<serde_json::Value, P> {
     /// Cast this response context to a different response type.
     ///
     /// The provided type `T` will be serialized to JSON before sending.
-    pub fn cast<T: JsonRpcResponse>(self) -> ResponseRouter<T> {
+    pub fn cast<T: JsonRpcResponse>(self) -> ResponseRouter<T, P> {
         self.wrap_params(move |method, value| match value {
             Ok(value) => T::into_json(value, method),
             Err(e) => Err(e),
@@ -5368,28 +5414,27 @@ impl ResponseRouter<serde_json::Value> {
     }
 }
 
-impl<T: JsonRpcResponse> ResponseRouter<T> {
+impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
     /// Method of the original request
     #[must_use]
     pub fn method(&self) -> &str {
         &self.method
     }
 
-    /// ID of the original request.
+    /// ID of the original request, as this router's protocol version types
+    /// it.
     #[must_use]
-    pub fn id(&self) -> &RawJsonRpcId {
-        &self.id.id
+    pub fn id(&self) -> &P::RequestId {
+        self.id.typed()
     }
 
-    /// ID of the original request as a protocol-v2 request ID.
+    /// ID of the original request exactly as it was sent on the wire.
     ///
-    /// Responses are only routed for requests the SDK sent, and the SDK never
-    /// assigns `null` to those, so this is always available. It is the same
-    /// ID as [`id`](Self::id).
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// This is the same ID as [`id`](Self::id), in the version-neutral form
+    /// used by routers, forwarders and tracing.
     #[must_use]
-    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
-        &self.id.v2_id
+    pub fn raw_id(&self) -> &RawJsonRpcId {
+        self.id.raw()
     }
 
     /// The peer to which the original request was sent.
@@ -5403,8 +5448,33 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
     /// Convert to a `ResponseRouter` that expects a JSON value
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
-    pub fn erase_to_json(self) -> ResponseRouter<serde_json::Value> {
+    pub fn erase_to_json(self) -> ResponseRouter<serde_json::Value, P> {
         self.wrap_params(|method, value| T::from_value(method, value?))
+    }
+
+    /// The same router for protocol `Q`. Fails only if the request ID is not
+    /// allowed by `Q`, which cannot happen because the SDK never assigns
+    /// `null` to requests it sends.
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
+        Ok(ResponseRouter {
+            method: self.method,
+            id: self.id.into_protocol()?,
+            role_id: self.role_id,
+            send_fn: self.send_fn,
+            reply_target: self.reply_target,
+        })
+    }
+
+    /// The same router with a version-neutral [`Raw`] request ID. This never
+    /// fails.
+    pub fn into_raw(self) -> ResponseRouter<T, Raw> {
+        ResponseRouter {
+            method: self.method,
+            id: self.id.into_raw(),
+            role_id: self.role_id,
+            send_fn: self.send_fn,
+            reply_target: self.reply_target,
+        }
     }
 
     /// Return a new ResponseRouter that expects a response of type U.
@@ -5414,7 +5484,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
     fn wrap_params<U: JsonRpcResponse>(
         self,
         wrap_fn: impl FnOnce(&str, Result<U, crate::Error>) -> Result<T, crate::Error> + Send + 'static,
-    ) -> ResponseRouter<U> {
+    ) -> ResponseRouter<U, P> {
         let method = self.method.clone();
         ResponseRouter {
             method: self.method,
@@ -5430,7 +5500,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route the response result to the waiting task.
     pub fn route_with_result(self, response: Result<T, crate::Error>) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id.id, "response routed to awaiter");
+        tracing::debug!(id = ?self.id, "response routed to awaiter");
         (self.send_fn)(response)
     }
 
@@ -5446,8 +5516,18 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// Route an error response to the waiting task.
     pub fn route_with_error(self, error: crate::Error) -> Result<(), crate::Error> {
-        tracing::debug!(id = ?self.id.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
+        tracing::debug!(id = ?self.id, error = ?crate::util::redacted_error(error.code), "error routed to awaiter");
         self.route_with_result(Err(error))
+    }
+}
+
+impl<T: JsonRpcResponse> ResponseRouter<T, Raw> {
+    /// Convert this version-neutral router to protocol `Q`'s router.
+    ///
+    /// Only the request ID's type changes. The SDK never assigns `null` to
+    /// requests it sends, so this succeeds for every marker.
+    pub fn into_protocol<Q: Protocol>(self) -> Result<ResponseRouter<T, Q>, crate::Error> {
+        self.retag()
     }
 }
 
@@ -5559,11 +5639,19 @@ pub trait JsonRpcRequest: JsonRpcMessage {
 /// Type parameters allow specifying the concrete request and notification types.
 /// By default, both are `UntypedMessage` for dynamic dispatch.
 /// The request context's response type matches the request's response type.
+///
+/// `P` is the [`Protocol`] marker of the request handles. Typed handlers on
+/// v1 builders receive `Dispatch<Req, Notif, V1>` and those on v2 builders
+/// `Dispatch<Req, Notif, V2>`. The version-neutral [`HandleDispatchFrom`]
+/// layer uses the default, [`Raw`], whose `id()` is the wire ID.
 #[derive(Debug)]
-pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcNotification = UntypedMessage>
-{
+pub enum Dispatch<
+    Req: JsonRpcRequest = UntypedMessage,
+    Notif: JsonRpcNotification = UntypedMessage,
+    P: Protocol = Raw,
+> {
     /// Incoming request and the context where the response should be sent.
-    Request(Req, Responder<Req::Response>),
+    Request(Req, Responder<Req::Response, P>),
 
     /// Incoming notification.
     Notification(Notif),
@@ -5575,20 +5663,23 @@ pub enum Dispatch<Req: JsonRpcRequest = UntypedMessage, Notif: JsonRpcNotificati
     /// (typically a waiting oneshot channel).
     Response(
         Result<Req::Response, crate::Error>,
-        ResponseRouter<Req::Response>,
+        ResponseRouter<Req::Response, P>,
     ),
 }
 
-impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
+impl<Req: JsonRpcRequest, Notif: JsonRpcNotification, P: Protocol> Dispatch<Req, Notif, P> {
     /// Map the request and notification types to new types.
     ///
     /// Note: Response variants are passed through unchanged since they don't
     /// contain a parseable message payload.
     pub fn map<Req1, Notif1>(
         self,
-        map_request: impl FnOnce(Req, Responder<Req::Response>) -> (Req1, Responder<Req1::Response>),
+        map_request: impl FnOnce(
+            Req,
+            Responder<Req::Response, P>,
+        ) -> (Req1, Responder<Req1::Response, P>),
         map_notification: impl FnOnce(Notif) -> Notif1,
-    ) -> Dispatch<Req1, Notif1>
+    ) -> Dispatch<Req1, Notif1, P>
     where
         Req1: JsonRpcRequest<Response = Req::Response>,
         Notif1: JsonRpcNotification,
@@ -5623,7 +5714,9 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     /// Convert self to an untyped message context.
     ///
     /// Note: Response variants cannot be converted. This returns an error for Response variants.
-    pub fn into_untyped_dispatch(self) -> Result<Dispatch, crate::Error> {
+    pub fn into_untyped_dispatch(
+        self,
+    ) -> Result<Dispatch<UntypedMessage, UntypedMessage, P>, crate::Error> {
         match self {
             Dispatch::Request(request, responder) => Ok(Dispatch::Request(
                 request.to_untyped_message()?,
@@ -5639,7 +5732,9 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     }
 
     /// Returns the request ID if this is a request or response, None if notification.
-    pub fn id(&self) -> Option<&RawJsonRpcId> {
+    ///
+    /// See [`Responder::id`] and [`ResponseRouter::id`].
+    pub fn id(&self) -> Option<&P::RequestId> {
         match self {
             Dispatch::Request(_, cx) => Some(cx.id()),
             Dispatch::Notification(_) => None,
@@ -5647,19 +5742,41 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
         }
     }
 
-    /// Returns the request ID as a protocol-v2 request ID if this is a
-    /// request or response, `None` if notification.
+    /// Returns the request ID exactly as it appears on the wire if this is a
+    /// request or response, None if notification.
     ///
-    /// See [`Responder::v2_id`] and [`ResponseRouter::v2_id`]. For requests,
-    /// this is also `None` when the request has a `null` ID, which can only
-    /// happen on a v1 connection.
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// See [`Responder::raw_id`] and [`ResponseRouter::raw_id`].
     #[must_use]
-    pub fn v2_id(&self) -> Option<crate::schema::v2::RequestId> {
+    pub fn raw_id(&self) -> Option<&RawJsonRpcId> {
         match self {
-            Dispatch::Request(_, responder) => responder.v2_id(),
+            Dispatch::Request(_, cx) => Some(cx.raw_id()),
             Dispatch::Notification(_) => None,
-            Dispatch::Response(_, router) => Some(router.v2_id().clone()),
+            Dispatch::Response(_, cx) => Some(cx.raw_id()),
+        }
+    }
+
+    /// The same dispatch with request handles for protocol `Q`.
+    ///
+    /// Fails only for a request whose `null` ID `Q` does not allow, which
+    /// cannot happen for a message received on a connection that speaks `Q`.
+    pub(crate) fn retag<Q: Protocol>(self) -> Result<Dispatch<Req, Notif, Q>, crate::Error> {
+        Ok(match self {
+            Dispatch::Request(request, responder) => Dispatch::Request(request, responder.retag()?),
+            Dispatch::Notification(notification) => Dispatch::Notification(notification),
+            Dispatch::Response(result, router) => Dispatch::Response(result, router.retag()?),
+        })
+    }
+
+    /// The same dispatch with version-neutral [`Raw`] request handles, for
+    /// example to hand a typed dispatch to a [`HandleDispatchFrom`]
+    /// implementation. This never fails.
+    pub fn into_raw(self) -> Dispatch<Req, Notif, Raw> {
+        match self {
+            Dispatch::Request(request, responder) => {
+                Dispatch::Request(request, responder.into_raw())
+            }
+            Dispatch::Notification(notification) => Dispatch::Notification(notification),
+            Dispatch::Response(result, router) => Dispatch::Response(result, router.into_raw()),
         }
     }
 
@@ -5688,6 +5805,18 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     }
 }
 
+impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif, Raw> {
+    /// Convert this version-neutral dispatch to protocol `Q`'s request
+    /// handles.
+    ///
+    /// See [`Responder::into_protocol`]: this fails only for a request whose
+    /// `null` ID `Q` does not allow, with the Invalid Request error
+    /// (`-32600`).
+    pub fn into_protocol<Q: Protocol>(self) -> Result<Dispatch<Req, Notif, Q>, crate::Error> {
+        self.retag()
+    }
+}
+
 impl Dispatch {
     /// Attempts to parse `self` into a typed message context.
     ///
@@ -5702,7 +5831,7 @@ impl Dispatch {
     ) -> Result<Result<Dispatch<Req, Notif>, Dispatch>, crate::Error> {
         tracing::debug!(
             method = self.method(),
-            id = ?self.id(),
+            id = ?self.raw_id(),
             "into_typed_dispatch"
         );
         match self {
@@ -6056,11 +6185,17 @@ impl JsonRpcNotification for UntypedMessage {}
 /// `{"reason":"incoming_transport_closed","method":"..."}`. Requests made
 /// after incoming EOF fail immediately with the same error. Use
 /// [`is_incoming_transport_closed`] to identify it.
+///
+/// # Protocol version
+///
+/// `P` is the [`Protocol`] marker of the connection handle that sent the
+/// request: [`Raw`] for the version-neutral [`ConnectionTo`], `V2` for
+/// `V2ConnectionTo`. It selects the type [`id`](Self::id) returns.
 #[must_use = "dropping a SentRequest asks the peer to cancel the request and \
               discards the response; consume it with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
-pub struct SentRequest<T> {
-    id: OutgoingRequestId,
+pub struct SentRequest<T, P: Protocol = Raw> {
+    id: HandleId<P>,
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
@@ -6107,10 +6242,13 @@ pub struct SentRequest<T> {
 /// registered; in that case the request is not published. [`detach`](Self::detach)
 /// returns preparation or publication errors directly because it has no response
 /// consumer. A callback returning an error terminates the connection.
+///
+/// `P` is the [`Protocol`] marker that types [`id`](Self::id); see
+/// [`SentRequest`].
 #[must_use = "a prepared request is not sent until consumed with `block_task`, \
               `on_receiving_result`, `forward_response_to`, or `detach`"]
-pub struct PreparedRequest<T> {
-    sent: SentRequest<T>,
+pub struct PreparedRequest<T, P: Protocol = Raw> {
+    sent: SentRequest<T, P>,
     publication: RequestPublication,
 }
 
@@ -6165,7 +6303,7 @@ impl RequestPublication {
     }
 }
 
-impl<T: Debug> Debug for PreparedRequest<T> {
+impl<T: Debug, P: Protocol> Debug for PreparedRequest<T, P> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PreparedRequest")
@@ -6174,23 +6312,23 @@ impl<T: Debug> Debug for PreparedRequest<T> {
     }
 }
 
-impl<T> PreparedRequest<T> {
-    /// The ID reserved for this request, which has not been sent yet.
+impl<T, P: Protocol> PreparedRequest<T, P> {
+    /// The ID reserved for this request, which has not been sent yet, as
+    /// this request's protocol version types it.
+    ///
+    /// It is the ID written to the wire when the request is published. The
+    /// SDK never assigns `null`.
     #[must_use]
-    pub fn id(&self) -> &RawJsonRpcId {
+    pub fn id(&self) -> &P::RequestId {
         self.sent.id()
     }
 
-    /// The ID reserved for this request as a protocol-v2 request ID.
-    ///
-    /// The SDK never assigns `null` to requests it sends, so every prepared
-    /// request ID is representable in protocol v2. This is the same ID as
-    /// [`id`](Self::id) and the one written to the wire when the request is
-    /// published.
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// The ID reserved for this request in the version-neutral form used by
+    /// routers, forwarders and tracing. It is the same ID as
+    /// [`id`](Self::id).
     #[must_use]
-    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
-        self.sent.v2_id()
+    pub fn raw_id(&self) -> &RawJsonRpcId {
+        self.sent.raw_id()
     }
 
     /// The method of the prepared request.
@@ -6216,7 +6354,7 @@ impl<T> PreparedRequest<T> {
     pub fn map<U>(
         self,
         map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
-    ) -> PreparedRequest<U>
+    ) -> PreparedRequest<U, P>
     where
         T: 'static,
     {
@@ -6300,10 +6438,10 @@ impl<T> PreparedRequest<T> {
     /// Preparation, publication, and response errors are forwarded to `responder`.
     /// Returning an error from the callback ends the connection.
     #[track_caller]
-    pub fn on_receiving_ok_result<F>(
+    pub fn on_receiving_ok_result<F, Q: Protocol>(
         self,
-        responder: Responder<T>,
-        task: impl FnOnce(T, Responder<T>) -> F + 'static + Send,
+        responder: Responder<T, Q>,
+        task: impl FnOnce(T, Responder<T, Q>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
         T: JsonRpcResponse,
@@ -6325,7 +6463,10 @@ impl<T> PreparedRequest<T> {
     /// Returns a task-registration error without publishing the request.
     /// Preparation, publication, and response errors are forwarded to `responder`.
     #[track_caller]
-    pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
+    pub fn forward_response_to<Q: Protocol>(
+        self,
+        responder: Responder<T, Q>,
+    ) -> Result<(), crate::Error>
     where
         T: JsonRpcResponse,
     {
@@ -6335,7 +6476,7 @@ impl<T> PreparedRequest<T> {
             })
     }
 
-    fn into_sent_request(self, ordered: bool) -> SentRequest<T> {
+    fn into_sent_request(self, ordered: bool) -> SentRequest<T, P> {
         if ordered {
             self.sent.response_ordering.mark_ordered();
         }
@@ -6365,13 +6506,13 @@ impl<T> PreparedRequest<T> {
     fn register_consumer<F>(
         &self,
         handle: impl FnOnce(Result<Result<T, crate::Error>, crate::Error>) -> F + 'static + Send,
-    ) -> Result<oneshot::Sender<SentRequest<T>>, crate::Error>
+    ) -> Result<oneshot::Sender<SentRequest<T, P>>, crate::Error>
     where
         T: 'static,
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
     {
         self.sent.response_ordering.mark_ordered();
-        let (published_tx, published_rx) = oneshot::channel::<SentRequest<T>>();
+        let (published_tx, published_rx) = oneshot::channel::<SentRequest<T, P>>();
         Task::new(Location::caller(), async move {
             match published_rx.await {
                 Ok(sent) => sent.handle_response(handle).await,
@@ -6606,11 +6747,11 @@ async fn await_response_forwarding_cancellation(
     response
 }
 
-impl<T: Debug> Debug for SentRequest<T> {
+impl<T: Debug, P: Protocol> Debug for SentRequest<T, P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut debug = f.debug_struct("SentRequest");
         debug
-            .field("id", &self.id.id)
+            .field("id", &self.id)
             .field("method", &self.method)
             .field("task_tx", &self.task_tx)
             .field("response_rx", &self.response_rx);
@@ -6621,9 +6762,9 @@ impl<T: Debug> Debug for SentRequest<T> {
     }
 }
 
-impl SentRequest<serde_json::Value> {
+impl<P: Protocol> SentRequest<serde_json::Value, P> {
     fn new(
-        id: OutgoingRequestId,
+        id: HandleId<P>,
         method: String,
         task_tx: mpsc::UnboundedSender<Task>,
         response_rx: oneshot::Receiver<ResponsePayload>,
@@ -6643,7 +6784,7 @@ impl SentRequest<serde_json::Value> {
     }
 }
 
-impl<T> SentRequest<T> {
+impl<T, P: Protocol> SentRequest<T, P> {
     /// Detach this request handle without waiting for its response.
     ///
     /// The response will be discarded when it arrives. This also disables the
@@ -6738,22 +6879,21 @@ impl<T> SentRequest<T> {
     }
 }
 
-impl<T> SentRequest<T> {
-    /// The id of the outgoing request.
+impl<T, P: Protocol> SentRequest<T, P> {
+    /// The id of the outgoing request, as this request's protocol version
+    /// types it. It is the ID written to the wire; the SDK never assigns
+    /// `null`.
     #[must_use]
-    pub fn id(&self) -> &RawJsonRpcId {
-        &self.id.id
+    pub fn id(&self) -> &P::RequestId {
+        self.id.typed()
     }
 
-    /// The id of the outgoing request as a protocol-v2 request ID.
-    ///
-    /// The SDK never assigns `null` to requests it sends, so every outgoing
-    /// request ID is representable in protocol v2. This is the same ID as
-    /// [`id`](Self::id) and the one written to the wire.
-    #[cfg(feature = "unstable_protocol_v2")]
+    /// The id of the outgoing request in the version-neutral form used by
+    /// routers, forwarders and tracing. It is the same ID as
+    /// [`id`](Self::id).
     #[must_use]
-    pub fn v2_id(&self) -> &crate::schema::v2::RequestId {
-        &self.id.v2_id
+    pub fn raw_id(&self) -> &RawJsonRpcId {
+        self.id.raw()
     }
 
     /// The method of the request this is in response to.
@@ -6771,7 +6911,7 @@ impl<T> SentRequest<T> {
     pub(crate) fn recover_error(
         self,
         recover: impl FnOnce(crate::Error) -> Result<T, crate::Error> + 'static + Send,
-    ) -> SentRequest<T>
+    ) -> SentRequest<T, P>
     where
         T: 'static,
     {
@@ -6796,7 +6936,7 @@ impl<T> SentRequest<T> {
     pub fn map<U>(
         self,
         map_fn: impl FnOnce(T) -> Result<U, crate::Error> + 'static + Send,
-    ) -> SentRequest<U>
+    ) -> SentRequest<U, P>
     where
         T: 'static,
     {
@@ -6875,7 +7015,10 @@ impl<T> SentRequest<T> {
     ///   equivalent to registering the responder's marker with
     ///   `forward_cancellation_from`.
     #[track_caller]
-    pub fn forward_response_to(self, responder: Responder<T>) -> Result<(), crate::Error>
+    pub fn forward_response_to<Q: Protocol>(
+        self,
+        responder: Responder<T, Q>,
+    ) -> Result<(), crate::Error>
     where
         T: JsonRpcResponse,
     {
@@ -7140,10 +7283,10 @@ impl<T> SentRequest<T> {
     ///
     /// For more control over error handling, use [`on_receiving_result`](Self::on_receiving_result).
     #[track_caller]
-    pub fn on_receiving_ok_result<F>(
+    pub fn on_receiving_ok_result<F, Q: Protocol>(
         self,
-        responder: Responder<T>,
-        task: impl FnOnce(T, Responder<T>) -> F + 'static + Send,
+        responder: Responder<T, Q>,
+        task: impl FnOnce(T, Responder<T, Q>) -> F + 'static + Send,
     ) -> Result<(), crate::Error>
     where
         F: Future<Output = Result<(), crate::Error>> + 'static + Send,
@@ -8050,7 +8193,7 @@ mod tests {
                 crate::on_receive_notification!(),
             )
             .on_receive_dispatch(
-                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage, V2>, connection| {
                     assert_v2_context(&connection);
                     Ok(())
                 },
@@ -8074,7 +8217,7 @@ mod tests {
             )
             .on_receive_dispatch_from(
                 Agent,
-                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage, V2>, connection| {
                     assert_v2_context(&connection);
                     Ok(())
                 },
@@ -8200,7 +8343,7 @@ mod tests {
             )
             .on_receive_dispatch_from(
                 Client,
-                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage>, connection| {
+                async |_dispatch: Dispatch<UntypedMessage, UntypedMessage, V2>, connection| {
                     assert_v2_context(&connection);
                     Ok(())
                 },
@@ -8359,31 +8502,45 @@ mod tests {
 
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
-    fn outgoing_request_ids_are_available_as_v2_ids() {
+    fn handle_ids_are_typed_by_protocol_and_match_the_wire_id() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_request_to(
+        let raw_sent = connection.send_request_to(
             crate::role::UntypedRole,
             UntypedMessage::new("probe", serde_json::json!({}))
                 .expect("test request should serialize"),
         );
-        let request_id = sent.id().clone();
-        let v2_id = sent.v2_id().clone();
+        let raw_sent_id: &RawJsonRpcId = raw_sent.id();
+        assert_eq!(raw_sent_id, raw_sent.raw_id());
+        raw_sent.detach();
+
+        let v2_connection = V2ConnectionTo { inner: connection };
+        let sent = v2_connection.send_request_to(
+            crate::role::UntypedRole,
+            UntypedMessage::new("probe", serde_json::json!({}))
+                .expect("test request should serialize"),
+        );
+        let v2_id: crate::schema::v2::RequestId = sent.id().clone();
+        let raw_id = sent.raw_id().clone();
         assert_eq!(
             serde_json::to_value(&v2_id).expect("v2 id should serialize"),
-            serde_json::to_value(&request_id).expect("v1 id should serialize"),
+            serde_json::to_value(&raw_id).expect("raw id should serialize"),
         );
 
         let pending_reply = pending_replies
-            .remove(&request_id)
+            .remove(&raw_id)
             .expect("the request should have a pending reply");
         let (dispatch, _) =
             incoming_actor::dispatch_from_response(pending_reply, Ok(serde_json::json!({})));
-        assert_eq!(dispatch.v2_id(), Some(v2_id.clone()));
+        assert_eq!(dispatch.raw_id(), Some(&raw_id));
+        let dispatch = dispatch
+            .into_protocol::<V2>()
+            .expect("SDK-assigned ids are valid v2 ids");
+        assert_eq!(dispatch.id(), Some(&v2_id));
         let Dispatch::Response(_, router) = dispatch else {
             panic!("expected a response dispatch");
         };
-        assert_eq!(router.id(), &request_id);
-        assert_eq!(router.v2_id(), &v2_id);
+        assert_eq!(router.id(), &v2_id);
+        assert_eq!(router.raw_id(), &raw_id);
         sent.detach();
     }
 
@@ -8392,7 +8549,7 @@ mod tests {
     fn response_hook_runs_when_success_is_routed_before_consumption() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("hooked", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8406,7 +8563,7 @@ mod tests {
                 }
             },
         );
-        let request_id = sent.id().clone();
+        let request_id = sent.raw_id().clone();
 
         route_test_response(
             request_id,
@@ -8427,7 +8584,7 @@ mod tests {
     fn response_hook_skips_errors_but_outlives_a_dropped_consumer() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
         let peer_error_hook_ran = Arc::new(AtomicBool::new(false));
-        let peer_error = connection.send_request_to_with_response_hook_after(
+        let peer_error = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("peer-error", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8440,7 +8597,7 @@ mod tests {
                 }
             },
         );
-        let peer_error_id = peer_error.id().clone();
+        let peer_error_id = peer_error.raw_id().clone();
         route_test_response(
             peer_error_id,
             &pending_replies,
@@ -8453,7 +8610,7 @@ mod tests {
         assert!(!peer_error_hook_ran.load(Ordering::Acquire));
 
         let dropped_hook_ran = Arc::new(AtomicBool::new(false));
-        let dropped = connection.send_request_to_with_response_hook_after(
+        let dropped = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("dropped", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8466,7 +8623,7 @@ mod tests {
                 }
             },
         );
-        let dropped_id = dropped.id().clone();
+        let dropped_id = dropped.raw_id().clone();
         drop(dropped);
         route_test_response(
             dropped_id,
@@ -8480,14 +8637,14 @@ mod tests {
     #[test]
     fn response_hook_failure_replaces_the_success_result() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_request_to_with_response_hook_after(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("hook-failure", serde_json::json!({}))
                 .expect("test request should serialize"),
             future::ready(Ok(())),
             |_| Err(crate::Error::internal_error().data("response hook failed")),
         );
-        let request_id = sent.id().clone();
+        let request_id = sent.raw_id().clone();
         route_test_response(
             request_id,
             &pending_replies,
@@ -8504,7 +8661,7 @@ mod tests {
     fn ordered_request_waits_for_readiness_before_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let (ready_tx, ready_rx) = oneshot::channel();
-        let sent = connection.send_ordered_request_to_after(
+        let sent = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("after-ready", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8552,12 +8709,12 @@ mod tests {
     #[test]
     fn foreground_finish_settles_unready_requests_and_preserves_ready_output_fifo() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
-        let unready = connection.send_ordered_request_to_after(
+        let unready = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("unready", serde_json::json!({})).unwrap(),
             future::pending(),
         );
-        let unready_id = unready.id().clone();
+        let unready_id = unready.raw_id().clone();
         send_raw_message(
             &connection.message_tx,
             OutgoingMessage::Notification {
@@ -8565,17 +8722,17 @@ mod tests {
             },
         )
         .unwrap();
-        let ready = connection.send_ordered_request_to_after(
+        let ready = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ready", serde_json::json!({})).unwrap(),
             future::ready(Ok(())),
         );
-        let unready_after = connection.send_ordered_request_to_after(
+        let unready_after = connection.send_ordered_request_to_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("unready-after", serde_json::json!({})).unwrap(),
             future::pending(),
         );
-        let unready_after_id = unready_after.id().clone();
+        let unready_after_id = unready_after.raw_id().clone();
         send_raw_message(
             &connection.message_tx,
             OutgoingMessage::Notification {
@@ -8619,7 +8776,7 @@ mod tests {
                 .contains("foreground completed before outgoing request readiness")
         );
         assert!(!pending_replies.contains(&unready_after_id));
-        assert!(pending_replies.contains(ready.id()));
+        assert!(pending_replies.contains(ready.raw_id()));
         let frames = futures::executor::block_on(transport_rx.collect::<Vec<_>>());
         let methods = frames
             .into_iter()
@@ -8639,12 +8796,12 @@ mod tests {
     #[test]
     fn ordered_blocking_transform_precedes_response_acknowledgment() {
         let (connection, _message_rx, pending_replies) = connection_for_response_hook_tests();
-        let sent = connection.send_ordered_request_to(
+        let sent = connection.send_ordered_request_to::<Raw, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ordered-transform", serde_json::json!({}))
                 .expect("test request should serialize"),
         );
-        let request_id = sent.id().clone();
+        let request_id = sent.raw_id().clone();
         let pending_reply = pending_replies
             .remove(&request_id)
             .expect("the request should have a pending reply");
@@ -8696,7 +8853,7 @@ mod tests {
     fn outgoing_request_readiness_failure_rejects_without_publication() {
         let (connection, message_rx, pending_replies) = connection_for_response_hook_tests();
         let hook_ran = Arc::new(AtomicBool::new(false));
-        let sent = connection.send_request_to_with_response_hook_after(
+        let sent = connection.send_request_to_with_response_hook_after::<Raw, _, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("never-published", serde_json::json!({}))
                 .expect("test request should serialize"),
@@ -8752,12 +8909,12 @@ mod tests {
             ProtocolMode::disabled(),
         );
 
-        let sent = connection.send_ordered_request_to(
+        let sent = connection.send_ordered_request_to::<Raw, _, _>(
             crate::role::UntypedRole,
             UntypedMessage::new("ordered", serde_json::json!({}))
                 .expect("test request should serialize"),
         );
-        let request_id = sent.id().clone();
+        let request_id = sent.raw_id().clone();
         let message = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut message_rx))
             .expect("outgoing request should already be queued")
             .expect("outgoing request queue should remain open");

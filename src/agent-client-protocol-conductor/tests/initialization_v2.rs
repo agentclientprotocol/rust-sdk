@@ -938,7 +938,7 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
             async move |request: v2::NewSessionRequest, responder, cx| {
                 if AsRef::<std::path::Path>::as_ref(&request.cwd).ends_with("park-session") {
                     parked_id_tx
-                        .unbounded_send(responder.id().clone())
+                        .unbounded_send(responder.raw_id().clone())
                         .map_err(Error::into_internal_error)?;
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
@@ -997,7 +997,7 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
                 cx.send_request(initialize_request()).block_task().await?;
 
                 let pending = cx.send_request(v2::NewSessionRequest::new("/park-session"));
-                let client_request_id = pending.id().clone();
+                let client_request_id = pending.raw_id().clone();
                 pending.cancel()?;
                 let error = pending
                     .block_task()
@@ -1056,7 +1056,7 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
             async move |request: v2::ResumeSessionRequest, responder, cx| {
                 if request.session_id == v2::SessionId::new("park-session") {
                     parked_id_tx
-                        .unbounded_send(responder.id().clone())
+                        .unbounded_send(responder.raw_id().clone())
                         .map_err(Error::into_internal_error)?;
                     let cancellation = responder.cancellation();
                     cx.spawn(async move {
@@ -1116,7 +1116,7 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
                     "park-session",
                     "/park-session",
                 ));
-                let client_request_id = pending.id().clone();
+                let client_request_id = pending.raw_id().clone();
                 pending.cancel()?;
                 let error = pending
                     .block_task()
