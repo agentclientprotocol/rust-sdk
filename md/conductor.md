@@ -38,7 +38,7 @@ extension. See the [Proxy Extension Protocol Reference](./protocol.md) for the
 wire method shapes. The conductor uses `proxy/initialize` and `proxy/successor`
 from the ACP proxy chains RFD; earlier releases used `_proxy/initialize` and
 `_proxy/successor`, so upgrade conductors and proxies together (see
-[Migrating Proxy Method Names](./migration-proxy-methods.md)).
+[Migrating to v5](./migration-v5.md#proxy-method-names)).
 
 ## Lazy Initialization
 

@@ -759,7 +759,7 @@ mod tests {
         let error = handler
             .append_declaration_to_raw(&mut request)
             .expect_err("a colliding MCP server name must be rejected");
-        assert_eq!(error.code, crate::ErrorCode::InvalidParams);
+        assert_eq!(error.code, crate::ErrorCode::INVALID_PARAMS);
         let message = error
             .data
             .as_ref()

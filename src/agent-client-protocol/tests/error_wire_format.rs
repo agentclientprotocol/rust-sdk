@@ -63,10 +63,10 @@ fn shared_error(case: &str) -> Option<Error> {
 
 fn v1_error(case: &str) -> Option<Error> {
     match case {
-        "session_not_found" => Some(Error::session_not_found("sess_1")),
-        "resource_not_found" => Some(Error::resource_not_found(Some(
-            "file:///tmp/missing".into(),
-        ))),
+        "session_not_found" => Some(v1::Error::session_not_found("sess_1").into()),
+        "resource_not_found" => {
+            Some(v1::Error::resource_not_found(Some("file:///tmp/missing".into())).into())
+        }
         case => shared_error(case),
     }
 }
@@ -194,8 +194,8 @@ mod v2_connection {
 
     fn v2_error(case: &str) -> Option<Error> {
         match case {
-            "session_not_found" => Some(Error::session_not_found("sess_1")),
-            "resource_not_found" => Some(Error::resource_not_found(None)),
+            "session_not_found" => Some(v2::Error::session_not_found("sess_1").into()),
+            "resource_not_found" => Some(v2::Error::resource_not_found().into()),
             case => shared_error(case),
         }
     }

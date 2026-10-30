@@ -737,7 +737,7 @@ fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
 
 /// `-32002` for a session that does not exist or is not active on this connection.
 fn session_not_found(session_id: &acp::SessionId) -> agent_client_protocol::Error {
-    agent_client_protocol::Error::session_not_found(session_id.0.clone())
+    acp::Error::session_not_found(session_id.clone()).into()
 }
 
 /// `cwd` must be an absolute path in the native syntax of the Agent's machine;

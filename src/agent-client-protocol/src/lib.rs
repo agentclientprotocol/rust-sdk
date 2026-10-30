@@ -189,8 +189,8 @@ pub mod __private {
 // Re-export BoxFuture for implementing SDK traits that return boxed futures.
 pub use futures::future::BoxFuture;
 
-// Re-export commonly used infrastructure types for convenience
-pub use schema::v1::{Error, ErrorCode, Result};
+mod error;
+pub use error::{Error, ErrorCode, Result};
 
 // Re-export derive macros for custom JSON-RPC types
 pub use agent_client_protocol_derive::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};

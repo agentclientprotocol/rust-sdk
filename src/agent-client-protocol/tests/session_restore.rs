@@ -364,7 +364,7 @@ async fn failed_restore_removes_routing_before_later_messages() {
             .start_session()
             .await
             .expect_err("agent should reject session/load");
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         barrier_rx.next().await.ok_or_else(Error::internal_error)?;
 
         let mut restored = connection

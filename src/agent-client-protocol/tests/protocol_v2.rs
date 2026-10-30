@@ -522,7 +522,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         };
         assert_eq!(
             error.code,
-            i32::from(agent_client_protocol::ErrorCode::InvalidParams)
+            i32::from(agent_client_protocol::ErrorCode::INVALID_PARAMS)
         );
         let data = error
             .data
@@ -665,7 +665,7 @@ async fn role_builder_v1_client_is_rejected_by_v2_agent() -> Result<(), Error> {
                 .await
                 .expect_err("v2 agents require a v2 client implementation");
             assert_version_mismatch(&error, 1, &[2]);
-            assert_eq!(error.code, agent_client_protocol::ErrorCode::Other(-32022));
+            assert_eq!(error.code, v2::ErrorCode::UnsupportedProtocolVersion);
             Ok(())
         })
         .await

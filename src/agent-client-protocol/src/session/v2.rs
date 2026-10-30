@@ -947,7 +947,7 @@ where
         self.connection
             .send_request_to(Agent, v2::CloseSessionRequest::new(self.session_id.clone()))
             .recover_error(|error| {
-                if error.code == crate::ErrorCode::ResourceNotFound {
+                if error.code == v2::ErrorCode::ResourceNotFound {
                     Ok(v2::CloseSessionResponse::new())
                 } else {
                     Err(error)

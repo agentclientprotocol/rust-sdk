@@ -72,7 +72,7 @@ representation. Other protocols should construct `RawJsonRpcResponse` directly.
 ## Proxy Initialization
 
 > Earlier SDK releases used `_proxy/initialize` and `_proxy/successor`. See
-> [Migrating Proxy Method Names](./migration-proxy-methods.md); conductors and
+> [Migrating to v5](./migration-v5.md#proxy-method-names); conductors and
 > proxies must be upgraded together.
 
 The conductor sends `proxy/initialize` to a component that has a successor.

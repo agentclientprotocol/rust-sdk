@@ -656,7 +656,7 @@ fn invalid_params(message: impl ToString) -> Error {
 /// Requests naming a session that does not exist or is not active on this
 /// connection fail with `-32002` and `data.sessionId`.
 fn session_not_found(session_id: &v2::SessionId) -> Error {
-    Error::session_not_found(session_id.0.clone())
+    v2::Error::session_not_found(session_id.clone()).into()
 }
 
 /// `cwd` must be an absolute path in the native syntax of the agent's machine;
@@ -695,7 +695,7 @@ mod tests {
         let Err(error) = agent.admit_prompt(&session_id, &[]) else {
             panic!("an empty prompt should be rejected");
         };
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
         {
             let state = agent.state.lock().expect("session state lock poisoned");
             let session = &state.sessions[&session_id];

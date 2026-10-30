@@ -2,9 +2,11 @@ use agent_client_protocol::schema::v1::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAction, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationFormMode,
-    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities, Error,
+    ElicitationSchema, ElicitationSessionScope, ElicitationUrlCapabilities,
 };
-use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
+use agent_client_protocol::{
+    Error, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 

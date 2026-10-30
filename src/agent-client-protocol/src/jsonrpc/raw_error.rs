@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn acp_error_interpretation_is_explicit_and_keeps_data_presence() {
         for (code, expected_code) in [
-            (-32000, crate::ErrorCode::AuthRequired),
-            (12345, crate::ErrorCode::Other(12345)),
+            (-32000, crate::ErrorCode::AUTH_REQUIRED),
+            (12345, crate::ErrorCode::new(12345)),
         ] {
             for data in [None, Some(Value::Null), Some(json!({"detail":"kept"}))] {
                 let mut raw = RawJsonRpcError::new(code, "peer");

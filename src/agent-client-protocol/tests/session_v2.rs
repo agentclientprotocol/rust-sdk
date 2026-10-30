@@ -46,7 +46,7 @@ impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
             .start_session()
             .await
             .expect_err("the v1 helper must reject the raw protocol v2 connection");
-        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
 
         let data = error
             .data
@@ -813,7 +813,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
             .await
             .expect("the unhandled request should receive a response")
             .expect_err("the client should reject an unhandled permission request");
-        assert_eq!(error.code, ErrorCode::MethodNotFound);
+        assert_eq!(error.code, ErrorCode::METHOD_NOT_FOUND);
         Ok(())
     });
 
@@ -978,8 +978,9 @@ async fn v2_session_commands_cover_configuration_and_close() {
                     1 => responder.respond(v2::CloseSessionResponse::new()),
                     // An agent predating idempotent close reports the closed
                     // session as not found.
-                    2 => responder
-                        .respond_with_error(Error::session_not_found(request.session_id.0.clone())),
+                    2 => responder.respond_with_error(
+                        v2::Error::session_not_found(request.session_id).into(),
+                    ),
                     _ => responder.respond_with_error(Error::invalid_params()),
                 }
             },
@@ -1024,7 +1025,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
             .block_task()
             .await
             .expect_err("only -32002 is treated as a successful close");
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         Ok(())
     });
 

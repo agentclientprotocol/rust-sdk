@@ -1825,7 +1825,7 @@ fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
 
 /// `-32002` for a session that does not exist or is not active on this connection.
 fn session_not_found(session_id: &SessionId) -> agent_client_protocol::Error {
-    agent_client_protocol::Error::session_not_found(session_id.clone())
+    agent_client_protocol::schema::v1::Error::session_not_found(session_id.clone()).into()
 }
 
 fn is_supported_mode_id(mode_id: &SessionModeId) -> bool {

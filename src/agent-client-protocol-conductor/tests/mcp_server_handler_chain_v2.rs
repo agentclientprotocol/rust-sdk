@@ -455,7 +455,7 @@ impl ConnectTo<Client> for SetupRecordingAgent {
 
 fn assert_proxy_name_collision<T: std::fmt::Debug>(result: Result<T, Error>) {
     let error = result.expect_err("a colliding MCP server name must be rejected");
-    assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+    assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
     let message = error
         .data
         .as_ref()

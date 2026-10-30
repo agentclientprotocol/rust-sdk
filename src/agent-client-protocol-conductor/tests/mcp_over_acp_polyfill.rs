@@ -527,7 +527,7 @@ async fn unsupported_downstream_does_not_gain_native_capability()
         ))
         .await
         .expect_err("native declarations must not reach an unsupported downstream agent");
-        assert_eq!(error.code, agent_client_protocol::ErrorCode::InvalidParams);
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
         assert_eq!(
             error.data,
             Some(serde_json::json!(
