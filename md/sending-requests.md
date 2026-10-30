@@ -1,6 +1,7 @@
 # Sending Requests
 
-Both `ConnectionTo` and `V2ConnectionTo` support two request APIs:
+Both `v1::ConnectionTo` (the version-neutral `ConnectionTo`) and
+`v2::ConnectionTo` support two request APIs:
 
 - **`send_request(request)`** sends immediately and returns a `SentRequest`.
   Keep this when eager publication is useful, such as starting work before

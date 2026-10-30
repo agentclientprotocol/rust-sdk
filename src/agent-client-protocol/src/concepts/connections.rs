@@ -17,8 +17,10 @@
 //!
 //! # The Connection Builder Pattern
 //!
-//! Every role type has a `builder()` method that returns a connection builder.
-//! The builder lets you configure handlers, then connect to a transport:
+//! [`Client`], [`Agent`] and [`Proxy`] have one method per protocol version
+//! that returns a connection builder: `v1()` for stable protocol v1 and, with
+//! the `unstable_protocol_v2` feature, `v2()` for draft protocol v2. The
+//! builder lets you configure handlers, then connect to a transport:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -36,7 +38,8 @@
 //!
 //! # The Connection Context
 //!
-//! Inside `connect_with`, you receive a [`ConnectionTo`] (connection context) that
+//! Inside `connect_with`, you receive a [`v1::ConnectionTo`](crate::v1::ConnectionTo)
+//! (connection context; `v2::ConnectionTo` on a v2 builder) that
 //! lets you interact with the remote peer:
 //!
 //! ```

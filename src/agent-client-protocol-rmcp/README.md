@@ -58,7 +58,7 @@ use agent_client_protocol_rmcp::McpServerExt;
 let server = McpServer::from_rmcp("my-server", MyRmcpService::new);
 
 // Use as a handler in a proxy
-Proxy.builder()
+Proxy.v1()
     .with_mcp_server(server)
     .connect_to(transport)
     .await?;

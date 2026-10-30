@@ -3,6 +3,258 @@
 This page covers the breaking changes in `agent-client-protocol` 4.0 and the
 crates released with it.
 
+## `v1` and `v2` modules and versioned entry points
+
+Every connection now names its protocol version, in the entry point and in
+the imports:
+
+- `Client.v1()`, `Agent.v1()` and `Proxy.v1()` start a stable protocol v1
+  connection. They replace `Client.builder()`, `Agent.builder()` and
+  `Proxy.builder()`, which are removed.
+- `Client.v2()`, `Agent.v2()` and `Proxy.v2()` start a draft protocol v2
+  connection (`unstable_protocol_v2`), as before.
+- `agent_client_protocol::v1` and, with `unstable_protocol_v2`,
+  `agent_client_protocol::v2` hold each version's SDK types under the same
+  names. The protocol messages stay in `schema::v1` and `schema::v2`.
+
+The crate root keeps what every version shares: transports (`Channel`,
+`Lines`, `ByteStreams`, `Stdio`, `AcpAgent`, `TransportFrame` and the `Raw*`
+types), `ConnectTo`, `ConnectionDriver`, the roles, the `JsonRpc*` traits and
+derives, `UntypedMessage`, `Error`, `ErrorCode`, `Result`, `Protocol` with
+`Raw`/`V1`/`V2`, the generic request handles (`Responder`, `ResponseRouter`,
+`SentRequest`, `PreparedRequest`, `Dispatch` and `Builder`, defaulting to
+`Raw`), the version-neutral `ConnectionTo`, and the routers that serve both
+versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
+`ClientProtocolConnector`).
+
+| Name | `agent_client_protocol::v1` | `agent_client_protocol::v2` |
+| --- | --- | --- |
+| `ConnectionTo<Counterpart>` | the version-neutral `ConnectionTo` | the v2 connection |
+| `Builder<Host>` | `Builder<Host, .., V1>` | `Builder<Host, .., V2>` |
+| `Responder<T>` | `Responder<T, V1>` | `Responder<T, V2>` |
+| `ResponseRouter<T>` | `ResponseRouter<T, V1>` | `ResponseRouter<T, V2>` |
+| `Dispatch<Req, Notif>` | `Dispatch<Req, Notif, V1>` | `Dispatch<Req, Notif, V2>` |
+| `SentRequest<T>`, `PreparedRequest<T>` | not defined (see below) | `SentRequest<T, V2>`, `PreparedRequest<T, V2>` |
+| `SessionBuilder` | new session (`build_session*`) | new session (`build_session*`) |
+| `ResumeSessionBuilder` | `resume_session*` | `resume_session*` |
+| `OpenedSession` | a restored session and its response | an opened session and its response |
+| `ActiveSession` | the session handle with its update stream | the command-only session handle |
+| `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
+| `LoadSessionBuilder`, `RestoreSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
+| `InitializeOutcome`, `InitializationVersionMismatch`, `SelectedInitializeResponse` | - | the result of `send_initialize` |
+
+`v1::ConnectionTo` is the crate root's version-neutral `ConnectionTo`, which
+also carries the v1 session helpers. Requests sent through it return the root
+`SentRequest<T>` and `PreparedRequest<T>`, whose `id()` is the wire
+`RawJsonRpcId`, so `v1` does not define its own `SentRequest` or
+`PreparedRequest`.
+
+### Renamed and moved items
+
+Every path is relative to `agent_client_protocol`. Items not listed keep
+their path.
+
+| Before (3.x) | After |
+| --- | --- |
+| `Client.builder()` | `Client.v1()` |
+| `Agent.builder()` | `Agent.v1()` |
+| `Proxy.builder()` | `Proxy.v1()` |
+| `Role::builder(role)` (generic code, other roles) | `Builder::new(role)` |
+| `Client.connect_with(agent, f)` | `Client.v1().connect_with(agent, f)` |
+| `X.builder().without_acp_version_guard()` | `Builder::new(X).without_acp_version_guard()` |
+| `V2Builder` | `v2::Builder` |
+| `V2ConnectionTo` | `v2::ConnectionTo` |
+| `V2SessionBuilder` | `v2::SessionBuilder` |
+| `V2ResumeSessionBuilder` | `v2::ResumeSessionBuilder` |
+| `V2ForkSessionBuilder` | `v2::ForkSessionBuilder` |
+| `OpenedV2Session` | `v2::OpenedSession` |
+| `V2Session` | `v2::ActiveSession` |
+| `InitializeOutcome` | `v2::InitializeOutcome` |
+| `InitializationVersionMismatch` | `v2::InitializationVersionMismatch` |
+| `SelectedInitializeResponse` | `v2::SelectedInitializeResponse` |
+| `SessionBuilder` | `v1::SessionBuilder` |
+| `ActiveSession` | `v1::ActiveSession` |
+| `RestoredSession` | `v1::OpenedSession` |
+| `RestoreSessionBuilder` | `v1::RestoreSessionBuilder` (also `v1::LoadSessionBuilder` / `v1::ResumeSessionBuilder` for each request) |
+| `SessionMessage` | `v1::SessionMessage` |
+| `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
+| `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
+| `Responder<T, V1>` (and the other handles) | unchanged, or `v1::Responder<T>` |
+| `Responder<T, V2>` (and the other handles) | unchanged, or `v2::Responder<T>` |
+
+`Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
+`Conductor.builder()` and the MCP roles' `builder()` are version-neutral and
+stay. `Builder::new(Client)`, `Builder::new(Agent)` and `Builder::new(Proxy)`
+still apply the v1 wire guard until `without_acp_version_guard()` is called,
+as before.
+
+In `agent-client-protocol-test`, Testy follows the same layout:
+
+| Before | After |
+| --- | --- |
+| `testy::Testy` | `testy::v1::Testy` |
+| `testy::V2Testy`, `Testy::new().v2()` | `testy::v2::Testy`, `testy::v2::Testy::new()` |
+| `Testy::new().protocol_router()` | `testy::protocol_router()` |
+
+### Name clashes with `schema::v1` and `schema::v2`
+
+Code that imports the schema modules as `v1` and `v2` cannot also import the
+SDK modules under those names. Import the SDK types by name instead:
+
+```rust,ignore
+use agent_client_protocol::schema::v2;
+use agent_client_protocol::v2::{ConnectionTo, Responder};
+
+async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse>, cx: ConnectionTo<Client>| { ... }
+```
+
+or spell out the path, for example `agent_client_protocol::v2::ConnectionTo`,
+where one file needs both versions' SDK types.
+
+### A v1 client
+
+```rust,ignore
+// Before
+use agent_client_protocol::{ActiveSession, Agent, Client, ConnectTo, ConnectionTo};
+use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+
+Client
+    .builder()
+    .connect_with(transport, async |cx: ConnectionTo<Agent>| {
+        cx.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
+        cx.build_session_cwd()?
+            .block_task()
+            .run_until(async |mut session: ActiveSession<'_, Agent>| {
+                session.send_prompt("Hello")?;
+                println!("{}", session.read_to_string().await?);
+                Ok(())
+            })
+            .await
+    })
+    .await
+
+// After
+use agent_client_protocol::{Agent, Client, ConnectTo};
+use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+use agent_client_protocol::v1::{ActiveSession, ConnectionTo};
+
+Client
+    .v1()
+    .connect_with(transport, async |cx: ConnectionTo<Agent>| {
+        // ... unchanged ...
+    })
+    .await
+```
+
+### A v1 agent
+
+```rust,ignore
+// Before
+use agent_client_protocol::{Agent, Responder};
+use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
+
+Agent
+    .builder()
+    .on_receive_request(
+        async |request: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
+            responder.respond(InitializeResponse::new(request.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+    .connect_to(transport)
+    .await
+
+// After
+use agent_client_protocol::Agent;
+use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
+use agent_client_protocol::v1::Responder;
+
+Agent
+    .v1()
+    .on_receive_request(
+        async |request: InitializeRequest, responder: Responder<InitializeResponse>, _cx| {
+            responder.respond(InitializeResponse::new(request.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+    .connect_to(transport)
+    .await
+```
+
+### A v2 client
+
+```rust,ignore
+// Before
+use agent_client_protocol::{Agent, Client, InitializeOutcome, V2ConnectionTo, V2Session};
+use agent_client_protocol::schema::{ProtocolVersion, v2};
+
+Client
+    .v2()
+    .connect_with(transport, async |cx: V2ConnectionTo<Agent>| {
+        let InitializeOutcome::Initialized(_) = cx.send_initialize(request).block_task().await? else {
+            return Err(Error::internal_error());
+        };
+        let session: V2Session<Agent> =
+            cx.build_session_cwd()?.start_session().block_task().await?.into_session();
+        session.send_prompt("Hello").block_task().await?;
+        Ok(())
+    })
+    .await
+
+// After
+use agent_client_protocol::{Agent, Client};
+use agent_client_protocol::schema::{ProtocolVersion, v2};
+use agent_client_protocol::v2::{ActiveSession, ConnectionTo, InitializeOutcome};
+
+Client
+    .v2()
+    .connect_with(transport, async |cx: ConnectionTo<Agent>| {
+        let InitializeOutcome::Initialized(_) = cx.send_initialize(request).block_task().await? else {
+            return Err(Error::internal_error());
+        };
+        let session: ActiveSession<Agent> =
+            cx.build_session_cwd()?.start_session().block_task().await?.into_session();
+        session.send_prompt("Hello").block_task().await?;
+        Ok(())
+    })
+    .await
+```
+
+### A v2 agent
+
+```rust,ignore
+// Before
+use agent_client_protocol::{Agent, Client, Responder, V2ConnectionTo};
+use agent_client_protocol::schema::v2;
+
+Agent
+    .v2()
+    .on_receive_request(
+        async |request: v2::PromptRequest,
+               responder: Responder<v2::PromptResponse>,
+               cx: V2ConnectionTo<Client>| { ... },
+        agent_client_protocol::on_receive_request!(),
+    )
+    .connect_to(transport)
+    .await
+
+// After
+use agent_client_protocol::{Agent, Client};
+use agent_client_protocol::schema::v2;
+use agent_client_protocol::v2::{ConnectionTo, Responder};
+
+Agent
+    .v2()
+    .on_receive_request(
+        async |request: v2::PromptRequest,
+               responder: Responder<v2::PromptResponse>,
+               cx: ConnectionTo<Client>| { ... },
+        agent_client_protocol::on_receive_request!(),
+    )
+    .connect_to(transport)
+    .await
+```
+
 ## A version-neutral `Error`
 
 `agent_client_protocol::Error` used to be a re-export of
@@ -193,8 +445,8 @@ marker selects the type that `id()` returns:
 | Marker | Used by | `id()` |
 | --- | --- | --- |
 | `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, builders without a version guard, `Builder::new` | `&RawJsonRpcId` |
-| `V1` | typed handlers on `Client.builder()`, `Agent.builder()`, `Proxy.builder()` | `&schema::v1::RequestId` |
-| `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `V2ConnectionTo` | `&schema::v2::RequestId` |
+| `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()` | `&schema::v1::RequestId` |
+| `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `v2::ConnectionTo` | `&schema::v2::RequestId` |
 
 `Dispatch::id()` returns an `Option` of the same type. A `V2` `id()` never
 fails: the SDK rejects `null` request IDs on v2 connections and never assigns
@@ -232,13 +484,14 @@ converts with `v1::RequestId::from(id.clone())`.
 
 ### Typed handlers on v1 builders
 
-Typed handlers on `Client.builder()`, `Agent.builder()` and `Proxy.builder()`
-receive `V1` handles, so `id()` still returns `&schema::v1::RequestId`.
-Closures whose parameters are not annotated need no change. Where the handle
-type is spelled out, add the marker, because the default is now `Raw`:
+Typed handlers on `Client.v1()`, `Agent.v1()` and `Proxy.v1()` receive `V1`
+handles, so `id()` still returns `&schema::v1::RequestId`. Closures whose
+parameters are not annotated need no change. Where the handle type is spelled
+out, use the `v1` alias (or add the marker), because the root default is now
+`Raw`:
 
 ```rust,ignore
-use agent_client_protocol::{Dispatch, Responder, V1};
+use agent_client_protocol::v1::{Dispatch, Responder};
 
 // Before
 Agent.builder().on_receive_request(
@@ -246,26 +499,27 @@ Agent.builder().on_receive_request(
     on_receive_request!(),
 )
 // After
-Agent.builder().on_receive_request(
-    async |request: PromptRequest, responder: Responder<PromptResponse, V1>, cx| { ... },
+Agent.v1().on_receive_request(
+    async |request: PromptRequest, responder: Responder<PromptResponse>, cx| { ... },
     on_receive_request!(),
 )
 
 // Likewise for on_receive_dispatch
-async |message: Dispatch<PromptRequest, SessionNotification, V1>, cx| { ... }
+async |message: Dispatch<PromptRequest, SessionNotification>, cx| { ... }
 ```
 
-`Client.builder()`, `Agent.builder()` and `Proxy.builder()` return
-`Builder<_, _, _, _, V1>`; code that names that type adds the marker too.
+`Client.v1()`, `Agent.v1()` and `Proxy.v1()` return `v1::Builder<_>`
+(`Builder<_, _, _, _, V1>`).
 `Builder::new`, other roles' builders, and
 `without_acp_version_guard()` / `with_v2_protocol_guard()` (which now return
 a `Raw` builder) use `Raw`. The v1 session helpers that take a responder,
-such as `SessionBuilder::on_proxy_session_start`, take a `Responder<_, V1>`.
+such as `v1::SessionBuilder::on_proxy_session_start`, take a
+`v1::Responder<_>`.
 
 ### v2 code
 
 The `v2_id()` accessors are removed. `id()` on handles from the v2 builders and
-`V2ConnectionTo` returns the v2 ID directly:
+`v2::ConnectionTo` returns the v2 ID directly:
 
 ```rust,ignore
 // Before
@@ -278,18 +532,18 @@ let id: &v2::RequestId = sent.id();
 ```
 
 Closures registered on a v2 builder whose parameters are not annotated need
-no change. Where a v2 handle type is spelled out, add the marker:
+no change. Where a v2 handle type is spelled out, use the `v2` alias:
 
 ```rust,ignore
-use agent_client_protocol::{Responder, SentRequest, V2};
+use agent_client_protocol::v2::{ActiveSession, Responder, SentRequest};
 
 // Before
 async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse>, cx| { ... }
 fn send(session: &V2Session<Agent>) -> SentRequest<v2::PromptResponse> { ... }
 
 // After
-async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse, V2>, cx| { ... }
-fn send(session: &V2Session<Agent>) -> SentRequest<v2::PromptResponse, V2> { ... }
+async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse>, cx| { ... }
+fn send(session: &ActiveSession<Agent>) -> SentRequest<v2::PromptResponse> { ... }
 ```
 
 ### Getting a typed handle from the raw layer
@@ -329,7 +583,7 @@ marker, so forwarding between connections needs no conversion.
 The hidden `ConnectionContext` trait and its `RawConnectionContext` and
 `V2ConnectionContext` implementations are replaced by `Protocol`, `Raw`, `V1`
 and `V2`. `Protocol::Connection<Counterpart>` is the connection type builder
-callbacks receive (`ConnectionTo` for `Raw` and `V1`, `V2ConnectionTo` for
+callbacks receive (`ConnectionTo` for `Raw` and `V1`, `v2::ConnectionTo` for
 `V2`), so code generic over a builder's context changes
 `Context: ConnectionContext` to `P: Protocol`.
 
@@ -357,9 +611,10 @@ release cannot drive a proxy built with an earlier release, and vice versa.
 Upgrade the conductor and every proxy in a chain at the same time, including
 nested conductors running in proxy mode.
 
-Code that uses the SDK types (`InitializeProxyRequest`, `SuccessorMessage`,
-`METHOD_INITIALIZE_PROXY`, `METHOD_SUCCESSOR_MESSAGE`, or the `Proxy` and
-`Conductor` roles) needs no source changes. Update any hard-coded method
+Code that uses the SDK types (`schema::v1::InitializeProxyRequest`, formerly
+`schema::InitializeProxyRequest`, `schema::v2::InitializeProxyRequest`,
+`SuccessorMessage`, `METHOD_INITIALIZE_PROXY`, `METHOD_SUCCESSOR_MESSAGE`, or
+the `Proxy` and `Conductor` roles) needs no changes for the rename. Update any hard-coded method
 strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
 
 ### `ConductorHostRole` is sealed

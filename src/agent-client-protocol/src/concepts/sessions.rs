@@ -4,8 +4,8 @@
 //! session, you can send prompts, receive responses, and the agent maintains
 //! context across turns.
 //!
-//! The examples below use the stable protocol v1 `SessionBuilder` and
-//! `ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
+//! The examples below use the stable protocol v1 `v1::SessionBuilder` and
+//! `v1::ActiveSession`. With the `unstable_protocol_v2` feature, callbacks created
 //! through `Client.v2()` receive `v2::ConnectionTo` and its `build_session*`,
 //! `v2::SessionBuilder`, `resume_session*`, `v2::ResumeSessionBuilder`, and
 //! command-only `v2::ActiveSession` APIs. With `unstable_session_fork`, it also exposes

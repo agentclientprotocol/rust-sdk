@@ -37,6 +37,15 @@ cargo build -p agent-client-protocol-test --bin testy --no-default-features
 The binary lands at `target/debug/testy`. Integration tests that need to spawn it should use
 `agent_client_protocol_test::test_binaries::testy()` after prebuilding test binaries.
 
+In-process tests use the library types, which follow the SDK's `v1`/`v2` module layout:
+
+- `agent_client_protocol_test::testy::v1::Testy` is the protocol v1 agent.
+- `agent_client_protocol_test::testy::v2::Testy` is the draft protocol v2 agent
+  (`unstable_protocol_v2`).
+- `agent_client_protocol_test::testy::protocol_router()` serves both versions on one transport, as
+  the binary does (`unstable_protocol_v2`).
+- `TestyCommand` and `TestyScenario` are shared by both agents.
+
 ## Prompt Commands
 
 Prompt text can be either plain text or a JSON-serialized `TestyCommand`.

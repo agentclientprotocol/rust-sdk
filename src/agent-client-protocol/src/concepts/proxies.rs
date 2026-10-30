@@ -16,7 +16,7 @@
 //!
 //! # Choosing a Protocol Version
 //!
-//! `Proxy::builder` creates a stable protocol v1 proxy. With the
+//! `Proxy.v1()` creates a stable protocol v1 proxy. With the
 //! `unstable_protocol_v2` feature, `Proxy.v2()` creates a v2-only proxy whose
 //! fluent callbacks receive `v2::ConnectionTo<Conductor>`. Each builder
 //! negotiates `proxy/initialize` the way an agent of its version negotiates

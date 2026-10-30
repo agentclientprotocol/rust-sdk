@@ -836,8 +836,9 @@ where
 ///
 /// `P` is the [`Protocol`] marker of the request handles that typed handlers
 /// receive and of the connection type callbacks receive. `Client.v1()`,
-/// `Agent.v1()` and `Proxy.v1()` return [`V1`] builders, the v2
-/// builders use `V2`, and [`Builder::new`], other roles and
+/// `Agent.v1()` and `Proxy.v1()` return [`V1`] builders
+/// ([`v1::Builder`](crate::v1::Builder)), the v2 builders use `V2`
+/// (`v2::Builder`), and [`Builder::new`], other roles and
 /// [`without_acp_version_guard`](Builder::without_acp_version_guard) use the
 /// version-neutral default, [`Raw`].
 #[must_use]

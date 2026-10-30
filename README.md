@@ -27,9 +27,9 @@ proxy attachment. Draft protocol v2 supports the same two attachment scopes
 when both `unstable_protocol_v2` and `unstable_mcp_over_acp` are enabled:
 `Proxy.v2().with_mcp_server(...)` injects a global declaration into each
 supported session setup request, while
-`V2SessionBuilder::with_mcp_server(...)` attaches a server to one new session
-and `V2ResumeSessionBuilder::with_mcp_server(...)` attaches one while resuming.
-With `unstable_session_fork`, `V2ForkSessionBuilder::with_mcp_server(...)`
+`v2::SessionBuilder::with_mcp_server(...)` attaches a server to one new session
+and `v2::ResumeSessionBuilder::with_mcp_server(...)` attaches one while resuming.
+With `unstable_session_fork`, `v2::ForkSessionBuilder::with_mcp_server(...)`
 attaches one while forking. Successful v2 attachments remain active for the
 connection lifetime, and all three builders expose `on_proxy_session_start` to
 forward proxied setup without coupling later session events to that response.
@@ -55,11 +55,14 @@ forward proxied setup without coupling later session events to that response.
   complete v2 agent/client pair first, use the
   [Runnable V2 Quickstart](./md/protocol-v2-quickstart.md).
 
-`Client.builder()`, `Agent.builder()`, and `Proxy.builder()` remain stable-v1
-entry points; their `.v2()` counterparts select the draft-v2 API. With
-`unstable_protocol_v2`, use `Proxy.protocol_router()` to expose separate strict
-v1 and v2 proxy implementations as one component. Custom raw routing
-infrastructure can use `without_acp_version_guard`.
+Every connection names its protocol version: `Client.v1()`, `Agent.v1()`, and
+`Proxy.v1()` start stable-v1 connections, and their `.v2()` counterparts select
+the draft-v2 API. The matching types live in `agent_client_protocol::v1` and
+`agent_client_protocol::v2`, which export the same names (`ConnectionTo`,
+`Builder`, `Responder`, `SessionBuilder`, ...). With `unstable_protocol_v2`,
+use `Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
+implementations as one component. Custom raw routing infrastructure can use
+`Builder::new(role).without_acp_version_guard()`.
 
 ## Integrations
 

@@ -34,10 +34,10 @@ agent-client-protocol-polyfill = { version = "...", features = ["unstable_protoc
 The feature makes this concrete compatibility proxy recognize v2
 initialization, capability, session setup, and `mcp/*` wire types. It does not
 change the core attachment API. `Proxy.v2().with_mcp_server(...)` provides
-connection-global attachment. `V2SessionBuilder::with_mcp_server(...)` and
-`V2ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
+connection-global attachment. `v2::SessionBuilder::with_mcp_server(...)` and
+`v2::ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
 for new and resumed sessions respectively. With `unstable_session_fork`,
-`V2ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
+`v2::ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
 attachment. The polyfill adapts their native declarations when the final agent
 supports only HTTP MCP.
 
@@ -63,10 +63,10 @@ The application proxy can attach a high-level
 `agent_client_protocol::mcp_server::McpServer`. The SDK advertises it in session
 setup requests as `McpServer::Acp`; callers do not need to construct a transport
 placeholder themselves. In v2, `Proxy.v2().with_mcp_server(...)` provides
-connection-global attachment. `V2SessionBuilder::with_mcp_server(...)` and
-`V2ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
+connection-global attachment. `v2::SessionBuilder::with_mcp_server(...)` and
+`v2::ResumeSessionBuilder::with_mcp_server(...)` provide per-session attachment
 for new and resumed sessions respectively. With `unstable_session_fork`,
-`V2ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
+`v2::ForkSessionBuilder::with_mcp_server(...)` provides per-session fork
 attachment. The polyfill translates those native declarations at the final
 compatibility boundary.
 

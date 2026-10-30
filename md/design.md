@@ -11,7 +11,8 @@ For API usage, see the [rustdoc](https://docs.rs/agent-client-protocol) and [coo
 The core SDK. Provides:
 
 - **Role types** (`Client`, `Agent`, `Proxy`, `Conductor`) - the identities in ACP
-- **Connection builders** (`builder()`, `connect_to()`, `connect_with()`)
+- **Versioned connection builders** (`Client.v1()`, `Agent.v2()`, ..., `connect_to()`, `connect_with()`)
+- **Per-version modules** (`agent_client_protocol::v1`, and `agent_client_protocol::v2` with `unstable_protocol_v2`) - the same names (`ConnectionTo`, `Builder`, `Responder`, `SessionBuilder`, ...) for each protocol version
 - **Message handling** (`on_receive_request`, `on_receive_notification`, `on_receive_dispatch`)
 - **Protocol types** (`agent_client_protocol::schema::*`) - all ACP message types
 - **Transports and process launching** (`Channel`, `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`)
@@ -137,7 +138,7 @@ The dispatch loop provides sequential processing:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Building: builder()
+    [*] --> Building: Client.v1() / Agent.v2() / ...
     Building --> Building: on_receive_*()
     Building --> Connected: connect_to(transport)
     Building --> Connected: connect_with(transport, closure)

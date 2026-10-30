@@ -15,6 +15,27 @@
 //! - **Proxies** that add capabilities to existing agents (like adding custom tools via MCP)
 //! - **Agents** that respond to prompts with AI-powered responses
 //!
+//! ## Protocol versions
+//!
+//! Every connection names the ACP protocol version it speaks:
+//!
+//! - [`Client.v1()`](Client::v1), [`Agent.v1()`](Agent::v1) and
+//!   [`Proxy.v1()`](Proxy::v1) start a stable protocol v1 connection. Its
+//!   types are in [`v1`] and its messages in [`schema::v1`].
+//! - With the `unstable_protocol_v2` feature, `Client.v2()`, `Agent.v2()` and
+//!   `Proxy.v2()` start a draft protocol v2 connection. Its types are in
+//!   `agent_client_protocol::v2` and its messages in `schema::v2`.
+//!
+//! The `v1` and `v2` modules export the same names (`ConnectionTo`,
+//! `Builder`, `Responder`, `Dispatch`, `SessionBuilder`, `ActiveSession`, ...),
+//! so code moves between versions by changing the module it imports from.
+//! The crate root holds what every version shares: transports, roles, the
+//! JSON-RPC traits, [`Error`], the generic request handles (which default to
+//! the version-neutral [`Raw`] marker) and, with `unstable_protocol_v2`, the
+//! routers that serve both versions. [`Builder::new`] and
+//! [`without_acp_version_guard`](Builder::without_acp_version_guard) remain
+//! as the raw, version-neutral escape hatch.
+//!
 //! ## Quick Start: Connecting to an Agent
 //!
 //! The most common use case is connecting to an existing ACP agent as a client.
@@ -29,7 +50,7 @@
 //! Per-session MCP routes and runners are ready before a setup request is
 //! published, as is proxy session routing for resume replay. Successful v2
 //! setup detaches MCP handlers for the connection lifetime; dropping the
-//! returned `v2::ActiveSession` does not unregister them. In v1, `ActiveSession` owns
+//! returned `v2::ActiveSession` does not unregister them. In v1, `v1::ActiveSession` owns
 //! per-session MCP registrations until drop, unless a proxy handoff detaches
 //! them (`proxy_remaining_messages` or successful `on_proxy_session_start`).
 //! Global proxy attachments are connection-scoped in both versions.

@@ -36,6 +36,11 @@ use crate::schema::v2;
 ///   [`MatchDispatch`](crate::util::MatchDispatch), builders whose version
 ///   guard is disabled, and requests sent through [`ConnectionTo`].
 ///
+/// The [`v1`](crate::v1) and `v2` modules name the typed handles:
+/// `v1::Responder<T>` is `Responder<T, V1>`, `v2::SentRequest<T>` is
+/// `SentRequest<T, V2>`, `v1::Builder<Host>` is `Builder<Host, .., V1>`, and so
+/// on.
+///
 /// Every handle also has `raw_id()`, which returns the wire ID as a
 /// [`RawJsonRpcId`] whatever the marker. A [`Raw`] handle converts to a typed
 /// one with `into_protocol`, and any handle converts back with `into_raw`.
