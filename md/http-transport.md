@@ -25,33 +25,24 @@ from applications or underlying libraries.
 
 ## JSON-RPC Batches
 
-`HttpClient` starts every connection with an individual `initialize` and
-requires an individual initialize response. For compatibility with other
-clients, the server also accepts an initial batch when its first call-shaped
-entry is an `initialize` request. Valid and malformed response-only entries may
-precede it and are ignored; an invalid or call-shaped predecessor rejects the
-batch as an initial frame. The server forwards the complete frame and returns
-the complete grouped response in the POST response body; a successful
-initialize also adds `Acp-Connection-Id`. Lifecycle-sensitive calls should
-normally remain individual. If the agent emits a notification or callback
-before the initialize response is ready, including from a batched sibling, the
-server buffers that frame for the connection's SSE stream until initialization
-completes.
+JSON-RPC batches are not supported. ACP protocol v2 removed them, and the SDK
+rejects them in both protocol versions:
 
-After initialization, both transport shapes preserve batches:
+- A `POST /acp` body that is a JSON array, including an empty one, gets
+  `400 Bad Request` with a single JSON-RPC error body: `-32600`
+  (`Invalid Request`) with `id: null`. None of its entries is forwarded, and no
+  connection is created.
+- A WebSocket text frame that is a JSON array gets that error as one text frame,
+  and none of its entries is forwarded.
+- `HttpClient` sends every message individually. A JSON array received from the
+  server, in an SSE event or a POST response body, is treated as a malformed
+  message.
 
-- On an established HTTP connection, one complete batch occupies one POST
-  body. The server returns `202 Accepted`; any grouped JSON-RPC reply is
-  delivered through SSE as one array.
-- WebSocket sends one complete batch in one text frame and writes its grouped
-  reply in one text frame.
-- A grouped HTTP reply is sent to a session stream only when all correlated
-  entries have the same session route. If routes differ, it is sent on the
-  connection-level stream so the array remains intact.
-
-Entry validation, notification-only behavior, empty arrays, and malformed
-response filtering follow the shared [transport batch
-contract](./transport-architecture.md#json-rpc-batch-behavior).
+If the agent emits a notification or callback before its initialize response
+is ready, the server buffers that frame for the connection's SSE stream until
+initialization completes. See [Transport
+Architecture](./transport-architecture.md#json-rpc-batches) for the shared
+rules.
 
 ## HTTP + SSE Streams
 

@@ -5,7 +5,7 @@ use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcMessage, Responder, SessionMessage, TransportBatch, TransportFrame, UntypedMessage,
+    RawJsonRpcMessage, Responder, SessionMessage, TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
         LoadSessionResponse, RequestId, ResumeSessionRequest, ResumeSessionResponse,
@@ -146,15 +146,15 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
         assert_eq!(parsed.session_id, peer_session_id);
         assert_eq!(parsed.cwd, PathBuf::from("/restore/load"));
 
-        let batch = TransportBatch::from_messages([
+        for message in [
             update_notification(parsed.session_id.clone(), "first replay"),
             update_notification(parsed.session_id, "second replay"),
             RawJsonRpcMessage::response(request.id, Ok(serde_json::to_value(wire_response)?)),
-        ])
-        .expect("restore batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept replay and response");
+        ] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept replay and response");
+        }
 
         while peer.rx.next().await.is_some() {}
         Ok::<(), Error>(())
@@ -213,14 +213,14 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
         let parsed = ResumeSessionRequest::parse_message(&request.method, &request.params)?;
         assert_eq!(parsed.session_id, session_id);
 
-        let batch = TransportBatch::from_messages([
+        for message in [
             RawJsonRpcMessage::response(request.id, Ok(serde_json::to_value(wire_response)?)),
             update_notification(parsed.session_id, "resume update"),
-        ])
-        .expect("resume batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept update and response");
+        ] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept update and response");
+        }
 
         while peer.rx.next().await.is_some() {}
         Ok::<(), Error>(())
@@ -341,7 +341,7 @@ async fn restore_waits_for_routing_acknowledgment_before_publication() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn failed_restore_removes_routing_before_later_batch_entries() {
+async fn failed_restore_removes_routing_before_later_messages() {
     let session_id = SessionId::new("restore-failed");
     let client_session_id = session_id.clone();
     let (transport, mut peer) = Channel::duplex();
@@ -385,18 +385,18 @@ async fn failed_restore_removes_routing_before_later_batch_entries() {
         else {
             panic!("expected session/load")
         };
-        let batch = TransportBatch::from_messages([
+        for message in [
             RawJsonRpcMessage::response(
                 request.id,
                 Err(Error::invalid_params().data("restore refused")),
             ),
             update_notification(session_id, "after failed restore"),
             dispatch_barrier_notification(),
-        ])
-        .expect("failure batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept failure, probe, and barrier");
+        ] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept failure, probe, and barrier");
+        }
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(retry))) = peer.rx.next().await
         else {
@@ -498,14 +498,14 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
             CancelRequestNotification::parse_message(&notification.method, &notification.params)?;
         assert_eq!(cancellation.request_id, restore_request_id);
 
-        let probe_batch = TransportBatch::from_messages([
+        for message in [
             update_notification(session_id, "after cancelled restore"),
             dispatch_barrier_notification(),
-        ])
-        .expect("cancellation probe batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(probe_batch))
-            .expect("client should accept cancellation probe and barrier");
+        ] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept cancellation probe and barrier");
+        }
         barrier_observed_rx
             .await
             .map_err(Error::into_internal_error)?;

@@ -127,9 +127,9 @@ plumbing:
 - Responses are correlated with the request details retained by the trace
   writer.
 
-The snooping bridges carry complete `TransportFrame` values. Enabling tracing
-therefore preserves batch boundaries even though the viewer renders the
-individual logical messages.
+The snooping bridges carry complete `TransportFrame` values, so enabling
+tracing relays each wire value unchanged, including malformed input that the
+viewer does not render.
 
 ## Viewer Features
 

@@ -6,7 +6,6 @@ use agent_client_protocol_schema::v1::{
 };
 
 // Types re-exported from crate root
-use serde::ser::SerializeSeq as _;
 use serde::{Deserialize, Serialize};
 use std::any::TypeId;
 use std::collections::HashMap;
@@ -88,10 +87,10 @@ pub enum RawJsonRpcMessage {
 
 /// A JSON-RPC frame exchanged between protocol components and transports.
 ///
-/// A frame preserves the boundary between a single JSON-RPC value and a batch.
-/// Malformed wire input is represented explicitly; transport failures are
-/// reported by the future that drives the transport rather than sent through a
-/// [`Channel`].
+/// A frame is one JSON-RPC wire value. Malformed wire input, including a
+/// JSON-RPC batch array, which the SDK does not support, is represented
+/// explicitly; transport failures are reported by the future that drives the
+/// transport rather than sent through a [`Channel`].
 #[derive(Clone, Debug)]
 pub enum TransportFrame {
     /// One valid JSON-RPC message.
@@ -100,29 +99,6 @@ pub enum TransportFrame {
     Malformed {
         /// The original wire representation.
         raw: String,
-        /// The JSON-RPC error associated with the malformed value.
-        error: crate::Error,
-    },
-    /// Entries retained from one non-empty JSON-RPC batch, kept in source order.
-    Batch(TransportBatch),
-}
-
-/// A structurally non-empty JSON-RPC batch retained across framed relays.
-#[derive(Clone, Debug)]
-pub struct TransportBatch {
-    first: TransportBatchEntry,
-    rest: Vec<TransportBatchEntry>,
-}
-
-/// One entry in a [`TransportBatch`].
-#[derive(Clone, Debug)]
-pub enum TransportBatchEntry {
-    /// A valid JSON-RPC message.
-    Message(RawJsonRpcMessage),
-    /// A malformed or invalid JSON-RPC value retained for relays.
-    Malformed {
-        /// The original JSON value.
-        raw: serde_json::Value,
         /// The JSON-RPC error associated with the malformed value.
         error: crate::Error,
     },
@@ -139,122 +115,6 @@ pub(crate) fn raw_is_response_only_shape(raw: &str) -> bool {
     serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
 }
 
-impl TransportBatchEntry {
-    /// Create a valid batch entry.
-    #[must_use]
-    pub fn message(message: RawJsonRpcMessage) -> Self {
-        Self::Message(message)
-    }
-
-    /// Create a malformed batch entry.
-    #[must_use]
-    pub fn malformed(raw: serde_json::Value, error: crate::Error) -> Self {
-        Self::Malformed { raw, error }
-    }
-
-    #[cfg(test)]
-    fn as_result(&self) -> Result<&RawJsonRpcMessage, &crate::Error> {
-        match self {
-            Self::Message(message) => Ok(message),
-            Self::Malformed { error, .. } => Err(error),
-        }
-    }
-
-    fn message_ref(&self) -> Option<&RawJsonRpcMessage> {
-        match self {
-            Self::Message(message) => Some(message),
-            Self::Malformed { .. } => None,
-        }
-    }
-}
-
-impl Serialize for TransportBatchEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self {
-            Self::Message(message) => message.serialize(serializer),
-            Self::Malformed { raw, .. } => raw.serialize(serializer),
-        }
-    }
-}
-
-impl TransportBatch {
-    /// Create a non-empty batch from entries.
-    ///
-    /// Returns `None` when the iterator is empty.
-    pub fn from_entries(entries: impl IntoIterator<Item = TransportBatchEntry>) -> Option<Self> {
-        let mut entries = entries.into_iter();
-        Some(Self {
-            first: entries.next()?,
-            rest: entries.collect(),
-        })
-    }
-
-    /// Create a non-empty batch from valid messages.
-    ///
-    /// Returns `None` when the iterator is empty.
-    pub fn from_messages(messages: impl IntoIterator<Item = RawJsonRpcMessage>) -> Option<Self> {
-        Self::from_entries(messages.into_iter().map(TransportBatchEntry::message))
-    }
-
-    /// Iterate over entries in source order.
-    pub fn entries(&self) -> impl Iterator<Item = &TransportBatchEntry> {
-        std::iter::once(&self.first).chain(&self.rest)
-    }
-
-    /// Iterate mutably over entries in source order.
-    pub fn entries_mut(&mut self) -> impl Iterator<Item = &mut TransportBatchEntry> {
-        std::iter::once(&mut self.first).chain(&mut self.rest)
-    }
-
-    /// Consume this batch and iterate over its entries in source order.
-    pub fn into_entries(self) -> impl Iterator<Item = TransportBatchEntry> {
-        std::iter::once(self.first).chain(self.rest)
-    }
-
-    /// Return the number of entries in this non-empty batch.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        1 + self.rest.len()
-    }
-
-    /// Return whether this batch is empty.
-    ///
-    /// A `TransportBatch` is structurally non-empty, so this always returns
-    /// `false`.
-    #[must_use]
-    pub const fn is_empty(&self) -> bool {
-        false
-    }
-
-    #[cfg(test)]
-    pub(crate) fn iter_results(
-        &self,
-    ) -> impl Iterator<Item = Result<&RawJsonRpcMessage, &crate::Error>> {
-        self.entries().map(TransportBatchEntry::as_result)
-    }
-
-    fn messages(&self) -> impl Iterator<Item = &RawJsonRpcMessage> {
-        self.entries().filter_map(TransportBatchEntry::message_ref)
-    }
-}
-
-impl Serialize for TransportBatch {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let mut sequence = serializer.serialize_seq(Some(1 + self.rest.len()))?;
-        sequence.serialize_element(&self.first)?;
-        for entry in &self.rest {
-            sequence.serialize_element(entry)?;
-        }
-        sequence.end()
-    }
-}
-
 impl TransportFrame {
     fn inspect_messages(
         &self,
@@ -263,12 +123,6 @@ impl TransportFrame {
         match self {
             Self::Single(message) => observer(message),
             Self::Malformed { .. } => Ok(()),
-            Self::Batch(batch) => {
-                for message in batch.messages() {
-                    observer(message)?;
-                }
-                Ok(())
-            }
         }
     }
 }
@@ -2995,97 +2849,19 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
     }
 }
 
-/// Messages send to be serialized over the transport.
-#[derive(Clone)]
-enum ResponseDestination {
-    Individual(IndividualResponseSlot),
-    Batch(BatchResponseSlot),
-}
-
-impl std::fmt::Debug for ResponseDestination {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Individual(slot) => formatter.debug_tuple("Individual").field(slot).finish(),
-            Self::Batch(slot) => formatter.debug_tuple("Batch").field(slot).finish(),
-        }
-    }
+/// Where the response to an incoming request is sent.
+///
+/// A request is answered at most once; a duplicate completion is ignored.
+#[derive(Clone, Debug, Default)]
+struct ResponseDestination {
+    completed: Arc<AtomicBool>,
 }
 
 impl ResponseDestination {
     fn individual() -> Self {
-        Self::Individual(IndividualResponseSlot::default())
+        Self::default()
     }
 
-    fn batch(slot_count: usize) -> (impl Iterator<Item = Self>, BatchDispatchCompletion) {
-        let state = Arc::new(Mutex::new(BatchResponseState {
-            remaining: slot_count,
-            responses: (0..slot_count).map(|_| None).collect(),
-            abandoned: (0..slot_count).map(|_| None).collect(),
-            active_handler_attempts: (0..slot_count).map(|_| 0).collect(),
-            dispatch_complete: false,
-            emitted: false,
-        }));
-
-        (
-            (0..slot_count).map({
-                let state = state.clone();
-                move |index| {
-                    Self::Batch(BatchResponseSlot {
-                        state: state.clone(),
-                        index,
-                    })
-                }
-            }),
-            BatchDispatchCompletion { state },
-        )
-    }
-
-    fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
-        match self {
-            Self::Individual(slot) => slot.complete(response),
-            Self::Batch(slot) => slot.complete(response).map(batch_response_frame),
-        }
-    }
-
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<TransportFrame> {
-        match self {
-            Self::Individual(_) => None,
-            Self::Batch(slot) => slot.abandon(fallback).map(batch_response_frame),
-        }
-    }
-
-    fn is_batch(&self) -> bool {
-        matches!(self, Self::Batch(_))
-    }
-
-    fn begin_handler_attempt(
-        &self,
-        message_tx: OutgoingMessageTx,
-    ) -> Option<ResponderHandlerAttempt> {
-        let Self::Batch(slot) = self else {
-            return None;
-        };
-        slot.begin_handler_attempt();
-        Some(ResponderHandlerAttempt {
-            message_tx,
-            destination: self.clone(),
-        })
-    }
-
-    fn finish_handler_attempt(self) -> Option<TransportFrame> {
-        match self {
-            Self::Individual(_) => None,
-            Self::Batch(slot) => slot.finish_handler_attempt().map(batch_response_frame),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-struct IndividualResponseSlot {
-    completed: Arc<AtomicBool>,
-}
-
-impl IndividualResponseSlot {
     fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
         if self.completed.swap(true, Ordering::AcqRel) {
             tracing::warn!("Ignoring duplicate completion of JSON-RPC request");
@@ -3096,202 +2872,11 @@ impl IndividualResponseSlot {
     }
 }
 
-fn batch_response_frame(responses: Vec<RawJsonRpcMessage>) -> TransportFrame {
-    TransportFrame::Batch(
-        TransportBatch::from_messages(responses)
-            .expect("a completed JSON-RPC response batch is non-empty"),
-    )
-}
-
-#[derive(Clone)]
-struct BatchDispatchCompletion {
-    state: Arc<Mutex<BatchResponseState>>,
-}
-
-impl std::fmt::Debug for BatchDispatchCompletion {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BatchDispatchCompletion")
-            .finish_non_exhaustive()
-    }
-}
-
-impl BatchDispatchCompletion {
-    fn complete(self) -> Option<TransportFrame> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("batch response accumulator mutex poisoned");
-        if state.dispatch_complete {
-            tracing::warn!("Ignoring duplicate JSON-RPC batch dispatch completion");
-            return None;
-        }
-        state.dispatch_complete = true;
-        for index in 0..state.responses.len() {
-            promote_abandoned_response(&mut state, index);
-        }
-        take_completed_batch(&mut state).map(batch_response_frame)
-    }
-}
-
-fn promote_abandoned_response(state: &mut BatchResponseState, index: usize) {
-    if state.active_handler_attempts[index] == 0
-        && state.responses[index].is_none()
-        && let Some(fallback) = state.abandoned[index].take()
-    {
-        state.responses[index] = Some(fallback);
-        state.remaining -= 1;
-    }
-}
-
-fn take_completed_batch(state: &mut BatchResponseState) -> Option<Vec<RawJsonRpcMessage>> {
-    if !state.dispatch_complete || state.remaining != 0 || state.emitted {
-        return None;
-    }
-
-    state.emitted = true;
-    Some(
-        state
-            .responses
-            .iter_mut()
-            .map(|response| {
-                response
-                    .take()
-                    .expect("completed JSON-RPC batch has every response slot")
-            })
-            .collect(),
-    )
-}
-
-#[derive(Clone)]
-struct BatchResponseSlot {
-    state: Arc<Mutex<BatchResponseState>>,
-    index: usize,
-}
-
-impl std::fmt::Debug for BatchResponseSlot {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("BatchResponseSlot")
-            .field("index", &self.index)
-            .finish_non_exhaustive()
-    }
-}
-
-impl BatchResponseSlot {
-    fn begin_handler_attempt(&self) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("batch response accumulator mutex poisoned");
-        state.active_handler_attempts[self.index] += 1;
-    }
-
-    fn finish_handler_attempt(self) -> Option<Vec<RawJsonRpcMessage>> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("batch response accumulator mutex poisoned");
-        state.active_handler_attempts[self.index] = state.active_handler_attempts[self.index]
-            .checked_sub(1)
-            .expect("handler attempt completion without a matching start");
-        if state.dispatch_complete {
-            promote_abandoned_response(&mut state, self.index);
-        }
-        take_completed_batch(&mut state)
-    }
-
-    fn complete(self, response: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("batch response accumulator mutex poisoned");
-        if state.emitted {
-            tracing::warn!(
-                index = self.index,
-                "Ignoring response after JSON-RPC batch was already completed"
-            );
-            return None;
-        }
-        if self.index >= state.responses.len() {
-            tracing::error!(index = self.index, "Invalid JSON-RPC batch response slot");
-            return None;
-        }
-        if state.responses[self.index].is_some() {
-            tracing::warn!(
-                index = self.index,
-                "Ignoring duplicate completion of JSON-RPC batch response slot"
-            );
-            return None;
-        }
-
-        state.abandoned[self.index] = None;
-        state.responses[self.index] = Some(response);
-        state.remaining -= 1;
-        take_completed_batch(&mut state)
-    }
-
-    fn abandon(self, fallback: RawJsonRpcMessage) -> Option<Vec<RawJsonRpcMessage>> {
-        let mut state = self
-            .state
-            .lock()
-            .expect("batch response accumulator mutex poisoned");
-        if state.emitted || state.responses[self.index].is_some() {
-            return None;
-        }
-        if state.abandoned[self.index].is_some() {
-            tracing::warn!(
-                index = self.index,
-                "Ignoring duplicate abandonment of JSON-RPC batch response slot"
-            );
-            return None;
-        }
-
-        if state.dispatch_complete && state.active_handler_attempts[self.index] == 0 {
-            state.responses[self.index] = Some(fallback);
-            state.remaining -= 1;
-        } else {
-            state.abandoned[self.index] = Some(fallback);
-        }
-        take_completed_batch(&mut state)
-    }
-}
-
-struct BatchResponseState {
-    remaining: usize,
-    responses: Vec<Option<RawJsonRpcMessage>>,
-    abandoned: Vec<Option<RawJsonRpcMessage>>,
-    active_handler_attempts: Vec<usize>,
-    dispatch_complete: bool,
-    emitted: bool,
-}
-
 #[derive(Clone, Debug)]
 struct RequestReplyTarget {
     id: RequestId,
     method: String,
     destination: ResponseDestination,
-}
-
-struct ResponderHandlerAttempt {
-    message_tx: OutgoingMessageTx,
-    destination: ResponseDestination,
-}
-
-impl Drop for ResponderHandlerAttempt {
-    fn drop(&mut self) {
-        if let Err(error) = send_raw_message(
-            &self.message_tx,
-            OutgoingMessage::BatchHandlerAttemptComplete {
-                destination: self.destination.clone(),
-            },
-        ) {
-            tracing::debug!(
-                error = ?crate::util::redacted_error(error.code),
-                "could not complete JSON-RPC batch handler attempt"
-            );
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -3373,40 +2958,11 @@ enum HandlerErrorTarget {
     Response(ResponseReplyTarget),
 }
 
-impl HandlerErrorTarget {
-    fn begin_handler_attempt(
-        &self,
-        message_tx: &OutgoingMessageTx,
-    ) -> Option<ResponderHandlerAttempt> {
-        match self {
-            Self::Request(target) => target.destination.begin_handler_attempt(message_tx.clone()),
-            Self::Response(_) => None,
-        }
-    }
-}
-
 #[derive(Debug)]
 enum OutgoingMessage {
     /// Close the outgoing application queue and acknowledge after every
     /// already-accepted message has entered the raw transport queue.
     CloseAfterDraining { done: oneshot::Sender<()> },
-
-    /// Mark every entry in an incoming batch as dispatched. A completed
-    /// response array may only be emitted after this barrier.
-    BatchDispatchComplete { completion: BatchDispatchCompletion },
-
-    /// Finish arbitration for a handler attempt that may have dropped a batch
-    /// responder immediately before returning an error.
-    BatchHandlerAttemptComplete { destination: ResponseDestination },
-
-    /// Record that a claimed batch request dropped its responder without
-    /// replying. The fallback remains provisional while its handler attempt is
-    /// active so a handler error can supply the authoritative response.
-    AbandonedBatchResponse {
-        id: RequestId,
-        method: String,
-        destination: ResponseDestination,
-    },
 
     /// Send a request to the server.
     Request {
@@ -3459,13 +3015,6 @@ impl OutgoingMessage {
     fn log_summary(&self) -> (&'static str, Option<&str>, Option<&RequestId>) {
         match self {
             Self::CloseAfterDraining { .. } => ("close_after_draining", None, None),
-            Self::BatchDispatchComplete { .. } => ("batch_dispatch_complete", None, None),
-            Self::BatchHandlerAttemptComplete { .. } => {
-                ("batch_handler_attempt_complete", None, None)
-            }
-            Self::AbandonedBatchResponse { id, method, .. } => {
-                ("abandoned_batch_response", Some(method), Some(id))
-            }
             Self::Request { id, method, .. } => ("request", Some(method), Some(id)),
             Self::Notification { untyped } => ("notification", Some(&untyped.method), None),
             Self::Response { id, method, .. } => ("response", Some(method), Some(id)),
@@ -4115,7 +3664,7 @@ fn incoming_transport_closed_error(method: &str) -> crate::Error {
 
 /// Unlike the cleanup coordinator below, check success before polling delivery:
 /// an already-ready success must not resume a message handler into another
-/// dispatch (including another entry of the same batch).
+/// dispatch.
 fn run_incoming_until_foreground_succeeds(
     incoming: impl Future<Output = Result<(), crate::Error>>,
     foreground_succeeded: SharedCompletionSignal,
@@ -5237,10 +4786,7 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 ///
 /// # Drop behavior
 ///
-/// Dropping a responder for a request that arrived in a batch completes that
-/// slot with an Internal Error, so one abandoned request cannot withhold valid
-/// sibling responses forever. A responder for an individual request retains
-/// the historical behavior: dropping it does not automatically send a reply.
+/// Dropping a responder does not automatically send a reply.
 #[must_use]
 pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the request.
@@ -5252,7 +4798,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// Request-local cancellation state.
     cancellation: ResponderCancellation,
 
-    /// Whether this response is emitted on its own or collected into a batch.
+    /// Where the response is sent; it is completed at most once.
     destination: ResponseDestination,
 
     /// Function to send the response to its destination.
@@ -5260,47 +4806,6 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
-
-    /// Completes an abandoned batch slot unless an explicit response disarms it.
-    drop_guard: ResponderDropGuard,
-}
-
-struct ResponderDropGuard {
-    message_tx: OutgoingMessageTx,
-    id: RequestId,
-    method: String,
-    destination: ResponseDestination,
-    armed: bool,
-}
-
-impl ResponderDropGuard {
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for ResponderDropGuard {
-    fn drop(&mut self) {
-        if !self.armed || !self.destination.is_batch() {
-            return;
-        }
-
-        if let Err(error) = send_raw_message(
-            &self.message_tx,
-            OutgoingMessage::AbandonedBatchResponse {
-                id: self.id.clone(),
-                method: self.method.clone(),
-                destination: self.destination.clone(),
-            },
-        ) {
-            tracing::debug!(
-                id = ?self.id,
-                method = %self.method,
-                error = ?crate::util::redacted_error(error.code),
-                "could not complete abandoned JSON-RPC batch response slot"
-            );
-        }
-    }
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -5328,13 +4833,6 @@ impl Responder<serde_json::Value> {
         let method_clone = method.clone();
         let cancellation = cancellation_registry.register(&id);
         let send_destination = destination.clone();
-        let drop_guard = ResponderDropGuard {
-            message_tx: message_tx.clone(),
-            id: id.clone(),
-            method: method.clone(),
-            destination: destination.clone(),
-            armed: true,
-        };
         Self {
             method,
             id,
@@ -5351,7 +4849,6 @@ impl Responder<serde_json::Value> {
                     },
                 )
             }),
-            drop_guard,
         }
     }
 
@@ -5415,15 +4912,13 @@ impl<T: JsonRpcResponse> Responder<T> {
     }
 
     /// Return a new Responder with a different method name.
-    pub fn wrap_method(mut self, method: String) -> Responder<T> {
-        self.drop_guard.method.clone_from(&method);
+    pub fn wrap_method(self, method: String) -> Responder<T> {
         Responder {
             method,
             id: self.id,
             cancellation: self.cancellation,
             destination: self.destination,
             send_fn: self.send_fn,
-            drop_guard: self.drop_guard,
         }
     }
 
@@ -5445,17 +4940,15 @@ impl<T: JsonRpcResponse> Responder<T> {
                 let t_value = wrap_fn(&method, input);
                 (self.send_fn)(t_value)
             }),
-            drop_guard: self.drop_guard,
         }
     }
 
     /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`).
     pub fn respond_with_result(
-        mut self,
+        self,
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
-        self.drop_guard.disarm();
         (self.send_fn)(response)
     }
 
@@ -7485,10 +6978,8 @@ impl<T> SentRequest<T> {
 /// `Lines` implements the [`ConnectTo`] trait for any pair of line-based streams
 /// (a `Stream<Item = io::Result<String>>` for incoming and a `Sink<String>` for outgoing),
 /// handling serialization of JSON-RPC messages to/from newline-delimited JSON.
-/// An incoming line may contain one JSON-RPC message or a non-empty batch array. Batch
-/// entries are dispatched individually in source order, and responses to the batch are
-/// collected into one response-array line. SDK-initiated requests and notifications remain
-/// individual messages.
+/// Each line carries one JSON-RPC message. JSON-RPC batch arrays are not supported: an
+/// incoming array is answered with a single invalid-request (`-32600`) error with `id: null`.
 ///
 /// This is a lower-level primitive than [`ByteStreams`] that enables interception and
 /// transformation of individual lines before they are parsed or after they are serialized.
@@ -7726,8 +7217,8 @@ where
 
 /// A channel endpoint representing one side of a bidirectional JSON-RPC transport.
 ///
-/// A channel carries complete TransportFrame values, preserving batch boundaries
-/// across in-process components and transport adapters. Malformed wire input is an
+/// A channel carries complete TransportFrame values across in-process components and
+/// transport adapters. Malformed wire input is an
 /// explicit frame; failures while driving a physical transport are returned by that
 /// transport's future.
 ///
@@ -7845,8 +7336,8 @@ impl Channel {
 
     /// Bridge two endpoints while inspecting every valid message.
     ///
-    /// Observers are invoked in source order, including for each valid member of
-    /// a batch. The original frame is forwarded unchanged after inspection.
+    /// Observers are invoked in source order for each valid message. The
+    /// original frame is forwarded unchanged after inspection.
     ///
     /// # Errors
     ///

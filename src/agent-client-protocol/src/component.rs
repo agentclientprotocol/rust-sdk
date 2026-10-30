@@ -327,8 +327,8 @@ pub trait ConnectTo<R: Role>: Send + 'static {
     /// Convert this component into a channel endpoint and optional owned driver.
     ///
     /// The returned [`Channel`] is the canonical frame-aware boundary. It carries
-    /// complete [`TransportFrame`](crate::TransportFrame) values so default
-    /// adapters preserve batch grouping.
+    /// complete [`TransportFrame`](crate::TransportFrame) values, including
+    /// malformed input, so default adapters relay each wire value unchanged.
     ///
     /// This method returns:
     /// - A `Channel` that can be used to communicate with this component

@@ -85,10 +85,9 @@ the core JSON-RPC contexts and may use a direct response path; the conductor
 does not maintain a second global request-ID table.
 
 Every physical and in-process bridge carries `TransportFrame`, so tracing and
-delegating components preserve JSON-RPC batch boundaries. This matters because
-flattening a batch would change one response array into several response
-objects. The complete framing rules are documented in [Transport
-Architecture](./transport-architecture.md#json-rpc-batch-behavior).
+delegating components relay each wire value, including malformed input,
+unchanged. JSON-RPC batches are not supported; see [Transport
+Architecture](./transport-architecture.md#json-rpc-batches).
 
 ## Command-Line Usage
 
@@ -167,5 +166,5 @@ traffic as v1.
 
 The conductor can record an idealized logical sequence of ACP and MCP messages.
 Its snooping bridges retain complete transport frames, so enabling tracing does
-not change batch behavior. See [Trace Viewer](./trace-viewer.md) for the event
+not change what is sent on the wire. See [Trace Viewer](./trace-viewer.md) for the event
 format and current CLI/API examples.

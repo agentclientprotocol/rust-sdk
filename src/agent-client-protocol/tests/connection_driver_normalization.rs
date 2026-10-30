@@ -13,8 +13,8 @@ use std::{
 
 use agent_client_protocol::{
     Agent, ByteStreams, Channel, Client, ConnectTo, ConnectionDriver, Error, JsonRpcMessage,
-    JsonRpcNotification, Lines, RawJsonRpcMessage, RawJsonRpcResponse, TransportBatch,
-    TransportFrame, UntypedMessage,
+    JsonRpcNotification, Lines, RawJsonRpcMessage, RawJsonRpcResponse, TransportFrame,
+    UntypedMessage,
     role::{Role, UntypedRole},
     schema::v1::RequestId,
 };
@@ -411,16 +411,14 @@ async fn underway_close_keeps_callback_phase_task_progress_before_sealing_output
 async fn success_does_not_resume_message_delivery_or_start_queued_tasks_for_drain() {
     let (channel, peer) = Channel::duplex();
     let Channel { mut rx, tx } = peer;
-    tx.unbounded_send(TransportFrame::Batch(
-        TransportBatch::from_messages((0..2).map(|sequence| {
-            let TransportFrame::Single(message) = frame(sequence) else {
-                unreachable!()
-            };
-            message
-        }))
-        .unwrap(),
-    ))
-    .unwrap();
+    for message in (0..2).map(|sequence| {
+        let TransportFrame::Single(message) = frame(sequence) else {
+            unreachable!()
+        };
+        message
+    }) {
+        tx.unbounded_send(TransportFrame::Single(message)).unwrap();
+    }
     let (entered_tx, entered_rx) = futures::channel::oneshot::channel();
     let (release_tx, release_rx) = futures::channel::oneshot::channel();
     let mut entered_tx = Some(entered_tx);
@@ -451,7 +449,7 @@ async fn success_does_not_resume_message_delivery_or_start_queued_tasks_for_drai
                 })?;
                 cx.send_notification(notification(2))?;
                 // Both this handler and main_fn become ready together. Success
-                // must win before the handler can start the next batch entry.
+                // must win before the handler can start the next message.
                 release_tx.send(()).unwrap();
                 Ok(())
             }),

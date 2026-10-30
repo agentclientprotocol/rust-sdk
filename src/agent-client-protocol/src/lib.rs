@@ -163,9 +163,8 @@ pub use jsonrpc::{
     HandleDispatchFrom, Handled, INCOMING_TRANSPORT_CLOSED_REASON, IntoHandled, JsonRpcMessage,
     JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Lines, NullClose, NullHandler,
     PreparedRequest, RawConnectionContext, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
-    RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportBatch,
-    TransportBatchEntry, TransportFrame, UntypedMessage, is_connection_terminated,
-    is_incoming_transport_closed,
+    RawJsonRpcResponse, Responder, ResponseRouter, SentRequest, TransportFrame, UntypedMessage,
+    is_connection_terminated, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
 #[cfg(feature = "unstable_protocol_v2")]

@@ -3,8 +3,7 @@
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use agent_client_protocol::{
-    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportBatch, TransportFrame,
-    V2ConnectionTo,
+    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportFrame, V2ConnectionTo,
     schema::{ProtocolVersion, v2},
 };
 use futures::{StreamExt as _, channel::mpsc};
@@ -19,25 +18,15 @@ enum ApplicationEvent {
 
 #[tokio::test(flavor = "current_thread")]
 async fn application_queue_orders_replay_response_and_eof() {
-    assert_application_order(false, false).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn application_queue_orders_batched_replay_response_and_eof() {
-    assert_application_order(true, false).await;
+    assert_application_order(false).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn prepared_application_queue_orders_replay_response_and_eof() {
-    assert_application_order(false, true).await;
+    assert_application_order(true).await;
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn prepared_application_queue_orders_batched_replay_response_and_eof() {
-    assert_application_order(true, true).await;
-}
-
-async fn assert_application_order(batched: bool, prepared: bool) {
+async fn assert_application_order(prepared: bool) {
     let (transport, mut peer) = Channel::duplex();
     let (events_tx, mut events_rx) = mpsc::unbounded();
     let updates_tx = events_tx.clone();
@@ -183,18 +172,10 @@ async fn assert_application_order(batched: bool, prepared: bool) {
             RawJsonRpcMessage::response(resume.id, Ok(json!({}))),
             update("live"),
         ];
-        if batched {
+        for message in messages {
             peer.tx
-                .unbounded_send(TransportFrame::Batch(
-                    TransportBatch::from_messages(messages).unwrap(),
-                ))
+                .unbounded_send(TransportFrame::Single(message))
                 .unwrap();
-        } else {
-            for message in messages {
-                peer.tx
-                    .unbounded_send(TransportFrame::Single(message))
-                    .unwrap();
-            }
         }
         // EOF is immediately behind the queued traffic, not delayed until the
         // application has consumed the response or any updates.

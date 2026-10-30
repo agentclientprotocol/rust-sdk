@@ -4,10 +4,7 @@ use std::{
     task::Poll,
 };
 
-use agent_client_protocol::{
-    Channel, RawJsonRpcMessage, TransportBatch, TransportBatchEntry, TransportFrame,
-    schema::v1::RequestId,
-};
+use agent_client_protocol::{Channel, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId};
 use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
@@ -276,16 +273,6 @@ impl OutboundTransport {
                 Self::Http(http) => http.connection_stream.push(raw),
                 Self::WebSocket(websocket) => websocket.all_outbound.push(raw),
             },
-            TransportFrame::Batch(batch) => {
-                let Ok(serialized) = serde_json::to_string(&batch) else {
-                    error!("failed to serialize outbound JSON-RPC batch");
-                    return Err("failed to serialize outbound JSON-RPC batch");
-                };
-                match self {
-                    Self::Http(http) => http.route_outbound_batch(&batch, serialized).await,
-                    Self::WebSocket(websocket) => websocket.all_outbound.push(serialized),
-                }
-            }
         }
     }
 }
@@ -357,48 +344,6 @@ impl HttpOutbound {
             ResponseRoute::Session(sid) => {
                 trace!(target = "session", "→ session-scoped stream");
                 self.session_stream(&sid).await.push(serialized)
-            }
-        }
-    }
-
-    async fn route_outbound_batch(
-        &self,
-        batch: &TransportBatch,
-        serialized: String,
-    ) -> Result<(), &'static str> {
-        let mut pending_routes = self.pending_routes.lock().await;
-        let mut common_route = None;
-        let mut routes_disagree = false;
-        for entry in batch.entries() {
-            let route = match entry {
-                TransportBatchEntry::Message(message) => message
-                    .response_id()
-                    .and_then(pending_route_key)
-                    .and_then(|key| take_pending_route(&mut pending_routes, &key))
-                    .unwrap_or(ResponseRoute::Connection),
-                TransportBatchEntry::Malformed { .. } => ResponseRoute::Connection,
-            };
-            match &common_route {
-                None => common_route = Some(route),
-                Some(common_route) if common_route == &route => {}
-                Some(_) => routes_disagree = true,
-            }
-        }
-        drop(pending_routes);
-
-        let route = if routes_disagree {
-            ResponseRoute::Connection
-        } else {
-            common_route.unwrap_or(ResponseRoute::Connection)
-        };
-        match route {
-            ResponseRoute::Connection => {
-                trace!(target = "connection", "→ connection-scoped batch stream");
-                self.connection_stream.push(serialized)
-            }
-            ResponseRoute::Session(session_id) => {
-                trace!(target = "session", "→ session-scoped batch stream");
-                self.session_stream(&session_id).await.push(serialized)
             }
         }
     }
@@ -629,7 +574,7 @@ fn take_pending_route(
 mod tests {
     use std::sync::Arc;
 
-    use agent_client_protocol::{ConnectionDriver, TransportBatch};
+    use agent_client_protocol::ConnectionDriver;
     use tokio::{
         sync::Notify,
         time::{Duration, sleep, timeout},
@@ -833,40 +778,6 @@ mod tests {
                 agent
                     .tx
                     .unbounded_send(TransportFrame::Single(message))
-                    .unwrap();
-                exit.notified().await;
-                Ok(())
-            });
-
-            (transport, Some(future))
-        }
-    }
-
-    struct BatchThenWaitAgentFactory {
-        exit: Arc<Notify>,
-    }
-
-    impl AgentFactory for BatchThenWaitAgentFactory {
-        fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
-            let (agent, transport) = Channel::duplex();
-            let exit = self.exit.clone();
-            let future = ConnectionDriver::new(async move {
-                let batch = TransportBatch::from_messages([
-                    RawJsonRpcMessage::notification(
-                        "test/first".to_string(),
-                        serde_json::json!({}),
-                    )
-                    .unwrap(),
-                    RawJsonRpcMessage::notification(
-                        "test/second".to_string(),
-                        serde_json::json!({}),
-                    )
-                    .unwrap(),
-                ])
-                .expect("test batch is non-empty");
-                agent
-                    .tx
-                    .unbounded_send(TransportFrame::Batch(batch))
                     .unwrap();
                 exit.notified().await;
                 Ok(())
@@ -1280,69 +1191,6 @@ mod tests {
 
         exit.notify_one();
         connection.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn batch_is_relayed_as_one_connection_stream_frame() {
-        let exit = Arc::new(Notify::new());
-        let registry =
-            ConnectionRegistry::new(Arc::new(BatchThenWaitAgentFactory { exit: exit.clone() }));
-        let (_connection_id, connection) = registry.create_connection().await;
-        let mut connection_rx = connection.subscribe_connection_stream().unwrap();
-
-        connection.start_router().await;
-
-        let text = timeout(Duration::from_secs(1), connection_rx.recv())
-            .await
-            .unwrap()
-            .expect("batch should reach the connection stream");
-        let batch = serde_json::from_str::<serde_json::Value>(&text).unwrap();
-        let entries = batch.as_array().expect("batch should remain an array");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["method"], "test/first");
-        assert_eq!(entries[1]["method"], "test/second");
-        assert!(connection_rx.try_recv().is_err());
-
-        exit.notify_one();
-        connection.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn duplicate_batch_response_ids_consume_each_pending_route() {
-        let outbound = HttpOutbound::new();
-        let mut connection_rx = outbound.connection_stream.try_acquire().unwrap();
-        let mut session_rx = outbound
-            .session_stream("session-1")
-            .await
-            .try_acquire()
-            .unwrap();
-
-        let id = RequestId::Number(21);
-        let route = ResponseRoute::Session("session-1".to_string());
-        outbound
-            .record_pending_route(id.clone(), route.clone())
-            .await;
-        outbound.record_pending_route(id.clone(), route).await;
-
-        let batch = TransportBatch::from_messages([
-            RawJsonRpcMessage::response(id.clone(), Ok(serde_json::json!({ "slot": 1 }))),
-            RawJsonRpcMessage::response(id, Ok(serde_json::json!({ "slot": 2 }))),
-        ])
-        .expect("duplicate-ID response batch is non-empty");
-        let serialized = serde_json::to_string(&batch).unwrap();
-
-        outbound
-            .route_outbound_batch(&batch, serialized.clone())
-            .await
-            .unwrap();
-
-        assert_eq!(
-            timeout(Duration::from_secs(1), session_rx.recv())
-                .await
-                .unwrap(),
-            Some(serialized)
-        );
-        assert!(connection_rx.try_recv().is_err());
     }
 
     #[tokio::test]

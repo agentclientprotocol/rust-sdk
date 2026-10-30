@@ -191,6 +191,15 @@ pub fn unsupported_protocol_version(
     crate::Error::new(-32022, "Unsupported protocol version").data(data)
 }
 
+/// The `-32600` error, sent with `id: null`, for a JSON-RPC batch array.
+///
+/// The SDK does not support JSON-RPC batching, and ACP protocol v2 removed
+/// it.
+pub(crate) fn batch_not_supported() -> crate::Error {
+    crate::Error::invalid_request()
+        .data("JSON-RPC batches are not supported; send each message individually")
+}
+
 pub(crate) fn instrumented_with_connection_name<F>(
     name: String,
     task: F,

@@ -47,47 +47,6 @@ pub(super) async fn outgoing_protocol_actor(
                 drain_waiters.push(done);
                 continue;
             }
-            OutgoingMessage::BatchDispatchComplete { completion } => {
-                if let Some(frame) = completion.complete() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
-                }
-                continue;
-            }
-            OutgoingMessage::BatchHandlerAttemptComplete { destination } => {
-                if let Some(frame) = destination.finish_handler_attempt() {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
-                }
-                continue;
-            }
-            OutgoingMessage::AbandonedBatchResponse {
-                id,
-                method,
-                destination,
-            } => {
-                tracing::warn!(
-                    ?id,
-                    %method,
-                    "Completing abandoned JSON-RPC batch request with Internal Error"
-                );
-                let fallback = protocol_compat.outgoing_response_to(
-                    &id,
-                    &method,
-                    Err(crate::Error::internal_error().data(format!(
-                        "request handler dropped its responder for `{method}`"
-                    ))),
-                );
-                let fallback = RawJsonRpcMessage::response(id, fallback);
-                if let Some(frame) = destination.abandon(fallback) {
-                    transport_tx
-                        .unbounded_send(frame)
-                        .map_err(crate::Error::into_internal_error)?;
-                }
-                continue;
-            }
             OutgoingMessage::Request {
                 id,
                 method,

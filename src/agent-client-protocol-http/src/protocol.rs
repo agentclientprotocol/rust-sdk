@@ -27,6 +27,29 @@ pub(crate) fn is_initialize_request(msg: &RawJsonRpcMessage) -> bool {
     matches!(msg, RawJsonRpcMessage::Request(req) if req.method.as_ref() == "initialize")
 }
 
+/// The serialized JSON-RPC error answering an unsupported batch array.
+///
+/// JSON-RPC batches are not supported. The core SDK parses a JSON array as a
+/// malformed frame with an invalid-request (`-32600`) error; the transport
+/// answers it with that error and `id: null` and forwards none of its entries.
+#[cfg(feature = "server")]
+pub(crate) fn batch_rejection(frame: &agent_client_protocol::TransportFrame) -> Option<String> {
+    let agent_client_protocol::TransportFrame::Malformed { raw, error } = frame else {
+        return None;
+    };
+    if error.code != agent_client_protocol::ErrorCode::InvalidRequest
+        || !raw.trim_start().starts_with('[')
+    {
+        return None;
+    }
+    serde_json::to_string(&RawJsonRpcMessage::response(
+        agent_client_protocol::schema::v1::RequestId::Null,
+        Err(error.clone()),
+    ))
+    .ok()
+}
+
+#[cfg(feature = "client")]
 pub(crate) fn is_response_only_shape(value: &serde_json::Value) -> bool {
     value.as_object().is_some_and(|object| {
         !object.contains_key("method")

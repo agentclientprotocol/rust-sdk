@@ -24,7 +24,7 @@ The architecture separates two distinct responsibilities:
 2. **Transport and framing layer**: Message movement and JSON-RPC envelope validation
    - Reading/writing from I/O sources
    - Serialization/deserialization
-   - Preserving single-value and batch boundaries
+   - Preserving each wire value, including malformed input
    - Connection management
 
 This separation enables:
@@ -37,8 +37,7 @@ This separation enables:
 ### The `TransportFrame` Boundary
 
 The public, transport-neutral boundary is `TransportFrame`. A frame contains
-one `RawJsonRpcMessage`, one structurally non-empty `TransportBatch`, or a
-malformed wire value that a relay must preserve. `RawJsonRpcMessage` is backed
+one `RawJsonRpcMessage` or a malformed wire value that a relay must preserve. `RawJsonRpcMessage` is backed
 by the JSON-RPC envelope types from `agent-client-protocol-schema`:
 
 ```rust
@@ -53,17 +52,17 @@ At that boundary:
 
 - **Above**: Protocol layer works with application types (`OutgoingMessage`, `UntypedMessage`)
 - **Below**: Transport actors parse and serialize JSON-RPC frames
-- **Boundary**: `TransportFrame` carries one raw message, a structurally
-  non-empty batch, or a malformed wire value retained for a relay
+- **Boundary**: `TransportFrame` carries one raw message or a malformed wire
+  value retained for a relay
 - **In-process API**: `Channel::rx` and `Channel::tx` carry `TransportFrame`
-  directly, so adapters cannot accidentally flatten a batch
+  directly
 - **Failures**: I/O and connection failures are returned by the future driving
   a transport; they are not sent as channel entries
 
 `TransportFrame::parse_json` returns one frame for every input string, including
-malformed response-shaped input. Standalone malformed input retains its exact
-text. Batch entries retain their parsed JSON values, source order, and batch
-boundary, although serializing a relayed batch may normalize whitespace. The
+malformed response-shaped input. Malformed input retains its exact text. A JSON
+array is a malformed frame with an `Invalid Request` error, since JSON-RPC
+batches are not supported (see [JSON-RPC Batches](#json-rpc-batches)). The
 protocol actor, not the parser, decides whether malformed input requires a
 response.
 
@@ -98,11 +97,8 @@ Responsibilities:
 - Route responses to pending request awaiters (matched by ID)
 - Route requests/notifications to registered handlers
 - Convert schema request/notification envelopes to `UntypedMessage` for handlers
-- Retain batch response slots while entries are dispatched
-- Emit one response array only after every response-bearing entry has completed
-  and all entries in the batch have been dispatched
-- Emit nothing for a notification-only batch; answer an empty batch with one
-  standalone `Invalid Request` response
+- Answer malformed call-shaped input, including any JSON array, with one error
+  response with `id: null`
 
 #### Pending Reply Registry
 
@@ -130,7 +126,8 @@ Output: Writes to I/O (byte stream, channel, socket, etc.)
 
 For byte streams:
 
-- Serialize a single `RawJsonRpcMessage` or one non-empty batch to JSON
+- Serialize a single `RawJsonRpcMessage` to JSON, or write a relayed malformed
+  value unchanged
 - Write newline-delimited JSON to stream
 
 For in-process channels:
@@ -147,10 +144,8 @@ Output: mpsc::UnboundedSender<TransportFrame>
 For byte streams:
 
 - Read newline-delimited JSON from stream
-- Parse a single message or a non-empty batch array
-- Retain the batch boundary while dispatching each `RawJsonRpcMessage` entry to
-  the incoming protocol actor
-- Retain malformed entries so relays can forward the complete frame
+- Parse a single message
+- Retain malformed input, including JSON arrays, so relays can forward it
 - Leave call/response-shape classification and Error Response decisions to the
   incoming protocol actor
 
@@ -158,52 +153,39 @@ For in-process channels:
 
 - Directly forward `TransportFrame` from the channel
 
-The public `Channel` boundary preserves complete frames. The SDK continues to
-initiate requests and notifications as individual JSON-RPC messages; response
-arrays are correlated replies to batch calls received from the peer. Relays and
-instrumentation must forward frames intact so they do not change those wire
+The public `Channel` boundary preserves complete frames. The SDK sends every
+request, notification, and response as an individual JSON-RPC message. Relays
+and instrumentation must forward frames intact so they do not change wire
 semantics.
 
-## JSON-RPC Batch Behavior
+## JSON-RPC Batches
 
-Batch support is shared by the stable v1 and draft v2 APIs because it belongs
-to the JSON-RPC transport layer:
+The SDK does not support JSON-RPC batching, in either protocol version. ACP
+protocol v2 removed batches, and v1 support was experimental and best-effort.
 
-- `Lines`, `ByteStreams`, `Stdio`, and the HTTP/WebSocket adapters accept
-  incoming JSON-RPC arrays.
-- Entries are validated and dispatched independently and in source order. An
-  invalid call-shaped entry receives its own `Invalid Request` error without
-  preventing valid siblings from running.
-- Responses for response-bearing entries are collected and written as one
-  response array after dispatch completes. A notification-only batch receives
-  no response.
-- If a handler drops a batched request's `Responder`, the completed dispatch
-  supplies an `Internal Error` for that slot so completed siblings are not
-  stranded. Returning a handler error supplies that error instead. Dropping an
-  individual request's responder continues to send no automatic response.
-- An empty input array receives one standalone `Invalid Request` response; the
-  SDK never writes an empty response array.
-- Response entries are routed by request ID. The framing layer retains malformed
-  values, but the protocol actor ignores values that are response-shaped and
-  not call-shaped because a JSON-RPC response must not itself receive a
-  response; ambiguous call-shaped values still receive `Invalid Request`.
-- The SDK does not originate batches of requests or notifications. Individual
-  calls continue to receive individual responses; a response array is emitted
-  only for an incoming call batch.
+- `Lines`, `ByteStreams`, `Stdio`, and in-process channels parse an incoming
+  JSON array, including an empty one, as one malformed frame. The connection
+  answers it with a single `Invalid Request` (`-32600`) error with `id: null`
+  and processes none of its entries. The connection stays usable.
+- The HTTP transport answers a `POST` body that is a JSON array with
+  `400 Bad Request` and that JSON-RPC error as the body. The WebSocket transport
+  answers an array frame with that error. Neither forwards any entry to the
+  agent.
+- `AgentProtocolRouter` answers a batched first `initialize` the same way and
+  keeps the connection open, so the client can send `initialize` again.
+- The SDK never sends a batch.
 
-Relays, wrappers, and tracing bridges must forward the complete
-`TransportFrame`. Flattening a batch changes observable JSON-RPC semantics even
-when every individual message remains valid.
+Since the removal, `TransportFrame` has only the `Single` and `Malformed`
+variants, and `TransportBatch` and `TransportBatchEntry` no longer exist. Code
+that matched `TransportFrame::Batch` or built batches should send each message
+as its own `TransportFrame::Single`. Dropping a `Responder` never sends an
+automatic reply.
 
-Lifecycle-sensitive calls should normally be sent individually. As a
-compatibility measure, `AgentProtocolRouter` can select a v1 or v2 agent when
-the first call-shaped entry is `initialize`, while preserving the original
-frame for the selected implementation. Response-only frames received before
-initialization are ignored. `ProxyProtocolRouter` provides the analogous
-boundary after conductor selection: it requires an exact v1 or v2
-`_proxy/initialize` match and preserves the complete initial frame without
-cross-version conversion. `ClientProtocolConnector` starts each attempted
-client implementation with an individual `initialize` request.
+Lifecycle-sensitive routing is unaffected: `ProxyProtocolRouter` requires an
+exact v1 or v2 `_proxy/initialize` match and preserves the initial frame without
+cross-version conversion, and `ClientProtocolConnector` starts each attempted
+client implementation with an individual `initialize` request. Response-only
+frames received before initialization are ignored.
 
 ## Message Flow
 
@@ -219,7 +201,7 @@ Outgoing Protocol Actor
     | - Subscribe to replies
     | - Convert to RawJsonRpcMessage
     v
-    | TransportFrame (single message or batch response)
+    | TransportFrame (single message)
     |
 Transport Outgoing Actor
     | - Serialize (byte streams)
@@ -237,7 +219,7 @@ Transport Incoming Actor
     | - Parse (byte streams)
     | - Or forward directly (channels)
     v
-    | TransportFrame (single message or incoming batch)
+    | TransportFrame (single message or malformed input)
     |
 Incoming Protocol Actor
     | - Route responses → pending request awaiters
@@ -361,8 +343,8 @@ Use cases:
 
 For components in the same process, `Channel::duplex()` creates paired
 endpoints and skips serialization entirely. Relays forward each received
-`TransportFrame` without unpacking it; this preserves batch boundaries and the
-original representation of malformed wire input.
+`TransportFrame` without unpacking it; this preserves the original
+representation of malformed wire input.
 
 Benefits:
 

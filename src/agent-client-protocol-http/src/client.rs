@@ -5,7 +5,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, ConnectionDriver, Error as AcpError, RawJsonRpcMessage,
-    RawJsonRpcResponse as RpcResponse, TransportBatchEntry, TransportFrame, schema::v1::RequestId,
+    RawJsonRpcResponse as RpcResponse, TransportFrame, schema::v1::RequestId,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
@@ -478,13 +478,13 @@ async fn run_with_finish(
         let is_response_only = is_response_only_frame(&frame);
         let msg = match frame {
             TransportFrame::Single(message) => message,
-            frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
+            frame @ TransportFrame::Malformed { .. } => {
                 if state.connection.connection_id().is_none() {
                     break Err(AcpError::invalid_request()
                         .data("ACP HTTP transport: first message must be `initialize`"));
                 }
                 match state.prepare_frame_post(frame) {
-                    // Response-only batches answer SSE-delivered callbacks and
+                    // Response-only values answer SSE-delivered callbacks and
                     // must not be blocked behind the request they answer.
                     Ok((post, session_ids)) => {
                         for session_id in session_ids {
@@ -643,7 +643,7 @@ fn queue_response_post(
 ) -> Result<(), AcpError> {
     let post = match frame {
         TransportFrame::Single(message) => state.prepare_post(message),
-        frame @ (TransportFrame::Malformed { .. } | TransportFrame::Batch(_)) => {
+        frame @ TransportFrame::Malformed { .. } => {
             state.prepare_frame_post(frame).map(|(post, session_ids)| {
                 debug_assert_eq!(session_ids, Vec::<String>::new());
                 post
@@ -661,13 +661,6 @@ fn queue_response_post(
 fn is_response_only_frame(frame: &TransportFrame) -> bool {
     match frame {
         TransportFrame::Single(RawJsonRpcMessage::Response(_)) => true,
-        TransportFrame::Batch(batch) => batch.entries().all(|entry| match entry {
-            TransportBatchEntry::Message(RawJsonRpcMessage::Response(_)) => true,
-            TransportBatchEntry::Malformed { raw, .. } => is_response_only_shape(raw),
-            TransportBatchEntry::Message(
-                RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_),
-            ) => false,
-        }),
         TransportFrame::Malformed { raw, .. } => {
             serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
         }
@@ -1087,9 +1080,6 @@ impl ClientState {
             TransportFrame::Malformed { error, .. } => {
                 return Err(format!("invalid initialize response: {error}"));
             }
-            TransportFrame::Batch(_) => {
-                return Err("initialize response must not be a JSON-RPC batch".to_string());
-            }
         };
 
         if matches!(
@@ -1230,15 +1220,6 @@ impl ClientState {
                 .session_to_open_for_response(message)
                 .into_iter()
                 .collect(),
-            TransportFrame::Batch(batch) => batch
-                .entries()
-                .filter_map(|entry| match entry {
-                    TransportBatchEntry::Message(message) => {
-                        self.session_to_open_for_response(message)
-                    }
-                    TransportBatchEntry::Malformed { .. } => None,
-                })
-                .collect(),
             TransportFrame::Malformed { .. } => Vec::new(),
         }
     }
@@ -1290,13 +1271,6 @@ impl FrameBookkeeping {
         let mut bookkeeping = Self::default();
         match frame {
             TransportFrame::Single(message) => bookkeeping.add_message(message)?,
-            TransportFrame::Batch(batch) => {
-                for entry in batch.entries() {
-                    if let TransportBatchEntry::Message(message) = entry {
-                        bookkeeping.add_message(message)?;
-                    }
-                }
-            }
             TransportFrame::Malformed { .. } => {}
         }
         Ok(bookkeeping)
@@ -1632,12 +1606,12 @@ mod tests {
         convert::Infallible,
         sync::{
             Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
+            atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
 
-    use agent_client_protocol::{TransportBatch, UntypedMessage, schema::v1::RequestId};
+    use agent_client_protocol::{UntypedMessage, schema::v1::RequestId};
     use axum::{
         Json, Router,
         extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},
@@ -1757,9 +1731,6 @@ mod tests {
         match frame {
             TransportFrame::Single(message) => Ok(message),
             TransportFrame::Malformed { error, .. } => Err(error),
-            TransportFrame::Batch(_) => {
-                Err(AcpError::internal_error().data("expected one JSON-RPC message"))
-            }
         }
     }
 
@@ -1774,136 +1745,21 @@ mod tests {
     }
 
     #[test]
-    fn malformed_response_shapes_bypass_only_when_the_whole_frame_is_response_only() {
+    fn only_malformed_response_shapes_bypass_as_responses() {
         let standalone_response = TransportFrame::parse_json(
             r#"{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":-32603}}"#,
         );
         assert!(is_response_only_frame(&standalone_response));
 
-        let response_batch = TransportFrame::parse_json(
-            r#"[
-                {"jsonrpc":"2.0","id":1,"result":{}},
-                {"jsonrpc":"2.0","id":2,"result":{},"error":{"code":-32603}}
-            ]"#,
-        );
-        assert!(is_response_only_frame(&response_batch));
-
-        let scalar_batch = TransportFrame::parse_json(
-            r#"[
-                {"jsonrpc":"2.0","id":1,"result":{}},
-                17
-            ]"#,
-        );
-        assert!(!is_response_only_frame(&scalar_batch));
+        // Batches are not supported: an array is malformed, never a response.
+        let response_batch =
+            TransportFrame::parse_json(r#"[{"jsonrpc":"2.0","id":1,"result":{}}]"#);
+        assert!(!is_response_only_frame(&response_batch));
 
         let call_shaped = TransportFrame::parse_json(
             r#"{"jsonrpc":"2.0","id":1,"method":"custom/call","result":{}}"#,
         );
         assert!(!is_response_only_frame(&call_shaped));
-    }
-
-    fn initialized_client_state() -> ClientState {
-        let connection = HttpConnection::new(
-            url::Url::parse("http://127.0.0.1/acp").unwrap(),
-            reqwest::Client::new(),
-        );
-        connection.set_connection_id("connection-1".to_string());
-        let (incoming, _incoming_rx) = mpsc::unbounded();
-        ClientState {
-            connection,
-            open_session_streams: HashSet::new(),
-            pending_requests: HashMap::new(),
-            incoming,
-        }
-    }
-
-    #[test]
-    fn batch_post_validation_happens_before_tracking_requests_or_sessions() {
-        let mut state = initialized_client_state();
-        let frame = TransportFrame::Batch(
-            TransportBatch::from_messages([
-                RawJsonRpcMessage::request(
-                    "custom/valid".to_string(),
-                    json!({}),
-                    RequestId::Number(1),
-                )
-                .unwrap(),
-                RawJsonRpcMessage::request(
-                    "session/prompt".to_string(),
-                    json!({ "prompt": [] }),
-                    RequestId::Number(2),
-                )
-                .unwrap(),
-            ])
-            .unwrap(),
-        );
-
-        let Err(error) = state.prepare_frame_post(frame) else {
-            panic!("batch should require sessionId for session/prompt");
-        };
-
-        assert_eq!(
-            error,
-            "method `session/prompt` requires sessionId in params"
-        );
-        assert!(state.pending_requests.is_empty());
-        assert!(state.open_session_streams.is_empty());
-    }
-
-    #[test]
-    fn batch_post_tracks_every_non_null_request_and_rolls_back_from_the_back() {
-        let mut state = initialized_client_state();
-        state.track_pending_requests(&[(RequestId::Number(7), "session/fork".to_string())]);
-        let frame = TransportFrame::Batch(
-            TransportBatch::from_messages([
-                RawJsonRpcMessage::request(
-                    "session/fork".to_string(),
-                    json!({ "sessionId": "source-a" }),
-                    RequestId::Number(7),
-                )
-                .unwrap(),
-                RawJsonRpcMessage::request(
-                    "custom/request".to_string(),
-                    json!({ "sessionId": "source-b" }),
-                    RequestId::Number(7),
-                )
-                .unwrap(),
-                RawJsonRpcMessage::request(
-                    "session/fork".to_string(),
-                    json!({ "sessionId": "source-a" }),
-                    RequestId::Null,
-                )
-                .unwrap(),
-            ])
-            .unwrap(),
-        );
-
-        let (post, session_ids) = state.prepare_frame_post(frame).unwrap();
-
-        assert_eq!(session_ids, ["source-a", "source-b"]);
-        assert_eq!(
-            state.pending_requests.get(&RequestId::Number(7)).unwrap(),
-            &VecDeque::from([
-                "session/fork".to_string(),
-                "session/fork".to_string(),
-                "custom/request".to_string(),
-            ])
-        );
-        assert_eq!(
-            post.pending_requests,
-            [
-                (RequestId::Number(7), "session/fork".to_string()),
-                (RequestId::Number(7), "custom/request".to_string()),
-            ]
-        );
-        assert!(!state.pending_requests.contains_key(&RequestId::Null));
-
-        state.remove_pending_requests(&post.pending_requests);
-
-        assert_eq!(
-            state.pending_requests.get(&RequestId::Number(7)).unwrap(),
-            &VecDeque::from(["session/fork".to_string()])
-        );
     }
 
     impl WsSink for RecordingWsSink {
@@ -2321,307 +2177,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_preserves_batch_frames_across_post_and_sse() {
-        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
-        let post_count = Arc::new(AtomicUsize::new(0));
-        let emit_sse = Arc::new(Notify::new());
-        let inbound_batch = json!([
-            {
-                "jsonrpc": "2.0",
-                "method": "custom/inbound-one",
-                "params": {}
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "custom/inbound-two",
-                "params": {}
-            }
-        ]);
-        let app = Router::new().route(
-            "/acp",
-            post({
-                let post_count = post_count.clone();
-                move |body: String| {
-                    let post_count = post_count.clone();
-                    let post_tx = post_tx.clone();
-                    async move {
-                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                            return initialize_response().await.into_response();
-                        }
-
-                        post_tx
-                            .send(serde_json::from_str::<serde_json::Value>(&body).unwrap())
-                            .unwrap();
-                        StatusCode::ACCEPTED.into_response()
-                    }
-                }
-            })
-            .get({
-                let emit_sse = emit_sse.clone();
-                let inbound_batch = inbound_batch.clone();
-                move || {
-                    let emit_sse = emit_sse.clone();
-                    let inbound_batch = inbound_batch.clone();
-                    async move {
-                        let stream = async_stream::stream! {
-                            emit_sse.notified().await;
-                            yield Ok::<_, Infallible>(
-                                Event::default().data(inbound_batch.to_string()),
-                            );
-                            futures::future::pending::<()>().await;
-                        };
-                        Sse::new(stream)
-                    }
-                }
-            })
-            .delete(|| async { StatusCode::ACCEPTED }),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let client = HttpClient::new(format!("http://{addr}")).unwrap();
-        let (mut caller, transport) = Channel::duplex();
-        let transport = tokio::spawn(run(client, transport));
-
-        caller
-            .tx
-            .unbounded_send(single_frame(
-                RawJsonRpcMessage::request(
-                    "initialize".to_string(),
-                    json!({}),
-                    RequestId::Number(1),
-                )
-                .unwrap(),
-            ))
-            .unwrap();
-        let init_response = timeout(Duration::from_secs(1), caller.rx.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(matches!(init_response, RawJsonRpcMessage::Response(_)));
-
-        let outbound_batch = json!([
-            {
-                "jsonrpc": "2.0",
-                "method": "custom/outbound-one",
-                "params": {}
-            },
-            {
-                "jsonrpc": "2.0",
-                "method": "custom/outbound-two",
-                "params": {}
-            }
-        ]);
-        caller
-            .tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    RawJsonRpcMessage::notification("custom/outbound-one".to_string(), json!({}))
-                        .unwrap(),
-                    RawJsonRpcMessage::notification("custom/outbound-two".to_string(), json!({}))
-                        .unwrap(),
-                ])
-                .unwrap(),
-            ))
-            .unwrap();
-
-        let posted = timeout(Duration::from_secs(1), post_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(posted, outbound_batch);
-
-        emit_sse.notify_one();
-        let inbound = timeout(Duration::from_secs(1), caller.rx.next())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(&inbound, TransportFrame::Batch(_)));
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&inbound.to_json().unwrap()).unwrap(),
-            inbound_batch
-        );
-
-        drop(caller);
-        timeout(Duration::from_secs(1), transport)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn batch_fork_opens_source_and_result_session_streams() {
-        let (post_tx, mut post_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (get_tx, mut get_rx) = tokio::sync::mpsc::unbounded_channel();
-        let post_count = Arc::new(AtomicUsize::new(0));
-        let emit_response = Arc::new(Notify::new());
-        let connection_stream_established = Arc::new(AtomicBool::new(false));
-        let source_stream_established = Arc::new(AtomicBool::new(false));
-        let response_batch = json!([
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "result": { "sessionId": "forked-session" }
-            }
-        ]);
-        let app = Router::new().route(
-            "/acp",
-            post({
-                let post_count = post_count.clone();
-                let connection_stream_established = connection_stream_established.clone();
-                let source_stream_established = source_stream_established.clone();
-                move |body: String| {
-                    let post_count = post_count.clone();
-                    let post_tx = post_tx.clone();
-                    let connection_stream_established = connection_stream_established.clone();
-                    let source_stream_established = source_stream_established.clone();
-                    async move {
-                        if post_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                            return initialize_response().await.into_response();
-                        }
-
-                        if !connection_stream_established.load(Ordering::SeqCst)
-                            || !source_stream_established.load(Ordering::SeqCst)
-                        {
-                            return StatusCode::CONFLICT.into_response();
-                        }
-                        post_tx
-                            .send(serde_json::from_str::<serde_json::Value>(&body).unwrap())
-                            .unwrap();
-                        StatusCode::ACCEPTED.into_response()
-                    }
-                }
-            })
-            .get({
-                let emit_response = emit_response.clone();
-                let response_batch = response_batch.clone();
-                let connection_stream_established = connection_stream_established.clone();
-                let source_stream_established = source_stream_established.clone();
-                move |headers: HeaderMap| {
-                    let emit_response = emit_response.clone();
-                    let response_batch = response_batch.clone();
-                    let get_tx = get_tx.clone();
-                    let connection_stream_established = connection_stream_established.clone();
-                    let source_stream_established = source_stream_established.clone();
-                    async move {
-                        let session_id = headers
-                            .get(HEADER_SESSION_ID)
-                            .and_then(|value| value.to_str().ok())
-                            .map(String::from);
-                        let is_connection_stream = session_id.is_none();
-                        let is_source_stream = session_id.as_deref() == Some("source-session");
-                        if is_connection_stream {
-                            sleep(Duration::from_millis(50)).await;
-                            connection_stream_established.store(true, Ordering::SeqCst);
-                        }
-                        if is_source_stream {
-                            sleep(Duration::from_millis(50)).await;
-                            source_stream_established.store(true, Ordering::SeqCst);
-                        }
-                        get_tx.send(session_id).unwrap();
-
-                        let stream = async_stream::stream! {
-                            if is_source_stream {
-                                emit_response.notified().await;
-                                yield Ok::<_, Infallible>(
-                                    Event::default().data(response_batch.to_string()),
-                                );
-                            }
-                            futures::future::pending::<()>().await;
-                        };
-                        Sse::new(stream)
-                    }
-                }
-            })
-            .delete(|| async { StatusCode::ACCEPTED }),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let client = HttpClient::new(format!("http://{addr}")).unwrap();
-        let (mut caller, transport) = Channel::duplex();
-        let transport = tokio::spawn(run(client, transport));
-
-        caller
-            .tx
-            .unbounded_send(single_frame(
-                RawJsonRpcMessage::request(
-                    "initialize".to_string(),
-                    json!({}),
-                    RequestId::Number(1),
-                )
-                .unwrap(),
-            ))
-            .unwrap();
-        timeout(Duration::from_secs(1), caller.rx.next())
-            .await
-            .unwrap()
-            .unwrap();
-
-        caller
-            .tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([RawJsonRpcMessage::request(
-                    "session/fork".to_string(),
-                    json!({ "sessionId": "source-session" }),
-                    RequestId::Number(2),
-                )
-                .unwrap()])
-                .unwrap(),
-            ))
-            .unwrap();
-
-        let connection_stream = timeout(Duration::from_secs(1), get_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(connection_stream.is_none());
-        let source_stream = timeout(Duration::from_secs(1), get_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(source_stream.as_deref(), Some("source-session"));
-        let posted = timeout(Duration::from_secs(1), post_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(posted.is_array(), "outgoing batch must remain an array");
-
-        emit_response.notify_one();
-        let response = timeout(Duration::from_secs(1), caller.rx.next())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(&response, TransportFrame::Batch(_)));
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&response.to_json().unwrap()).unwrap(),
-            response_batch
-        );
-        let forked_stream = timeout(Duration::from_secs(1), get_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(forked_stream.as_deref(), Some("forked-session"));
-
-        drop(caller);
-        timeout(Duration::from_secs(1), transport)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-
-        server.abort();
-    }
-
-    #[tokio::test]
     async fn custom_response_with_session_id_does_not_open_session_sse() {
         let (get_tx, mut get_rx) = tokio::sync::mpsc::unbounded_channel();
         let response_ready = Arc::new(tokio::sync::Notify::new());
@@ -2882,23 +2437,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_response_batches_bypass_ordered_posts() {
+    async fn only_responses_bypass_ordered_posts() {
         let slow_started = Arc::new(Notify::new());
         let release_slow = Arc::new(Notify::new());
-        let call_batch_seen = Arc::new(Notify::new());
-        let response_batch_seen = Arc::new(Notify::new());
+        let call_seen = Arc::new(Notify::new());
+        let response_seen = Arc::new(Notify::new());
         let app = Router::new().route(
             "/acp",
             post({
                 let slow_started = slow_started.clone();
                 let release_slow = release_slow.clone();
-                let call_batch_seen = call_batch_seen.clone();
-                let response_batch_seen = response_batch_seen.clone();
+                let call_seen = call_seen.clone();
+                let response_seen = response_seen.clone();
                 move |body: String| {
                     let slow_started = slow_started.clone();
                     let release_slow = release_slow.clone();
-                    let call_batch_seen = call_batch_seen.clone();
-                    let response_batch_seen = response_batch_seen.clone();
+                    let call_seen = call_seen.clone();
+                    let response_seen = response_seen.clone();
                     async move {
                         let value = serde_json::from_str::<serde_json::Value>(&body).unwrap();
                         if value.get("method").and_then(serde_json::Value::as_str)
@@ -2911,12 +2466,10 @@ mod tests {
                         {
                             slow_started.notify_one();
                             release_slow.notified().await;
-                        } else if let Some(entries) = value.as_array() {
-                            if entries.iter().all(|entry| entry.get("method").is_none()) {
-                                response_batch_seen.notify_one();
-                            } else {
-                                call_batch_seen.notify_one();
-                            }
+                        } else if value.get("method").is_none() {
+                            response_seen.notify_one();
+                        } else {
+                            call_seen.notify_one();
                         }
                         StatusCode::ACCEPTED.into_response()
                     }
@@ -2962,39 +2515,32 @@ mod tests {
 
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    RawJsonRpcMessage::notification("custom/one".to_string(), json!({})).unwrap(),
-                    RawJsonRpcMessage::notification("custom/two".to_string(), json!({})).unwrap(),
-                ])
-                .unwrap(),
+            .unbounded_send(single_frame(
+                RawJsonRpcMessage::notification("custom/one".to_string(), json!({})).unwrap(),
             ))
             .unwrap();
         assert!(
-            timeout(Duration::from_millis(100), call_batch_seen.notified())
+            timeout(Duration::from_millis(100), call_seen.notified())
                 .await
                 .is_err(),
-            "call-bearing batches must remain behind an earlier ordered POST"
+            "calls must remain behind an earlier ordered POST"
         );
 
         caller
             .tx
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    RawJsonRpcMessage::response(RequestId::Number(10), Ok(json!({}))),
-                    RawJsonRpcMessage::response(RequestId::Number(11), Ok(json!({}))),
-                ])
-                .unwrap(),
-            ))
+            .unbounded_send(single_frame(RawJsonRpcMessage::response(
+                RequestId::Number(10),
+                Ok(json!({})),
+            )))
             .unwrap();
-        timeout(Duration::from_secs(1), response_batch_seen.notified())
+        timeout(Duration::from_secs(1), response_seen.notified())
             .await
-            .expect("response-only batch should bypass the ordered POST queue");
+            .expect("a response should bypass the ordered POST queue");
 
         release_slow.notify_one();
-        timeout(Duration::from_secs(1), call_batch_seen.notified())
+        timeout(Duration::from_secs(1), call_seen.notified())
             .await
-            .expect("call-bearing batch should be sent after the earlier POST completes");
+            .expect("a call should be sent after the earlier POST completes");
 
         drop(caller);
         timeout(Duration::from_secs(1), transport)
@@ -4159,52 +3705,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[tokio::test]
-    async fn websocket_serializes_batch_as_one_text_frame() {
-        let (caller, transport) = Channel::duplex();
-        let Channel {
-            tx: outgoing,
-            rx: incoming,
-        } = caller;
-        drop(incoming);
-        outgoing
-            .unbounded_send(TransportFrame::Batch(
-                TransportBatch::from_messages([
-                    RawJsonRpcMessage::notification("custom/first".to_string(), json!({})).unwrap(),
-                    RawJsonRpcMessage::notification("custom/second".to_string(), json!({}))
-                        .unwrap(),
-                ])
-                .unwrap(),
-            ))
-            .unwrap();
-        drop(outgoing);
-
-        let (ws_output_tx, mut ws_output) = mpsc::unbounded();
-        timeout(
-            Duration::from_secs(1),
-            drive_ws(
-                RecordingWsSink(ws_output_tx),
-                futures::stream::pending::<Result<WsMessage, std::io::Error>>(),
-                transport,
-            ),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let frames = ws_output.by_ref().collect::<Vec<_>>().await;
-
-        let WsMessage::Text(text) = &frames[0] else {
-            panic!("batch was not sent as WebSocket text");
-        };
-        let batch = serde_json::from_str::<serde_json::Value>(text.as_str()).unwrap();
-        let entries = batch.as_array().expect("batch should remain an array");
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["method"], "custom/first");
-        assert_eq!(entries[1]["method"], "custom/second");
-        assert!(matches!(frames.get(1), Some(WsMessage::Close(None))));
-        assert_eq!(frames.len(), 2);
     }
 
     #[tokio::test]

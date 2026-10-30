@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use agent_client_protocol::{
     ActiveSession, Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder,
-    SessionMessage, TransportBatch, TransportFrame,
+    SessionMessage, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
@@ -278,8 +278,8 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn on_session_start_installs_routing_before_later_batch_entry() {
-    let session_id = SessionId::new("same-batch-session");
+async fn on_session_start_installs_routing_before_later_message() {
+    let session_id = SessionId::new("queued-session");
     let response_session_id = session_id.clone();
     let notification_session_id = session_id.clone();
     let (transport, mut peer) = Channel::duplex();
@@ -324,17 +324,17 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
             serde_json::to_value(SessionNotification::new(
                 notification_session_id,
                 SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new("same batch"),
+                    TextContent::new("queued"),
                 ))),
             ))
             .expect("session notification should serialize"),
         )
         .expect("session notification should form valid JSON-RPC parameters");
-        let batch = TransportBatch::from_messages([response, notification])
-            .expect("test batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept the response batch");
+        for message in [response, notification] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept the queued messages");
+        }
 
         while peer.rx.next().await.is_some() {}
         Ok::<(), agent_client_protocol::Error>(())
@@ -342,14 +342,14 @@ async fn on_session_start_installs_routing_before_later_batch_entry() {
 
     tokio::time::timeout(TIMEOUT, async { futures::try_join!(client, peer) })
         .await
-        .expect("same-batch session update was not routed")
+        .expect("queued session update was not routed")
         .expect("session connection failed");
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
-async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
-    let session_id = v2::SessionId::new("same-batch-v2-session");
+async fn v2_proxy_session_start_installs_routing_before_later_message() {
+    let session_id = v2::SessionId::new("queued-v2-session");
     let setup_response = v2::NewSessionResponse::new(session_id.clone()).config_options(vec![
         v2::SessionConfigOption::boolean("thinking", "Thinking", true),
     ]);
@@ -367,7 +367,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
             async |request: v2::InitializeProxyRequest, responder, _connection| {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
-                    v2::Implementation::new("same-batch-proxy", env!("CARGO_PKG_VERSION")),
+                    v2::Implementation::new("queued-proxy", env!("CARGO_PKG_VERSION")),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -403,13 +403,13 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
         });
 
     let peer = async move {
-        initialize_raw_v2_proxy(&mut peer, "same-batch-client").await?;
+        initialize_raw_v2_proxy(&mut peer, "queued-client").await?;
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/new".to_owned(),
-                serde_json::to_value(v2::NewSessionRequest::new("/same-batch-v2-session"))
+                serde_json::to_value(v2::NewSessionRequest::new("/queued-v2-session"))
                     .expect("session request should serialize"),
                 upstream_id.clone(),
             )?))
@@ -426,7 +426,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
         )?;
         assert_eq!(
             successor.message.cwd,
-            v2::AbsolutePath::new("/same-batch-v2-session")
+            v2::AbsolutePath::new("/queued-v2-session")
         );
 
         let response = RawJsonRpcMessage::response(
@@ -445,11 +445,11 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
         .to_untyped_message()?;
         let (method, params) = update.into_parts();
         let notification = RawJsonRpcMessage::notification(method, params)?;
-        let batch = TransportBatch::from_messages([response, notification])
-            .expect("test response batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("proxy should accept the response batch");
+        for message in [response, notification] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("proxy should accept the queued messages");
+        }
 
         let mut saw_response = false;
         let mut saw_update = false;
@@ -490,15 +490,15 @@ async fn v2_proxy_session_start_installs_routing_before_later_batch_entry() {
 
     tokio::time::timeout(TIMEOUT, async { futures::try_join!(proxy, peer) })
         .await
-        .expect("same-batch v2 session update was not routed")
+        .expect("queued v2 session update was not routed")
         .expect("v2 proxy session connection failed");
 }
 
 #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_session_fork"))]
 #[tokio::test(flavor = "current_thread")]
-async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
-    let source_session_id = v2::SessionId::new("same-batch-v2-source");
-    let forked_session_id = v2::SessionId::new("same-batch-v2-fork");
+async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
+    let source_session_id = v2::SessionId::new("queued-v2-source");
+    let forked_session_id = v2::SessionId::new("queued-v2-fork");
     let setup_response =
         v2::ForkSessionResponse::new(forked_session_id.clone()).config_options(vec![
             v2::SessionConfigOption::boolean("thinking", "Thinking", true),
@@ -518,7 +518,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
             async |request: v2::InitializeProxyRequest, responder, _connection| {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
-                    v2::Implementation::new("same-batch-fork-proxy", env!("CARGO_PKG_VERSION")),
+                    v2::Implementation::new("queued-fork-proxy", env!("CARGO_PKG_VERSION")),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -554,7 +554,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
         });
 
     let peer = async move {
-        initialize_raw_v2_proxy(&mut peer, "same-batch-fork-client").await?;
+        initialize_raw_v2_proxy(&mut peer, "queued-fork-client").await?;
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
@@ -562,7 +562,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
                 "session/fork".to_owned(),
                 serde_json::to_value(v2::ForkSessionRequest::new(
                     source_session_id,
-                    "/same-batch-v2-fork",
+                    "/queued-v2-fork",
                 ))
                 .expect("fork request should serialize"),
                 upstream_id.clone(),
@@ -581,7 +581,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
         assert_eq!(successor.message.session_id, expected_source_session_id);
         assert_eq!(
             successor.message.cwd,
-            v2::AbsolutePath::new("/same-batch-v2-fork")
+            v2::AbsolutePath::new("/queued-v2-fork")
         );
 
         let response = RawJsonRpcMessage::response(
@@ -600,11 +600,11 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
         .to_untyped_message()?;
         let (method, params) = update.into_parts();
         let notification = RawJsonRpcMessage::notification(method, params)?;
-        let batch = TransportBatch::from_messages([response, notification])
-            .expect("test response batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("proxy should accept the response batch");
+        for message in [response, notification] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("proxy should accept the queued messages");
+        }
 
         let mut saw_response = false;
         let mut saw_update = false;
@@ -646,14 +646,14 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_batch_entry() {
 
     tokio::time::timeout(TIMEOUT, async { futures::try_join!(proxy, peer) })
         .await
-        .expect("same-batch v2 fork update was not routed")
+        .expect("queued v2 fork update was not routed")
         .expect("v2 proxy fork connection failed");
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
-async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
-    let session_id = v2::SessionId::new("same-batch-v2-resume");
+async fn v2_proxy_resume_forwards_replay_before_its_response() {
+    let session_id = v2::SessionId::new("queued-v2-resume");
     let setup_response =
         v2::ResumeSessionResponse::new().config_options(vec![v2::SessionConfigOption::boolean(
             "thinking", "Thinking", false,
@@ -673,7 +673,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
             async |request: v2::InitializeProxyRequest, responder, _connection| {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
-                    v2::Implementation::new("same-batch-resume-proxy", env!("CARGO_PKG_VERSION")),
+                    v2::Implementation::new("queued-resume-proxy", env!("CARGO_PKG_VERSION")),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -710,7 +710,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
         });
 
     let peer = async move {
-        initialize_raw_v2_proxy(&mut peer, "same-batch-resume-client").await?;
+        initialize_raw_v2_proxy(&mut peer, "queued-resume-client").await?;
 
         let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
         peer.tx
@@ -718,7 +718,7 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
                 "session/resume".to_owned(),
                 serde_json::to_value(v2::ResumeSessionRequest::new(
                     session_id.clone(),
-                    "/same-batch-v2-resume",
+                    "/queued-v2-resume",
                 ))
                 .expect("resume request should serialize"),
                 upstream_id.clone(),
@@ -752,11 +752,11 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
             forwarded.id,
             Ok(serde_json::to_value(setup_response).expect("resume response should serialize")),
         );
-        let batch = TransportBatch::from_messages([notification, response])
-            .expect("test replay batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("proxy should accept the replay batch");
+        for message in [notification, response] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("proxy should accept the queued messages");
+        }
 
         let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(notification))) =
             peer.rx.next().await
@@ -790,6 +790,6 @@ async fn v2_proxy_resume_forwards_replay_before_same_batch_response() {
 
     tokio::time::timeout(TIMEOUT, async { futures::try_join!(proxy, peer) })
         .await
-        .expect("same-batch v2 resume replay was not routed before its response")
+        .expect("queued v2 resume replay was not routed before its response")
         .expect("v2 proxy resume connection failed");
 }

@@ -9,7 +9,6 @@ pub(crate) fn inbound(frame: &TransportFrame, byte_len: usize, transport: &'stat
         TransportFrame::Single(RawJsonRpcMessage::Request(_)) => "request",
         TransportFrame::Single(RawJsonRpcMessage::Notification(_)) => "notification",
         TransportFrame::Single(RawJsonRpcMessage::Response(_)) => "response",
-        TransportFrame::Batch(_) => "batch",
         TransportFrame::Malformed { .. } => "malformed",
     };
     tracing::trace!(byte_len, kind, transport, "Client → agent");
@@ -78,7 +77,7 @@ mod tests {
             output.len() < 4096,
             "diagnostics must not grow with payloads"
         );
-        for kind in ["request", "notification", "response", "batch", "malformed"] {
+        for kind in ["request", "notification", "response", "malformed"] {
             assert!(output.contains(&format!("kind=\"{kind}\"")));
         }
         for text in &messages {
