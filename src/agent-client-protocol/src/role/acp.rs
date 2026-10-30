@@ -444,9 +444,10 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             let message = match initialize_message_mut(&mut frame) {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
-                // A v1 implementation answers anything that does not select
-                // v2 itself, exactly as it would without the router.
-                Err(_) if supported.v1 => break (frame, client, SelectedProtocol::V1),
+                // A malformed frame, such as invalid JSON or a batch, gets the
+                // frame's own error with `id: null`, exactly as a v1
+                // connection answers it. It selects no version, so the client
+                // can still initialize either one.
                 Err(error) => {
                     send_initialize_error(&client.tx, &frame, error)?;
                     continue;
@@ -454,6 +455,8 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             };
             let selected = match select_agent_protocol(message, supported) {
                 Ok(selected) => selected,
+                // A v1 implementation answers any other initialize that does
+                // not select v2 itself, exactly as it would without the router.
                 Err(_) if supported.v1 && !requests_agent_protocol_v2(message, supported) => {
                     SelectedProtocol::V1
                 }

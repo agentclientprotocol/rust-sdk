@@ -18,7 +18,9 @@ use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Send `messages` to `agent` one at a time and return what the agent wrote in
-/// answer to the requests among them.
+/// answer to the requests among them. A JSON string is written verbatim as a
+/// raw line, so a test can send text that is not valid JSON; it and a JSON
+/// array (a batch) each get one response.
 async fn exchange(agent: impl ConnectTo<Client> + 'static, messages: &[Value]) -> Vec<Value> {
     let (mut client_writer, agent_reader) = tokio::io::duplex(64 * 1024);
     let (agent_writer, client_reader) = tokio::io::duplex(64 * 1024);
@@ -30,11 +32,15 @@ async fn exchange(agent: impl ConnectTo<Client> + 'static, messages: &[Value]) -
 
     let mut written = Vec::new();
     for message in messages {
+        let line = match message {
+            Value::String(raw) => raw.clone(),
+            message => message.to_string(),
+        };
         client_writer
-            .write_all(format!("{message}\n").as_bytes())
+            .write_all(format!("{line}\n").as_bytes())
             .await
             .expect("agent is still reading");
-        if message.get("id").is_none() {
+        if !message.is_string() && !message.is_array() && message.get("id").is_none() {
             continue;
         }
         let line = tokio::time::timeout(TIMEOUT, lines.next_line())
@@ -115,4 +121,18 @@ async fn notification_before_initialize() {
         initialize(v1_initialize_params()),
     ])
     .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn batch_before_initialize() {
+    assert_same_for_v1_client(&[
+        json!([initialize(v1_initialize_params())]),
+        initialize(v1_initialize_params()),
+    ])
+    .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_json_before_initialize() {
+    assert_same_for_v1_client(&[json!("{"), initialize(v1_initialize_params())]).await;
 }
