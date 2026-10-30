@@ -164,11 +164,12 @@
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
+//! use agent_client_protocol::v1::SessionSetup;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session_cwd()?
 //!     .block_task()
-//!     .run_until(async |mut session| {
+//!     .run_until(async |SessionSetup { mut session, .. }| {
 //!         // Safe: connect_with's foreground future runs outside the dispatch loop
 //!         session.send_prompt("Hello")?;
 //!         let response = session.read_to_string().await?;

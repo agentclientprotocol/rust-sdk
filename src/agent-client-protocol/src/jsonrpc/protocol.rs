@@ -24,11 +24,11 @@ use crate::schema::v2;
 /// | Marker | `RequestId` | `Connection<Counterpart>` |
 /// | --- | --- | --- |
 /// | [`Raw`] (the default) | [`RawJsonRpcId`] | [`ConnectionTo`] |
-/// | [`V1`] | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`ConnectionTo`] |
+/// | [`V1`] | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`v1::ConnectionTo`](crate::v1::ConnectionTo) |
 /// | `V2` (`unstable_protocol_v2`) | `schema::v2::RequestId` | `v2::ConnectionTo` |
 ///
 /// - Typed handlers on `Client.v1()`, `Agent.v1()` and
-///   `Proxy.v1()` receive [`V1`] handles.
+///   `Proxy.v1()`, and requests sent through `v1::ConnectionTo`, use [`V1`].
 /// - Typed handlers on `Client.v2()`, `Agent.v2()` and `Proxy.v2()`, and
 ///   requests sent through `v2::ConnectionTo`, use `V2`.
 /// - Everything that is not tied to one version uses [`Raw`]: the
@@ -162,8 +162,8 @@ pub struct V1;
 impl sealed::Sealed for V1 {
     fn connection_from_raw<Counterpart: Role>(
         connection: ConnectionTo<Counterpart>,
-    ) -> ConnectionTo<Counterpart> {
-        connection
+    ) -> super::v1_connection::ConnectionTo<Counterpart> {
+        super::v1_connection::ConnectionTo { inner: connection }
     }
 
     fn request_id_from_raw(id: &RawJsonRpcId) -> Result<v1::RequestId, crate::Error> {
@@ -177,7 +177,7 @@ impl sealed::Sealed for V1 {
 
 impl Protocol for V1 {
     type RequestId = v1::RequestId;
-    type Connection<Counterpart: Role> = ConnectionTo<Counterpart>;
+    type Connection<Counterpart: Role> = super::v1_connection::ConnectionTo<Counterpart>;
 }
 
 /// ACP protocol version 2.

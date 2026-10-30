@@ -241,7 +241,7 @@ impl EventNormalizer {
 
 /// Test helper to receive a JSON-RPC response
 async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
-    response: agent_client_protocol::SentRequest<T>,
+    response: agent_client_protocol::v1::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {

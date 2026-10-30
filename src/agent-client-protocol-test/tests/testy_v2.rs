@@ -97,7 +97,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 .start_session()
                 .block_task()
                 .await?;
-            let (session, new_session_response) = opened.into_parts();
+            let (session, new_session_response) = (opened.session, opened.response);
             assert_eq!(&new_session_response.session_id, session.session_id());
             assert!(
                 session
@@ -194,7 +194,7 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                     let expected_session_id = session_id.clone();
                     async move |result| {
                         let resumed = result?;
-                        assert_eq!(resumed.session().session_id(), &expected_session_id);
+                        assert_eq!(resumed.session.session_id(), &expected_session_id);
                         event_tx
                             .send(TestEvent::ResumeResponded)
                             .map_err(Error::into_internal_error)
@@ -300,7 +300,7 @@ async fn testy_v2_prompt_acceptance_is_independent_from_cancellation_completion(
                 .start_session()
                 .block_task()
                 .await?
-                .into_session();
+                .session;
 
             session
                 .send_prompt(wait_for_cancel_prompt())
@@ -794,7 +794,7 @@ async fn testy_v2_holds_prompts_during_active_work() {
                 .start_session()
                 .block_task()
                 .await?
-                .into_session();
+                .session;
 
             let running = session
                 .send_prompt(wait_for_cancel_prompt())

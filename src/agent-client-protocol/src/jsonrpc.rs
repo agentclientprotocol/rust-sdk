@@ -38,6 +38,7 @@ pub(crate) mod run;
 mod task_actor;
 mod termination;
 mod transport_actor;
+pub(crate) mod v1_connection;
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) mod v2_connection;
 
@@ -3828,30 +3829,49 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.spawn_connection_raw(builder, transport)
     }
 
+    /// The same connection, typed for protocol `P`.
+    ///
+    /// `into_protocol::<V1>()` returns a [`v1::ConnectionTo`](crate::v1::ConnectionTo)
+    /// (and, with `unstable_protocol_v2`, `into_protocol::<V2>()` a
+    /// `v2::ConnectionTo`), whose sends return request handles typed for that
+    /// version and which carries that version's session helpers. Only the
+    /// Rust API changes: the connection's wire guard is the one its builder
+    /// selected. The versioned connections convert back with `into_raw`.
+    ///
+    /// ```
+    /// # use agent_client_protocol::{Agent, ConnectionTo, V1, v1};
+    /// fn sessions(connection: ConnectionTo<Agent>) -> v1::ConnectionTo<Agent> {
+    ///     connection.into_protocol::<V1>()
+    /// }
+    /// ```
+    #[must_use]
+    pub fn into_protocol<P: Protocol>(self) -> P::Connection<Counterpart> {
+        protocol::connection_from_raw::<P, _>(self)
+    }
+
     /// Spawn a JSON-RPC connection and return the connection context selected
     /// by its builder.
     ///
     /// This is the low-level counterpart to
-    /// [`v2::ConnectionTo::spawn_connection`](crate::v2::ConnectionTo::spawn_connection) for code that intentionally works
+    /// [`v1::ConnectionTo::spawn_connection`](crate::v1::ConnectionTo::spawn_connection) for code that intentionally works
     /// with a raw [`ConnectionTo`], such as custom [`HandleDispatchFrom`] or
     /// [`RunWithConnectionTo`] implementations. Prefer [`Self::spawn_connection`]
     /// when a raw child handle is sufficient.
     ///
     /// ```no_run
     /// # use agent_client_protocol::{
-    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole, v2,
+    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole, v1,
     /// # };
     /// # fn example(
     /// #     connection: ConnectionTo<UntypedRole>,
     /// #     transport: impl ConnectTo<Client> + 'static,
     /// # ) -> Result<(), Error> {
-    /// let child: v2::ConnectionTo<Agent> =
-    ///     connection.spawn_connection_with_context(Client.v2(), transport)?;
+    /// let child: v1::ConnectionTo<Agent> =
+    ///     connection.spawn_connection_with_context(Client.v1(), transport)?;
     /// # drop(child);
     /// # Ok(())
     /// # }
     /// ```
-    #[cfg(feature = "unstable_protocol_v2")]
     #[track_caller]
     pub fn spawn_connection_with_context<R: Role, P: Protocol>(
         &self,
@@ -7529,8 +7549,8 @@ mod tests {
                 .v1()
                 .with_spawned({
                     let cleaned = cleaned.clone();
-                    async move |cx: ConnectionTo<Agent>| {
-                        cx.shutdown_requested().await;
+                    async move |cx: crate::v1::ConnectionTo<Agent>| {
+                        cx.raw_connection().shutdown_requested().await;
                         // This stands in for the actual scoped native operation:
                         // its async cleanup only advances if this runner is polled.
                         cleanup_rx.await.unwrap();
@@ -7553,9 +7573,9 @@ mod tests {
                 .on_close({
                     let close_finished = close_finished.clone();
                     let scoped_done = scoped_done_rx.clone();
-                    async move |cx: ConnectionTo<Agent>| {
+                    async move |cx: crate::v1::ConnectionTo<Agent>| {
                         // EOF cancellation must precede, not await, close callbacks.
-                        cx.shutdown_requested().await;
+                        cx.raw_connection().shutdown_requested().await;
                         assert!(!cx.is_incoming_closed());
                         scoped_done.await;
                         close_finished.store(true, Ordering::Release);

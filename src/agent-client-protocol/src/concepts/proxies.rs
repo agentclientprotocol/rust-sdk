@@ -149,7 +149,7 @@
 //! The corresponding v2 proxy uses `Proxy.v2()`, a
 //! `schema::v2::NewSessionRequest`, and the same fluent session-builder shape.
 //! Its `v2::SessionBuilder::on_proxy_session_start` callback receives an
-//! `v2::OpenedSession` containing both the command-only v2 session handle and the
+//! `v2::SessionSetup` containing both the command-only v2 session handle and the
 //! complete `NewSessionResponse`:
 //!
 //! ```rust,ignore
@@ -159,8 +159,8 @@
 //!         async |request: schema::v2::NewSessionRequest, responder, cx| {
 //!             cx.build_session_from(request)
 //!                 .with_mcp_server(my_mcp_server)?
-//!                 .on_proxy_session_start(responder, async |opened| {
-//!                     let (session, response) = opened.into_parts();
+//!                 .on_proxy_session_start(responder, async |setup| {
+//!                     let SessionSetup { session, response, .. } = setup;
 //!                     track_session(session.session_id(), response);
 //!                     Ok(())
 //!                 })

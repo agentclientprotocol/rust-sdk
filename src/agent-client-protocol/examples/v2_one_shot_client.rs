@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .start_session()
                 .block_task()
                 .await?;
-            let session = opened.into_session();
+            let session = opened.session;
 
             session.send_prompt(&cli.prompt).block_task().await?;
             eprintln!("Prompt accepted; waiting for session output and completion...");

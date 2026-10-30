@@ -28,9 +28,9 @@ Every connection names its version: `Client.v1()`, `Agent.v1()`, and
 `Proxy.v2()` the v2 API. The SDK types for each version live in
 `agent_client_protocol::v1` and `agent_client_protocol::v2`, which export the
 same names: `ConnectionTo`, `Builder`, `Responder`, `ResponseRouter`,
-`Dispatch`, `SessionBuilder`, `ResumeSessionBuilder`, `OpenedSession`, and
-`ActiveSession` (plus `SentRequest`, `PreparedRequest`, `ForkSessionBuilder`,
-and the `send_initialize` outcome types in `v2`). Moving code from v1 to v2 is
+`SentRequest`, `PreparedRequest`, `Dispatch`, `SessionBuilder`,
+`ResumeSessionBuilder`, `SessionSetup`, `ActiveSession`, and `schema` (plus
+`ForkSessionBuilder` and the `send_initialize` outcome types in `v2`). Moving code from v1 to v2 is
 mostly a matter of changing which module it imports from.
 Fluent typed handlers, spawned tasks, close callbacks, and `connect_with`
 receive `v2::ConnectionTo<_>`, so the protocol version is reflected in the
@@ -92,8 +92,8 @@ baseline session surface shown in the runnable quickstart.
 
 ## High-level v2 sessions
 
-Stable callbacks receive `v1::ConnectionTo<_>` (the version-neutral
-`ConnectionTo<_>`) and expose the protocol v1 `build_session*`,
+Stable callbacks receive `v1::ConnectionTo<_>` and expose the protocol v1
+`build_session*`, `load_session*`, `resume_session*`,
 `v1::SessionBuilder`, `v1::ActiveSession`, and `v1::SessionMessage` APIs.
 Callbacks installed through `Client.v2()` receive `v2::ConnectionTo<_>` and expose
 the v2 `build_session*` and `resume_session*` helpers, plus feature-gated
@@ -101,7 +101,7 @@ the v2 `build_session*` and `resume_session*` helpers, plus feature-gated
 names describe the same lifecycle operations while the connection type selects
 their schema and return types at compile time. Resume and fork return
 `v2::ResumeSessionBuilder` and `v2::ForkSessionBuilder`. Call `start_session` to
-publish the request and obtain an `v2::OpenedSession` containing the command
+publish the request and obtain a `v2::SessionSetup` containing the command
 handle and complete operation-specific response.
 
 Low-level custom `with_handler` and `with_runner` implementations continue to
@@ -112,7 +112,9 @@ or deliberately send extension or untyped messages. The connection guard
 enforces negotiation and initialization lifecycle, not Rust-type provenance.
 Dynamic handlers registered through `v2::ConnectionTo::add_dynamic_handler` use
 the same low-level `HandleDispatchFrom` interface and therefore also receive
-`ConnectionTo<_>`.
+`ConnectionTo<_>`. Raw code converts explicitly: `connection.into_protocol::<V1>()`
+returns a `v1::ConnectionTo` (and `into_protocol::<V2>()` a `v2::ConnectionTo`),
+and either versioned connection's `into_raw()` returns the version-neutral one.
 
 Nested connections preserve the stable `ConnectionTo` API while still typing
 the child implementation's callbacks. On a raw `ConnectionTo<_>`,
@@ -121,12 +123,13 @@ callbacks installed on that v2 child builder still receive
 `v2::ConnectionTo<_>`. Existing `spawn_connection::<Role>` calls therefore remain
 source-compatible.
 
-When a raw parent also needs a typed handle to the v2 child, the
-`unstable_protocol_v2` feature exposes
-`ConnectionTo::spawn_connection_with_context`, which returns the context
-selected by the child builder. `v2::ConnectionTo::spawn_connection` likewise
-follows the child builder naturally, so spawning `Client.v2()` through an
-already-typed v2 connection returns another `v2::ConnectionTo<_>`.
+When a raw parent also needs a typed handle to the child,
+`ConnectionTo::spawn_connection_with_context` returns the context selected by
+the child builder. `v1::ConnectionTo::spawn_connection` and
+`v2::ConnectionTo::spawn_connection` likewise follow the child builder
+naturally, so spawning `Client.v2()` through an already-typed v2 connection
+returns another `v2::ConnectionTo<_>`, and spawning `Client.v1()` through any
+typed connection returns a `v1::ConnectionTo<_>`.
 
 A complete client installs update and interactive-request handlers before
 connecting. After `session/prompt` is accepted, it must keep the connection
@@ -147,12 +150,12 @@ V2 deliberately separates prompt submission from session observation:
   `SentRequest<PromptResponse, V2>`. Callers must explicitly await it, register a
   response callback, or detach it.
 - `v2::SessionBuilder::start_session` likewise returns a mapped `SentRequest`.
-  Its `v2::OpenedSession` result keeps the command handle separate from the
+  Its `v2::SessionSetup` result keeps the command handle separate from the
   complete `NewSessionResponse` represented by the linked schema, rather than
   reconstructing a selected subset of its fields.
 - `v2::ConnectionTo::resume_session` and `resume_session_from` return a
   `v2::ResumeSessionBuilder`. Its `start_session` method publishes
-  `session/resume` and returns an `v2::OpenedSession` containing the complete
+  `session/resume` and returns a `v2::SessionSetup` containing the complete
   `ResumeSessionResponse` without reconstructing it.
 - With `unstable_session_fork`, `v2::ConnectionTo::fork_session` and
   `fork_session_from` return a `v2::ForkSessionBuilder`. Its `start_session`
@@ -254,6 +257,7 @@ non-blocking setup helpers for a v2 proxy:
 
 ```rust,ignore
 use agent_client_protocol::schema::v2;
+use agent_client_protocol::v2::SessionSetup;
 use agent_client_protocol::{Client, Proxy};
 
 Proxy
@@ -263,9 +267,9 @@ Proxy
         async |request: v2::NewSessionRequest, responder, cx| {
             cx.build_session_from(request)
                 .with_mcp_server(session_server)?
-                .on_proxy_session_start(responder, async |opened| {
-                    let (session, setup_response) = opened.into_parts();
-                    record_session(session.session_id(), setup_response);
+                .on_proxy_session_start(responder, async |setup| {
+                    let SessionSetup { session, response, .. } = setup;
+                    record_session(session.session_id(), response);
                     Ok(())
                 })
         },
@@ -286,7 +290,7 @@ downstream response drops pending routing and MCP attachment. Successful setup
 keeps them for the connection lifetime. A cancellation signal itself remains
 advisory: it is forwarded downstream while the helper awaits that response.
 Each helper then spawns the callback outside the ordering barrier with an
-`v2::OpenedSession` containing the command-only session handle and complete setup
+`v2::SessionSetup` containing the command-only session handle and complete setup
 response. Updates and interactive requests remain independent connection
 traffic and should still be handled by typed callbacks on `Proxy.v2()`.
 

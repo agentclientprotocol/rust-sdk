@@ -11,6 +11,7 @@
 
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+use agent_client_protocol::v1::SessionSetup;
 use agent_client_protocol::{Client, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
@@ -295,7 +296,7 @@ async fn test_trace_client_mcp_server() -> Result<(), agent_client_protocol::Err
                         .build_session(".")
                         .with_mcp_server(make_echo_mcp_server::<Client>(&call_count))?
                         .block_task()
-                        .run_until(async |mut session| {
+                        .run_until(async |SessionSetup { mut session, .. }| {
                             // Send prompt that triggers MCP tool call
                             // The tool call will travel: agent → conductor → client
                             session.send_prompt(TestyCommand::CallTool {

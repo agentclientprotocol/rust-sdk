@@ -5,6 +5,7 @@
 //! when the tool is invoked.
 
 use agent_client_protocol::mcp_server::McpServer;
+use agent_client_protocol::v1::SessionSetup;
 use agent_client_protocol::{Agent, Conductor, ConnectTo, Proxy, Role, RunWithConnectionTo};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
@@ -72,7 +73,7 @@ async fn test_scoped_mcp_server_through_session() -> Result<(), agent_client_pro
                     .build_session(".")
                     .with_mcp_server(make_mcp_server::<Agent>(&collected_values))?
                     .block_task()
-                    .run_until(async |mut active_session| {
+                    .run_until(async |SessionSetup { session: mut active_session, .. }| {
                         active_session
                             .send_prompt(TestyCommand::CallTool {
                                 server: "test".to_string(),

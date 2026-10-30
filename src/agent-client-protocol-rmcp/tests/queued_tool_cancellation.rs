@@ -240,7 +240,7 @@ async fn queued_cancellation(end_scope: bool) {
         let task = tokio::spawn(Client.v1().connect_with(transport, async move |cx| {
             // The shared runner belongs to the connection, not either of the
             // independent registrations that happen to delegate to it.
-            cx.spawn(runner.run_with_connection_to(cx.clone()))?;
+            cx.spawn(runner.run_with_connection_to(cx.clone().into_raw()))?;
             let a = cx
                 .build_session_cwd()?
                 .with_mcp_server(server_a)?

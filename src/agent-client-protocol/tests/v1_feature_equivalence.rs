@@ -217,7 +217,7 @@ async fn v1_client_retries_unhandled_session_messages() {
     let client = Client.v1().on_receive_request(
         async move |request: UntypedMessage,
                     responder: agent_client_protocol::Responder<Value, V1>,
-                    cx: ConnectionTo<Agent>| {
+                    cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
             assert_eq!(request.method(), "_test/register_session_handler");
             cx.add_dynamic_handler(CaptureUpdate(captured_tx.take()))?
                 .detach();

@@ -706,8 +706,8 @@ async fn v2_proxy_session_helper_preserves_response_and_routes_later_updates() -
                 move |opened| async move {
                     callback_tx
                         .unbounded_send((
-                            opened.session().session_id().clone(),
-                            opened.response().clone(),
+                            opened.session.session_id().clone(),
+                            opened.response.clone(),
                         ))
                         .map_err(Error::into_internal_error)
                 },
@@ -831,8 +831,8 @@ async fn v2_proxy_resume_helper_routes_replay_before_response_and_later_updates(
                 move |opened| async move {
                     callback_tx
                         .unbounded_send((
-                            opened.session().session_id().clone(),
-                            opened.response().clone(),
+                            opened.session.session_id().clone(),
+                            opened.response.clone(),
                         ))
                         .map_err(Error::into_internal_error)
                 },

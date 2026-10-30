@@ -103,7 +103,7 @@ pub async fn prompt_with_callback(
         )
         .connect_with(
             component,
-            |cx: agent_client_protocol::ConnectionTo<Agent>| async move {
+            |cx: agent_client_protocol::v1::ConnectionTo<Agent>| async move {
                 // Initialize the agent
                 let _init_response = cx
                     .send_request(InitializeRequest::new(ProtocolVersion::V1))
@@ -114,7 +114,8 @@ pub async fn prompt_with_callback(
                     .build_session(PathBuf::from("."))
                     .block_task()
                     .start_session()
-                    .await?;
+                    .await?
+                    .session;
 
                 session.send_prompt(prompt_text)?;
 

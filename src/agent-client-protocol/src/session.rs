@@ -4,20 +4,20 @@ use futures::channel::mpsc;
 use futures::future::{self, Either};
 
 use crate::{
-    Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcRequest, Responder,
-    Role,
+    Agent, Client, ConnectionTo as RawConnectionTo, Dispatch, HandleDispatchFrom, Handled,
+    JsonRpcRequest, Responder, Role,
     jsonrpc::{
         DynamicHandlerCleanup, DynamicHandlerGuard,
         run::{NullRun, RunWithConnectionTo, RunnerErrorScope},
     },
     role::{HasPeer, acp::ProxySessionMessages},
     schema::v1::{
-        ContentBlock, ContentChunk, LoadSessionRequest, LoadSessionResponse, Meta,
-        NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
-        ResumeSessionResponse, SessionConfigOption, SessionId, SessionModeState,
-        SessionNotification, SessionUpdate, StopReason,
+        ContentBlock, ContentChunk, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+        NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
+        ResumeSessionResponse, SessionId, SessionNotification, SessionUpdate, StopReason,
     },
     util::{MatchDispatch, MatchDispatchFrom},
+    v1::ConnectionTo,
 };
 
 use crate::Raw;
@@ -47,9 +47,9 @@ async fn wait_session_cleanup(cleanup: SessionCleanup) {
 }
 
 fn session_runner_connection<R: Role>(
-    connection: ConnectionTo<R>,
+    connection: RawConnectionTo<R>,
     cleanup: &SessionCleanup,
-) -> (ConnectionTo<R>, RunnerErrorScope) {
+) -> (RawConnectionTo<R>, RunnerErrorScope) {
     let closing = cleanup.clone();
     let scope = RunnerErrorScope::new(
         move || close_session_registrations(&closing),
@@ -234,7 +234,7 @@ where
 
     /// Given a session response received from the agent,
     /// attach a handler to process messages related to this session
-    /// and let you access them.
+    /// and return the session together with the response.
     ///
     /// Normally you would not use this method directly but would
     /// instead use [`Self::build_session`] and then [`SessionBuilder::start_session`].
@@ -246,24 +246,14 @@ where
         &self,
         response: NewSessionResponse,
         mcp_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
-    ) -> Result<ActiveSession<'runner, Counterpart>, crate::Error> {
-        let NewSessionResponse {
-            session_id,
-            modes,
-            config_options,
-            meta,
-            ..
-        } = response;
-
-        let prepared = self.prepare_session_routing(&session_id)?;
-        Ok(prepared.into_active_session(
+    ) -> Result<SessionSetup<'runner, Counterpart, NewSessionResponse>, crate::Error> {
+        let prepared = self.prepare_session_routing(&response.session_id)?;
+        let session = prepared.into_active_session(
             self.clone(),
-            session_id,
-            modes,
-            config_options,
-            meta,
+            response.session_id.clone(),
             mcp_handler_registrations,
-        ))
+        );
+        Ok(SessionSetup { session, response })
     }
 
     /// Install the update channel and handler for `session_id`.
@@ -304,16 +294,10 @@ where
         self,
         connection: ConnectionTo<Counterpart>,
         session_id: SessionId,
-        modes: Option<SessionModeState>,
-        config_options: Option<Vec<SessionConfigOption>>,
-        meta: Option<Meta>,
         mcp_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     ) -> ActiveSession<'runner, Counterpart> {
         ActiveSession {
             session_id,
-            modes,
-            config_options,
-            meta,
             update_rx: self.update_rx,
             update_tx: self.update_tx,
             connection,
@@ -327,44 +311,17 @@ where
 /// Internal behavior shared by the two stable restore operations.
 trait RestoreRequest: JsonRpcRequest {
     fn session_id(&self) -> &SessionId;
-    fn response_modes(response: &Self::Response) -> Option<SessionModeState>;
-    fn response_config_options(response: &Self::Response) -> Option<Vec<SessionConfigOption>>;
-    fn response_meta(response: &Self::Response) -> Option<Meta>;
 }
 
 impl RestoreRequest for LoadSessionRequest {
     fn session_id(&self) -> &SessionId {
         &self.session_id
     }
-
-    fn response_modes(response: &Self::Response) -> Option<SessionModeState> {
-        response.modes.clone()
-    }
-
-    fn response_config_options(response: &Self::Response) -> Option<Vec<SessionConfigOption>> {
-        response.config_options.clone()
-    }
-
-    fn response_meta(response: &Self::Response) -> Option<Meta> {
-        response.meta.clone()
-    }
 }
 
 impl RestoreRequest for ResumeSessionRequest {
     fn session_id(&self) -> &SessionId {
         &self.session_id
-    }
-
-    fn response_modes(response: &Self::Response) -> Option<SessionModeState> {
-        response.modes.clone()
-    }
-
-    fn response_config_options(response: &Self::Response) -> Option<Vec<SessionConfigOption>> {
-        response.config_options.clone()
-    }
-
-    fn response_meta(response: &Self::Response) -> Option<Meta> {
-        response.meta.clone()
     }
 }
 
@@ -435,21 +392,14 @@ fn restored_session<Counterpart, Request>(
     session_id: SessionId,
     prepared: PreparedSession<Counterpart>,
     response: Request::Response,
-) -> OpenedSession<'static, Counterpart, Request::Response>
+) -> SessionSetup<'static, Counterpart, Request::Response>
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
 {
-    let session = prepared.into_active_session(
-        connection,
-        session_id,
-        Request::response_modes(&response),
-        Request::response_config_options(&response),
-        Request::response_meta(&response),
-        Vec::new(),
-    );
+    let session = prepared.into_active_session(connection, session_id, Vec::new());
 
-    OpenedSession { session, response }
+    SessionSetup { session, response }
 }
 
 fn on_restore_session_start<Counterpart, Request, F, Fut>(
@@ -459,7 +409,7 @@ fn on_restore_session_start<Counterpart, Request, F, Fut>(
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
-    F: FnOnce(OpenedSession<'static, Counterpart, Request::Response>) -> Fut + Send + 'static,
+    F: FnOnce(SessionSetup<'static, Counterpart, Request::Response>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
     ensure_v1_session_protocol(&builder.connection)?;
@@ -471,9 +421,10 @@ where
     } = builder;
     let session_id = request.session_id().clone();
     let prepared = connection.prepare_session_routing(&session_id)?;
-    let routing_ready = connection.dynamic_handler_barrier();
+    let routing_ready = connection.raw_connection().dynamic_handler_barrier();
 
     connection
+        .raw_connection()
         .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .on_receiving_result({
             let connection = connection.clone();
@@ -492,7 +443,7 @@ where
 
 async fn start_restored_session<Counterpart, Request>(
     builder: RestoreSessionBuilder<Counterpart, Request, Blocking>,
-) -> Result<OpenedSession<'static, Counterpart, Request::Response>, crate::Error>
+) -> Result<SessionSetup<'static, Counterpart, Request::Response>, crate::Error>
 where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
@@ -506,10 +457,11 @@ where
     } = builder;
     let session_id = request.session_id().clone();
     let prepared = connection.prepare_session_routing(&session_id)?;
-    let routing_ready = connection.dynamic_handler_barrier();
+    let routing_ready = connection.raw_connection().dynamic_handler_barrier();
     let session_connection = connection.clone();
 
     connection
+        .raw_connection()
         .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .block_task_with_ordered_result(move |result| {
             let response = result?;
@@ -535,7 +487,7 @@ where
     /// the returned session.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
-        F: FnOnce(OpenedSession<'static, Counterpart, LoadSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(SessionSetup<'static, Counterpart, LoadSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         on_restore_session_start(self, op)
@@ -553,7 +505,7 @@ where
     /// The returned session receives subsequent session traffic.
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
-        F: FnOnce(OpenedSession<'static, Counterpart, ResumeSessionResponse>) -> Fut
+        F: FnOnce(SessionSetup<'static, Counterpart, ResumeSessionResponse>) -> Fut
             + Send
             + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
@@ -574,7 +526,7 @@ where
     /// provisional session route.
     pub async fn start_session(
         self,
-    ) -> Result<OpenedSession<'static, Counterpart, LoadSessionResponse>, crate::Error> {
+    ) -> Result<SessionSetup<'static, Counterpart, LoadSessionResponse>, crate::Error> {
         start_restored_session(self).await
     }
 }
@@ -591,64 +543,48 @@ where
     /// provisional session route.
     pub async fn start_session(
         self,
-    ) -> Result<OpenedSession<'static, Counterpart, ResumeSessionResponse>, crate::Error> {
+    ) -> Result<SessionSetup<'static, Counterpart, ResumeSessionResponse>, crate::Error> {
         start_restored_session(self).await
     }
 }
 
-/// A restored stable-v1 session and the exact operation response that opened
-/// it.
+/// A stable protocol v1 session and the response of the request that set it
+/// up.
 ///
-/// The session ID comes from the load or resume request because stable-v1
-/// restore responses do not repeat it. Keeping the response separate preserves
-/// every operation-specific field without reconstructing it from session
-/// state.
-pub struct OpenedSession<'runner, Link, Response>
+/// Every setup method returns one: [`SessionBuilder::start_session`]
+/// (`session/new`) and [`RestoreSessionBuilder::start_session`]
+/// (`session/load` and `session/resume`), and the `on_session_start` and
+/// [`run_until`](SessionBuilder::run_until) callbacks receive one too. The
+/// response is the complete, operation-specific setup response; it is kept
+/// next to the session rather than inside [`ActiveSession`], so the setup
+/// response lives in the same place for every setup method. For load and
+/// resume, the session ID comes from the request, because stable v1 restore
+/// responses do not repeat it.
+///
+/// New fields may be added, so destructure with `..`:
+///
+/// ```ignore
+/// let SessionSetup { mut session, response, .. } = builder.start_session().await?;
+/// ```
+#[non_exhaustive]
+pub struct SessionSetup<'runner, Link, Response>
 where
     Link: HasPeer<Agent>,
 {
-    session: ActiveSession<'runner, Link>,
-    response: Response,
+    /// The session, with its update stream.
+    pub session: ActiveSession<'runner, Link>,
+    /// The complete response of the request that set the session up.
+    pub response: Response,
 }
 
-impl<'runner, Link, Response> OpenedSession<'runner, Link, Response>
-where
-    Link: HasPeer<Agent>,
-{
-    /// Access the active session.
-    pub fn session(&self) -> &ActiveSession<'runner, Link> {
-        &self.session
-    }
-
-    /// Mutably access the active session, for example to consume replay.
-    pub fn session_mut(&mut self) -> &mut ActiveSession<'runner, Link> {
-        &mut self.session
-    }
-
-    /// Access the complete load or resume response.
-    pub fn response(&self) -> &Response {
-        &self.response
-    }
-
-    /// Split the restored value into its active session and exact response.
-    pub fn into_parts(self) -> (ActiveSession<'runner, Link>, Response) {
-        (self.session, self.response)
-    }
-
-    /// Consume this value and return only the active session.
-    pub fn into_session(self) -> ActiveSession<'runner, Link> {
-        self.session
-    }
-}
-
-impl<Link, Response> std::fmt::Debug for OpenedSession<'_, Link, Response>
+impl<Link, Response> std::fmt::Debug for SessionSetup<'_, Link, Response>
 where
     Link: HasPeer<Agent>,
     Response: std::fmt::Debug,
 {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("OpenedSession")
+            .debug_struct("SessionSetup")
             .field("session_id", self.session.session_id())
             .field("response", &self.response)
             .finish()
@@ -709,8 +645,9 @@ where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
         let (handler, mcp_run) = mcp_server.into_handler_and_runner();
-        self.dynamic_handler_registrations
-            .push(handler.into_dynamic_handler(&mut self.request, &self.connection)?);
+        self.dynamic_handler_registrations.push(
+            handler.into_dynamic_handler(&mut self.request, self.connection.raw_connection())?,
+        );
         Ok(SessionBuilder {
             connection: self.connection,
             request: self.request,
@@ -726,8 +663,9 @@ where
     /// without blocking the current task. The session handshake and closure execution
     /// happen in a spawned background task.
     ///
-    /// The closure receives an `ActiveSession<'static, _>` and runs in a
-    /// spawned task. If it returns an error, the error propagates to the
+    /// The closure receives a [`SessionSetup`] with an
+    /// `ActiveSession<'static, _>` and the [`NewSessionResponse`], and runs in
+    /// a spawned task. If it returns an error, the error propagates to the
     /// connection's task handling.
     ///
     /// # Example
@@ -741,7 +679,7 @@ where
     /// # let mcp = McpServer::<Agent, _>::builder("tools").build();
     /// cx.build_session_cwd()?
     ///     .with_mcp_server(mcp)?
-    ///     .on_session_start(async |mut session| {
+    ///     .on_session_start(async |SessionSetup { mut session, .. }| {
     ///         // Do something with the session
     ///         session.send_prompt("Hello")?;
     ///         let response = session.read_to_string().await?;
@@ -767,7 +705,7 @@ where
     pub fn on_session_start<F, Fut>(self, op: F) -> Result<(), crate::Error>
     where
         R: 'static,
-        F: FnOnce(ActiveSession<'static, Counterpart>) -> Fut + Send + 'static,
+        F: FnOnce(SessionSetup<'static, Counterpart, NewSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         ensure_v1_session_protocol(&self.connection)?;
@@ -782,7 +720,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -790,16 +728,17 @@ where
         ))?;
 
         connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
                 async move |result| {
                     let response = result?;
 
-                    let active_session =
+                    let setup =
                         connection.attach_session(response, dynamic_handler_registrations)?;
 
-                    connection.spawn(async move { op(active_session).await })
+                    connection.spawn(async move { op(setup).await })
                 }
             })
     }
@@ -879,7 +818,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -887,7 +826,9 @@ where
         ))?;
 
         // Send the "new session" request to the agent.
-        let sent = connection.send_ordered_request_to::<Raw, _, _>(Agent, request);
+        let sent = connection
+            .raw_connection()
+            .send_ordered_request_to::<Raw, _, _>(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -948,7 +889,8 @@ where
     /// This is useful when you have MCP servers that are borrowed from your local
     /// stack frame.
     ///
-    /// The `ActiveSession` passed to `op` has a non-`'static` lifetime, which
+    /// The [`SessionSetup`] passed to `op` holds an `ActiveSession` with a
+    /// non-`'static` lifetime, which
     /// prevents calling [`ActiveSession::proxy_remaining_messages`] (since the
     /// session's background runners would terminate when `op` returns).
     ///
@@ -956,7 +898,7 @@ where
     pub async fn run_until<T>(
         self,
         op: impl for<'runner> AsyncFnOnce(
-            ActiveSession<'runner, Counterpart>,
+            SessionSetup<'runner, Counterpart, NewSessionResponse>,
         ) -> Result<T, crate::Error>,
     ) -> Result<T, crate::Error> {
         let Self {
@@ -969,7 +911,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         run_session_scope(
             run.run_with_connection_to(runner_connection),
             async move {
@@ -978,9 +920,8 @@ where
                     .send_request_to(Agent, request)
                     .block_task()
                     .await?;
-                let active_session =
-                    connection.attach_session(response, dynamic_handler_registrations)?;
-                op(active_session).await
+                let setup = connection.attach_session(response, dynamic_handler_registrations)?;
+                op(setup).await
             },
             cleanup,
             error_scope,
@@ -993,8 +934,10 @@ where
     /// drift but at the cost of requiring MCP servers that are `Send` and
     /// don't access data from the surrounding scope.
     ///
-    /// Returns an `ActiveSession<'static, _>` because the session's runners are spawned into
-    /// background tasks that live for the connection lifetime.
+    /// Returns a [`SessionSetup`] with the `ActiveSession<'static, _>` and the
+    /// complete [`NewSessionResponse`]. The session is `'static` because its
+    /// runners are spawned into background tasks that live for the connection
+    /// lifetime.
     ///
     /// An error response to `session/new` is returned to the caller and leaves
     /// the connection running. The session's dynamic handlers are removed, so
@@ -1002,7 +945,9 @@ where
     /// installed before later inbound messages are dispatched.
     ///
     /// Requires calling [`block_task`](Self::block_task) first.
-    pub async fn start_session(self) -> Result<ActiveSession<'static, Counterpart>, crate::Error>
+    pub async fn start_session(
+        self,
+    ) -> Result<SessionSetup<'static, Counterpart, NewSessionResponse>, crate::Error>
     where
         R: 'static,
     {
@@ -1018,7 +963,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -1027,6 +972,7 @@ where
 
         let session_connection = connection.clone();
         connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .block_task_with_ordered_result(move |result| {
                 let response = result?;
@@ -1060,10 +1006,12 @@ where
         Counterpart: HasPeer<Client>,
         R: 'static,
     {
-        let active_session = self.start_session().await?;
-        let session_id = active_session.session_id().clone();
-        responder.respond(active_session.response())?;
-        active_session.proxy_remaining_messages()?;
+        let SessionSetup {
+            session, response, ..
+        } = self.start_session().await?;
+        let session_id = session.session_id().clone();
+        responder.respond(response)?;
+        session.proxy_remaining_messages()?;
         Ok(session_id)
     }
 }
@@ -1084,9 +1032,6 @@ where
     session_id: SessionId,
     update_rx: mpsc::UnboundedReceiver<SessionMessage>,
     update_tx: mpsc::UnboundedSender<SessionMessage>,
-    modes: Option<SessionModeState>,
-    config_options: Option<Vec<SessionConfigOption>>,
-    meta: Option<serde_json::Map<String, serde_json::Value>>,
     connection: ConnectionTo<Link>,
 
     /// Registration for the handler that routes session messages to `update_rx`.
@@ -1128,32 +1073,6 @@ where
         &self.session_id
     }
 
-    /// Access modes available in this session.
-    pub fn modes(&self) -> Option<&SessionModeState> {
-        self.modes.as_ref()
-    }
-
-    /// Access the initial session configuration options returned by the agent.
-    pub fn config_options(&self) -> Option<&[SessionConfigOption]> {
-        self.config_options.as_deref()
-    }
-
-    /// Access meta data from session response.
-    pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
-        self.meta.as_ref()
-    }
-
-    /// Build a `NewSessionResponse` from the session information.
-    ///
-    /// Useful when you need to forward the session response to a client
-    /// after doing some processing.
-    pub fn response(&self) -> NewSessionResponse {
-        NewSessionResponse::new(self.session_id.clone())
-            .modes(self.modes.clone())
-            .config_options(self.config_options.clone())
-            .meta(self.meta.clone())
-    }
-
     /// Access the underlying connection context used to communicate with the agent.
     pub fn connection(&self) -> &ConnectionTo<Link> {
         &self.connection
@@ -1163,6 +1082,7 @@ where
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(
                 Agent,
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
@@ -1261,10 +1181,6 @@ where
             connection,
             session_handler_registration,
             mcp_handler_registrations,
-            // These fields are not needed for proxying
-            modes: _,
-            config_options: _,
-            meta: _,
             _runner,
         } = self;
 
@@ -1330,7 +1246,7 @@ where
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
-        cx: ConnectionTo<Counterpart>,
+        cx: RawConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
         // If this is a message for our session, grab it.
         tracing::trace!(
@@ -1372,7 +1288,7 @@ where
 fn ensure_v1_session_protocol<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
 ) -> Result<(), crate::Error> {
-    if !connection.is_acp_v2() {
+    if !connection.raw_connection().is_acp_v2() {
         return Ok(());
     }
 

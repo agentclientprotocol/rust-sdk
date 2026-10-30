@@ -84,6 +84,7 @@ pub mod one_shot_prompt {
     //! ```
     //! use agent_client_protocol::{Client, Agent, ConnectTo};
     //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+    //! use agent_client_protocol::v1::SessionSetup;
     //!
     //! async fn ask_agent(
     //!     transport: impl ConnectTo<Client> + 'static,
@@ -97,7 +98,7 @@ pub mod one_shot_prompt {
     //!                 .block_task().await?;
     //!
     //!             // Create a session, send prompt, read response
-    //!             let mut session = connection.build_session_cwd()?
+    //!             let SessionSetup { mut session, .. } = connection.build_session_cwd()?
     //!                 .block_task()
     //!                 .start_session()
     //!                 .await?;
@@ -128,9 +129,9 @@ pub mod one_shot_prompt {
     //! [`RequestPermissionRequest`] messages.
     //!
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
-    //! [`send_request`]: agent_client_protocol::ConnectionTo::send_request
+    //! [`send_request`]: agent_client_protocol::v1::ConnectionTo::send_request
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
-    //! [`build_session_cwd`]: agent_client_protocol::ConnectionTo::build_session_cwd
+    //! [`build_session_cwd`]: agent_client_protocol::v1::ConnectionTo::build_session_cwd
     //! [`start_session`]: agent_client_protocol::v1::SessionBuilder::start_session
     //! [`ActiveSession`]: agent_client_protocol::v1::ActiveSession
     //! [`send_prompt`]: agent_client_protocol::v1::ActiveSession::send_prompt
@@ -267,7 +268,7 @@ pub mod v2_one_shot_prompt {
     //!                 .start_session()
     //!                 .block_task()
     //!                 .await?
-    //!                 .into_session();
+    //!                 .session;
     //!
     //!             // This response only means that the prompt was accepted.
     //!             session.send_prompt(prompt).block_task().await?;
@@ -312,6 +313,7 @@ pub mod connecting_as_client {
     //! ```
     //! use agent_client_protocol::{Client, Agent, ConnectTo};
     //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+    //! use agent_client_protocol::v1::SessionSetup;
     //!
     //! async fn connect_to_agent(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
     //!     Client.v1()
@@ -324,7 +326,7 @@ pub mod connecting_as_client {
     //!             // Create a session and send a prompt
     //!             connection.build_session_cwd()?
     //!                 .block_task()
-    //!                 .run_until(async |mut session| {
+    //!                 .run_until(async |SessionSetup { mut session, .. }| {
     //!                     session.send_prompt("Hello, agent!")?;
     //!                     let response = session.read_to_string().await?;
     //!                     println!("Agent said: {}", response);
@@ -350,10 +352,11 @@ pub mod connecting_as_client {
     //! also supports adding MCP servers with [`with_mcp_server`].
     //!
     //! Existing stable-v1 sessions can be reopened with [`load_session`] to
-    //! replay history or [`resume_session`] to continue without replay. Their
-    //! blocking `start_session` returns a [`v1::OpenedSession`] containing the
-    //! active session and complete operation response; `on_session_start`
-    //! delivers the same value to its callback. Use either restore operation
+    //! replay history or [`resume_session`] to continue without replay. Like
+    //! `session/new`, their blocking `start_session` returns a
+    //! [`v1::SessionSetup`] containing the active session and complete
+    //! operation response; `on_session_start` delivers the same value to its
+    //! callback. Use either restore operation
     //! only after initialization advertises its matching capability.
     //!
     //! # Handling Permission Requests
@@ -394,11 +397,11 @@ pub mod connecting_as_client {
     //!
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
-    //! [`build_session`]: agent_client_protocol::ConnectionTo::build_session
-    //! [`load_session`]: agent_client_protocol::ConnectionTo::load_session
-    //! [`resume_session`]: agent_client_protocol::ConnectionTo::resume_session
+    //! [`build_session`]: agent_client_protocol::v1::ConnectionTo::build_session
+    //! [`load_session`]: agent_client_protocol::v1::ConnectionTo::load_session
+    //! [`resume_session`]: agent_client_protocol::v1::ConnectionTo::resume_session
     //! [`SessionBuilder`]: agent_client_protocol::v1::SessionBuilder
-    //! [`v1::OpenedSession`]: agent_client_protocol::v1::OpenedSession
+    //! [`v1::SessionSetup`]: agent_client_protocol::v1::SessionSetup
     //! [`send_prompt`]: agent_client_protocol::v1::ActiveSession::send_prompt
     //! [`read_update`]: agent_client_protocol::v1::ActiveSession::read_update
     //! [`read_to_string`]: agent_client_protocol::v1::ActiveSession::read_to_string
@@ -862,12 +865,13 @@ pub mod per_session_mcp_server {
     //! types. `v2::SessionBuilder` handles `session/new`, while
     //! `v2::ResumeSessionBuilder` handles `session/resume`. With
     //! `unstable_session_fork`, `v2::ForkSessionBuilder` handles `session/fork`.
-    //! Their `on_proxy_session_start` callbacks receive an `v2::OpenedSession`,
+    //! Their `on_proxy_session_start` callbacks receive a `v2::SessionSetup`,
     //! not just a session ID, so they retain both the command-only handle and
     //! the complete operation-specific response:
     //!
     //! ```rust,ignore
     //! use agent_client_protocol::schema::v2;
+    //! use agent_client_protocol::v2::SessionSetup;
     //!
     //! Proxy.v2()
     //!     .on_receive_request_from(
@@ -879,11 +883,11 @@ pub mod per_session_mcp_server {
     //!             connection
     //!                 .build_session_from(request)
     //!                 .with_mcp_server(mcp_server)?
-    //!                 .on_proxy_session_start(responder, async move |opened| {
-    //!                     let (session, setup_response) = opened.into_parts();
+    //!                 .on_proxy_session_start(responder, async move |setup| {
+    //!                     let SessionSetup { session, response, .. } = setup;
     //!                     tracing::info!(
     //!                         session_id = %session.session_id(),
-    //!                         ?setup_response,
+    //!                         ?response,
     //!                         "Session started"
     //!                     );
     //!                     Ok(())
@@ -905,8 +909,8 @@ pub mod per_session_mcp_server {
     //!             connection
     //!                 .resume_session_from(request)
     //!                 .with_mcp_server(mcp_server)?
-    //!                 .on_proxy_session_start(responder, async move |opened| {
-    //!                     tracing::info!(session_id = %opened.session().session_id(), "Session resumed");
+    //!                 .on_proxy_session_start(responder, async move |setup| {
+    //!                     tracing::info!(session_id = %setup.session.session_id(), "Session resumed");
     //!                     Ok(())
     //!                 })
     //!         },

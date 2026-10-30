@@ -4,10 +4,11 @@
 use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::SessionMessage;
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcId, RawJsonRpcMessage, Responder, TransportFrame, UntypedMessage,
+    Agent, Channel, Client, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification, RawJsonRpcId,
+    RawJsonRpcMessage, Responder, TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
         LoadSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption,
@@ -115,20 +116,14 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
             connection
                 .load_session(client_session_id.clone(), "/restore/load")
                 .on_session_start(async move |mut restored| {
-                    assert_eq!(restored.session().session_id(), &client_session_id);
-                    assert_eq!(restored.session().modes(), expected.modes.as_ref());
+                    assert_eq!(restored.session.session_id(), &client_session_id);
+                    assert_eq!(&restored.response, &expected);
                     assert_eq!(
-                        restored.session().config_options(),
-                        expected.config_options.as_deref()
-                    );
-                    assert_eq!(restored.session().meta(), expected.meta.as_ref());
-                    assert_eq!(restored.response(), &expected);
-                    assert_eq!(
-                        session_message_text(restored.session_mut().read_update().await?),
+                        session_message_text(restored.session.read_update().await?),
                         "first replay"
                     );
                     assert_eq!(
-                        session_message_text(restored.session_mut().read_update().await?),
+                        session_message_text(restored.session.read_update().await?),
                         "second replay"
                     );
                     done_tx.send(()).map_err(|()| Error::internal_error())
@@ -186,20 +181,14 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
                 .block_task()
                 .start_session()
                 .await?;
-            assert_eq!(restored.session().session_id(), &client_session_id);
-            assert_eq!(restored.session().modes(), expected.modes.as_ref());
+            assert_eq!(restored.session.session_id(), &client_session_id);
+            assert_eq!(&restored.response, &expected);
             assert_eq!(
-                restored.session().config_options(),
-                expected.config_options.as_deref()
-            );
-            assert_eq!(restored.session().meta(), expected.meta.as_ref());
-            assert_eq!(restored.response(), &expected);
-            assert_eq!(
-                session_message_text(restored.session_mut().read_update().await?),
+                session_message_text(restored.session.read_update().await?),
                 "resume update"
             );
 
-            let (session, response) = restored.into_parts();
+            let (session, response) = (restored.session, restored.response);
             assert_eq!(session.session_id(), &client_session_id);
             assert_eq!(response, expected);
             Ok(())
@@ -251,7 +240,7 @@ async fn resume_session_from_preserves_the_existing_request() {
                 .block_task()
                 .start_session()
                 .await?;
-            assert_eq!(restored.session().session_id(), &session_id);
+            assert_eq!(restored.session.session_id(), &session_id);
             Ok(())
         });
 
@@ -374,7 +363,7 @@ async fn failed_restore_removes_routing_before_later_messages() {
             .start_session()
             .await?;
         assert_eq!(
-            session_message_text(restored.session_mut().read_update().await?),
+            session_message_text(restored.session.read_update().await?),
             "after failed restore"
         );
         Ok(())
@@ -470,7 +459,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
             .start_session()
             .await?;
         assert_eq!(
-            session_message_text(restored.session_mut().read_update().await?),
+            session_message_text(restored.session.read_update().await?),
             "after cancelled restore"
         );
         Ok(())

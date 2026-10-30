@@ -63,6 +63,7 @@
 //! ```no_run
 //! use agent_client_protocol::Client;
 //! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+//! use agent_client_protocol::v1::SessionSetup;
 //!
 //! # async fn run(transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
 //! Client.v1()
@@ -75,7 +76,7 @@
 //!         // Step 2: Create a session and send a prompt
 //!         cx.build_session_cwd()?
 //!             .block_task()
-//!             .run_until(async |mut session| {
+//!             .run_until(async |SessionSetup { mut session, .. }| {
 //!                 session.send_prompt("What is 2 + 2?")?;
 //!                 let response = session.read_to_string().await?;
 //!                 println!("{}", response);

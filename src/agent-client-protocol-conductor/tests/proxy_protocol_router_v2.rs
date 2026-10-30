@@ -6,9 +6,8 @@ use std::sync::{
 };
 
 use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
-use agent_client_protocol::{
-    Agent, Builder, ByteStreams, Client, Conductor, ConnectionTo, Error, Proxy,
-};
+use agent_client_protocol::v1::ConnectionTo;
+use agent_client_protocol::{Agent, Builder, ByteStreams, Client, Conductor, Error, Proxy};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -261,7 +260,7 @@ async fn run_v2_client(
 
 async fn run_raw_client(
     components: ProxiesAndAgent,
-    client_task: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), Error>,
+    client_task: impl AsyncFnOnce(agent_client_protocol::ConnectionTo<Agent>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (client_out, conductor_in) = duplex(4096);
     let (conductor_out, client_in) = duplex(4096);

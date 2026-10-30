@@ -56,7 +56,7 @@ pub use crate::jsonrpc::{
 };
 #[cfg(feature = "unstable_session_fork")]
 pub use crate::session::v2::ForkSessionBuilder;
-pub use crate::session::v2::{ActiveSession, OpenedSession, ResumeSessionBuilder, SessionBuilder};
+pub use crate::session::v2::{ActiveSession, ResumeSessionBuilder, SessionBuilder, SessionSetup};
 
 /// A protocol v2 connection builder, returned by
 /// [`Client.v2()`](crate::Client::v2), [`Agent.v2()`](crate::Agent::v2) and

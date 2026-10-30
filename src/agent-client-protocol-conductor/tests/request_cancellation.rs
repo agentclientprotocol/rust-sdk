@@ -28,9 +28,10 @@ use agent_client_protocol::schema::v1::{
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate, StopReason, ToolCallUpdate, ToolCallUpdateFields,
 };
+use agent_client_protocol::v1::{ConnectionTo, SentRequest};
 use agent_client_protocol::{
-    Agent, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, Error, JsonRpcRequest,
-    JsonRpcResponse, NullRun, Proxy, Responder, Role, SentRequest,
+    Agent, ByteStreams, Client, Conductor, ConnectTo, Error, JsonRpcRequest, JsonRpcResponse,
+    NullRun, Proxy, Responder, Role,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
 };
@@ -224,7 +225,7 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
                     let request: SentRequest<SimpleResponse> = cx.send_request(SimpleRequest {
                         message: "park".into(),
                     });
-                    let client_request_id = request.id().clone();
+                    let client_request_id = request.raw_id().clone();
                     request.cancel()?;
 
                     // The cancellation reaches the agent hop by hop, and the
@@ -612,7 +613,7 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
                         session.session_id.clone(),
                         vec!["park".into()],
                     ));
-                    let client_prompt_id = prompt.id().clone();
+                    let client_prompt_id = prompt.raw_id().clone();
                     prompt.cancel()?;
 
                     let error = prompt
@@ -750,7 +751,7 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
 
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
-                    let client_request_id = request.id().clone();
+                    let client_request_id = request.raw_id().clone();
                     request.cancel()?;
 
                     let error = request
@@ -882,7 +883,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
 
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
-                    let client_request_id = request.id().clone();
+                    let client_request_id = request.raw_id().clone();
                     request.cancel()?;
 
                     let error = request
@@ -1100,7 +1101,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
 
                     let request: SentRequest<NewSessionResponse> =
                         cx.send_request(NewSessionRequest::new("/park-session"));
-                    let client_request_id = request.id().clone();
+                    let client_request_id = request.raw_id().clone();
                     let parked_id = next_with_timeout(&mut parked_id_rx).await;
                     request.cancel()?;
 
@@ -1153,7 +1154,7 @@ struct ParkedMcpServer {
     started_tx: mpsc::UnboundedSender<RawJsonRpcId>,
     stopped_tx: mpsc::UnboundedSender<RawJsonRpcId>,
     dropped_tx: mpsc::UnboundedSender<()>,
-    late_tx: mpsc::UnboundedSender<ConnectionTo<role::mcp::Client>>,
+    late_tx: mpsc::UnboundedSender<agent_client_protocol::ConnectionTo<role::mcp::Client>>,
 }
 
 impl McpServerConnect<Conductor> for ParkedMcpServer {
@@ -1199,7 +1200,7 @@ impl ConnectTo<role::mcp::Client> for ParkedMcpComponent {
             .on_receive_request(
                 async move |_request: McpParkRequest,
                             responder: Responder<McpParkResponse>,
-                            cx: ConnectionTo<role::mcp::Client>| {
+                            cx: agent_client_protocol::ConnectionTo<role::mcp::Client>| {
                     let id = responder.raw_id().clone();
                     let stopped = ProbeOnDrop {
                         sender: stopped_tx.clone(),
@@ -1291,7 +1292,9 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
                             }),
                         )])),
                     );
-                    request_id_tx.unbounded_send(request.id().clone()).unwrap();
+                    request_id_tx
+                        .unbounded_send(request.raw_id().clone())
+                        .unwrap();
                     gate.await.map_err(Error::into_internal_error)?;
                     request.cancel()?;
                     let result: Result<MessageMcpResponse, Error> = request.block_task().await;
@@ -1452,7 +1455,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
                 async |cx| {
                     let request: SentRequest<InitializeResponse> =
                         cx.send_request(InitializeRequest::new(ProtocolVersion::V1));
-                    let client_request_id = request.id().clone();
+                    let client_request_id = request.raw_id().clone();
                     request.cancel()?;
 
                     let error = request

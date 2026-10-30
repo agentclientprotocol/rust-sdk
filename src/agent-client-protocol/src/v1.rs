@@ -42,18 +42,11 @@ use crate::{NullClose, NullHandler, UntypedMessage, V1, jsonrpc::run::NullRun};
 /// SDK's `v1` module.
 pub use crate::schema::v1 as schema;
 
-/// The connection that v1 builder callbacks receive.
-///
-/// Protocol v1 uses the version-neutral [`crate::ConnectionTo`], which also
-/// carries the v1 session helpers such as
-/// [`build_session`](crate::ConnectionTo::build_session). Requests sent
-/// through it return the version-neutral [`crate::SentRequest`] and
-/// [`crate::PreparedRequest`].
-pub use crate::jsonrpc::ConnectionTo;
+pub use crate::jsonrpc::v1_connection::ConnectionTo;
 
 pub use crate::session::{
-    ActiveSession, Blocking, LoadSessionBuilder, NonBlocking, OpenedSession, RestoreSessionBuilder,
-    ResumeSessionBuilder, SessionBlockState, SessionBuilder, SessionMessage,
+    ActiveSession, Blocking, LoadSessionBuilder, NonBlocking, RestoreSessionBuilder,
+    ResumeSessionBuilder, SessionBlockState, SessionBuilder, SessionMessage, SessionSetup,
 };
 
 /// A protocol v1 connection builder, returned by
@@ -72,6 +65,14 @@ pub type Responder<T = serde_json::Value> = crate::Responder<T, V1>;
 /// A v1 [`ResponseRouter`](crate::ResponseRouter): `id()` returns a
 /// [`schema::v1::RequestId`](crate::schema::v1::RequestId).
 pub type ResponseRouter<T = serde_json::Value> = crate::ResponseRouter<T, V1>;
+
+/// A request sent through a v1 [`ConnectionTo`]: the
+/// [`SentRequest`](crate::SentRequest) with a v1 request ID.
+pub type SentRequest<T> = crate::SentRequest<T, V1>;
+
+/// A request prepared through a v1 [`ConnectionTo`]: the
+/// [`PreparedRequest`](crate::PreparedRequest) with a v1 request ID.
+pub type PreparedRequest<T> = crate::PreparedRequest<T, V1>;
 
 /// A message received by a typed handler on a v1 [`Builder`]: the
 /// [`Dispatch`](crate::Dispatch) with v1 request handles.
