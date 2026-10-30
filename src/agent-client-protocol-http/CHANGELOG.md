@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v3.6.0...agent-client-protocol-http-v5.0.0) - 2026-10-30
+
+### Added
+
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+- *(acp)* [**breaking**] version-neutral raw JSON-RPC request IDs ([#466](https://github.com/agentclientprotocol/rust-sdk/pull/466))
+- *(acp)* [**breaking**] version-neutral SDK Error with conversions to v1 and v2 schema errors ([#465](https://github.com/agentclientprotocol/rust-sdk/pull/465))
+- [**breaking**] breaking cleanups for the next major release ([#461](https://github.com/agentclientprotocol/rust-sdk/pull/461))
+- *(acp)* [**breaking**] rename proxy methods to proxy/initialize and proxy/successor ([#460](https://github.com/agentclientprotocol/rust-sdk/pull/460))
+- *(acp)* [**breaking**] remove JSON-RPC batch support ([#454](https://github.com/agentclientprotocol/rust-sdk/pull/454))
+
+### Fixed
+
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.2.0...agent-client-protocol-http-v3.0.0) - 2026-10-06
 
 ### Added
