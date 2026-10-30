@@ -297,10 +297,12 @@ mod tests {
     fn metadata_only_updates_establish_order_without_changing_text() {
         let first_id = v2::MessageId::new("metadata-first");
         let second_id = v2::MessageId::new("content-first");
-        let metadata_only =
-            v2::SessionUpdate::AgentMessage(v2::AgentMessage::new(first_id.clone()).meta(
-                serde_json::Map::from_iter([("source".to_owned(), serde_json::json!("replay"))]),
-            ));
+        let metadata_only = v2::SessionUpdate::AgentMessage(
+            v2::AgentMessage::new(first_id.clone()).meta(serde_json::Map::from_iter([(
+                "com.example/source".to_owned(),
+                serde_json::json!("replay"),
+            )])),
+        );
         let mut projection = AgentTextProjection::default();
 
         projection.apply(metadata_only.clone());
