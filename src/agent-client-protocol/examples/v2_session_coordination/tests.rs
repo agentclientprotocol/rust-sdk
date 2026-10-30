@@ -155,7 +155,7 @@ async fn concurrent_loaders_share_one_resume_and_projection() {
             "thinking", "Thinking", true,
         )])
         .meta(serde_json::Map::from_iter([(
-            "opaque".into(),
+            "com.example/opaque".into(),
             json!({"kept": true}),
         )]));
     let response = serde_json::to_value(&expected).unwrap();

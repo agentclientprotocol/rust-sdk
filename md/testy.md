@@ -68,6 +68,8 @@ The binary handles every stable client-to-agent v1 request and notification:
 `initialize`, `authenticate`, `logout`, `session/new`, `session/load`, `session/list`,
 `session/delete`, `session/resume`, `session/close`, `session/set_mode`,
 `session/set_config_option`, `session/prompt`, and `session/cancel`.
+Closing is idempotent: `session/close` of an unknown or already-closed session succeeds with the
+empty result, like `session/delete`.
 
 The `full` scenario sends every stable agent-to-client callback request:
 `session/request_permission`, `fs/write_text_file`, `fs/read_text_file`, `terminal/create`,
@@ -114,6 +116,17 @@ snapshot is not another completed turn.
 Prompts may contain only the baseline `text` and `resource_link` content blocks; any other block
 is rejected with `-32602` before the turn begins. `session/list` returns every session in one page
 and never issues `nextCursor`, so any `cursor` is rejected with `-32602`.
+
+A prompt that arrives while the session has foreground work is held, not rejected. Held prompts
+are inserted in received order once the current work ends, and their responses stay pending until
+then. `session/cancel` and `session/close` answer prompts held before them with `-32800`, and the
+client can withdraw a held prompt with `$/cancel_request`, which also yields `-32800`. A prompt
+received after `session/cancel` is not cancelled by it.
+
+A relative `cwd` in `session/new`, `session/resume`, or a `session/list` filter is rejected with
+`-32602`. Testy does not advertise `additionalDirectories`, so it ignores that field and never
+lists additional directories. `session/close` is idempotent: closing an unknown or already-closed
+session succeeds.
 
 The existing v1 scenarios do not map one-to-one onto v2. V2 scenario parity, client callbacks,
 MCP, authentication, deletion, configuration, and other optional capabilities remain unadvertised

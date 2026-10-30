@@ -346,16 +346,46 @@ where
     }
 
     /// Attach this server to a draft protocol v2 session setup request.
+    ///
+    /// MCP server names must be unique within a setup request's
+    /// `mcpServers`, and agents reject duplicates with `-32602`. A server
+    /// whose name is already declared fails here with `-32602` instead of
+    /// sending a request the agent must reject.
     pub fn into_dynamic_handler(
         self,
         mcp_servers: &mut Vec<crate::schema::v2::McpServer>,
         cx: &crate::V2ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
+        let name = self.connect.name();
+        if mcp_servers
+            .iter()
+            .any(|server| v2_mcp_server_name(server) == Some(name.as_str()))
+        {
+            return Err(crate::Error::invalid_params().data(format!(
+                "MCP server name `{name}` is already declared; names must be unique within mcpServers"
+            )));
+        }
         self.append_declaration(mcp_servers);
         let cleanup = self.active_session.cleanup();
         Ok(cx
             .add_dynamic_handler(self.active_session)?
             .with_cleanup(cleanup))
+    }
+}
+
+/// The `name` of a v2 MCP server declaration, if it has one.
+#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+fn v2_mcp_server_name(server: &crate::schema::v2::McpServer) -> Option<&str> {
+    use crate::schema::v2::McpServer;
+    match server {
+        McpServer::Http(server) => Some(&server.name),
+        McpServer::Acp(server) => Some(&server.name),
+        McpServer::Stdio(server) => Some(&server.name),
+        McpServer::Other(server) => server
+            .fields
+            .get("name")
+            .and_then(serde_json::Value::as_str),
+        _ => None,
     }
 }
 

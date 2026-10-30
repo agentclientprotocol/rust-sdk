@@ -534,7 +534,9 @@ impl Testy {
                 .get_mut(&request.session_id)
                 .filter(|session| !session.closed)
             else {
-                return responder.respond_with_error(session_not_found(&request.session_id));
+                // Closing is idempotent: an unknown or already-closed session
+                // closes successfully.
+                return responder.respond(CloseSessionResponse::new());
             };
             session.cancelled = true;
             session.closed = true;

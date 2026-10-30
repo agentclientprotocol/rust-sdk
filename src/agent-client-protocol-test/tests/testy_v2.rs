@@ -176,15 +176,11 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                 closed_prompt.data,
                 Some(serde_json::json!({ "sessionId": session.session_id() }))
             );
-            let closed_again = connection
+            // Closing is idempotent: closing an inactive session succeeds.
+            connection
                 .send_request(v2::CloseSessionRequest::new(session.session_id().clone()))
                 .block_task()
-                .await
-                .expect_err("closing an inactive v2 session should fail");
-            assert_eq!(
-                closed_again.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
-            );
+                .await?;
 
             let session_id = session.session_id().clone();
             let resume = v2::ResumeSessionRequest::new(session_id.clone(), PathBuf::from("/tmp"))
@@ -515,15 +511,36 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
                 Some(serde_json::json!({ "sessionId": "testy-v2-session-unknown" }))
             );
 
-            let close_error = connection
+            // Closing is idempotent: closing an unknown session succeeds.
+            connection
                 .send_request(v2::CloseSessionRequest::new(unknown.clone()))
                 .block_task()
-                .await
-                .expect_err("closing an unknown v2 session should fail");
-            assert_eq!(
-                close_error.code,
-                agent_client_protocol::ErrorCode::ResourceNotFound
-            );
+                .await?;
+
+            for (method, error) in [
+                (
+                    "session/new",
+                    connection
+                        .send_request(v2::NewSessionRequest::new(PathBuf::from("relative")))
+                        .block_task()
+                        .await,
+                ),
+                (
+                    "session/list",
+                    connection
+                        .send_request(v2::ListSessionsRequest::new().cwd(PathBuf::from("relative")))
+                        .block_task()
+                        .await
+                        .map(|_| v2::NewSessionResponse::new("unused")),
+                ),
+            ] {
+                let error = error.expect_err("a relative cwd must be rejected");
+                assert_eq!(
+                    error.code,
+                    agent_client_protocol::ErrorCode::InvalidParams,
+                    "{method}"
+                );
+            }
 
             let resume_error = connection
                 .send_request(v2::ResumeSessionRequest::new(
@@ -694,4 +711,78 @@ async fn testy_v2_unimplemented_scenarios_end_with_error_stop_reason() {
         })
         .await
         .expect("Testy v2 unimplemented scenario failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_holds_prompts_during_active_work() {
+    let client = Client
+        .v2()
+        .connect_with(Testy::new().v2(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .into_session();
+
+            let running = session
+                .send_prompt(wait_for_cancel_prompt())
+                .block_task()
+                .await?;
+
+            // Prompts received during foreground work are held, not rejected.
+            let withdrawn = session.send_prompt(TestyCommand::Greet.to_prompt());
+            let held = session.send_prompt(TestyCommand::Greet.to_prompt());
+
+            // `$/cancel_request` withdraws a held prompt.
+            withdrawn.cancel()?;
+            let error = withdrawn
+                .block_task()
+                .await
+                .expect_err("a withdrawn held prompt is never inserted");
+            assert_eq!(
+                error.code,
+                agent_client_protocol::ErrorCode::RequestCancelled
+            );
+
+            // `session/cancel` answers held prompts received before it with
+            // -32800.
+            session.cancel_active_work()?;
+            let error = held
+                .block_task()
+                .await
+                .expect_err("session/cancel cancels held prompts");
+            assert_eq!(
+                error.code,
+                agent_client_protocol::ErrorCode::RequestCancelled
+            );
+
+            // A prompt received after `session/cancel` is not cancelled by it.
+            // It is held until the cancelled work ends, then inserted.
+            let after_cancel = session
+                .send_prompt(TestyCommand::Greet.to_prompt())
+                .block_task()
+                .await?;
+            assert_ne!(after_cancel.message_id, running.message_id);
+
+            // Back-to-back prompts are each inserted, in received order.
+            let first = session.send_prompt(TestyCommand::Greet.to_prompt());
+            let second = session.send_prompt(TestyCommand::Greet.to_prompt());
+            let first = first.block_task().await?;
+            let second = second.block_task().await?;
+            assert_ne!(first.message_id, second.message_id);
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 held prompts timed out")
+        .expect("Testy v2 held prompts failed");
 }

@@ -1234,3 +1234,48 @@ async fn rejected_v2_resume_stops_prestarted_mcp_attachment() -> Result<(), Erro
         .await
         .expect("rejected v2 resume MCP cleanup test timed out")
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn v2_session_builder_rejects_duplicate_mcp_server_names() -> Result<(), Error> {
+    let agent = Agent.v2().on_receive_request(
+        async |request: v2::InitializeRequest,
+               responder: Responder<v2::InitializeResponse>,
+               _connection: V2ConnectionTo<Client>| {
+            responder.respond(initialize_response(request.protocol_version))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    let test = Client.v2().connect_with(agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation(),
+            ))
+            .block_task()
+            .await?;
+
+        // `DropTrackedMcpConnect` is named `rejected-v2-mcp`.
+        let existing = v2::McpServer::Http(v2::McpServerHttp::new(
+            "rejected-v2-mcp",
+            "http://localhost:1/mcp",
+        ));
+        let Err(error) = connection
+            .build_session_from(v2::NewSessionRequest::new(cwd()?).mcp_servers(vec![existing]))
+            .with_mcp_server(McpServer::<Agent, _>::new(
+                DropTrackedMcpConnect {
+                    dropped_tx: Mutex::new(None),
+                },
+                ImmediateErrorRunner,
+            ))
+        else {
+            panic!("a duplicate MCP server name must be rejected before publication");
+        };
+        assert_eq!(error.code, ErrorCode::InvalidParams);
+        Ok(())
+    });
+
+    tokio::time::timeout(TIMEOUT, test)
+        .await
+        .expect("duplicate MCP server name test timed out")
+}

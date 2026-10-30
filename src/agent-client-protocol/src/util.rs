@@ -180,8 +180,15 @@ pub fn unsupported_protocol_version(
     requested: crate::schema::ProtocolVersion,
     supported: &[crate::schema::ProtocolVersion],
 ) -> crate::Error {
-    crate::Error::new(-32022, "Unsupported protocol version")
-        .data(serde_json::json!({ "requested": requested, "supported": supported }))
+    #[cfg(feature = "unstable_protocol_v2")]
+    let data = serde_json::to_value(crate::schema::v2::UnsupportedProtocolVersionErrorData::new(
+        requested,
+        supported.to_vec(),
+    ))
+    .ok();
+    #[cfg(not(feature = "unstable_protocol_v2"))]
+    let data = Some(serde_json::json!({ "requested": requested, "supported": supported }));
+    crate::Error::new(-32022, "Unsupported protocol version").data(data)
 }
 
 pub(crate) fn instrumented_with_connection_name<F>(

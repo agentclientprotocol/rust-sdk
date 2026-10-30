@@ -6281,7 +6281,11 @@ pub struct SentRequest<T> {
     method: String,
     task_tx: TaskTx,
     response_rx: oneshot::Receiver<ResponsePayload>,
-    to_result: Box<dyn FnOnce(serde_json::Value) -> Result<T, crate::Error> + Send>,
+    /// Converts the raw response into the typed result. It receives error
+    /// responses too, so [`SentRequest::recover_error`] can map an error to a
+    /// success.
+    to_result:
+        Box<dyn FnOnce(Result<serde_json::Value, crate::Error>) -> Result<T, crate::Error> + Send>,
     cancellation: SentRequestCancellation,
     response_ordering: ResponseOrdering,
     /// Cancellation markers of other (incoming) requests whose cancellation
@@ -6848,7 +6852,7 @@ impl SentRequest<serde_json::Value> {
             method,
             response_rx,
             task_tx,
-            to_result: Box::new(Ok),
+            to_result: Box::new(|result| result),
             cancellation,
             response_ordering,
             cancellation_sources: Vec::new(),
@@ -6975,6 +6979,29 @@ impl<T> SentRequest<T> {
         &self.method
     }
 
+    /// Map a JSON-RPC error response to a result of the same type.
+    ///
+    /// The recovery function only sees error responses from the peer, not
+    /// local failures to decode a successful response. Return `Ok` to treat
+    /// the error as success, or `Err` to keep failing.
+    #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(dead_code))]
+    pub(crate) fn recover_error(
+        self,
+        recover: impl FnOnce(crate::Error) -> Result<T, crate::Error> + 'static + Send,
+    ) -> SentRequest<T>
+    where
+        T: 'static,
+    {
+        let to_result = self.to_result;
+        SentRequest {
+            to_result: Box::new(move |result| match result {
+                Ok(value) => to_result(Ok(value)),
+                Err(error) => recover(error),
+            }),
+            ..self
+        }
+    }
+
     /// Map a successful JSON-RPC response into an application type.
     ///
     /// The mapped type does not need to implement [`JsonRpcResponse`]. The
@@ -6995,7 +7022,7 @@ impl<T> SentRequest<T> {
             method: self.method,
             response_rx: self.response_rx,
             task_tx: self.task_tx,
-            to_result: Box::new(move |value| map_fn((self.to_result)(value)?)),
+            to_result: Box::new(move |result| map_fn((self.to_result)(result)?)),
             cancellation: self.cancellation,
             response_ordering: self.response_ordering,
             cancellation_sources: self.cancellation_sources,
@@ -7128,11 +7155,7 @@ impl<T> SentRequest<T> {
 
             match response {
                 Ok(ResponsePayload { result, ack_tx }) => {
-                    // Convert the result using to_result for Ok values
-                    let typed_result = match result {
-                        Ok(json_value) => to_result(json_value),
-                        Err(err) => Err(err),
-                    };
+                    let typed_result = to_result(result);
 
                     let outcome = handle(Ok(typed_result)).await;
 
@@ -7227,28 +7250,13 @@ impl<T> SentRequest<T> {
         .await;
 
         match response {
-            Ok(ResponsePayload {
-                result: Ok(json_value),
-                ack_tx,
-            }) => {
+            Ok(ResponsePayload { result, ack_tx }) => {
                 // Blocking consumers ack before converting or returning the
                 // value, so dispatch can continue while the caller processes it.
                 if let Some(tx) = ack_tx {
                     let _ = tx.send(());
                 }
-                match (self.to_result)(json_value) {
-                    Ok(value) => Ok(value),
-                    Err(err) => Err(err),
-                }
-            }
-            Ok(ResponsePayload {
-                result: Err(err),
-                ack_tx,
-            }) => {
-                if let Some(tx) = ack_tx {
-                    let _ = tx.send(());
-                }
-                Err(err)
+                (self.to_result)(result)
             }
             Err(err) => Err(crate::util::internal_error(format!(
                 "response to `{}` never received: {}",
@@ -7276,13 +7284,7 @@ impl<T> SentRequest<T> {
         .await;
 
         let (result, ack_tx) = match response {
-            Ok(ResponsePayload { result, ack_tx }) => {
-                let typed_result = match result {
-                    Ok(json_value) => (self.to_result)(json_value),
-                    Err(error) => Err(error),
-                };
-                (typed_result, ack_tx)
-            }
+            Ok(ResponsePayload { result, ack_tx }) => ((self.to_result)(result), ack_tx),
             Err(error) => (
                 Err(crate::util::internal_error(format!(
                     "response to `{}` never received: {error}",

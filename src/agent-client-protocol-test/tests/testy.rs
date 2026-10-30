@@ -287,13 +287,11 @@ async fn testy_reserves_loaded_session_ids_and_rejects_after_close()
                 .await
                 .expect_err("closed sessions should reject set_config_option");
             assert_eq!(set_config_error.code, session_not_found);
-            let close_error = cx
-                .send_request(CloseSessionRequest::new(loaded_id.clone()))
+            // Closing is idempotent: closing an already-closed session
+            // succeeds.
+            cx.send_request(CloseSessionRequest::new(loaded_id.clone()))
                 .block_task()
-                .await
-                .expect_err("closing an unknown session should fail");
-            assert_eq!(close_error.code, session_not_found);
-            assert_eq!(close_error.data, expected_data);
+                .await?;
             cx.send_request(DeleteSessionRequest::new(loaded_id.clone()))
                 .block_task()
                 .await?;

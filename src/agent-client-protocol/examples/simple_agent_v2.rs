@@ -3,17 +3,21 @@
 //! The agent implements the baseline v2 session lifecycle: new, list, resume,
 //! close, prompt, cancel, and update. It keeps session history in memory so a
 //! client can request replay from the beginning when resuming a session.
+//! A prompt sent while earlier work is still running is held and inserted
+//! once that work ends, rather than rejected.
 //!
 //! Run it with the companion `v2_one_shot_client` example. An ACP agent owns
 //! stdout for JSON-RPC, so diagnostics belong on stderr.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
 use agent_client_protocol::schema::v2;
-use agent_client_protocol::{Agent, Client, Error, Responder, Result, Stdio, V2ConnectionTo};
+use agent_client_protocol::{
+    Agent, Client, Error, RequestCancellation, Responder, Result, Stdio, V2ConnectionTo,
+};
 use tokio::sync::Notify;
 
 const SESSION_TITLE: &str = "Echo agent session";
@@ -29,32 +33,48 @@ struct AgentState {
     sessions: HashMap<v2::SessionId, Session>,
     next_session_id: u64,
     next_message_id: u64,
+    next_prompt_ticket: u64,
 }
 
 #[derive(Clone, Debug)]
 struct Session {
     cwd: v2::AbsolutePath,
-    additional_directories: Vec<v2::AbsolutePath>,
     active: bool,
     foreground_work: bool,
     cancelled: bool,
+    /// Incremented by each `session/cancel` and `session/close`, which cancel
+    /// every prompt held before them.
+    cancel_epoch: u64,
+    /// Prompts received during foreground work, held in received order.
+    held_prompts: VecDeque<u64>,
     history: Vec<v2::SessionUpdate>,
+}
+
+/// How an accepted `session/prompt` request proceeds.
+enum PromptAdmission {
+    /// The prompt starts foreground work now.
+    Inserted,
+    /// The prompt waits for the current foreground work to end.
+    Held { ticket: u64, cancel_epoch: u64 },
 }
 
 impl EchoAgent {
     fn create_session(&self, request: v2::NewSessionRequest) -> Result<v2::SessionId> {
+        require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_session_id += 1;
         let session_id = v2::SessionId::new(format!("echo-session-{}", state.next_session_id));
         state.sessions.insert(
             session_id.clone(),
+            // `additionalDirectories` is not advertised, so it is ignored.
             Session {
                 cwd: request.cwd,
-                additional_directories: request.additional_directories,
                 active: true,
                 foreground_work: false,
                 cancelled: false,
+                cancel_epoch: 0,
+                held_prompts: VecDeque::new(),
                 history: Vec::new(),
             },
         );
@@ -68,9 +88,7 @@ impl EchoAgent {
             .iter()
             .filter(|(_, session)| request.cwd.as_ref().is_none_or(|cwd| cwd == &session.cwd))
             .map(|(session_id, session)| {
-                v2::SessionInfo::new(session_id.clone(), session.cwd.clone())
-                    .additional_directories(session.additional_directories.clone())
-                    .title(SESSION_TITLE)
+                v2::SessionInfo::new(session_id.clone(), session.cwd.clone()).title(SESSION_TITLE)
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
@@ -82,6 +100,7 @@ impl EchoAgent {
     }
 
     fn resume_session(&self, request: &v2::ResumeSessionRequest) -> Result<Vec<v2::SessionUpdate>> {
+        require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         let session = state
@@ -106,26 +125,27 @@ impl EchoAgent {
             Some(v2::ReplayFrom::Start(_)) => session.history.clone(),
             Some(_) => return Err(invalid_params("unsupported replay cursor")),
         };
-        session
-            .additional_directories
-            .clone_from(&request.additional_directories);
         session.active = true;
         session.cancelled = false;
         Ok(history)
     }
 
-    fn begin_prompt(&self, session_id: &v2::SessionId, prompt: &[v2::ContentBlock]) -> Result<()> {
+    /// Accept a prompt, starting it now or holding it behind active work.
+    ///
+    /// A v2 agent must not reject a prompt only because foreground work is
+    /// active. It may hold the prompt and insert it later, in received order.
+    fn admit_prompt(
+        &self,
+        session_id: &v2::SessionId,
+        prompt: &[v2::ContentBlock],
+    ) -> Result<PromptAdmission> {
         let mut state = self.state.lock().expect("session state lock poisoned");
+        let ticket = state.next_prompt_ticket;
         let session = state
             .sessions
             .get_mut(session_id)
             .filter(|session| session.active)
             .ok_or_else(|| session_not_found(session_id))?;
-        if session.foreground_work {
-            return Err(invalid_params(format!(
-                "session `{session_id}` already has foreground work"
-            )));
-        }
         // No prompt capabilities are advertised, so only the baseline `text` and
         // `resource_link` blocks are supported. Anything else must be rejected.
         if prompt.iter().any(|block| {
@@ -136,8 +156,92 @@ impl EchoAgent {
         }) {
             return Err(invalid_params("unsupported prompt content block"));
         }
+        if session.foreground_work || !session.held_prompts.is_empty() {
+            session.held_prompts.push_back(ticket);
+            let cancel_epoch = session.cancel_epoch;
+            state.next_prompt_ticket += 1;
+            return Ok(PromptAdmission::Held {
+                ticket,
+                cancel_epoch,
+            });
+        }
         session.foreground_work = true;
         session.cancelled = false;
+        Ok(PromptAdmission::Inserted)
+    }
+
+    /// Wait until a held prompt can start. A held prompt is cancelled with
+    /// `-32800` by `session/cancel`, `session/close`, or `$/cancel_request`.
+    async fn insert_held_prompt(
+        &self,
+        session_id: &v2::SessionId,
+        ticket: u64,
+        cancel_epoch: u64,
+        withdrawn: RequestCancellation,
+    ) -> Result<()> {
+        loop {
+            let notified = self.state_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut state = self.state.lock().expect("session state lock poisoned");
+                let Some(session) = state.sessions.get_mut(session_id) else {
+                    return Err(Error::request_cancelled());
+                };
+                if !session.active
+                    || session.cancel_epoch != cancel_epoch
+                    || withdrawn.is_cancelled()
+                {
+                    session.held_prompts.retain(|held| *held != ticket);
+                    drop(state);
+                    self.state_changed.notify_waiters();
+                    return Err(Error::request_cancelled());
+                }
+                if !session.foreground_work && session.held_prompts.front() == Some(&ticket) {
+                    session.held_prompts.pop_front();
+                    session.foreground_work = true;
+                    session.cancelled = false;
+                    return Ok(());
+                }
+            }
+            tokio::select! {
+                () = &mut notified => {}
+                () = withdrawn.cancelled() => {}
+            }
+        }
+    }
+
+    /// Insert the user message for a prompt that holds the foreground work,
+    /// acknowledge it with its message ID, and run it.
+    fn run_inserted_prompt(
+        &self,
+        request: v2::PromptRequest,
+        responder: Responder<v2::PromptResponse>,
+        connection: &V2ConnectionTo<Client>,
+    ) -> Result<()> {
+        let user_message_id = self.next_message_id("user-message");
+        let user_message = v2::SessionUpdate::UserMessage(
+            v2::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
+        );
+        self.record_history(&request.session_id, user_message.clone());
+        let session_id = request.session_id.clone();
+        if let Err(error) = responder.respond(v2::PromptResponse::new(user_message_id)) {
+            self.abandon_prompt(&session_id);
+            return Err(error);
+        }
+
+        let prompt_connection = connection.clone();
+        if let Err(error) = connection.spawn({
+            let agent = self.clone();
+            async move {
+                agent
+                    .process_prompt(request, user_message, prompt_connection)
+                    .await
+            }
+        }) {
+            self.abandon_prompt(&session_id);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -211,6 +315,8 @@ impl EchoAgent {
             .is_none_or(|session| session.cancelled || !session.active)
     }
 
+    /// `session/cancel` cancels foreground work and every prompt held before
+    /// it. It is ignored for a session that is not active.
     fn cancel(&self, session_id: &v2::SessionId) {
         if let Some(session) = self
             .state
@@ -218,28 +324,37 @@ impl EchoAgent {
             .expect("session state lock poisoned")
             .sessions
             .get_mut(session_id)
-            && session.foreground_work
+            .filter(|session| session.active)
         {
-            session.cancelled = true;
+            session.cancel_epoch += 1;
+            if session.foreground_work {
+                session.cancelled = true;
+            }
         }
         self.state_changed.notify_waiters();
     }
 
-    fn close(&self, session_id: &v2::SessionId) -> Result<bool> {
+    /// Close a session and report whether foreground work must finish before
+    /// the close response. Closing is idempotent: an unknown or already-closed
+    /// session closes successfully.
+    fn close(&self, session_id: &v2::SessionId) -> bool {
         let mut state = self.state.lock().expect("session state lock poisoned");
-        let session = state
+        let Some(session) = state
             .sessions
             .get_mut(session_id)
             .filter(|session| session.active)
-            .ok_or_else(|| session_not_found(session_id))?;
+        else {
+            return false;
+        };
         session.active = false;
+        session.cancel_epoch += 1;
         if session.foreground_work {
             session.cancelled = true;
         }
         let foreground_work = session.foreground_work;
         drop(state);
         self.state_changed.notify_waiters();
-        Ok(foreground_work)
+        foreground_work
     }
 
     fn has_foreground_work(&self, session_id: &v2::SessionId) -> bool {
@@ -400,6 +515,11 @@ async fn main() -> Result<()> {
                             "invalid session/list cursor `{cursor}`"
                         )));
                     }
+                    if let Some(cwd) = &request.cwd
+                        && let Err(error) = require_absolute(cwd)
+                    {
+                        return responder.respond_with_error(error);
+                    }
                     responder.respond(v2::ListSessionsResponse::new(agent.list_sessions(&request)))
                 }
             },
@@ -446,11 +566,7 @@ async fn main() -> Result<()> {
                 async move |request: v2::CloseSessionRequest,
                             responder: Responder<v2::CloseSessionResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    let has_foreground_work = match agent.close(&request.session_id) {
-                        Ok(has_foreground_work) => has_foreground_work,
-                        Err(error) => return responder.respond_with_error(error),
-                    };
-                    if !has_foreground_work {
+                    if !agent.close(&request.session_id) {
                         return responder.respond(v2::CloseSessionResponse::new());
                     }
                     let waiting_agent = agent.clone();
@@ -470,31 +586,38 @@ async fn main() -> Result<()> {
                 async move |request: v2::PromptRequest,
                             responder: Responder<v2::PromptResponse>,
                             connection: V2ConnectionTo<Client>| {
-                    if let Err(error) = agent.begin_prompt(&request.session_id, &request.prompt) {
-                        return responder.respond_with_error(error);
-                    }
-                    let user_message_id = agent.next_message_id("user-message");
-                    let user_message = v2::SessionUpdate::UserMessage(
-                        v2::UserMessage::new(user_message_id.clone())
-                            .content(request.prompt.clone()),
-                    );
-                    agent.record_history(&request.session_id, user_message.clone());
-                    responder.respond(v2::PromptResponse::new(user_message_id))?;
-
-                    let prompt_connection = connection.clone();
-                    let session_id = request.session_id.clone();
-                    if let Err(error) = connection.spawn({
-                        let agent = agent.clone();
-                        async move {
-                            agent
-                                .process_prompt(request, user_message, prompt_connection)
-                                .await
+                    match agent.admit_prompt(&request.session_id, &request.prompt) {
+                        Err(error) => responder.respond_with_error(error),
+                        Ok(PromptAdmission::Inserted) => {
+                            agent.run_inserted_prompt(request, responder, &connection)
                         }
-                    }) {
-                        agent.abandon_prompt(&session_id);
-                        return Err(error);
+                        Ok(PromptAdmission::Held {
+                            ticket,
+                            cancel_epoch,
+                        }) => {
+                            let withdrawn = responder.cancellation();
+                            let held_connection = connection.clone();
+                            let agent = agent.clone();
+                            connection.spawn(async move {
+                                match agent
+                                    .insert_held_prompt(
+                                        &request.session_id,
+                                        ticket,
+                                        cancel_epoch,
+                                        withdrawn,
+                                    )
+                                    .await
+                                {
+                                    Ok(()) => agent.run_inserted_prompt(
+                                        request,
+                                        responder,
+                                        &held_connection,
+                                    ),
+                                    Err(error) => responder.respond_with_error(error),
+                                }
+                            })
+                        }
                     }
-                    Ok(())
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -530,6 +653,16 @@ fn invalid_params(message: impl ToString) -> Error {
 /// connection fail with `-32002` and `data.sessionId`.
 fn session_not_found(session_id: &v2::SessionId) -> Error {
     Error::session_not_found(session_id.0.clone())
+}
+
+/// `cwd` must be an absolute path in the native syntax of the agent's machine;
+/// a relative one is rejected with `-32602`.
+fn require_absolute(cwd: &v2::AbsolutePath) -> Result<()> {
+    if AsRef::<std::path::Path>::as_ref(cwd).is_absolute() {
+        Ok(())
+    } else {
+        Err(invalid_params("`cwd` must be an absolute path"))
+    }
 }
 
 /// This agent advertises no `session.mcp` transports, so it must reject every
