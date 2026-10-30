@@ -86,7 +86,8 @@
 //!
 //! Send at most one response per request. If a handler responds and then
 //! returns an error, the first response wins and the duplicate completion is
-//! ignored. Dropping a responder sends no response.
+//! ignored. Dropping a responder without responding answers the request with
+//! an error; see [error handling](super::error_handling#dropped-responders).
 //!
 //! # Multiple Handlers
 //!

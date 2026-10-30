@@ -1752,6 +1752,51 @@ async fn v2_agent_can_retry_after_malformed_initialize_success() -> Result<(), E
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn v2_agent_can_retry_after_initialize_responder_is_dropped() -> Result<(), Error> {
+    let initialize_count = Arc::new(AtomicUsize::new(0));
+    let initialize_counter = Arc::clone(&initialize_count);
+    let agent = Agent.v2().on_receive_request(
+        async move |initialize: v2::InitializeRequest, responder, _cx| {
+            if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                // Abandon the first handshake without answering it.
+                drop(responder);
+                Ok(())
+            } else {
+                responder.respond(v2_initialize_response_with_session(
+                    initialize.protocol_version,
+                ))
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+
+    Client
+        .builder()
+        .without_acp_version_guard()
+        .connect_with(agent, async |cx| {
+            let error = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await
+                .expect_err("a dropped initialize responder must answer with an error");
+            assert_eq!(i32::from(error.code), -32603, "{error:?}");
+
+            // The failed handshake left the connection uninitialized rather
+            // than stuck initializing, so the client can retry.
+            let retry = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            assert_eq!(retry.protocol_version, ProtocolVersion::V2);
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(initialize_count.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn client_protocol_connector_routes_to_v2_client_for_v2_agent() -> Result<(), Error> {
     Client
         .protocol_connector()
