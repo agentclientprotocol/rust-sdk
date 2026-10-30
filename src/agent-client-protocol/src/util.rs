@@ -191,6 +191,61 @@ pub fn unsupported_protocol_version(
     crate::Error::new(-32022, "Unsupported protocol version").data(data)
 }
 
+/// Rewrite the params of an `initialize` request for the protocol version
+/// `selected` that a version-agnostic forwarder, such as the conductor,
+/// selected for it.
+///
+/// The SDK's own agents negotiate the same way. A request for a newer version
+/// than `selected` was written for that newer version, so it keeps only what
+/// parses under `selected` instead of being rejected (for v1, only the shared
+/// capabilities are carried across). A request for `selected` or an older
+/// version keeps its params. In every case `protocolVersion` is set to
+/// `selected`.
+///
+/// # Errors
+///
+/// Returns `-32602` when `params` has no valid `protocolVersion`, and
+/// `-32600` when a newer request must be rewritten for a version this build
+/// of the SDK does not support.
+pub fn initialize_params_for_version(
+    params: &serde_json::Value,
+    selected: crate::schema::ProtocolVersion,
+) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
+    use crate::schema::ProtocolVersion;
+
+    let invalid_version = || {
+        crate::Error::invalid_params()
+            .data("initialize.protocolVersion must be a valid ACP protocol version")
+    };
+    let serde_json::Value::Object(object) = params else {
+        return Err(invalid_version());
+    };
+    let requested: ProtocolVersion = object
+        .get("protocolVersion")
+        .cloned()
+        .and_then(|version| serde_json::from_value(version).ok())
+        .ok_or_else(invalid_version)?;
+
+    let mut rewritten = if requested <= selected {
+        object.clone()
+    } else if selected == ProtocolVersion::V1 {
+        crate::jsonrpc::normalize_v1_initialize_request(params)?
+    } else {
+        #[cfg(feature = "unstable_protocol_v2")]
+        if selected == ProtocolVersion::V2 {
+            return crate::jsonrpc::normalize_newer_v2_initialize_request(object);
+        }
+        return Err(crate::Error::invalid_request().data(format!(
+            "cannot rewrite an initialize request for ACP protocol version {requested} to version {selected}",
+        )));
+    };
+    rewritten.insert(
+        "protocolVersion".into(),
+        serde_json::to_value(selected).map_err(crate::Error::into_internal_error)?,
+    );
+    Ok(rewritten)
+}
+
 /// The `-32600` error, sent with `id: null`, for a JSON-RPC batch array.
 ///
 /// The SDK does not support JSON-RPC batching, and ACP protocol v2 removed

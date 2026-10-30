@@ -11,14 +11,12 @@ use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
-#[cfg(not(feature = "unstable_protocol_v2"))]
-use crate::schema::InitializeProxyRequest;
 use crate::schema::METHOD_INITIALIZE_PROXY;
 #[cfg(feature = "unstable_protocol_v2")]
+use crate::schema::v1::InitializeRequest;
+#[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::RequestId;
-use crate::schema::v1::{InitializeRequest, SessionId};
-#[cfg(not(feature = "unstable_protocol_v2"))]
-use crate::schema::v1::{NewSessionRequest, NewSessionResponse};
+use crate::schema::v1::SessionId;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
@@ -29,7 +27,6 @@ use crate::{
 };
 use crate::{ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
 
-#[cfg(feature = "unstable_protocol_v2")]
 #[derive(serde::Deserialize)]
 struct NewSessionResponseEnvelope {
     #[serde(rename = "sessionId")]
@@ -319,12 +316,7 @@ impl Role for Agent {
                 // V2 uses typed handlers installed before the connection
                 // starts. Retrying an unhandled v2 message would retain it
                 // forever because no per-session dynamic handler is expected.
-                #[cfg(feature = "unstable_protocol_v2")]
-                let retry = message.has_session_id()
-                    && connection.acp_protocol_version()
-                        != Some(crate::schema::ProtocolVersion::V2);
-                #[cfg(not(feature = "unstable_protocol_v2"))]
-                let retry = message.has_session_id();
+                let retry = message.has_session_id() && !connection.is_acp_v2();
                 Ok(Handled::No { message, retry })
             })
             .await
@@ -367,10 +359,14 @@ impl Agent {
     /// Add implementations with [`AgentProtocolRouter::with_v1`] and
     /// [`AgentProtocolRouter::with_v2`].
     /// The resulting router reads the initial
-    /// `initialize` request and selects a version-specific implementation. An
-    /// endpoint exposing v2 selects the highest configured version at or below
-    /// the requested version. A v1-only endpoint retains v1's fallback-to-latest
-    /// rule. The router does not convert traffic after initialization.
+    /// `initialize` request and selects a version-specific implementation. A
+    /// request for v2 or newer selects the v2 implementation. With a v1
+    /// implementation configured, everything else, including a request below
+    /// v1 and a missing or malformed first request, is handed unchanged to the
+    /// v1 implementation, so a v1 client sees exactly the behavior of the v1
+    /// implementation alone (including v1's fallback-to-latest rule). A
+    /// v2-only router rejects a request below v2 with `-32022`. The router
+    /// does not convert traffic after initialization.
     ///
     /// The selected implementation owns the connection. A repeated
     /// `initialize` is forwarded to it and is never re-routed, so it is
@@ -448,6 +444,10 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             let message = match initialize_message_mut(&mut frame) {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
+                // A malformed frame, such as invalid JSON or a batch, gets the
+                // frame's own error with `id: null`, exactly as a v1
+                // connection answers it. It selects no version, so the client
+                // can still initialize either one.
                 Err(error) => {
                     send_initialize_error(&client.tx, &frame, error)?;
                     continue;
@@ -455,6 +455,11 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             };
             let selected = match select_agent_protocol(message, supported) {
                 Ok(selected) => selected,
+                // A v1 implementation answers any other initialize that does
+                // not select v2 itself, exactly as it would without the router.
+                Err(_) if supported.v1 && !requests_agent_protocol_v2(message, supported) => {
+                    SelectedProtocol::V1
+                }
                 Err(error) => {
                     send_initialize_error(&client.tx, &frame, error)?;
                     continue;
@@ -532,15 +537,12 @@ struct SupportedProtocols {
 #[cfg(feature = "unstable_protocol_v2")]
 impl SupportedProtocols {
     fn select_for_agent(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
-        if self.v1 && !self.v2 {
-            // A v1-only endpoint retains the legacy fallback-to-latest rule.
-            return Some(SelectedProtocol::V1);
-        }
         if self.v2 && requested >= ProtocolVersion::V2 {
             return Some(SelectedProtocol::V2);
         }
-
-        if self.v1 && requested >= ProtocolVersion::V1 {
+        // Any request that does not select v2 keeps v1's fallback-to-latest
+        // rule, so a v1 implementation behaves as it does without the router.
+        if self.v1 {
             return Some(SelectedProtocol::V1);
         }
 
@@ -610,6 +612,35 @@ fn select_agent_protocol(
     rewrite_initialize_params(params, requested, selected)?;
 
     Ok(selected)
+}
+
+/// The requested protocol version of an `initialize` (or, for a proxy,
+/// `_proxy/initialize`) request, if it has a valid one.
+#[cfg(feature = "unstable_protocol_v2")]
+fn requested_initialize_version(
+    message: &RawJsonRpcMessage,
+    initialize_method: &str,
+) -> Option<ProtocolVersion> {
+    let RawJsonRpcMessage::Request(request) = message else {
+        return None;
+    };
+    if request.method.as_ref() != initialize_method {
+        return None;
+    }
+    let Some(RawJsonRpcParams::Object(params)) = &request.params else {
+        return None;
+    };
+    serde_json::from_value(params.get("protocolVersion")?.clone()).ok()
+}
+
+/// Whether `message` is an `initialize` request that selects a configured v2
+/// implementation. Everything else is answered by a configured v1
+/// implementation.
+#[cfg(feature = "unstable_protocol_v2")]
+fn requests_agent_protocol_v2(message: &RawJsonRpcMessage, supported: SupportedProtocols) -> bool {
+    supported.v2
+        && requested_initialize_version(message, "initialize")
+            .is_some_and(|requested| requested >= ProtocolVersion::V2)
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -1506,6 +1537,9 @@ impl Proxy {
     /// [`ProxyProtocolRouter::with_v2`]. The router reads the initial
     /// `_proxy/initialize` request, selects the implementation for that exact
     /// protocol version, and hands over the complete initial transport frame.
+    /// With a v1 implementation configured, anything other than a request for
+    /// exactly v2 is handed unchanged to the v1 implementation, so a v1
+    /// conductor sees exactly the behavior of the v1 implementation alone.
     /// It does not downgrade proxy traffic or convert later messages.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
@@ -1572,10 +1606,21 @@ impl ConnectTo<Conductor> for ProxyProtocolRouter {
                     conductor = next_conductor;
                     continue;
                 }
+                // A v1 implementation answers anything that does not select
+                // v2 itself, exactly as it would without the router.
+                Err(_) if supported.v1 => break (frame, next_conductor, SelectedProtocol::V1),
                 Err(error) => return reject_initialize(next_conductor, &frame, error).await,
             };
             let selected = match select_proxy_protocol(message, supported) {
                 Ok(selected) => selected,
+                Err(_)
+                    if supported.v1
+                        && !(supported.v2
+                            && requested_initialize_version(message, METHOD_INITIALIZE_PROXY)
+                                == Some(ProtocolVersion::V2)) =>
+                {
+                    SelectedProtocol::V1
+                }
                 Err(error) => return reject_initialize(next_conductor, &frame, error).await,
             };
             break (frame, next_conductor, selected);
@@ -1671,108 +1716,72 @@ impl Role for Conductor {
         message: Dispatch,
         cx: ConnectionTo<Conductor>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        {
-            MatchDispatchFrom::new(message, &cx)
-                .if_request_from(Client, async |_req: InitializeRequest, responder| {
-                    responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                        "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
-                    )))
-                })
-                .await
-                .if_request_from(
-                    Client,
-                    async |request: InitializeProxyRequest, responder| {
-                        let InitializeProxyRequest { initialize } = request;
-                        cx.send_ordered_request_to(Agent, initialize)
-                            .forward_response_to(responder)
-                    },
-                )
-                .await
-                .if_request_from(Client, async |request: NewSessionRequest, responder| {
-                    let sent = cx.send_ordered_request_to(Agent, request);
-                    let sent = sent.forward_cancellation_from(responder.cancellation());
-                    sent.on_receiving_result({
-                        let cx = cx.clone();
-                        async move |result| {
-                            if let Ok(NewSessionResponse { session_id, .. }) = &result {
-                                cx.add_dynamic_handler(ProxySessionMessages::new(
-                                    session_id.clone(),
-                                ))?
-                                .detach();
-                            }
-                            responder.respond_with_result(result)
-                        }
-                    })
-                })
-                .await
-                .if_dispatch_from(Client, async |message: Dispatch| {
-                    cx.send_proxied_message_to(Agent, message)
-                })
-                .await
-                .if_dispatch_from(Agent, async |message: Dispatch| {
-                    cx.send_proxied_message_to(Client, message)
-                })
-                .await
-                .done()
-        }
-
-        #[cfg(feature = "unstable_protocol_v2")]
-        {
-            let message = match message {
-                Dispatch::Request(request, responder) if request.method() == "initialize" => {
-                    responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                        "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
-                    )))?;
-                    return Ok(Handled::Yes);
-                }
-                Dispatch::Request(mut request, responder)
-                    if request.method() == METHOD_INITIALIZE_PROXY =>
-                {
-                    request.method = "initialize".to_string();
-                    cx.send_ordered_request_to(Agent, request)
-                        .forward_response_to(responder)?;
-                    return Ok(Handled::Yes);
-                }
-                Dispatch::Request(request, responder) if request.method() == "session/new" => {
-                    let sent = cx.send_ordered_request_to(Agent, request);
-                    // The dynamic-handler hook below means we cannot use
-                    // `forward_response_to`, so wire up cancellation forwarding
-                    // explicitly to keep `session/new` cancellable like every
-                    // other proxied request.
-                    let sent = sent.forward_cancellation_from(responder.cancellation());
-                    sent.on_receiving_result({
-                        let cx = cx.clone();
-                        async move |result| {
-                            let result = result.and_then(|response| {
-                                let envelope: NewSessionResponseEnvelope =
-                                    crate::util::json_cast(response.clone())?;
-                                cx.add_dynamic_handler(ProxySessionMessages::new(
-                                    envelope.session_id,
-                                ))?
-                                .detach();
-                                Ok(response)
-                            });
-                            responder.respond_with_result(result)
-                        }
-                    })?;
-                    return Ok(Handled::Yes);
-                }
-                message => message,
-            };
-
-            MatchDispatchFrom::new(message, &cx)
-                .if_dispatch_from(Client, async |message: Dispatch| {
-                    cx.send_proxied_message_to(Agent, message)
-                })
-                .await
-                .if_dispatch_from(Agent, async |message: Dispatch| {
-                    cx.send_proxied_message_to(Client, message)
-                })
-                .await
-                .done()
-        }
+        forward_proxy_dispatch(message, cx).await
     }
+}
+
+/// Default forwarding for a proxy.
+///
+/// `_proxy/initialize` has the same wire shape in every protocol version, so
+/// one untyped path serves v1 and v2 proxies alike. Messages are forwarded
+/// without being parsed and re-serialized, so fields this SDK does not know
+/// survive. The connection's protocol guard, if any, has already validated
+/// them. A `session/new` response installs the session's update routing from
+/// its raw `sessionId`.
+async fn forward_proxy_dispatch(
+    message: Dispatch,
+    cx: ConnectionTo<Conductor>,
+) -> Result<Handled<Dispatch>, crate::Error> {
+    let message = match message {
+        Dispatch::Request(request, responder) if request.method() == "initialize" => {
+            responder.respond_with_error(crate::Error::invalid_request().data(format!(
+                "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
+            )))?;
+            return Ok(Handled::Yes);
+        }
+        Dispatch::Request(mut request, responder)
+            if request.method() == METHOD_INITIALIZE_PROXY =>
+        {
+            request.method = "initialize".to_string();
+            cx.send_ordered_request_to(Agent, request)
+                .forward_response_to(responder)?;
+            return Ok(Handled::Yes);
+        }
+        Dispatch::Request(request, responder) if request.method() == "session/new" => {
+            let sent = cx.send_ordered_request_to(Agent, request);
+            // The dynamic-handler hook below means we cannot use
+            // `forward_response_to`, so wire up cancellation forwarding
+            // explicitly to keep `session/new` cancellable like every
+            // other proxied request.
+            let sent = sent.forward_cancellation_from(responder.cancellation());
+            sent.on_receiving_result({
+                let cx = cx.clone();
+                async move |result| {
+                    let result = result.and_then(|response| {
+                        let envelope: NewSessionResponseEnvelope =
+                            crate::util::json_cast(response.clone())?;
+                        cx.add_dynamic_handler(ProxySessionMessages::new(envelope.session_id))?
+                            .detach();
+                        Ok(response)
+                    });
+                    responder.respond_with_result(result)
+                }
+            })?;
+            return Ok(Handled::Yes);
+        }
+        message => message,
+    };
+
+    MatchDispatchFrom::new(message, &cx)
+        .if_dispatch_from(Client, async |message: Dispatch| {
+            cx.send_proxied_message_to(Agent, message)
+        })
+        .await
+        .if_dispatch_from(Agent, async |message: Dispatch| {
+            cx.send_proxied_message_to(Client, message)
+        })
+        .await
+        .done()
 }
 
 impl Conductor {

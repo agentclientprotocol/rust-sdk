@@ -12,6 +12,7 @@ use agent_client_protocol::{
 };
 use agent_client_protocol_conductor::{
     ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent, ProxiesAndAgent,
+    ProxiesAndAgentComponents, SelectedInitializeRequest,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use serde::{Deserialize, Serialize};
@@ -115,38 +116,14 @@ struct MutatingInstantiator {
 impl InstantiateProxiesAndAgent for MutatingInstantiator {
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
-        request: v1::InitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (
-                v1::InitializeRequest,
-                Vec<DynConnectTo<Conductor>>,
-                DynConnectTo<Client>,
-            ),
-            Error,
-        >,
-    > {
-        drop((self, request));
-        Box::pin(async {
-            Err(Error::internal_error().data("v1 initialization unexpectedly selected in v2 test"))
-        })
-    }
-
-    fn instantiate_v2_proxies_and_agent(
-        self: Box<Self>,
-        mut request: v2::InitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (
-                v2::InitializeRequest,
-                Vec<DynConnectTo<Conductor>>,
-                DynConnectTo<Client>,
-            ),
-            Error,
-        >,
-    > {
+        request: SelectedInitializeRequest,
+    ) -> futures::future::BoxFuture<'static, Result<ProxiesAndAgentComponents, Error>> {
+        let SelectedInitializeRequest::V2(mut request) = request else {
+            return Box::pin(async {
+                Err(Error::internal_error()
+                    .data("v1 initialization unexpectedly selected in v2 test"))
+            });
+        };
         match self.mutation {
             InitializeMutation::ProtocolVersion => {
                 request.protocol_version = ProtocolVersion::from(3_u16);
@@ -156,7 +133,7 @@ impl InstantiateProxiesAndAgent for MutatingInstantiator {
             }
         }
         let agent = self.agent;
-        Box::pin(async move { Ok((request, Vec::new(), agent)) })
+        Box::pin(async move { Ok((request.into(), Vec::new(), agent)) })
     }
 }
 
@@ -165,27 +142,19 @@ struct VersionMutatingProxyInstantiator;
 impl InstantiateProxies for VersionMutatingProxyInstantiator {
     fn instantiate_proxies(
         self: Box<Self>,
-        request: v1::InitializeRequest,
+        request: SelectedInitializeRequest,
     ) -> futures::future::BoxFuture<
         'static,
-        Result<(v1::InitializeRequest, Vec<DynConnectTo<Conductor>>), Error>,
+        Result<(SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>), Error>,
     > {
-        drop((self, request));
-        Box::pin(async {
-            Err(Error::internal_error()
-                .data("v1 proxy initialization unexpectedly selected in v2 test"))
-        })
-    }
-
-    fn instantiate_v2_proxies(
-        self: Box<Self>,
-        mut request: v2::InitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<(v2::InitializeRequest, Vec<DynConnectTo<Conductor>>), Error>,
-    > {
+        let SelectedInitializeRequest::V2(mut request) = request else {
+            return Box::pin(async {
+                Err(Error::internal_error()
+                    .data("v1 proxy initialization unexpectedly selected in v2 test"))
+            });
+        };
         request.protocol_version = ProtocolVersion::from(3_u16);
-        Box::pin(async move { Ok((request, Vec::new())) })
+        Box::pin(async move { Ok((request.into(), Vec::new())) })
     }
 }
 
@@ -324,7 +293,6 @@ async fn assert_raw_initialize_rejected(
     expected_code: i32,
 ) -> Result<(), Error> {
     run_raw_client_with_conductor(ProxiesAndAgent::new(Agent.v2()), async move |cx| {
-        let requested = params.get("protocolVersion").cloned();
         let request = UntypedMessage {
             method: "initialize".to_string(),
             params,
@@ -337,15 +305,6 @@ async fn assert_raw_initialize_rejected(
         .expect("invalid initialize request should not hang")
         .expect_err("invalid initialize request must be rejected");
         assert_eq!(i32::from(error.code), expected_code);
-        if expected_code == -32022 {
-            assert_eq!(
-                error.data,
-                Some(serde_json::json!({
-                    "requested": requested.expect("a version mismatch has a requested version"),
-                    "supported": [1, 2],
-                }))
-            );
-        }
         assert!(
             error.to_string().contains(expected_error),
             "unexpected initialize rejection: {error:?}"
@@ -488,16 +447,12 @@ async fn v2_conductor_rejects_invalid_protocol_versions_with_responses() -> Resu
         -32602,
     )
     .await?;
+    // A request below v1 does not select v2, so the conductor keeps v1's
+    // fallback-to-latest rule; `v1_chain_equivalence.rs` covers it.
     assert_raw_initialize_rejected(
         serde_json::json!({ "protocolVersion": "2" }),
         "protocolVersion must be a valid ACP protocol version",
         -32602,
-    )
-    .await?;
-    assert_raw_initialize_rejected(
-        serde_json::json!({ "protocolVersion": 0 }),
-        "Unsupported protocol version",
-        -32022,
     )
     .await
 }
@@ -584,8 +539,9 @@ async fn v2_nested_proxy_instantiator_cannot_change_selected_version() -> Result
 
 #[tokio::test]
 async fn v2_nested_proxy_rejection_is_flushed_and_remains_failed() -> Result<(), Error> {
-    let v1_only_proxy = |request: v1::InitializeRequest| async move {
-        Ok::<_, Error>((request, Vec::<DynConnectTo<Conductor>>::new()))
+    let v1_only_proxy = |request: SelectedInitializeRequest| async move {
+        let request = request.into_v1()?;
+        Ok::<_, Error>((request.into(), Vec::<DynConnectTo<Conductor>>::new()))
     };
     let nested_conductor = ConductorImpl::new_proxy("v1-only-proxy", v1_only_proxy);
     let request = initialize_request();
@@ -604,7 +560,7 @@ async fn v2_nested_proxy_rejection_is_flushed_and_remains_failed() -> Result<(),
                 assert!(
                     error
                         .to_string()
-                        .contains("proxy instantiator does not support ACP protocol v2"),
+                        .contains("instantiator does not support ACP protocol version 2"),
                     "unexpected nested proxy rejection on attempt {attempt}: {error:?}"
                 );
             }
@@ -1384,15 +1340,11 @@ async fn v2_nested_conductor_canonicalizes_future_version_fields() -> Result<(),
 #[tokio::test]
 async fn v2_initialize_rejects_v1_only_instantiator_with_response() -> Result<(), Error> {
     let request = initialize_request();
-    let v1_only_instantiator = |_request: v1::InitializeRequest| async move {
-        Err::<
-            (
-                v1::InitializeRequest,
-                Vec<DynConnectTo<Conductor>>,
-                DynConnectTo<Client>,
-            ),
-            Error,
-        >(Error::internal_error().data("v1 instantiator unexpectedly called for v2"))
+    let v1_only_instantiator = |request: SelectedInitializeRequest| async move {
+        let _request = request.into_v1()?;
+        Err::<ProxiesAndAgentComponents, Error>(
+            Error::internal_error().data("v1 instantiator unexpectedly called for v2"),
+        )
     };
     run_with_conductor(v1_only_instantiator, async move |cx| {
         for attempt in 1..=2 {
@@ -1406,7 +1358,7 @@ async fn v2_initialize_rejects_v1_only_instantiator_with_response() -> Result<()
             assert!(
                 error
                     .to_string()
-                    .contains("does not support ACP protocol v2"),
+                    .contains("does not support ACP protocol version 2"),
                 "unexpected v2 rejection on attempt {attempt}: {error:?}"
             );
         }

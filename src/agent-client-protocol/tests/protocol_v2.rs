@@ -2762,7 +2762,7 @@ async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() 
             },
             agent_client_protocol::on_receive_request!(),
         )
-        .connect_with(Proxy.builder(), async move |cx: ConnectionTo<Proxy>| {
+        .connect_with(Proxy.v2(), async move |cx: ConnectionTo<Proxy>| {
             let malformed = UntypedMessage::new(
                 "session/new",
                 serde_json::json!({

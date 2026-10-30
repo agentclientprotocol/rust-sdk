@@ -32,6 +32,10 @@
 //! explicit version-neutral escape hatch, not the ordinary way to author a v2
 //! proxy.
 //!
+//! Default forwarding is the same for every builder and every protocol
+//! version: `_proxy/initialize` has the same wire shape in v1 and v2, so a
+//! proxy forwards untyped messages, and fields the SDK does not know survive.
+//!
 //! # Default Forwarding
 //!
 //! By default, [`Proxy`] forwards all messages it doesn't handle.

@@ -46,14 +46,13 @@ use crate::jsonrpc::handlers::{ChainedHandler, NamedHandler};
 use crate::jsonrpc::handlers::{MessageHandler, NotificationHandler, RequestHandler};
 use crate::jsonrpc::outgoing_actor::{OutgoingMessageTx, send_raw_message};
 #[cfg(feature = "unstable_protocol_v2")]
+pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
+pub(crate) use crate::jsonrpc::protocol_compat::normalize_v1_initialize_request;
+#[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol_compat::{
     InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
 };
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
-#[cfg(feature = "unstable_protocol_v2")]
-pub(crate) use crate::jsonrpc::protocol_compat::{
-    normalize_newer_v2_initialize_request, normalize_v1_initialize_request,
-};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
@@ -961,6 +960,40 @@ where
     }
 }
 
+impl<
+    Host: Role,
+    Handler: HandleDispatchFrom<Host::Counterpart>,
+    Runner: RunWithConnectionTo<Host::Counterpart>,
+    Close: HandleConnectionClose<Host::Counterpart>,
+> Builder<Host, Handler, Runner, Close>
+{
+    /// Disable all automatic ACP protocol-version tracking and validation.
+    ///
+    /// This is a low-level escape hatch for protocol-routing infrastructure
+    /// that inspects and validates raw initialize requests and responses
+    /// itself before selecting a version-specific implementation, and for
+    /// version-agnostic forwarders such as the conductor, which leave version
+    /// validation to the endpoints. It also disables the version checks
+    /// applied to messages after initialization.
+    ///
+    /// This method is deliberately available only on builders whose callbacks
+    /// receive raw [`ConnectionTo`] values. Applications should normally use
+    /// [`Client::builder`](crate::Client::builder),
+    /// [`Agent::builder`](crate::Agent::builder),
+    /// [`Proxy::builder`](crate::Proxy::builder), or, with the
+    /// `unstable_protocol_v2` feature, `Client::v2`, `Agent::v2`, or
+    /// `Proxy::v2` instead.
+    ///
+    /// ```compile_fail
+    /// # use agent_client_protocol::Client;
+    /// let _ = Client.v2().without_acp_version_guard();
+    /// ```
+    pub fn without_acp_version_guard(mut self) -> Self {
+        self.protocol_mode = ProtocolMode::disabled();
+        self
+    }
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 impl<
     Host: Role,
@@ -1003,30 +1036,6 @@ impl<
             on_close: self.on_close,
             context: PhantomData,
         }
-    }
-
-    /// Disable all automatic ACP protocol-version tracking and validation.
-    ///
-    /// This is a low-level escape hatch for protocol-routing infrastructure
-    /// that inspects and validates raw initialize requests and responses
-    /// itself before selecting a version-specific implementation. It also
-    /// disables the version checks applied to messages after initialization.
-    ///
-    /// This method is deliberately available only on builders whose callbacks
-    /// receive raw [`ConnectionTo`] values. Applications should normally use
-    /// [`Client::builder`](crate::Client::builder),
-    /// [`Agent::builder`](crate::Agent::builder),
-    /// [`Proxy::builder`](crate::Proxy::builder), [`Client::v2`](crate::Client::v2),
-    /// [`Agent::v2`](crate::Agent::v2), or [`Proxy::v2`](crate::Proxy::v2)
-    /// instead.
-    ///
-    /// ```compile_fail
-    /// # use agent_client_protocol::Client;
-    /// let _ = Client.v2().without_acp_version_guard();
-    /// ```
-    pub fn without_acp_version_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::disabled();
-        self
     }
 }
 
@@ -3831,6 +3840,24 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     #[cfg(feature = "unstable_protocol_v2")]
     pub(crate) fn acp_protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
         self.protocol_mode.api_protocol_version()
+    }
+
+    /// Whether this connection uses the ACP protocol v2 API.
+    ///
+    /// Shared code paths select v2 behavior with this runtime check rather than
+    /// with the `unstable_protocol_v2` feature, so enabling the feature never
+    /// changes how a v1 (or guard-less) connection behaves. Always `false`
+    /// without the feature, because no v2 connection can exist.
+    #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(clippy::unused_self))]
+    pub(crate) fn is_acp_v2(&self) -> bool {
+        #[cfg(feature = "unstable_protocol_v2")]
+        {
+            self.acp_protocol_version() == Some(crate::schema::ProtocolVersion::V2)
+        }
+        #[cfg(not(feature = "unstable_protocol_v2"))]
+        {
+            false
+        }
     }
 
     /// Return the counterpart role this connection is talking to.
