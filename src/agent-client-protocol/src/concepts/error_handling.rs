@@ -46,6 +46,20 @@
 //! Malformed JSON and invalid request envelopes are handled at the SDK's transport
 //! boundary. Applications do not need to construct uncorrelated Error Responses.
 //!
+//! # Dropped Responders
+//!
+//! Every request gets a response. If a [`Responder`][crate::Responder] is
+//! dropped without responding (and was not moved somewhere that responds,
+//! such as [`SentRequest::forward_response_to`][crate::SentRequest::forward_response_to]),
+//! the SDK answers the request with `-32603` (Internal error), with data naming
+//! the method, or with `-32800` (Request cancelled) if the peer had cancelled
+//! the request with `$/cancel_request`. If the handler that dropped the
+//! responder returns an error, that error is sent instead. Nothing is sent if
+//! a response was already sent or the connection is shutting down.
+//!
+//! The automatic error is an ordinary error response: a dropped `initialize`
+//! responder fails initialization, so the client can retry.
+//!
 //! # The `into_internal_error` Helper
 //!
 //! When working with external libraries that return their own error types,

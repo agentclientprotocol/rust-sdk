@@ -178,8 +178,9 @@ protocol v2 removed batches, and v1 support was experimental and best-effort.
 Since the removal, `TransportFrame` has only the `Single` and `Malformed`
 variants, and `TransportBatch` and `TransportBatchEntry` no longer exist. Code
 that matched `TransportFrame::Batch` or built batches should send each message
-as its own `TransportFrame::Single`. Dropping a `Responder` never sends an
-automatic reply.
+as its own `TransportFrame::Single`. A dropped `Responder` is answered with an
+automatic error; see
+[Request Cancellation](./request-cancellation.md#unanswered-requests).
 
 Lifecycle-sensitive routing is unaffected: `ProxyProtocolRouter` requires an
 exact v1 or v2 `_proxy/initialize` match and preserves the initial frame without

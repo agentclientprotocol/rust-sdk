@@ -2766,6 +2766,27 @@ impl ResponderCancellation {
     fn cancellation(&self) -> RequestCancellation {
         self.registry.marker(&self.id, self.generation)
     }
+
+    /// Whether the peer has cancelled this request, without allocating a
+    /// marker.
+    fn is_cancelled(&self) -> bool {
+        let inner = self
+            .registry
+            .inner
+            .lock()
+            .expect("request cancellation registry mutex poisoned");
+        let Some(slot) = inner.slots.get(&self.id) else {
+            return false;
+        };
+        if slot.generation != self.generation {
+            return false;
+        }
+        match &slot.entry {
+            RequestCancellationEntry::Armed => false,
+            RequestCancellationEntry::Cancelled => true,
+            RequestCancellationEntry::Marker(marker) => marker.is_cancelled(),
+        }
+    }
 }
 
 impl Drop for ResponderCancellation {
@@ -2861,9 +2882,72 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
 /// Where the response to an incoming request is sent.
 ///
 /// A request is answered at most once; a duplicate completion is ignored.
+///
+/// While a handler attempt for the request is running (see
+/// [`begin_handler_attempt`](Self::begin_handler_attempt)), the automatic
+/// error for a dropped [`Responder`] is held back: if the handler then
+/// returns an error, that error is the response, not the generic fallback.
 #[derive(Clone, Debug, Default)]
 struct ResponseDestination {
-    completed: Arc<AtomicBool>,
+    state: Arc<ResponseDestinationState>,
+}
+
+#[derive(Debug, Default)]
+struct ResponseDestinationState {
+    completed: AtomicBool,
+    attempts: Mutex<HandlerAttempts>,
+}
+
+#[derive(Debug, Default)]
+struct HandlerAttempts {
+    active: usize,
+    deferred: Option<AbandonedResponse>,
+}
+
+/// The automatic error response for a [`Responder`] dropped without replying.
+#[derive(Debug)]
+struct AbandonedResponse {
+    message_tx: OutgoingMessageTx,
+    connection_state: IncomingClosed,
+    message: OutgoingMessage,
+}
+
+impl AbandonedResponse {
+    fn send(self) {
+        // Re-check: shutdown may have begun while the response was deferred.
+        if self.connection_state.is_shutting_down() {
+            tracing::debug!("not answering dropped responder: connection is shutting down");
+            return;
+        }
+        if let Err(error) = send_raw_message(&self.message_tx, self.message) {
+            tracing::debug!(
+                error = ?crate::util::redacted_error(error.code),
+                "could not answer request whose responder was dropped"
+            );
+        }
+    }
+}
+
+/// A running handler attempt for one request; see [`ResponseDestination`].
+struct HandlerAttempt {
+    destination: ResponseDestination,
+}
+
+impl Drop for HandlerAttempt {
+    fn drop(&mut self) {
+        let deferred = {
+            let mut attempts = self.destination.attempts();
+            attempts.active -= 1;
+            if attempts.active == 0 {
+                attempts.deferred.take()
+            } else {
+                None
+            }
+        };
+        if let Some(deferred) = deferred {
+            deferred.send();
+        }
+    }
 }
 
 impl ResponseDestination {
@@ -2871,13 +2955,49 @@ impl ResponseDestination {
         Self::default()
     }
 
+    fn attempts(&self) -> std::sync::MutexGuard<'_, HandlerAttempts> {
+        self.state
+            .attempts
+            .lock()
+            .expect("response destination mutex poisoned")
+    }
+
+    fn is_completed(&self) -> bool {
+        self.state.completed.load(Ordering::Acquire)
+    }
+
     fn complete(self, response: RawJsonRpcMessage) -> Option<TransportFrame> {
-        if self.completed.swap(true, Ordering::AcqRel) {
+        if self.state.completed.swap(true, Ordering::AcqRel) {
             tracing::warn!("Ignoring duplicate completion of JSON-RPC request");
             return None;
         }
 
         Some(TransportFrame::Single(response))
+    }
+
+    fn begin_handler_attempt(&self) -> HandlerAttempt {
+        self.attempts().active += 1;
+        HandlerAttempt {
+            destination: self.clone(),
+        }
+    }
+
+    /// Send, or defer until the running handler attempt ends, the automatic
+    /// error for a dropped responder.
+    fn abandon(&self, response: AbandonedResponse) {
+        {
+            let mut attempts = self.attempts();
+            if attempts.active > 0 {
+                attempts.deferred = Some(response);
+                return;
+            }
+        }
+        response.send();
+    }
+
+    /// A handler error answers the request; drop any deferred fallback.
+    fn discard_abandoned(&self) {
+        self.attempts().deferred = None;
     }
 }
 
@@ -2965,6 +3085,15 @@ impl ResponseDispatch {
 enum HandlerErrorTarget {
     Request(RequestReplyTarget),
     Response(ResponseReplyTarget),
+}
+
+impl HandlerErrorTarget {
+    fn begin_handler_attempt(&self) -> Option<HandlerAttempt> {
+        match self {
+            Self::Request(target) => Some(target.destination.begin_handler_attempt()),
+            Self::Response(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -3530,6 +3659,17 @@ impl IncomingClosed {
         {
             let _ = tx.send(());
         }
+    }
+
+    /// Whether the connection has begun shutting down (incoming EOF, a
+    /// finished foreground, an actor error) or has already terminated.
+    fn is_shutting_down(&self) -> bool {
+        self.state
+            .shutdown_tx
+            .lock()
+            .expect("shutdown signal mutex poisoned")
+            .is_none()
+            || self.termination().is_some()
     }
 
     fn finish_close(&self) {
@@ -4813,7 +4953,36 @@ impl<R: Role> Drop for DynamicHandlerGuard<R> {
 ///
 /// # Drop behavior
 ///
-/// Dropping a responder does not automatically send a reply.
+/// A request must be answered. If a responder for a request is dropped
+/// without a response having been sent through it, the SDK answers the
+/// request itself with an error, so the peer is never left waiting:
+///
+/// - `-32800` ([`Error::request_cancelled`]) if the peer had cancelled the
+///   request with `$/cancel_request`;
+/// - otherwise `-32603` ([`Error::internal_error`]), with data naming the
+///   method whose responder was dropped.
+///
+/// No automatic response is sent when:
+///
+/// - a response was already sent through the responder (any of the
+///   `respond*` methods), or the responder was handed to something that
+///   answers through it (such as
+///   [`SentRequest::forward_response_to`]) — only dropping the responder
+///   itself without responding triggers the fallback;
+/// - the responder was moved into another owner (another task, a wrapped
+///   responder from [`cast`](Self::cast) or [`wrap_params`](Self::wrap_params),
+///   a retried [`Dispatch`]); that owner's eventual drop is what counts;
+/// - the connection is shutting down or has terminated.
+///
+/// When a handler drops the responder and then returns an error, that error
+/// is the response instead of the generic fallback.
+///
+/// The automatic error is an ordinary error response: for example, a dropped
+/// `initialize` responder fails initialization just as an explicit error
+/// would.
+///
+/// [`Error::request_cancelled`]: crate::Error::request_cancelled
+/// [`Error::internal_error`]: crate::Error::internal_error
 #[must_use]
 pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// The method of the request.
@@ -4821,9 +4990,6 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
 
     /// The `id` of the message we are replying to.
     id: RequestId,
-
-    /// Request-local cancellation state.
-    cancellation: ResponderCancellation,
 
     /// Where the response is sent; it is completed at most once.
     destination: ResponseDestination,
@@ -4833,6 +4999,71 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     /// For incoming requests: serializes to JSON and sends over the wire.
     /// For incoming responses: sends to the waiting oneshot channel.
     send_fn: Box<dyn FnOnce(Result<T, crate::Error>) -> Result<(), crate::Error> + Send>,
+
+    /// Answers the request with an error if no response is sent. Owns the
+    /// request-local cancellation state, so it can still observe a
+    /// cancellation when it fires.
+    drop_guard: ResponderDropGuard,
+}
+
+/// Sends the automatic error for a [`Responder`] dropped without responding.
+struct ResponderDropGuard {
+    message_tx: OutgoingMessageTx,
+    connection_state: IncomingClosed,
+    /// The method of the request as received, used to route the response.
+    wire_method: String,
+    id: RequestId,
+    destination: ResponseDestination,
+    /// Request-local cancellation state.
+    cancellation: ResponderCancellation,
+    armed: bool,
+}
+
+impl ResponderDropGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ResponderDropGuard {
+    fn drop(&mut self) {
+        if !self.armed || self.destination.is_completed() {
+            return;
+        }
+        if self.connection_state.is_shutting_down() {
+            tracing::debug!(
+                id = ?self.id,
+                method = %self.wire_method,
+                "responder dropped while the connection is shutting down; not answering"
+            );
+            return;
+        }
+
+        let error = if self.cancellation.is_cancelled() {
+            crate::Error::request_cancelled()
+        } else {
+            crate::Error::internal_error().data(format!(
+                "request handler dropped its responder for `{}` without responding",
+                self.wire_method
+            ))
+        };
+        tracing::warn!(
+            id = ?self.id,
+            method = %self.wire_method,
+            code = ?error.code,
+            "Responder dropped without responding; answering with an error"
+        );
+        self.destination.abandon(AbandonedResponse {
+            message_tx: self.message_tx.clone(),
+            connection_state: self.connection_state.clone(),
+            message: OutgoingMessage::Response {
+                id: self.id.clone(),
+                method: self.wire_method.clone(),
+                response: Err(error),
+                destination: self.destination.clone(),
+            },
+        });
+    }
 }
 
 impl<T: JsonRpcResponse> std::fmt::Debug for Responder<T> {
@@ -4851,6 +5082,7 @@ impl Responder<serde_json::Value> {
     /// The response will be serialized to JSON and sent over the wire.
     fn new(
         message_tx: OutgoingMessageTx,
+        connection_state: IncomingClosed,
         method: String,
         id: RequestId,
         cancellation_registry: &RequestCancellationRegistry,
@@ -4860,10 +5092,18 @@ impl Responder<serde_json::Value> {
         let method_clone = method.clone();
         let cancellation = cancellation_registry.register(&id);
         let send_destination = destination.clone();
+        let drop_guard = ResponderDropGuard {
+            message_tx: message_tx.clone(),
+            connection_state,
+            wire_method: method.clone(),
+            id: id.clone(),
+            destination: destination.clone(),
+            cancellation,
+            armed: true,
+        };
         Self {
             method,
             id,
-            cancellation,
             destination,
             send_fn: Box::new(move |response: Result<serde_json::Value, crate::Error>| {
                 send_raw_message(
@@ -4876,6 +5116,7 @@ impl Responder<serde_json::Value> {
                     },
                 )
             }),
+            drop_guard,
         }
     }
 
@@ -4924,11 +5165,13 @@ impl<T: JsonRpcResponse> Responder<T> {
     /// method defines a successful response for cancellation (for example a
     /// permission request's `cancelled` outcome), that response is
     /// [`Error::request_cancelled`] (`-32800`) rather than partial data.
+    /// Dropping the responder of a cancelled request sends that error
+    /// automatically.
     ///
     /// [`Error::request_cancelled`]: crate::Error::request_cancelled
     #[must_use]
     pub fn cancellation(&self) -> RequestCancellation {
-        self.cancellation.cancellation()
+        self.drop_guard.cancellation.cancellation()
     }
 
     /// Convert to a `Responder` that expects a JSON value
@@ -4943,9 +5186,9 @@ impl<T: JsonRpcResponse> Responder<T> {
         Responder {
             method,
             id: self.id,
-            cancellation: self.cancellation,
             destination: self.destination,
             send_fn: self.send_fn,
+            drop_guard: self.drop_guard,
         }
     }
 
@@ -4958,24 +5201,26 @@ impl<T: JsonRpcResponse> Responder<T> {
         wrap_fn: impl FnOnce(&str, Result<U, crate::Error>) -> Result<T, crate::Error> + Send + 'static,
     ) -> Responder<U> {
         let method = self.method.clone();
+        let send_fn = self.send_fn;
         Responder {
             method: self.method,
             id: self.id,
-            cancellation: self.cancellation,
             destination: self.destination,
             send_fn: Box::new(move |input: Result<U, crate::Error>| {
                 let t_value = wrap_fn(&method, input);
-                (self.send_fn)(t_value)
+                send_fn(t_value)
             }),
+            drop_guard: self.drop_guard,
         }
     }
 
     /// Respond to the JSON-RPC request with either a value (`Ok`) or an error (`Err`).
     pub fn respond_with_result(
-        self,
+        mut self,
         response: Result<T, crate::Error>,
     ) -> Result<(), crate::Error> {
         tracing::debug!(id = ?self.id, "respond called");
+        self.drop_guard.disarm();
         (self.send_fn)(response)
     }
 

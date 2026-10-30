@@ -334,6 +334,11 @@ async fn handle_dynamic_handler_message<Counterpart: Role>(
                 tracing::trace!(method = pending_message.method(), handler = ?handler.dyn_describe_chain(), "Retrying message");
                 let reply_target = pending_message.handler_error_target();
                 let method = pending_message.method().to_string();
+                // Hold back a dropped responder's automatic error until we
+                // know whether the handler answers with its own error.
+                let _attempt = reply_target
+                    .as_ref()
+                    .and_then(HandlerErrorTarget::begin_handler_attempt);
                 match handler
                     .dyn_handle_dispatch_from(pending_message, connection.clone())
                     .await
@@ -420,6 +425,7 @@ fn dispatch_from_message<Counterpart: Role>(
             message,
             Responder::new(
                 connection.message_tx.clone(),
+                connection.incoming_closed.clone(),
                 method.to_string(),
                 id,
                 request_cancellations,
@@ -473,6 +479,11 @@ async fn dispatch_dispatch<Counterpart: Role>(
     let id = dispatch.id().cloned();
     let method = dispatch.method().to_string();
     let error_target = dispatch.handler_error_target();
+    // Hold back a dropped responder's automatic error until we know whether
+    // a handler answers with its own error.
+    let _attempt = error_target
+        .as_ref()
+        .and_then(HandlerErrorTarget::begin_handler_attempt);
 
     match request_cancellations.cancel_if_requested(&dispatch) {
         Ok(true) => {
@@ -615,15 +626,20 @@ fn handle_handler_error<Counterpart: Role>(
     error: crate::Error,
 ) -> Result<(), crate::Error> {
     match target {
-        Some(HandlerErrorTarget::Request(reply_target)) => send_raw_message(
-            &connection.message_tx,
-            OutgoingMessage::Response {
-                id: reply_target.id,
-                method: reply_target.method,
-                response: Err(error),
-                destination: reply_target.destination,
-            },
-        ),
+        Some(HandlerErrorTarget::Request(reply_target)) => {
+            // The handler error is the response; it replaces the automatic
+            // error for a responder the handler dropped.
+            reply_target.destination.discard_abandoned();
+            send_raw_message(
+                &connection.message_tx,
+                OutgoingMessage::Response {
+                    id: reply_target.id,
+                    method: reply_target.method,
+                    response: Err(error),
+                    destination: reply_target.destination,
+                },
+            )
+        }
         Some(HandlerErrorTarget::Response(reply_target)) => {
             reply_target.route(Err(error));
             Ok(())

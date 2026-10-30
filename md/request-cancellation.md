@@ -43,6 +43,29 @@ an unknown or already-completed request ID is silently ignored. A
 not a string, number, or null) is logged and ignored without a reply, like any
 other malformed notification.
 
+## Unanswered Requests
+
+The SDK makes sure a request it received is always answered, even when the
+handler never responds. If a `Responder` is dropped without a response having
+been sent through it, the SDK sends an error response for the request:
+
+- `-32800` (Request cancelled) if the peer had cancelled the request with
+  `$/cancel_request`, as ACP requires for a cancelled request whose method
+  defines no cancellation result;
+- otherwise `-32603` (Internal error), with data naming the method.
+
+If the handler that dropped the responder returns an error, that error is the
+response instead. No automatic response is sent when a response was already
+sent or handed off (for example with `forward_response_to`), when the
+responder was moved into another task or wrapper that still owns it, or when
+the connection is shutting down or has terminated. Notifications have no
+responder and never get a reply.
+
+The automatic error is an ordinary error response. A dropped `initialize`
+responder fails initialization like any other `initialize` error: a first
+`initialize` leaves the connection uninitialized, so the client can retry, and
+a failed repeat keeps the previous initialization.
+
 ## Interoperability
 
 Protocol-level (`$/`-prefixed) notifications are optional by design. The SDK
