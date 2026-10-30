@@ -21,7 +21,42 @@ type DebugCallback = Arc<dyn Fn(&str, LineDirection) + Send + Sync + 'static>;
 const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
 const STDERR_READ_BUFFER_SIZE: usize = 8 * 1024;
 const STDERR_LINE_TRUNCATION_MARKER: &str = "… [stderr line truncated]";
+/// How long shutdown waits for the agent to react on its own: to exit after
+/// its stdin has been closed, to drain stderr, or to finish pending writes.
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(1);
+/// How long an agent that ignored stdin EOF gets to exit after `SIGTERM`
+/// before its process group is sent `SIGKILL`.
+///
+/// Two seconds is enough for a well-behaved process (including Node and
+/// Python runtimes behind `npx`/`uvx`) to run its signal handlers, flush logs,
+/// and exit, while keeping the worst-case shutdown of a non-cooperative agent
+/// to about three seconds in total, below what an interactive client would
+/// notice as a hang.
+#[cfg(unix)]
+const TERMINATE_GRACE_PERIOD: Duration = Duration::from_secs(2);
+
+/// Bounds for the graceful shutdown of a spawned agent process.
+///
+/// This is crate-private so tests can shorten the waits without growing the
+/// public API.
+#[derive(Clone, Copy, Debug)]
+struct ShutdownTimeouts {
+    /// How long to wait for the agent to exit after its stdin is closed.
+    exit: Duration,
+    /// How long to wait for the agent to exit after `SIGTERM`.
+    #[cfg(unix)]
+    terminate: Duration,
+}
+
+impl Default for ShutdownTimeouts {
+    fn default() -> Self {
+        Self {
+            exit: SHUTDOWN_GRACE_PERIOD,
+            #[cfg(unix)]
+            terminate: TERMINATE_GRACE_PERIOD,
+        }
+    }
+}
 
 /// Configuration for launching an ACP agent subprocess.
 ///
@@ -131,8 +166,22 @@ impl AcpAgentConfig {
 ///
 /// The launch configuration is independent from ACP wire-schema types and can
 /// be parsed from command-line strings or JSON configurations.
-/// On Unix, dropping an active connection terminates the spawned process group, including agents
-/// started through wrapper commands such as `npx` and `uvx`.
+/// # Shutdown
+///
+/// When the protocol connection finishes cleanly (a `connect_with` foreground returns, or the
+/// agent closes its stdout), `AcpAgent` drains pending output, closes the agent's stdin, and waits
+/// briefly (one second) for the agent to exit on its own, as the ACP stdio transport
+/// specifies. A nonzero exit observed during that wait is reported as an error. If the agent
+/// is still running afterwards, it is terminated:
+///
+/// - On Unix, the spawned process group (which includes agents started through wrapper commands
+///   such as `npx` and `uvx`) is sent `SIGTERM`, then `SIGKILL` if it has not exited within two
+///   more seconds. Because the SDK requested this termination, the resulting exit status is not
+///   reported as an error.
+/// - On Windows, the process is killed.
+///
+/// Dropping an active connection (cancellation) cannot wait, so it kills the process
+/// immediately; on Unix it sends `SIGKILL` to the whole process group.
 ///
 /// Nonzero process exits include a bounded stderr tail in the returned error.
 /// Collection waits only for a bounded shutdown period; if stderr EOF does not
@@ -163,6 +212,7 @@ impl AcpAgentConfig {
 pub struct AcpAgent {
     config: AcpAgentConfig,
     debug_callback: Option<DebugCallback>,
+    shutdown_timeouts: ShutdownTimeouts,
 }
 
 impl std::fmt::Debug for AcpAgent {
@@ -173,6 +223,7 @@ impl std::fmt::Debug for AcpAgent {
                 "debug_callback",
                 &self.debug_callback.as_ref().map(|_| "..."),
             )
+            .field("shutdown_timeouts", &self.shutdown_timeouts)
             .finish()
     }
 }
@@ -184,6 +235,7 @@ impl AcpAgent {
         Self {
             config,
             debug_callback: None,
+            shutdown_timeouts: ShutdownTimeouts::default(),
         }
     }
 
@@ -301,8 +353,27 @@ impl AcpAgent {
     }
 }
 
+/// Sends `signal` to the process group led by `pid`.
+///
+/// The child was spawned as its own group leader (see `spawn_process`), so
+/// this reaches grandchildren spawned by wrapper launchers (`npx → node`,
+/// `uvx → python`). An error (e.g. `ESRCH`) just means the group is already
+/// gone.
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: rustix::process::Signal) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pid.cast_signed()) {
+        let _result = rustix::process::kill_process_group(pid, signal);
+    }
+}
+
 /// A wrapper around Child that kills the process — and, on unix, its whole
 /// process group (see `spawn_process`) — when dropped.
+///
+/// Dropping the guard is the cancellation path and kills immediately with
+/// `SIGKILL`: `Drop` is synchronous and cannot wait for the agent to react to
+/// a gentler `SIGTERM`. The graceful escalation (stdin EOF, then `SIGTERM`,
+/// then `SIGKILL`) lives on the async shutdown path in
+/// `AgentProcess::supervise`; see `terminate_unresponsive_child`.
 struct ChildGuard(Child);
 
 impl ChildGuard {
@@ -311,16 +382,11 @@ impl ChildGuard {
     }
 
     fn terminate(&mut self) {
-        // SIGKILL the child's process group first: the child was spawned as
-        // its own group leader, so this reaches grandchildren spawned by
-        // wrapper launchers (`npx → node`, `uvx → python`). This also covers
-        // the case where the direct child already exited but its wrapper left
-        // the real agent running. An error (e.g. `ESRCH`) just means the
-        // group is already gone.
+        // SIGKILL the child's process group first. This also covers the case
+        // where the direct child already exited but its wrapper left the real
+        // agent running.
         #[cfg(unix)]
-        if let Some(pid) = rustix::process::Pid::from_raw(self.0.id().cast_signed()) {
-            let _result = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-        }
+        signal_process_group(self.0.id(), rustix::process::Signal::KILL);
         // Fallback for platforms without group semantics (and a no-op double
         // tap on unix).
         drop(self.0.kill());
@@ -578,6 +644,66 @@ where
     }
 }
 
+/// Terminates an agent that is still running after protocol shutdown closed
+/// its stdin and the exit grace period expired.
+///
+/// On Unix the process group is sent `SIGTERM` and given
+/// `timeouts.terminate` to exit; whatever remains is then sent `SIGKILL` by
+/// the guard. Elsewhere the process is killed immediately.
+///
+/// The SDK requested this termination, so the resulting exit status (for
+/// example `signal: 15 (SIGTERM)`) is not reported as an agent failure, just
+/// as an immediate `SIGKILL` is not.
+async fn terminate_unresponsive_child<F>(
+    child_wait: F,
+    #[cfg(unix)] child_pid: u32,
+    timeouts: ShutdownTimeouts,
+) -> Result<(), crate::Error>
+where
+    F: std::future::Future<Output = Result<ExitedChild, crate::Error>> + Unpin,
+{
+    #[cfg(unix)]
+    {
+        tracing::debug!(
+            grace = ?timeouts.exit,
+            "Agent process did not exit after its stdin closed; sending SIGTERM"
+        );
+        // `child_wait` has not observed an exit, so the child has not been
+        // reaped and `child_pid` still identifies its process group.
+        signal_process_group(child_pid, rustix::process::Signal::TERM);
+        match futures::future::select(child_wait, async_io::Timer::after(timeouts.terminate)).await
+        {
+            futures::future::Either::Left((child, _)) => {
+                let ExitedChild {
+                    mut guard, status, ..
+                } = child?;
+                tracing::debug!(%status, "Agent process exited after SIGTERM");
+                // A launcher may exit while a descendant ignores SIGTERM and
+                // holds inherited stdio; do not leave it behind.
+                guard.terminate();
+            }
+            futures::future::Either::Right((_, child_wait)) => {
+                tracing::debug!(
+                    grace = ?timeouts.terminate,
+                    "Agent process did not exit after SIGTERM; sending SIGKILL"
+                );
+                // Dropping the guard SIGKILLs the process group.
+                drop(child_wait);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tracing::debug!(
+            grace = ?timeouts.exit,
+            "Agent process did not exit after its stdin closed; terminating it"
+        );
+        // Dropping the guard kills the process.
+        drop(child_wait);
+    }
+    Ok(())
+}
+
 async fn write_line_with_shutdown_timeout<W>(
     writer: &mut W,
     line: String,
@@ -648,6 +774,68 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         self,
         client: impl crate::ConnectTo<Counterpart::Counterpart>,
     ) -> Result<(), crate::Error> {
+        let (lines, process) = self.spawn_connection()?;
+        process
+            .supervise(crate::ConnectTo::<Counterpart>::connect_to(lines, client))
+            .await
+    }
+
+    /// Spawns the agent and returns a driver that supports graceful finish.
+    ///
+    /// A finite foreground (`Builder::connect_with`) requests finish after
+    /// handing off its output. The line transport then drains and closes the
+    /// agent's stdin, and the driver waits for the agent to exit, escalating
+    /// as described in [`AcpAgent`]'s shutdown documentation, instead of being
+    /// dropped (which would kill the agent without closing stdin first).
+    fn into_channel_and_future(self) -> (crate::Channel, Option<crate::ConnectionDriver>) {
+        match self.spawn_connection() {
+            Ok((lines, process)) => {
+                let (channel, driver) =
+                    crate::ConnectTo::<Counterpart>::into_channel_and_future(lines);
+                let driver = driver
+                    .expect("the line transport owns its I/O")
+                    .map_future(|work| process.supervise(work));
+                (channel, Some(driver))
+            }
+            Err(error) => {
+                let (channel, peer) = crate::Channel::duplex();
+                let driver = crate::ConnectionDriver::new(async move {
+                    drop(peer);
+                    Err(error)
+                });
+                (channel, Some(driver))
+            }
+        }
+    }
+}
+
+type AgentOutgoingLines =
+    std::pin::Pin<Box<dyn futures::Sink<String, Error = std::io::Error> + Send>>;
+type AgentIncomingLines =
+    std::pin::Pin<Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>>;
+
+/// The parts of a spawned agent that the protocol connection does not own:
+/// its stderr reader and its process-group guard.
+struct AgentProcess {
+    stderr_future: futures::future::BoxFuture<'static, ()>,
+    child_wait: futures::future::BoxFuture<'static, Result<ExitedChild, crate::Error>>,
+    #[cfg(unix)]
+    child_pid: u32,
+    shutdown_timeouts: ShutdownTimeouts,
+}
+
+impl AcpAgent {
+    /// Spawns the agent process and splits it into the line transport over
+    /// its stdio and the process that `AgentProcess::supervise` monitors.
+    fn spawn_connection(
+        self,
+    ) -> Result<
+        (
+            crate::Lines<AgentOutgoingLines, AgentIncomingLines>,
+            AgentProcess,
+        ),
+        crate::Error,
+    > {
         use futures::io::BufReader;
         use futures::{AsyncBufReadExt, StreamExt};
 
@@ -675,6 +863,10 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             }
         };
 
+        let shutdown_timeouts = self.shutdown_timeouts;
+        #[cfg(unix)]
+        let child_pid = child.id();
+
         // Create the guard eagerly so cancelling this connection before the
         // monitor is first polled still terminates the whole process group.
         let child_wait = wait_for_child(ChildGuard(child), stderr_rx, stderr_capture);
@@ -699,7 +891,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         let (stdout_eof_tx, stdout_eof_rx) = futures::channel::oneshot::channel();
         let mut stdout_eof_tx = Some(stdout_eof_tx);
         let mut incoming_lines = incoming_lines;
-        let incoming_lines = Box::pin(futures::stream::poll_fn(move |cx| {
+        let incoming_lines: AgentIncomingLines = Box::pin(futures::stream::poll_fn(move |cx| {
             let next = incoming_lines.as_mut().poll_next(cx);
             if matches!(next, std::task::Poll::Ready(None))
                 && let Some(stdout_eof_tx) = stdout_eof_tx.take()
@@ -710,9 +902,7 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
         }));
 
         // Create a sink that writes lines (with newlines) to stdin with optional debug logging
-        let outgoing_sink: std::pin::Pin<
-            Box<dyn futures::Sink<String, Error = std::io::Error> + Send>,
-        > = Box::pin(futures::sink::unfold(
+        let outgoing_sink: AgentOutgoingLines = Box::pin(futures::sink::unfold(
             (
                 child_stdin,
                 self.debug_callback.clone(),
@@ -736,16 +926,35 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             },
         ));
 
-        // Race the protocol against child process exit.
-        // Also run stderr collection concurrently.
-        let protocol_future = crate::ConnectTo::<Counterpart>::connect_to(
+        Ok((
             crate::Lines::new(outgoing_sink, incoming_lines),
-            client,
-        );
+            AgentProcess {
+                stderr_future: Box::pin(stderr_future),
+                child_wait: Box::pin(child_wait),
+                #[cfg(unix)]
+                child_pid,
+                shutdown_timeouts,
+            },
+        ))
+    }
+}
 
-        let stderr_future = pin!(stderr_future);
+impl AgentProcess {
+    /// Races the protocol connection against the agent process exiting,
+    /// while draining stderr.
+    async fn supervise(
+        self,
+        protocol_future: impl std::future::Future<Output = Result<(), crate::Error>>,
+    ) -> Result<(), crate::Error> {
+        let Self {
+            stderr_future,
+            child_wait,
+            #[cfg(unix)]
+            child_pid,
+            shutdown_timeouts,
+        } = self;
+        // Boxed (not stack-pinned) so `select` drops it on completion.
         let protocol_future = Box::pin(protocol_future);
-        let child_wait = Box::pin(child_wait);
 
         // Run stderr reader alongside the main race. Errors still stop the
         // connection immediately. After protocol shutdown succeeds, give the
@@ -755,9 +964,13 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
             match futures::future::select(protocol_future, child_wait).await {
                 futures::future::Either::Left((result, child_wait)) => {
                     result?;
+                    // `select` has dropped the completed protocol future and,
+                    // with it, the outgoing sink that owns `child_stdin`. The
+                    // agent therefore sees EOF on stdin, which is the ACP
+                    // stdio shutdown signal, before this grace period starts.
                     match futures::future::select(
                         child_wait,
-                        async_io::Timer::after(SHUTDOWN_GRACE_PERIOD),
+                        async_io::Timer::after(shutdown_timeouts.exit),
                     )
                     .await
                     {
@@ -765,12 +978,13 @@ impl<Counterpart: AcpAgentCounterpartRole> crate::ConnectTo<Counterpart> for Acp
                             finish_child_exit(child?).await
                         }
                         futures::future::Either::Right((_, child_wait)) => {
-                            tracing::debug!(
-                                grace = ?SHUTDOWN_GRACE_PERIOD,
-                                "Agent process did not exit after protocol shutdown; terminating it"
-                            );
-                            drop(child_wait);
-                            Ok(())
+                            terminate_unresponsive_child(
+                                child_wait,
+                                #[cfg(unix)]
+                                child_pid,
+                                shutdown_timeouts,
+                            )
+                            .await
                         }
                     }
                 }
@@ -1479,6 +1693,171 @@ mod tests {
             "launcher stderr should be preserved: {error:?}"
         );
         assert_process_exits(descendant_pid).await;
+        cleanup.disarm();
+    }
+
+    /// Files a shutdown-test agent script uses to report its PID and whether
+    /// its `TERM` trap ran. Removed on drop.
+    #[cfg(unix)]
+    struct ShutdownMarkers {
+        dir: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl ShutdownMarkers {
+        fn new(name: &str) -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "acp-shutdown-{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+
+        fn pid_path(&self) -> PathBuf {
+            self.dir.join("pid")
+        }
+
+        fn term_path(&self) -> PathBuf {
+            self.dir.join("term")
+        }
+
+        /// An agent running `script` as `sh -c script sh <pid file> <term file>`.
+        fn agent(&self, script: &str, timeouts: ShutdownTimeouts) -> AcpAgent {
+            let mut agent = AcpAgent::from_args([
+                "/bin/sh",
+                "-c",
+                script,
+                "sh",
+                self.pid_path().to_str().unwrap(),
+                self.term_path().to_str().unwrap(),
+            ])
+            .unwrap();
+            agent.shutdown_timeouts = timeouts;
+            agent
+        }
+
+        fn pid(&self) -> rustix::process::Pid {
+            let pid = std::fs::read_to_string(self.pid_path()).expect("agent wrote its PID");
+            rustix::process::Pid::from_raw(pid.trim().parse().unwrap()).unwrap()
+        }
+
+        fn received_sigterm(&self) -> bool {
+            self.term_path().exists()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ShutdownMarkers {
+        fn drop(&mut self) {
+            let _result = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Connects to `agent`, waits until its script has started (written its
+    /// PID), then ends the protocol from the client side. Returns the result
+    /// and how long shutdown took after the foreground returned.
+    #[cfg(unix)]
+    async fn shut_down_once_started(
+        agent: AcpAgent,
+        markers: &ShutdownMarkers,
+    ) -> (Result<(), crate::Error>, Duration) {
+        let pid_path = markers.pid_path();
+        let (stopped_tx, stopped_rx) = futures::channel::oneshot::channel();
+        let connection = Client.builder().connect_with(agent, async move |_cx| {
+            while !pid_path.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let _sent = stopped_tx.send(std::time::Instant::now());
+            Ok(())
+        });
+        let result = tokio::time::timeout(Duration::from_secs(10), connection)
+            .await
+            .expect("agent shutdown should be bounded");
+        let stopped = stopped_rx.await.expect("the foreground ran");
+        (result, stopped.elapsed())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_shutdown_child_exiting_on_stdin_eof_never_receives_sigterm() {
+        let markers = ShutdownMarkers::new("eof");
+        let agent = markers.agent(
+            r#"echo $$ > "$1"; trap 'echo term > "$2"' TERM; cat >/dev/null; echo eof > "$1.eof"; exit 0"#,
+            ShutdownTimeouts {
+                exit: Duration::from_secs(5),
+                terminate: Duration::from_secs(5),
+            },
+        );
+
+        let (result, elapsed) = shut_down_once_started(agent, &markers).await;
+
+        result.expect("an agent that exits on stdin EOF shuts down cleanly");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the agent should exit on stdin EOF, not after the grace period ({elapsed:?})"
+        );
+        assert!(!markers.received_sigterm(), "the agent received SIGTERM");
+        assert!(
+            markers.dir.join("pid.eof").exists(),
+            "the agent should have read EOF on its stdin"
+        );
+        assert_process_exits(markers.pid()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_shutdown_sigterms_child_ignoring_stdin_eof() {
+        let markers = ShutdownMarkers::new("term");
+        let agent = markers.agent(
+            r#"echo $$ > "$1"; trap 'echo term > "$2"; exit 0' TERM; while :; do sleep 1; done"#,
+            ShutdownTimeouts {
+                exit: Duration::from_millis(200),
+                terminate: Duration::from_secs(5),
+            },
+        );
+
+        let (result, elapsed) = shut_down_once_started(agent, &markers).await;
+        let pid = markers.pid();
+        let mut cleanup = KillOnDrop(Some(pid));
+
+        result.expect("an agent stopped by SIGTERM shuts down cleanly");
+        assert!(markers.received_sigterm(), "the agent did not get SIGTERM");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the agent should exit on SIGTERM, not wait for SIGKILL ({elapsed:?})"
+        );
+        assert_process_exits(pid).await;
+        cleanup.disarm();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn graceful_shutdown_sigkills_child_ignoring_sigterm() {
+        let markers = ShutdownMarkers::new("kill");
+        // The trap records SIGTERM but keeps running; `sleep` itself is
+        // killed by the group SIGTERM, and the loop starts another one.
+        let agent = markers.agent(
+            r#"echo $$ > "$1"; trap 'echo term > "$2"' TERM; while :; do sleep 1; done"#,
+            ShutdownTimeouts {
+                exit: Duration::from_millis(100),
+                terminate: Duration::from_millis(300),
+            },
+        );
+
+        let (result, elapsed) = shut_down_once_started(agent, &markers).await;
+        let pid = markers.pid();
+        let mut cleanup = KillOnDrop(Some(pid));
+
+        result.expect("an agent killed during shutdown is not an error");
+        assert!(markers.received_sigterm(), "SIGTERM should precede SIGKILL");
+        assert!(
+            elapsed >= Duration::from_millis(400),
+            "SIGKILL should wait for the SIGTERM grace period ({elapsed:?})"
+        );
+        assert_process_exits(pid).await;
         cleanup.disarm();
     }
 

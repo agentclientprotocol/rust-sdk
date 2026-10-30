@@ -387,6 +387,20 @@ transport or integration supplied by this SDK.
 Use native `Stdio` for the current process or `AcpAgent` for a child process.
 Both use the same frame-aware line transport underneath.
 
+`AcpAgent` shuts its child down as the ACP stdio transport specifies. Its driver
+supports graceful finish, so when a `connect_with` foreground returns (or the
+agent closes its stdout under `connect_to`), the transport drains accepted
+output and then closes the agent's stdin. The agent gets a one-second grace
+period to exit on its own; a nonzero exit in that window is reported as an
+error, with a bounded stderr tail. If the agent is still running, then on Unix
+its process group (which includes agents behind `npx` or `uvx` launchers) is
+sent `SIGTERM`, followed by `SIGKILL` if it has not exited two seconds later.
+On Windows the process is killed. An exit that the SDK forced this way is not
+reported as an error.
+
+Dropping the connection future is cancellation and cannot wait, so it kills
+the agent's process group immediately with `SIGKILL`.
+
 ### 2. In-Process Proxy Chain
 
 Connect builders, proxies, and conductor components directly. Their default
