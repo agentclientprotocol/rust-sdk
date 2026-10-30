@@ -2,7 +2,8 @@
 //!
 //! Start a v2 connection with [`Client.v2()`](crate::Client::v2),
 //! [`Agent.v2()`](crate::Agent::v2) or [`Proxy.v2()`](crate::Proxy::v2). The
-//! protocol v2 message types are in [`schema::v2`](crate::schema::v2).
+//! protocol v2 message types are in [`v2::schema`](schema), the same module as
+//! [`agent_client_protocol::schema::v2`](crate::schema::v2).
 //!
 //! This module exports the same names as [`crate::v1`] for protocol v2, so
 //! code moves between versions by changing the module it imports from.
@@ -13,9 +14,10 @@
 //! Requires the `unstable_protocol_v2` crate feature.
 //!
 //! ```no_run
-//! use agent_client_protocol::schema::{ProtocolVersion, v2::{Implementation, InitializeRequest}};
-//! use agent_client_protocol::{Agent, Client, ConnectTo};
+//! use agent_client_protocol::schema::ProtocolVersion;
+//! use agent_client_protocol::v2::schema::{Implementation, InitializeRequest};
 //! use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome};
+//! use agent_client_protocol::{Agent, Client, ConnectTo};
 //!
 //! # async fn run(transport: impl ConnectTo<Client>) -> agent_client_protocol::Result<()> {
 //! Client
@@ -39,6 +41,14 @@
 //! [`schema::v2::RequestId`]: crate::schema::v2::RequestId
 
 use crate::{NullClose, NullHandler, UntypedMessage, V2, jsonrpc::run::NullRun};
+
+/// The protocol v2 message types: the same module as
+/// [`agent_client_protocol::schema::v2`](crate::schema::v2).
+///
+/// `use agent_client_protocol::v2::{self, schema};` brings both the SDK
+/// types and the messages into scope under names that do not clash with the
+/// SDK's `v2` module.
+pub use crate::schema::v2 as schema;
 
 pub use crate::jsonrpc::v2_connection::ConnectionTo;
 pub use crate::jsonrpc::{

@@ -60,11 +60,13 @@ impl Peer {
         self.respond(
             id,
             Ok(serde_json::to_value(
-                v2::InitializeResponse::new(
+                schema::InitializeResponse::new(
                     ProtocolVersion::V2,
-                    v2::Implementation::new("gated-agent", "0.1.0"),
+                    schema::Implementation::new("gated-agent", "0.1.0"),
                 )
-                .capabilities(v2::AgentCapabilities::new().session(v2::SessionCapabilities::new())),
+                .capabilities(
+                    schema::AgentCapabilities::new().session(schema::SessionCapabilities::new()),
+                ),
             )
             .unwrap()),
         );
@@ -116,10 +118,10 @@ fn text(session: &Session) -> String {
         .updates
         .iter()
         .map(|update| {
-            let v2::SessionUpdate::AgentMessageChunk(chunk) = update else {
+            let schema::SessionUpdate::AgentMessageChunk(chunk) = update else {
                 panic!("expected a chunk");
             };
-            let v2::ContentBlock::Text(text) = &chunk.content else {
+            let schema::ContentBlock::Text(text) = &chunk.content else {
                 panic!("expected text");
             };
             text.text.as_str()
@@ -152,8 +154,8 @@ async fn bounded(future: impl Future<Output = ()>) {
 
 #[tokio::test(flavor = "current_thread")]
 async fn concurrent_loaders_share_one_resume_and_projection() {
-    let expected = v2::ResumeSessionResponse::new()
-        .config_options(vec![v2::SessionConfigOption::boolean(
+    let expected = schema::ResumeSessionResponse::new()
+        .config_options(vec![schema::SessionConfigOption::boolean(
             "thinking", "Thinking", true,
         )])
         .meta(serde_json::Map::from_iter([(

@@ -21,13 +21,16 @@
 //!
 //! - [`Client.v1()`](Client::v1), [`Agent.v1()`](Agent::v1) and
 //!   [`Proxy.v1()`](Proxy::v1) start a stable protocol v1 connection. Its
-//!   types are in [`v1`] and its messages in [`schema::v1`].
+//!   types are in [`v1`] and its messages in [`v1::schema`] (also reachable
+//!   as [`schema::v1`]).
 //! - With the `unstable_protocol_v2` feature, `Client.v2()`, `Agent.v2()` and
 //!   `Proxy.v2()` start a draft protocol v2 connection. Its types are in
-//!   `agent_client_protocol::v2` and its messages in `schema::v2`.
+//!   `agent_client_protocol::v2` and its messages in `v2::schema` (also
+//!   reachable as `schema::v2`).
 //!
 //! The `v1` and `v2` modules export the same names (`ConnectionTo`,
-//! `Builder`, `Responder`, `Dispatch`, `SessionBuilder`, `ActiveSession`, ...),
+//! `Builder`, `Responder`, `Dispatch`, `SessionBuilder`, `ActiveSession`,
+//! `schema`, ...),
 //! so code moves between versions by changing the module it imports from.
 //! The crate root holds what every version shares: transports, roles, the
 //! JSON-RPC traits, [`Error`], the generic request handles (which default to

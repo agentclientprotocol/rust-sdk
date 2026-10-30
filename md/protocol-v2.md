@@ -37,11 +37,12 @@ receive `v2::ConnectionTo<_>`, so the protocol version is reflected in the
 high-level Rust API as well as on the wire:
 
 ```rust
-use agent_client_protocol::schema::{ProtocolVersion, v2};
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::v2::schema;
 use agent_client_protocol::{Agent, Client};
 
-fn implementation() -> v2::Implementation {
-    v2::Implementation::new("example", "0.1.0")
+fn implementation() -> schema::Implementation {
+    schema::Implementation::new("example", "0.1.0")
 }
 
 # async fn run(agent_transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
@@ -49,7 +50,7 @@ Client
     .v2()
     .connect_with(agent_transport, async |cx| {
         let initialize = cx
-            .send_request(v2::InitializeRequest::new(
+            .send_request(schema::InitializeRequest::new(
                 ProtocolVersion::V2,
                 implementation(),
             ))
@@ -67,8 +68,8 @@ Client
 Agent
     .v2()
     .on_receive_request(
-        async |initialize: v2::InitializeRequest, responder, _cx| {
-            responder.respond(v2::InitializeResponse::new(
+        async |initialize: schema::InitializeRequest, responder, _cx| {
+            responder.respond(schema::InitializeResponse::new(
                 initialize.protocol_version,
                 implementation(),
             ))
@@ -81,9 +82,11 @@ Agent
 # }
 ```
 
-When v2 mode is enabled, application code should use message types from
-`agent_client_protocol::schema::v2` and SDK types from
-`agent_client_protocol::v2`. The preceding agent fragment demonstrates version negotiation only.
+When v2 mode is enabled, application code should use SDK types from
+`agent_client_protocol::v2` and message types from `v2::schema`, the same
+module as `agent_client_protocol::schema::v2`. Importing
+`agent_client_protocol::v2::{self, schema}` brings both into scope without a
+name clash. The preceding agent fragment demonstrates version negotiation only.
 An agent that advertises session support must also implement the complete
 baseline session surface shown in the runnable quickstart.
 
@@ -427,8 +430,9 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `into_protocol::<V2>()`, for example to call `on_proxy_session_start` from a
   raw router. Every handle also has `raw_id()`.
 - Closures registered on a v2 builder that spell out the responder type need
-  the v2 handle: `responder: agent_client_protocol::v2::Responder<v2::PromptResponse>`
-  (or `Responder<v2::PromptResponse, V2>`). Unannotated
+  the v2 handle: `responder: v2::Responder<schema::PromptResponse>` with
+  `use agent_client_protocol::v2::{self, schema}` (or
+  `Responder<schema::PromptResponse, V2>`). Unannotated
   closure parameters are inferred.
 - A v2 client advertises protocol v2 as its latest supported version.
 - A v2 client requires a v2 agent. Send initialization with

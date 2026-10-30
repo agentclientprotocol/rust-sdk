@@ -25,19 +25,19 @@
 //! ```
 //! use std::path::PathBuf;
 //! use agent_client_protocol::{Agent, Client, ConnectTo, Error};
-//! use agent_client_protocol::v2::ConnectionTo;
-//! use agent_client_protocol::schema::{ProtocolVersion, v2};
+//! use agent_client_protocol::v2::{ConnectionTo, schema};
+//! use agent_client_protocol::schema::ProtocolVersion;
 //! use futures::{channel::mpsc, StreamExt as _};
 //!
 //! enum ApplicationEvent {
-//!     Update(Box<v2::UpdateSessionNotification>),
-//!     ResumeFinished(Result<v2::ResumeSessionResponse, Error>),
+//!     Update(Box<schema::UpdateSessionNotification>),
+//!     ResumeFinished(Result<schema::ResumeSessionResponse, Error>),
 //!     Closed,
 //! }
 //!
 //! async fn observe_session(
 //!     transport: impl ConnectTo<Client> + 'static,
-//!     session_id: v2::SessionId,
+//!     session_id: schema::SessionId,
 //!     cwd: PathBuf,
 //!     mut apply: impl FnMut(ApplicationEvent),
 //! ) -> Result<(), Error> {
@@ -47,7 +47,7 @@
 //!
 //!     Client.v2()
 //!         .on_receive_notification(
-//!             async move |update: v2::UpdateSessionNotification,
+//!             async move |update: schema::UpdateSessionNotification,
 //!                         _connection: ConnectionTo<Agent>| {
 //!                 // A dropped receiver means the application stopped observing.
 //!                 drop(updates_tx.unbounded_send(ApplicationEvent::Update(Box::new(update))));
@@ -61,16 +61,16 @@
 //!         })
 //!         .connect_with(transport, async move |connection| {
 //!             // Initialization does not need an application projection barrier.
-//!             let initialized = connection.send_request(v2::InitializeRequest::new(
+//!             let initialized = connection.send_request(schema::InitializeRequest::new(
 //!                 ProtocolVersion::V2,
-//!                 v2::Implementation::new("ordered-client", "0.1.0"),
+//!                 schema::Implementation::new("ordered-client", "0.1.0"),
 //!             )).block_task().await?;
 //!             if initialized.capabilities.session.is_none() {
 //!                 return Err(Error::invalid_params().data("agent has no session support"));
 //!             }
 //!
-//!             let resume = v2::ResumeSessionRequest::new(session_id.clone(), cwd)
-//!                 .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
+//!             let resume = schema::ResumeSessionRequest::new(session_id.clone(), cwd)
+//!                 .replay_from(schema::ReplayFrom::from(schema::ReplayFromStart::new()));
 //!             connection.prepare_request(resume).on_receiving_result(async move |result| {
 //!                 drop(events_tx.unbounded_send(ApplicationEvent::ResumeFinished(result)));
 //!                 // Do not wait for the consumer or for another inbound response here.

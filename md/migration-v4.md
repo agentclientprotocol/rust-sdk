@@ -15,7 +15,8 @@ the imports:
   connection (`unstable_protocol_v2`), as before.
 - `agent_client_protocol::v1` and, with `unstable_protocol_v2`,
   `agent_client_protocol::v2` hold each version's SDK types under the same
-  names. The protocol messages stay in `schema::v1` and `schema::v2`.
+  names. Each also re-exports its protocol messages as `schema`:
+  `v1::schema` is `schema::v1` and `v2::schema` is `schema::v2`.
 
 The crate root keeps what every version shares: transports (`Channel`,
 `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`, `TransportFrame` and the `Raw*`
@@ -42,6 +43,7 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 | `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
 | `LoadSessionBuilder`, `RestoreSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
 | `InitializeOutcome`, `InitializationVersionMismatch`, `SelectedInitializeResponse` | - | the result of `send_initialize` |
+| `schema` | `schema::v1` | `schema::v2` |
 
 `v1::ConnectionTo` is the crate root's version-neutral `ConnectionTo`, which
 also carries the v1 session helpers. Requests sent through it return the root
@@ -130,20 +132,27 @@ In `agent-client-protocol-test`, Testy follows the same layout:
 | `testy::V2Testy`, `Testy::new().v2()` | `testy::v2::Testy`, `testy::v2::Testy::new()` |
 | `Testy::new().protocol_router()` | `testy::protocol_router()` |
 
-### Name clashes with `schema::v1` and `schema::v2`
+### `v1::schema` and `v2::schema`
 
 Code that imports the schema modules as `v1` and `v2` cannot also import the
-SDK modules under those names. Import the SDK types by name instead:
+SDK modules under those names. Import each version's messages through its SDK
+module instead, as `schema`:
 
 ```rust,ignore
-use agent_client_protocol::schema::v2;
-use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::v2::{self, schema};
 
-async |request: v2::PromptRequest, responder: Responder<v2::PromptResponse>, cx: ConnectionTo<Client>| { ... }
+async |request: schema::PromptRequest,
+       responder: v2::Responder<schema::PromptResponse>,
+       cx: v2::ConnectionTo<Client>| { ... }
+
+// or
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 ```
 
-or spell out the path, for example `agent_client_protocol::v2::ConnectionTo`,
-where one file needs both versions' SDK types.
+`agent_client_protocol::schema::v1` and `schema::v2` stay, next to the
+version-neutral schema items (`ProtocolVersion`, `SuccessorMessage`, the
+`proxy/*` method constants), so code that imports `schema::v2` keeps
+compiling.
 
 ### A v1 client
 

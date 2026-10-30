@@ -3,12 +3,8 @@
 //! cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
 //!   --features rmcp_3,unstable_protocol_v2,unstable_mcp_over_acp
 
-use agent_client_protocol::v2::{ConnectionTo, Responder};
-use agent_client_protocol::{
-    Agent, Client, Error,
-    mcp_server::McpServer,
-    schema::{ProtocolVersion, v2},
-};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
+use agent_client_protocol::{Agent, Client, Error, mcp_server::McpServer, schema::ProtocolVersion};
 use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 extern crate rmcp_3 as rmcp;
 
@@ -49,29 +45,28 @@ async fn main() -> Result<(), Error> {
     let agent = Agent
         .v2()
         .on_receive_request(
-            async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+            async |request: schema::InitializeRequest,
+                   responder: Responder<schema::InitializeResponse>,
                    _cx: ConnectionTo<Client>| {
                 responder.respond(
-                    v2::InitializeResponse::new(
+                    schema::InitializeResponse::new(
                         request.protocol_version,
-                        v2::Implementation::new("echo-agent", "1"),
+                        schema::Implementation::new("echo-agent", "1"),
                     )
-                    .capabilities(
-                        v2::AgentCapabilities::new()
-                            .session(v2::SessionCapabilities::new().mcp(
-                                v2::McpCapabilities::new().acp(v2::McpAcpCapabilities::new()),
-                            )),
-                    ),
+                    .capabilities(schema::AgentCapabilities::new().session(
+                        schema::SessionCapabilities::new().mcp(
+                            schema::McpCapabilities::new().acp(schema::McpAcpCapabilities::new()),
+                        ),
+                    )),
                 )
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: v2::NewSessionRequest,
-                        responder: Responder<v2::NewSessionResponse>,
+            async move |request: schema::NewSessionRequest,
+                        responder: Responder<schema::NewSessionResponse>,
                         cx: ConnectionTo<Client>| {
-                let [v2::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
+                let [schema::McpServer::Acp(server)] = request.mcp_servers.as_slice() else {
                     return Err(Error::invalid_params().data("expected one native server"));
                 };
                 let server_id = server.server_id.clone();
@@ -87,7 +82,7 @@ async fn main() -> Result<(), Error> {
                     });
                     let response = call_cx
                         .send_request(
-                            v2::MessageMcpRequest::new(server_id, "echo-1", "tools/call")
+                            schema::MessageMcpRequest::new(server_id, "echo-1", "tools/call")
                                 .params(params.as_object().unwrap().clone()),
                         )
                         .block_task()
@@ -95,7 +90,7 @@ async fn main() -> Result<(), Error> {
                     drop(done_tx.send(response));
                     Ok(())
                 })?;
-                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                responder.respond(schema::NewSessionResponse::new(schema::SessionId::new(
                     "echo-session",
                 )))
             },
@@ -105,9 +100,9 @@ async fn main() -> Result<(), Error> {
     Client
         .v2()
         .connect_with(agent, async move |cx| {
-            cx.send_request(v2::InitializeRequest::new(
+            cx.send_request(schema::InitializeRequest::new(
                 ProtocolVersion::V2,
-                v2::Implementation::new("echo-client", "1"),
+                schema::Implementation::new("echo-client", "1"),
             ))
             .block_task()
             .await?;
@@ -118,8 +113,8 @@ async fn main() -> Result<(), Error> {
                 .await?;
             let response = done_rx.await.map_err(Error::into_internal_error)??;
             match response {
-                v2::MessageMcpResponse::Result { result, .. } => println!("{result}"),
-                v2::MessageMcpResponse::Error { error, .. } => {
+                schema::MessageMcpResponse::Result { result, .. } => println!("{result}"),
+                schema::MessageMcpResponse::Error { error, .. } => {
                     eprintln!("MCP error {}: {}", error.code, error.message);
                 }
                 _ => return Err(Error::internal_error().data("unknown MCP carrier")),

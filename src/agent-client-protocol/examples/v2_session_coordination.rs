@@ -14,11 +14,8 @@ use std::{
     str::FromStr,
 };
 
-use agent_client_protocol::v2::{ConnectionTo, Responder};
-use agent_client_protocol::{
-    AcpAgent, Agent, Client, ConnectTo, Error,
-    schema::{ProtocolVersion, v2},
-};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
+use agent_client_protocol::{AcpAgent, Agent, Client, ConnectTo, Error, schema::ProtocolVersion};
 use clap::Parser;
 use futures::{
     FutureExt as _, StreamExt as _,
@@ -32,8 +29,8 @@ type Waiters = HashMap<u64, Reply>;
 
 /// A lossless update log, deliberately not a message/tool reducer.
 struct Projection {
-    response: v2::ResumeSessionResponse,
-    updates: Vec<v2::SessionUpdate>,
+    response: schema::ResumeSessionResponse,
+    updates: Vec<schema::SessionUpdate>,
     disconnected: bool,
 }
 
@@ -45,7 +42,7 @@ struct Sessions {
 
 impl Sessions {
     /// Register synchronously, so even an unpolled load has an abandonment guard.
-    fn load(&self, session_id: v2::SessionId) -> Result<Load, Error> {
+    fn load(&self, session_id: schema::SessionId) -> Result<Load, Error> {
         let ticket = self.next_ticket.get();
         self.next_ticket
             .set(ticket.checked_add(1).expect("ticket space exhausted"));
@@ -70,7 +67,7 @@ impl Sessions {
 
 struct Lease {
     commands: mpsc::UnboundedSender<Command>,
-    session_id: v2::SessionId,
+    session_id: schema::SessionId,
     ticket: u64,
 }
 
@@ -108,21 +105,27 @@ struct Session {
 
 enum Command {
     Acquire {
-        session_id: v2::SessionId,
+        session_id: schema::SessionId,
         ticket: u64,
         reply: Reply,
     },
     Release {
-        session_id: v2::SessionId,
+        session_id: schema::SessionId,
         ticket: u64,
     },
 }
 
 /// All inbound traffic uses one FIFO. No event contains an application owner.
 enum WireEvent {
-    Update(Box<v2::UpdateSessionNotification>),
-    Resumed(v2::SessionId, Result<v2::ResumeSessionResponse, Error>),
-    ClosedSession(v2::SessionId, Result<v2::CloseSessionResponse, Error>),
+    Update(Box<schema::UpdateSessionNotification>),
+    Resumed(
+        schema::SessionId,
+        Result<schema::ResumeSessionResponse, Error>,
+    ),
+    ClosedSession(
+        schema::SessionId,
+        Result<schema::CloseSessionResponse, Error>,
+    ),
     Disconnected,
 }
 
@@ -130,7 +133,7 @@ enum Phase {
     Resuming {
         waiters: Waiters,
         // None means abandoned. Discard remaining replay, but keep the wire slot.
-        replay: Option<Vec<v2::SessionUpdate>>,
+        replay: Option<Vec<schema::SessionUpdate>>,
     },
     Ready {
         leases: HashSet<u64>,
@@ -147,12 +150,12 @@ struct Operation {
 }
 
 enum Effect {
-    Resume(v2::SessionId),
-    Close(v2::SessionId),
+    Resume(schema::SessionId),
+    Close(schema::SessionId),
 }
 
 struct Driver {
-    operations: HashMap<v2::SessionId, Operation>,
+    operations: HashMap<schema::SessionId, Operation>,
     commands: mpsc::UnboundedReceiver<Command>,
     incoming: mpsc::UnboundedReceiver<WireEvent>,
     wire_events: mpsc::UnboundedSender<WireEvent>,
@@ -322,7 +325,7 @@ impl Driver {
         None
     }
 
-    fn resume(&mut self, session_id: v2::SessionId, mut waiters: Waiters) -> Option<Effect> {
+    fn resume(&mut self, session_id: schema::SessionId, mut waiters: Waiters) -> Option<Effect> {
         waiters.retain(|_, reply| !reply.is_canceled());
         if waiters.is_empty() {
             return None;
@@ -345,21 +348,21 @@ impl Driver {
         match effect {
             Effect::Resume(session_id) => connection
                 .send_request(
-                    v2::ResumeSessionRequest::new(session_id.clone(), self.cwd.clone())
-                        .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new())),
+                    schema::ResumeSessionRequest::new(session_id.clone(), self.cwd.clone())
+                        .replay_from(schema::ReplayFrom::from(schema::ReplayFromStart::new())),
                 )
                 .on_receiving_result(async move |result| {
                     drop(events.unbounded_send(WireEvent::Resumed(session_id, result)));
                     Ok(())
                 }),
             Effect::Close(session_id) => connection
-                .send_request(v2::CloseSessionRequest::new(session_id.clone()))
+                .send_request(schema::CloseSessionRequest::new(session_id.clone()))
                 .on_receiving_result(async move |result| {
                     // Closing is idempotent: `-32002` means the session is
                     // already closed, which is the outcome this effect wants.
                     let result = match result {
-                        Err(error) if error.code == v2::ErrorCode::ResourceNotFound => {
-                            Ok(v2::CloseSessionResponse::new())
+                        Err(error) if error.code == schema::ErrorCode::ResourceNotFound => {
+                            Ok(schema::CloseSessionResponse::new())
                         }
                         result => result,
                     };
@@ -411,18 +414,18 @@ async fn with_sessions(
     Client
         .v2()
         .on_receive_notification(
-            async move |update: v2::UpdateSessionNotification, _cx: ConnectionTo<Agent>| {
+            async move |update: schema::UpdateSessionNotification, _cx: ConnectionTo<Agent>| {
                 drop(updates.unbounded_send(WireEvent::Update(Box::new(update))));
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async |_request: v2::RequestPermissionRequest,
-                   responder: Responder<v2::RequestPermissionResponse>,
+            async |_request: schema::RequestPermissionRequest,
+                   responder: Responder<schema::RequestPermissionResponse>,
                    _cx: ConnectionTo<Agent>| {
-                responder.respond(v2::RequestPermissionResponse::new(
-                    v2::CancelledPermissionOutcome::new().into(),
+                responder.respond(schema::RequestPermissionResponse::new(
+                    schema::CancelledPermissionOutcome::new().into(),
                 ))
             },
             agent_client_protocol::on_receive_request!(),
@@ -433,9 +436,9 @@ async fn with_sessions(
         })
         .connect_with(transport, async move |connection| {
             let initialized = connection
-                .send_request(v2::InitializeRequest::new(
+                .send_request(schema::InitializeRequest::new(
                     ProtocolVersion::V2,
-                    v2::Implementation::new("session-coordination-example", "0.1.0"),
+                    schema::Implementation::new("session-coordination-example", "0.1.0"),
                 ))
                 .block_task()
                 .await?;
@@ -479,7 +482,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         AcpAgent::from_str(&cli.command)?,
         std::env::current_dir()?,
         async move |sessions| {
-            let id = v2::SessionId::new(cli.session_id);
+            let id = schema::SessionId::new(cli.session_id);
             let first = sessions.load(id.clone())?;
             let second = sessions.load(id.clone())?;
             let (first, second) = futures::try_join!(first.wait(), second.wait())?;
