@@ -347,8 +347,8 @@ async fn on_session_start_installs_routing_before_later_message() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn start_session_installs_routing_before_later_batch_entry() {
-    let session_id = SessionId::new("same-batch-blocking-session");
+async fn start_session_installs_routing_before_later_message() {
+    let session_id = SessionId::new("queued-blocking-session");
     let response_session_id = session_id.clone();
     let notification_session_id = session_id.clone();
     let (transport, mut peer) = Channel::duplex();
@@ -386,17 +386,17 @@ async fn start_session_installs_routing_before_later_batch_entry() {
             serde_json::to_value(SessionNotification::new(
                 notification_session_id,
                 SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new("same batch"),
+                    TextContent::new("queued"),
                 ))),
             ))
             .expect("session notification should serialize"),
         )
         .expect("session notification should form valid JSON-RPC parameters");
-        let batch = TransportBatch::from_messages([response, notification])
-            .expect("test batch should be non-empty");
-        peer.tx
-            .unbounded_send(TransportFrame::Batch(batch))
-            .expect("client should accept the response batch");
+        for message in [response, notification] {
+            peer.tx
+                .unbounded_send(TransportFrame::Single(message))
+                .expect("client should accept the queued messages");
+        }
 
         while peer.rx.next().await.is_some() {}
         Ok::<(), agent_client_protocol::Error>(())
@@ -404,7 +404,7 @@ async fn start_session_installs_routing_before_later_batch_entry() {
 
     tokio::time::timeout(TIMEOUT, async { futures::try_join!(client, peer) })
         .await
-        .expect("same-batch session update was not routed")
+        .expect("queued session update was not routed")
         .expect("session connection failed");
 }
 
