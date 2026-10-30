@@ -747,7 +747,10 @@ async fn testy_v2_holds_prompts_during_active_work() {
                 .block_task()
                 .await
                 .expect_err("a withdrawn held prompt is never inserted");
-            assert_eq!(error.code, agent_client_protocol::ErrorCode::RequestCancelled);
+            assert_eq!(
+                error.code,
+                agent_client_protocol::ErrorCode::RequestCancelled
+            );
 
             // `session/cancel` answers held prompts received before it with
             // -32800.
@@ -756,7 +759,10 @@ async fn testy_v2_holds_prompts_during_active_work() {
                 .block_task()
                 .await
                 .expect_err("session/cancel cancels held prompts");
-            assert_eq!(error.code, agent_client_protocol::ErrorCode::RequestCancelled);
+            assert_eq!(
+                error.code,
+                agent_client_protocol::ErrorCode::RequestCancelled
+            );
 
             // A prompt received after `session/cancel` is not cancelled by it.
             // It is held until the cancelled work ends, then inserted.

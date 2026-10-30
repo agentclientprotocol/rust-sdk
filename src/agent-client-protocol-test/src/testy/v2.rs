@@ -745,7 +745,9 @@ fn require_absolute(
     if AsRef::<std::path::Path>::as_ref(path).is_absolute() {
         Ok(())
     } else {
-        Err(invalid_params(format!("`{field}` must be an absolute path")))
+        Err(invalid_params(format!(
+            "`{field}` must be an absolute path"
+        )))
     }
 }
 

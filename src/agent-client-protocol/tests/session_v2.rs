@@ -978,9 +978,8 @@ async fn v2_session_commands_cover_configuration_and_close() {
                     1 => responder.respond(v2::CloseSessionResponse::new()),
                     // An agent predating idempotent close reports the closed
                     // session as not found.
-                    2 => responder.respond_with_error(Error::session_not_found(
-                        request.session_id.0.clone(),
-                    )),
+                    2 => responder
+                        .respond_with_error(Error::session_not_found(request.session_id.0.clone())),
                     _ => responder.respond_with_error(Error::invalid_params()),
                 }
             },
