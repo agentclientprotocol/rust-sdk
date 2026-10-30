@@ -1,6 +1,6 @@
-# Migrating to v5
+# Migrating to v4
 
-This page covers the breaking changes in `agent-client-protocol` 5.0 and the
+This page covers the breaking changes in `agent-client-protocol` 4.0 and the
 crates released with it.
 
 ## A version-neutral `Error`
