@@ -135,7 +135,7 @@ V2 deliberately separates prompt submission from session observation:
   `UserMessage` updates for that prompt use the same ID. Persisting the message
   in resumable history remains optional. The response does not indicate turn
   completion. `V2Session::send_prompt` returns that request as a
-  `SentRequest<PromptResponse>`. Callers must explicitly await it, register a
+  `SentRequest<PromptResponse, V2>`. Callers must explicitly await it, register a
   response callback, or detach it.
 - `V2SessionBuilder::start_session` likewise returns a mapped `SentRequest`.
   Its `OpenedV2Session` result keeps the command handle separate from the
@@ -406,13 +406,21 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   with a `null` id with `-32600` and `id: null`. V1 connections still accept
   `null` ids.
 - Since schema 1.13, v2 has its own `schema::v2::RequestId` without a `Null`
-  variant. The `id()` accessors on `PreparedRequest`, `SentRequest`,
-  `Responder`, `ResponseRouter`, and `Dispatch` return the SDK's
-  version-neutral `RawJsonRpcId`. Use `v2_id()` for the v2 form, for
-  example to match an elicitation's `requestId`. It returns the ID directly for
-  requests the SDK sends, since the SDK never assigns `null`. For `Responder`
-  and `Dispatch` it returns an `Option` that is `None` only for a `null` ID,
-  which can only reach a handler on a v1 connection.
+  variant. Request handles carry a protocol marker as their last type
+  parameter: `Responder<T, V2>`, `ResponseRouter<T, V2>`,
+  `SentRequest<T, V2>`, `PreparedRequest<T, V2>` and
+  `Dispatch<Req, Notif, V2>`. Handles from `Client.v2()`, `Agent.v2()`,
+  `Proxy.v2()` and `V2ConnectionTo` use `V2`, so their `id()` returns a
+  `schema::v2::RequestId`, for example to match an elicitation's `requestId`.
+  It never fails, because the SDK rejects `null` IDs on v2 connections and
+  never assigns `null` itself. The default marker is `V1`, whose `id()`
+  returns `schema::v1::RequestId`. Every handle also has `raw_id()`, which
+  returns the version-neutral `RawJsonRpcId`. Low-level `HandleDispatchFrom`
+  and `MatchDispatch` handlers are not tied to a version: they receive
+  default-marker handles and should use `raw_id()`.
+- Closures registered on a v2 builder that spell out the responder type need
+  the marker: `responder: Responder<v2::PromptResponse, V2>`. Unannotated
+  closure parameters are inferred.
 - A v2 client advertises protocol v2 as its latest supported version.
 - A v2 client requires a v2 agent. Send initialization with
   `send_initialize` to learn how the agent negotiated: it resolves with
