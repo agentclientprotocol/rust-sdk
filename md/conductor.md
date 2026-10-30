@@ -58,13 +58,24 @@ extension fields are never interpreted as a permissive v1 request. With the
 conductor crate's `unstable_protocol_v2` feature, a request for v2 or newer
 selects v2; every other request selects v1, keeping v1's fallback-to-latest
 rule. A request for a newer version than the selected one keeps only what
-parses under the selected version. A conductor in proxy mode accepts exactly
-the version its own conductor selected. The instantiator receives a
+parses under the selected version. A conductor in proxy mode negotiates its
+`proxy/initialize` the same way. The instantiator receives a
 `SelectedInitializeRequest` for the selected version. An unchanged request for
 exactly the selected version keeps its original raw parameters, including
 unknown extensions; a modified typed request is serialized as the new
 authoritative payload, while its `protocolVersion` remains pinned to the
 selected version.
+
+The selected version is the highest version the chain may speak. Proxies
+negotiate `proxy/initialize` the way agents negotiate `initialize`: a v1 proxy
+answers a request for v2 or newer as v1 and initializes its successor with v1,
+and a v2 proxy keeps what parses under v2 for a newer request and rejects a
+request below v2 with `-32022`. So a proxy that supports only a lower version
+narrows the rest of the chain to that version, and the `initialize` response
+the client receives carries the version every component accepted. A component
+that cannot accept the narrowed version, such as a v2-only agent behind a
+v1-only proxy, or a v2-only proxy whose successor answers with v1, rejects the
+initialization, and the client sees that error.
 
 The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
 proxy vectors use their components for every version, so each supplied
@@ -85,7 +96,7 @@ conductor rejects a `proxy/initialize` that arrives from outside, renames
 untouched, and forwards everything else unchanged, without parsing or
 re-serializing it. The conductor's connections to its client and to the final
 agent, and the pass-through proxy it inserts for tracing, have no protocol
-version guard; the endpoints validate the traffic of the selected version.
+version guard; the endpoints validate the traffic of the negotiated version.
 
 ## Agent and Proxy Modes
 

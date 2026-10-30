@@ -1366,3 +1366,108 @@ async fn v2_initialize_rejects_v1_only_instantiator_with_response() -> Result<()
     })
     .await
 }
+
+/// A v1 agent and a v2 agent behind one router, counting how often each
+/// implementation initializes.
+fn counting_agent_router(
+    v1_hits: Arc<AtomicUsize>,
+    v2_hits: Arc<AtomicUsize>,
+) -> impl ConnectTo<Client> {
+    let v1_agent = Agent
+        .builder()
+        .on_receive_request(
+            async move |request: v1::InitializeRequest, responder, _cx| {
+                v1_hits.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(request.protocol_version, ProtocolVersion::V1);
+                responder.respond(v1::InitializeResponse::new(ProtocolVersion::V1))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v1::NewSessionRequest, responder, _cx| {
+                responder.respond(v1::NewSessionResponse::new("v1-session"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+    let v2_agent = Agent.v2().on_receive_request(
+        async move |_request: v2::InitializeRequest, responder, _cx| {
+            v2_hits.fetch_add(1, Ordering::SeqCst);
+            responder.respond(initialize_response())
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    Agent.protocol_router().with_v1(v1_agent).with_v2(v2_agent)
+}
+
+/// The conductor selects v2 for a v2 client, a v1-only proxy negotiates its
+/// `proxy/initialize` down to v1 and initializes its successor with v1, and
+/// the whole chain, including the response the client sees, ends up on v1.
+/// The same holds when the v1 proxy sits inside a nested conductor, which
+/// negotiates its own `proxy/initialize` like an agent.
+#[tokio::test]
+async fn v1_only_proxy_negotiates_a_v2_chain_down_to_v1() -> Result<(), Error> {
+    for nested in [false, true] {
+        let v1_hits = Arc::new(AtomicUsize::new(0));
+        let v2_hits = Arc::new(AtomicUsize::new(0));
+        let agent = counting_agent_router(Arc::clone(&v1_hits), Arc::clone(&v2_hits));
+        let components = if nested {
+            ProxiesAndAgent::new(agent).proxy(ConductorImpl::new_proxy(
+                "nested-conductor",
+                vec![Proxy.builder()],
+            ))
+        } else {
+            ProxiesAndAgent::new(agent).proxy(Proxy.builder())
+        };
+
+        run_raw_client_with_conductor(components, async move |cx| {
+            let response = cx
+                .send_request(UntypedMessage::new(
+                    "initialize",
+                    serde_json::to_value(initialize_request())
+                        .map_err(Error::into_internal_error)?,
+                )?)
+                .block_task()
+                .await?;
+            assert_eq!(response["protocolVersion"], 1, "{response}");
+
+            let response = cx
+                .send_request(UntypedMessage::new(
+                    "session/new",
+                    serde_json::json!({ "cwd": "/tmp", "mcpServers": [] }),
+                )?)
+                .block_task()
+                .await?;
+            assert_eq!(response["sessionId"], "v1-session", "{response}");
+            Ok(())
+        })
+        .await?;
+
+        assert_eq!(v1_hits.load(Ordering::SeqCst), 1, "nested: {nested}");
+        assert_eq!(v2_hits.load(Ordering::SeqCst), 0, "nested: {nested}");
+    }
+    Ok(())
+}
+
+/// A chain that cannot agree on a version is rejected consistently: the
+/// v1-only proxy initializes its successor with v1, and the v2-only agent's
+/// `-32022` reaches the client.
+#[tokio::test]
+async fn v1_only_proxy_before_a_v2_only_agent_rejects_the_chain() -> Result<(), Error> {
+    run_raw_client_with_conductor(
+        ProxiesAndAgent::new(Agent.v2()).proxy(Proxy.builder()),
+        async move |cx| {
+            let error = cx
+                .send_request(UntypedMessage::new(
+                    "initialize",
+                    serde_json::to_value(initialize_request())
+                        .map_err(Error::into_internal_error)?,
+                )?)
+                .block_task()
+                .await
+                .expect_err("no version is supported by every component");
+            assert_eq!(i32::from(error.code), -32022, "{error:?}");
+            Ok(())
+        },
+    )
+    .await
+}

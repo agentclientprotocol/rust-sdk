@@ -812,36 +812,31 @@ mod imp {
             if mode.initialization_role == InitializationRole::Responder {
                 self.ensure_repeat_keeps_version(requested)?;
             }
-            if mode.initialize_surface == InitializeSurface::Peer {
-                // V1 retains its original fallback-to-latest bootstrap. Only
-                // v2 endpoints reject a version below their supported range.
-                if mode.api == ProtocolVersionKind::V2 && requested < mode.api.as_protocol_version()
-                {
-                    return Err(crate::util::unsupported_protocol_version(
-                        requested,
-                        &[mode.api.as_protocol_version()],
-                    ));
-                }
-                if mode.api == ProtocolVersionKind::V1 && requested > ProtocolVersion::V1 {
-                    message.params = serde_json::Value::Object(
-                        super::normalize_v1_initialize_request(message.params())?,
-                    );
-                }
-                // A request for a newer version keeps what parses under v2.
-                // An exact v2 request is validated strictly below.
-                #[cfg(feature = "unstable_protocol_v2")]
-                if mode.api == ProtocolVersionKind::V2 && requested > mode.api.as_protocol_version()
-                {
-                    let serde_json::Value::Object(params) = message.params() else {
-                        return Err(invalid_initialize_protocol_version());
-                    };
-                    message.params = serde_json::Value::Object(
-                        super::normalize_newer_v2_initialize_request(params)?,
-                    );
-                }
-            } else if ProtocolVersionKind::from_protocol_version(requested) != Some(mode.api) {
-                // The conductor has already selected a proxy's wire version.
-                return Err(unsupported_protocol_version(requested, mode.api));
+            // A proxy negotiates `proxy/initialize` exactly as an agent
+            // negotiates `initialize`. V1 retains its original
+            // fallback-to-latest bootstrap. Only v2 endpoints reject a version
+            // below their supported range.
+            if mode.api == ProtocolVersionKind::V2 && requested < mode.api.as_protocol_version() {
+                return Err(crate::util::unsupported_protocol_version(
+                    requested,
+                    &[mode.api.as_protocol_version()],
+                ));
+            }
+            if mode.api == ProtocolVersionKind::V1 && requested > ProtocolVersion::V1 {
+                message.params = serde_json::Value::Object(super::normalize_v1_initialize_request(
+                    message.params(),
+                )?);
+            }
+            // A request for a newer version keeps what parses under v2. An
+            // exact v2 request is validated strictly below.
+            #[cfg(feature = "unstable_protocol_v2")]
+            if mode.api == ProtocolVersionKind::V2 && requested > mode.api.as_protocol_version() {
+                let serde_json::Value::Object(params) = message.params() else {
+                    return Err(invalid_initialize_protocol_version());
+                };
+                message.params = serde_json::Value::Object(
+                    super::normalize_newer_v2_initialize_request(params)?,
+                );
             }
 
             set_protocol_version(&mut message.params, mode.api)?;
@@ -874,8 +869,8 @@ mod imp {
                     .ok_or_else(|| unsupported_protocol_version(response_version, mode.api))?;
                 // Only a client's own handshake, sent by `send_initialize`,
                 // has a caller that can fall back. A proxy relays its
-                // successor's outcome, and the conductor has already fixed
-                // that wire version.
+                // successor's outcome: it initialized its successor with its
+                // own selected version, and cannot relay a lower one.
                 #[cfg(feature = "unstable_protocol_v2")]
                 if accepts_lower_version
                     && mode.initialization_role == InitializationRole::Initiator
@@ -2391,45 +2386,107 @@ mod imp {
         }
 
         #[test]
-        fn proxy_initialize_request_requires_the_selected_protocol_version()
-        -> Result<(), crate::Error> {
-            for (mode, selected, unsupported, selected_kind) in [
-                (
-                    ProtocolMode::v1_proxy(),
-                    ProtocolVersion::V1,
-                    ProtocolVersion::V2,
-                    ProtocolVersionKind::V1,
-                ),
-                (
-                    ProtocolMode::v2_proxy(),
-                    ProtocolVersion::V2,
-                    ProtocolVersion::V1,
-                    ProtocolVersionKind::V2,
-                ),
-            ] {
-                let compat = ProtocolCompat::new(mode);
-                let error = compat
-                    .incoming_message(UntypedMessage::new(
-                        "proxy/initialize",
-                        serde_json::json!({ "protocolVersion": unsupported }),
-                    )?)
-                    .expect_err(
-                        "proxy initialization must reject a protocol version outside its API",
-                    );
-                let data = error
-                    .data
-                    .as_ref()
-                    .and_then(|data| data.as_str())
-                    .unwrap_or_default();
-                assert!(
-                    data.contains(&format!("only supports ACP protocol version {selected}")),
-                    "{error:?}"
+        fn v1_proxy_negotiates_newer_proxy_initialize_down_to_v1() -> Result<(), crate::Error> {
+            for requested in [2_u16, 3] {
+                let compat = ProtocolCompat::new(ProtocolMode::v1_proxy());
+                let request = compat.incoming_message(UntypedMessage::new(
+                    "proxy/initialize",
+                    serde_json::json!({
+                        "protocolVersion": requested,
+                        "info": { "name": "future-client", "version": "1.0.0" },
+                        "capabilities": { "elicitation": {}, "_future": true },
+                        "_futureField": true
+                    }),
+                )?)?;
+                // The same normalization a v1 agent applies to `initialize`.
+                let initialize: crate::schema::v1::InitializeRequest =
+                    serde_json::from_value(request.params().clone())?;
+                assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
+                assert_eq!(
+                    initialize.client_info,
+                    Some(crate::schema::v1::Implementation::new(
+                        "future-client",
+                        "1.0.0"
+                    ))
                 );
-                assert_eq!(negotiated(&compat), selected_kind);
-                assert_eq!(pending_initialize(&compat), None);
-                assert_eq!(compat.active_wire_version(), selected_kind);
+                assert!(initialize.client_capabilities.elicitation.is_some());
+                assert!(request.params().get("_futureField").is_none());
+                assert_eq!(pending_initialize(&compat), Some(ProtocolVersionKind::V1));
+
+                let response = compat.outgoing_response(
+                    "proxy/initialize",
+                    Ok(serde_json::to_value(v1_initialize_response())?),
+                )?;
+                assert_eq!(response["protocolVersion"], serde_json::json!(1));
             }
 
+            // Below v1, a v1 proxy keeps v1's fallback-to-latest rule.
+            let compat = ProtocolCompat::new(ProtocolMode::v1_proxy());
+            let request = compat.incoming_message(UntypedMessage::new(
+                "proxy/initialize",
+                serde_json::json!({ "protocolVersion": 0 }),
+            )?)?;
+            assert_eq!(request.params()["protocolVersion"], serde_json::json!(1));
+            Ok(())
+        }
+
+        #[test]
+        fn v2_proxy_negotiates_proxy_initialize_like_a_v2_agent() -> Result<(), crate::Error> {
+            let compat = ProtocolCompat::new(ProtocolMode::v2_proxy());
+            let request = compat.incoming_message(UntypedMessage::new(
+                "proxy/initialize",
+                serde_json::json!({
+                    "protocolVersion": 3,
+                    "info": { "name": "future-client" },
+                    "capabilities": { "elicitation": {}, "_future": { "dropped": true } },
+                    "_futureField": true
+                }),
+            )?)?;
+            let initialize: v2::InitializeRequest =
+                serde_json::from_value(request.params().clone())?;
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            assert_eq!(
+                initialize.info,
+                v2::Implementation::new("unknown", "unknown")
+            );
+            assert!(initialize.capabilities.elicitation.is_some());
+            assert_eq!(request.params(), &serde_json::to_value(&initialize)?);
+            assert_eq!(pending_initialize(&compat), Some(ProtocolVersionKind::V2));
+
+            // A v2 proxy rejects a version below v2 as a v2 agent does.
+            let compat = ProtocolCompat::new(ProtocolMode::v2_proxy());
+            let error = compat
+                .incoming_message(UntypedMessage::new(
+                    "proxy/initialize",
+                    serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
+                )?)
+                .expect_err("a v2 proxy supports no version at or below v1");
+            assert_eq!(i32::from(error.code), -32022);
+            assert_eq!(
+                error.data,
+                Some(serde_json::json!({ "requested": 1, "supported": [2] }))
+            );
+            assert_eq!(pending_initialize(&compat), None);
+            Ok(())
+        }
+
+        #[test]
+        fn exact_version_proxy_initialize_is_unchanged() -> Result<(), crate::Error> {
+            let compat = ProtocolCompat::new(ProtocolMode::v1_proxy());
+            let params = serde_json::json!({
+                "protocolVersion": 1,
+                "clientCapabilities": {},
+                "_futureField": true
+            });
+            let request = compat
+                .incoming_message(UntypedMessage::new("proxy/initialize", params.clone())?)?;
+            assert_eq!(request.params(), &params);
+
+            let compat = ProtocolCompat::new(ProtocolMode::v2_proxy());
+            let params = serde_json::to_value(v2_initialize_request(ProtocolVersion::V2))?;
+            let request = compat
+                .incoming_message(UntypedMessage::new("proxy/initialize", params.clone())?)?;
+            assert_eq!(request.params(), &params);
             Ok(())
         }
 

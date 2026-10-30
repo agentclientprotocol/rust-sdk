@@ -108,7 +108,7 @@ async fn request(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn routes_the_exact_conductor_selected_protocol() -> Result<(), Error> {
+async fn routes_exact_versions_to_their_implementation() -> Result<(), Error> {
     let v1_hits = Arc::new(AtomicUsize::new(0));
     let v2_hits = Arc::new(AtomicUsize::new(0));
 
@@ -134,20 +134,25 @@ async fn routes_the_exact_conductor_selected_protocol() -> Result<(), Error> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rejects_an_unconfigured_exact_version() -> Result<(), Error> {
-    let v1_hits = Arc::new(AtomicUsize::new(0));
-    let error = initialize(
-        Proxy
-            .protocol_router()
-            .with_v1(v1_proxy(Arc::clone(&v1_hits))),
-        serde_json::to_value(v2_proxy_initialize(ProtocolVersion::V2))
-            .map_err(Error::into_internal_error)?,
-    )
-    .await?
-    .expect_err("a v1-only router must reject v2");
-    assert_eq!(i32::from(error.code), -32600);
-    assert_eq!(v1_hits.load(Ordering::SeqCst), 0);
+async fn v1_only_router_answers_newer_versions_as_v1() -> Result<(), Error> {
+    for requested in [2_u16, 3] {
+        let v1_hits = Arc::new(AtomicUsize::new(0));
+        let response = initialize(
+            Proxy
+                .protocol_router()
+                .with_v1(v1_proxy(Arc::clone(&v1_hits))),
+            serde_json::to_value(v2_proxy_initialize(ProtocolVersion::from(requested)))
+                .map_err(Error::into_internal_error)?,
+        )
+        .await??;
+        assert_eq!(response["protocolVersion"], 1);
+        assert_eq!(v1_hits.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
 
+#[tokio::test(flavor = "current_thread")]
+async fn v2_only_router_rejects_v1_like_a_v2_agent() -> Result<(), Error> {
     let v2_hits = Arc::new(AtomicUsize::new(0));
     let error = initialize(
         Proxy
@@ -158,7 +163,11 @@ async fn rejects_an_unconfigured_exact_version() -> Result<(), Error> {
     )
     .await?
     .expect_err("a v2-only router must reject v1");
-    assert_eq!(i32::from(error.code), -32600);
+    assert_eq!(i32::from(error.code), -32022);
+    assert_eq!(
+        error.data,
+        Some(serde_json::json!({ "requested": 1, "supported": [2] }))
+    );
     assert_eq!(v2_hits.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -200,29 +209,24 @@ async fn requires_proxy_initialize_as_the_first_call() -> Result<(), Error> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn rejects_future_versions_instead_of_downgrading_them() -> Result<(), Error> {
+async fn selects_v2_for_newer_versions_like_an_agent_router() -> Result<(), Error> {
     let v1_hits = Arc::new(AtomicUsize::new(0));
     let v2_hits = Arc::new(AtomicUsize::new(0));
 
-    let error = initialize(
-        router(Arc::clone(&v1_hits), Arc::clone(&v2_hits)),
-        serde_json::to_value(v2_proxy_initialize(ProtocolVersion::from(3_u16)))
-            .map_err(Error::into_internal_error)?,
-    )
-    .await?
-    .expect_err("a proxy router must not canonicalize a future protocol version");
+    let mut params = serde_json::to_value(v2_proxy_initialize(ProtocolVersion::from(3_u16)))
+        .map_err(Error::into_internal_error)?;
+    let object = params
+        .as_object_mut()
+        .expect("serialized initialize params should be an object");
+    // Written for a newer version: keep what parses under v2.
+    object.insert("info".into(), serde_json::json!("not-a-v2-implementation"));
+    object.insert("_futureInitializeField".into(), serde_json::json!(true));
 
-    assert_eq!(i32::from(error.code), -32600);
-    assert!(
-        error
-            .data
-            .as_ref()
-            .and_then(Value::as_str)
-            .is_some_and(|data| data.contains("unsupported ACP protocol version 3")),
-        "{error:?}"
-    );
+    let response = initialize(router(Arc::clone(&v1_hits), Arc::clone(&v2_hits)), params).await??;
+
+    assert_eq!(response["protocolVersion"], 2);
     assert_eq!(v1_hits.load(Ordering::SeqCst), 0);
-    assert_eq!(v2_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(v2_hits.load(Ordering::SeqCst), 1);
     Ok(())
 }
 

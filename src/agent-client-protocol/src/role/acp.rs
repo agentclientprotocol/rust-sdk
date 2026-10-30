@@ -453,11 +453,13 @@ impl ConnectTo<Client> for AgentProtocolRouter {
                     continue;
                 }
             };
-            let selected = match select_agent_protocol(message, supported) {
+            let selected = match select_initialize_protocol(message, "initialize", supported) {
                 Ok(selected) => selected,
                 // A v1 implementation answers any other initialize that does
                 // not select v2 itself, exactly as it would without the router.
-                Err(_) if supported.v1 && !requests_agent_protocol_v2(message, supported) => {
+                Err(_)
+                    if supported.v1 && !requests_protocol_v2(message, "initialize", supported) =>
+                {
                     SelectedProtocol::V1
                 }
                 Err(error) => {
@@ -536,7 +538,7 @@ struct SupportedProtocols {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl SupportedProtocols {
-    fn select_for_agent(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
+    fn select(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
         if self.v2 && requested >= ProtocolVersion::V2 {
             return Some(SelectedProtocol::V2);
         }
@@ -547,16 +549,6 @@ impl SupportedProtocols {
         }
 
         None
-    }
-
-    fn exact(self, requested: ProtocolVersion) -> Option<SelectedProtocol> {
-        if self.v1 && requested == ProtocolVersion::V1 {
-            Some(SelectedProtocol::V1)
-        } else if self.v2 && requested == ProtocolVersion::V2 {
-            Some(SelectedProtocol::V2)
-        } else {
-            None
-        }
     }
 
     fn versions(self) -> Vec<ProtocolVersion> {
@@ -579,19 +571,28 @@ impl SupportedProtocols {
     }
 }
 
+/// Select the configured protocol for the first `initialize_method` request
+/// (`initialize` for an agent, `proxy/initialize` for a proxy) and rewrite its
+/// params for the selected version.
+///
+/// Agents and proxies negotiate the same way: the highest configured version
+/// at or below the requested one, v1's fallback-to-latest rule below v1, and a
+/// request for a newer version keeps what parses under the selected one.
 #[cfg(feature = "unstable_protocol_v2")]
-fn select_agent_protocol(
+fn select_initialize_protocol(
     message: &mut RawJsonRpcMessage,
+    initialize_method: &str,
     supported: SupportedProtocols,
 ) -> Result<SelectedProtocol, crate::Error> {
     let RawJsonRpcMessage::Request(request) = message else {
-        return Err(
-            crate::Error::invalid_request().data("first ACP message must be an initialize request")
-        );
+        return Err(crate::Error::invalid_request().data(format!(
+            "first ACP message must be a `{initialize_method}` request"
+        )));
     };
 
-    if request.method.as_ref() != "initialize" {
-        return Err(crate::Error::invalid_request().data("first ACP request must be initialize"));
+    if request.method.as_ref() != initialize_method {
+        return Err(crate::Error::invalid_request()
+            .data(format!("first ACP request must be `{initialize_method}`")));
     }
 
     let Some(RawJsonRpcParams::Object(params)) = &mut request.params else {
@@ -603,7 +604,7 @@ fn select_agent_protocol(
 
     let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
         .map_err(|_| invalid_initialize_protocol_version())?;
-    let selected = select_configured_agent_protocol(requested, supported)?;
+    let selected = select_configured_protocol(requested, supported)?;
     // V2 request ids must be strings or integers; v1 still accepts null.
     if selected == SelectedProtocol::V2 && request.id == RequestId::Null {
         return Err(crate::Error::invalid_request()
@@ -633,13 +634,17 @@ fn requested_initialize_version(
     serde_json::from_value(params.get("protocolVersion")?.clone()).ok()
 }
 
-/// Whether `message` is an `initialize` request that selects a configured v2
-/// implementation. Everything else is answered by a configured v1
-/// implementation.
+/// Whether `message` is an `initialize_method` request that selects a
+/// configured v2 implementation. Everything else is answered by a configured
+/// v1 implementation.
 #[cfg(feature = "unstable_protocol_v2")]
-fn requests_agent_protocol_v2(message: &RawJsonRpcMessage, supported: SupportedProtocols) -> bool {
+fn requests_protocol_v2(
+    message: &RawJsonRpcMessage,
+    initialize_method: &str,
+    supported: SupportedProtocols,
+) -> bool {
     supported.v2
-        && requested_initialize_version(message, "initialize")
+        && requested_initialize_version(message, initialize_method)
             .is_some_and(|requested| requested >= ProtocolVersion::V2)
 }
 
@@ -963,12 +968,12 @@ fn json_object_contains(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn select_configured_agent_protocol(
+fn select_configured_protocol(
     requested: ProtocolVersion,
     supported: SupportedProtocols,
 ) -> Result<SelectedProtocol, crate::Error> {
     supported
-        .select_for_agent(requested)
+        .select(requested)
         .ok_or_else(|| crate::util::unsupported_protocol_version(requested, &supported.versions()))
 }
 
@@ -1510,6 +1515,11 @@ impl Role for Proxy {
 impl Proxy {
     /// Create a stable protocol v1 connection builder for a proxy.
     ///
+    /// The proxy negotiates `proxy/initialize` the way a v1 agent negotiates
+    /// `initialize`: it selects v1 for every requested version. A request for
+    /// a newer version keeps what parses under v1, and one below v1 keeps
+    /// v1's fallback-to-latest rule.
+    ///
     /// Use `Proxy::v2` for a protocol-v2-only proxy with typed callbacks and
     /// wire validation. Protocol-routing infrastructure that deliberately
     /// selects a version itself can disable the guard with
@@ -1520,7 +1530,10 @@ impl Proxy {
 
     /// Create a proxy builder that uses the ACP protocol v2 API.
     ///
-    /// This builder requires `proxy/initialize` to select protocol v2.
+    /// The proxy negotiates `proxy/initialize` the way a v2 agent negotiates
+    /// `initialize`: it selects v2 for a request for v2 or newer, keeping what
+    /// parses under v2 for a newer request, and rejects a request below v2
+    /// with `-32022`.
     /// Fluent callbacks receive [`crate::V2ConnectionTo<Conductor>`], while
     /// low-level custom handlers and runners retain the protocol-neutral
     /// [`ConnectionTo`] interface.
@@ -1535,12 +1548,15 @@ impl Proxy {
     ///
     /// Add implementations with [`ProxyProtocolRouter::with_v1`] and
     /// [`ProxyProtocolRouter::with_v2`]. The router reads the initial
-    /// `proxy/initialize` request, selects the implementation for that exact
-    /// protocol version, and hands over the complete initial transport frame.
-    /// With a v1 implementation configured, anything other than a request for
-    /// exactly v2 is handed unchanged to the v1 implementation, so a v1
-    /// conductor sees exactly the behavior of the v1 implementation alone.
-    /// It does not downgrade proxy traffic or convert later messages.
+    /// `proxy/initialize` request and selects an implementation exactly as
+    /// [`Agent::protocol_router`] does for `initialize`: a request for v2 or
+    /// newer selects the v2 implementation, keeping what parses under v2 for
+    /// a newer request. With a v1 implementation configured, everything else
+    /// is handed to the v1 implementation, which negotiates it as it would
+    /// without the router. A v2-only router rejects a request below v2 with
+    /// `-32022`. A request for exactly the selected version is handed over in
+    /// the complete, unchanged initial transport frame. The router does not
+    /// convert later messages.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
@@ -1554,10 +1570,9 @@ impl Proxy {
 /// Proxy component that routes each connection to a configured protocol implementation.
 ///
 /// Use [`Proxy::protocol_router`] to start the builder, then add stable-v1 and
-/// draft-v2 proxy implementations independently. Unlike
-/// [`AgentProtocolRouter`], this router requires an exact version match: the
-/// conductor has already selected and canonicalized the wire protocol before
-/// sending `proxy/initialize` to a proxy.
+/// draft-v2 proxy implementations independently. Like [`AgentProtocolRouter`],
+/// it selects the highest configured version at or below the one
+/// `proxy/initialize` requests.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
 pub struct ProxyProtocolRouter {
@@ -1611,18 +1626,24 @@ impl ConnectTo<Conductor> for ProxyProtocolRouter {
                 Err(_) if supported.v1 => break (frame, next_conductor, SelectedProtocol::V1),
                 Err(error) => return reject_initialize(next_conductor, &frame, error).await,
             };
-            let selected = match select_proxy_protocol(message, supported) {
-                Ok(selected) => selected,
-                Err(_)
-                    if supported.v1
-                        && !(supported.v2
-                            && requested_initialize_version(message, METHOD_INITIALIZE_PROXY)
-                                == Some(ProtocolVersion::V2)) =>
-                {
-                    SelectedProtocol::V1
-                }
-                Err(error) => return reject_initialize(next_conductor, &frame, error).await,
-            };
+            let selected =
+                match select_initialize_protocol(message, METHOD_INITIALIZE_PROXY, supported) {
+                    Ok(selected) => selected,
+                    // A v1 implementation answers any other `proxy/initialize`
+                    // that does not select v2 itself, exactly as it would without
+                    // the router.
+                    Err(_)
+                        if supported.v1
+                            && !requests_protocol_v2(
+                                message,
+                                METHOD_INITIALIZE_PROXY,
+                                supported,
+                            ) =>
+                    {
+                        SelectedProtocol::V1
+                    }
+                    Err(error) => return reject_initialize(next_conductor, &frame, error).await,
+                };
             break (frame, next_conductor, selected);
         };
         let Some(proxy) = selected.take_proxy(self) else {
@@ -1644,47 +1665,6 @@ impl SelectedProtocol {
             Self::V2 => proxy.v2,
         }
     }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-fn select_proxy_protocol(
-    message: &RawJsonRpcMessage,
-    supported: SupportedProtocols,
-) -> Result<SelectedProtocol, crate::Error> {
-    let RawJsonRpcMessage::Request(request) = message else {
-        return Err(crate::Error::invalid_request()
-            .data("first ACP proxy message must be an `proxy/initialize` request"));
-    };
-
-    if request.method.as_ref() != METHOD_INITIALIZE_PROXY {
-        return Err(crate::Error::invalid_request()
-            .data("first ACP proxy request must be `proxy/initialize`"));
-    }
-
-    let Some(RawJsonRpcParams::Object(params)) = &request.params else {
-        return Err(invalid_initialize_protocol_version());
-    };
-    let Some(protocol_version) = params.get("protocolVersion") else {
-        return Err(invalid_initialize_protocol_version());
-    };
-    let requested = serde_json::from_value::<ProtocolVersion>(protocol_version.clone())
-        .map_err(|_| invalid_initialize_protocol_version())?;
-    let selected = supported.exact(requested).ok_or_else(|| {
-        crate::Error::invalid_request().data(format!(
-            "unsupported ACP protocol version {requested}; this proxy supports {}",
-            supported.description()
-        ))
-    })?;
-
-    match selected {
-        SelectedProtocol::V1 => {
-            parse_initialize_params::<crate::schema::InitializeProxyRequest>(params)?;
-        }
-        SelectedProtocol::V2 => {
-            parse_initialize_params::<v2::InitializeProxyRequest>(params)?;
-        }
-    }
-    Ok(selected)
 }
 
 impl HasPeer<Proxy> for Proxy {
