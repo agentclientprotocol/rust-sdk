@@ -30,16 +30,14 @@ version_group = "acp"
 name = "agent-client-protocol-polyfill"
 version_group = "acp"
 
-# This crate publicly exposes types from both rmcp and agent-client-protocol.
-# A major-version change in either public dependency therefore requires a
-# major release here. Keep it outside the `acp` version group because its
-# version need not equal the core version, but verify dependency-only release
-# proposals manually even if release-plz classifies a manifest update as a patch.
-# The upcoming combined release moves core ACP 2.x -> 3.x, this integration
-# crate 3.x -> 4.x, and its public rmcp dependency 2.x -> 3.x. The core major
-# release includes its own breaking APIs, not just the rmcp dependency upgrade.
+# This crate publicly exposes ACP types, so every major ACP release already
+# forces a major release here. Versioning it separately from the other ACP
+# crates only confused users, so keep it in the `acp` version group. When an
+# rmcp upgrade requires a major bump of this crate, ship it alongside other
+# ACP changes in a coordinated major release.
 [[package]]
 name = "agent-client-protocol-rmcp"
+version_group = "acp"
 
 [[package]]
 name = "agent-client-protocol-conductor"
