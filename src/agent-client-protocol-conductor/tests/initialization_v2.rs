@@ -1028,7 +1028,10 @@ async fn v2_proxy_session_helper_reissues_cancellation_for_the_downstream_hop() 
         .await
         .expect("agent should observe the reissued cancellation")
         .ok_or_else(|| Error::internal_error().data("cancellation channel closed"))?;
-    assert_eq!(cancelled_id, parked_id);
+    assert_eq!(
+        agent_client_protocol::RawJsonRpcId::from(cancelled_id),
+        parked_id
+    );
     assert!(
         cancel_rx.try_recv().is_err(),
         "the downstream hop must receive exactly one cancellation"
@@ -1147,7 +1150,10 @@ async fn v2_proxy_resume_helper_reissues_cancellation_for_the_downstream_hop() -
         .await
         .expect("agent should observe the reissued resume cancellation")
         .ok_or_else(|| Error::internal_error().data("cancellation channel closed"))?;
-    assert_eq!(cancelled_id, parked_id);
+    assert_eq!(
+        agent_client_protocol::RawJsonRpcId::from(cancelled_id),
+        parked_id
+    );
     assert!(
         cancel_rx.try_recv().is_err(),
         "the downstream hop must receive exactly one cancellation"

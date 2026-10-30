@@ -18,13 +18,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::DynConnectTo;
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     CancelRequestNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     McpRequestId, McpServer as SchemaMcpServer, McpServerAcpId, MessageMcpNotification,
     MessageMcpRequest, MessageMcpResponse, NewSessionRequest, NewSessionResponse, PermissionOption,
-    PermissionOptionKind, PromptRequest, PromptResponse, RequestId, RequestPermissionOutcome,
+    PermissionOptionKind, PromptRequest, PromptResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
     SessionNotification, SessionUpdate, StopReason, ToolCallUpdate, ToolCallUpdateFields,
 };
@@ -34,6 +33,7 @@ use agent_client_protocol::{
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
 };
+use agent_client_protocol::{DynConnectTo, RawJsonRpcId};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -180,7 +180,9 @@ async fn client_cancellation_propagates_hop_by_hop_to_agent() -> Result<(), Erro
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -357,7 +359,9 @@ async fn agent_cancellation_propagates_hop_by_hop_to_client() -> Result<(), Erro
             )
             .on_receive_notification(
                 async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Agent>| {
-                    client_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                    client_cancel_tx
+                        .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                        .unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -513,7 +517,9 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -572,7 +578,9 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
             )
             .on_receive_notification(
                 async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Agent>| {
-                    client_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                    client_cancel_tx
+                        .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                        .unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -694,7 +702,9 @@ async fn session_new_cancellation_propagates_through_proxy() -> Result<(), Error
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -813,7 +823,9 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -1009,7 +1021,9 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
         )
         .on_receive_notification(
             async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-                agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                agent_cancel_tx
+                    .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                    .unwrap();
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
@@ -1123,8 +1137,8 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
 
 #[derive(Clone)]
 struct ParkedMcpServer {
-    started_tx: mpsc::UnboundedSender<RequestId>,
-    stopped_tx: mpsc::UnboundedSender<RequestId>,
+    started_tx: mpsc::UnboundedSender<RawJsonRpcId>,
+    stopped_tx: mpsc::UnboundedSender<RawJsonRpcId>,
     dropped_tx: mpsc::UnboundedSender<()>,
     late_tx: mpsc::UnboundedSender<ConnectionTo<role::mcp::Client>>,
 }
@@ -1325,7 +1339,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
                     assert_ne!(outer_id, backend_id, "JSON-RPC IDs must be hop-local");
                     assert_eq!(
                         backend_id,
-                        RequestId::Str("logical-mcp-request".to_owned()),
+                        RawJsonRpcId::Str("logical-mcp-request".to_owned()),
                         "the inner MCP ID must survive the proxy unchanged"
                     );
                     cancel_gate_tx
@@ -1390,7 +1404,9 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     // separately so the request handler above can keep its captures.
     let agent = agent.on_receive_notification(
         async move |cancel: CancelRequestNotification, _cx: ConnectionTo<Client>| {
-            agent_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+            agent_cancel_tx
+                .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                .unwrap();
             Ok(())
         },
         agent_client_protocol::on_receive_notification!(),

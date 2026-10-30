@@ -573,7 +573,7 @@ async fn test_map_response_to_application_types() {
                         assert_eq!(scoped_response.method(), "ping");
                         assert!(matches!(
                             scoped_response.id(),
-                            agent_client_protocol::schema::v1::RequestId::Str(id)
+                            agent_client_protocol::RawJsonRpcId::Str(id)
                                 if !id.is_empty()
                         ));
                         let scoped_response = scoped_response.block_task().await?;

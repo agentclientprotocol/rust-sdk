@@ -332,7 +332,8 @@ impl crate::JsonRpcRequest for InitializeNegotiation {
 mod imp {
     use std::sync::{Arc, Mutex};
 
-    use crate::schema::{ProtocolVersion, v1::RequestId};
+    use crate::RawJsonRpcId;
+    use crate::schema::ProtocolVersion;
     use crate::{UntypedMessage, role::RemoteStyle};
 
     #[derive(Clone, Copy, Debug)]
@@ -521,7 +522,7 @@ mod imp {
     struct ProtocolState {
         negotiated: ProtocolVersionKind,
         pending_initialize: Option<ProtocolVersionKind>,
-        incoming_initialize_id: Option<RequestId>,
+        incoming_initialize_id: Option<RawJsonRpcId>,
         initialization: InitializationState,
         /// Whether any initialization has completed on this connection.
         initialized: bool,
@@ -608,12 +609,12 @@ mod imp {
             &self,
             message: UntypedMessage,
         ) -> Result<UntypedMessage, crate::Error> {
-            self.incoming_request(&RequestId::Number(0), message)
+            self.incoming_request(&RawJsonRpcId::Number(0), message)
         }
 
         pub(crate) fn incoming_request(
             &self,
-            id: &RequestId,
+            id: &RawJsonRpcId,
             message: UntypedMessage,
         ) -> Result<UntypedMessage, crate::Error> {
             let Some(mode) = self.mode else {
@@ -623,8 +624,8 @@ mod imp {
             // V2 request ids must be strings or integers. The rejection is
             // still answered with `id: null`, as for any request whose id
             // cannot be determined.
-            if mode.api == ProtocolVersionKind::V2 && *id == RequestId::Null {
-                return Err(null_request_id());
+            if mode.api == ProtocolVersionKind::V2 && *id == RawJsonRpcId::Null {
+                return Err(crate::jsonrpc::raw_id::null_v2_request_id());
             }
 
             if mode.is_incoming_initialize_request(message.method()) {
@@ -744,12 +745,12 @@ mod imp {
             method: &str,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
-            self.outgoing_response_to(&RequestId::Number(0), method, result)
+            self.outgoing_response_to(&RawJsonRpcId::Number(0), method, result)
         }
 
         pub(crate) fn outgoing_response_to(
             &self,
-            id: &RequestId,
+            id: &RawJsonRpcId,
             method: &str,
             result: Result<serde_json::Value, crate::Error>,
         ) -> Result<serde_json::Value, crate::Error> {
@@ -805,7 +806,7 @@ mod imp {
         fn incoming_initialize_request(
             &self,
             mode: AcpProtocolMode,
-            id: &RequestId,
+            id: &RawJsonRpcId,
             mut message: UntypedMessage,
         ) -> Result<UntypedMessage, crate::Error> {
             let requested = required_protocol_version_from_value(message.params())?;
@@ -917,7 +918,7 @@ mod imp {
         fn begin_incoming_initialize(
             &self,
             mode: AcpProtocolMode,
-            id: &RequestId,
+            id: &RawJsonRpcId,
         ) -> Result<(), crate::Error> {
             match mode.initialization_role {
                 InitializationRole::Initiator => return Err(invalid_initialize_direction()),
@@ -937,7 +938,7 @@ mod imp {
         fn begin_initialize(
             &self,
             requested: ProtocolVersionKind,
-            incoming_id: Option<&RequestId>,
+            incoming_id: Option<&RawJsonRpcId>,
         ) -> Result<(), crate::Error> {
             let mut state = self
                 .state
@@ -1085,7 +1086,7 @@ mod imp {
                 .initialized
         }
 
-        fn is_pending_incoming_initialize(&self, id: &RequestId) -> bool {
+        fn is_pending_incoming_initialize(&self, id: &RawJsonRpcId) -> bool {
             self.state
                 .lock()
                 .expect("protocol compatibility state mutex poisoned")
@@ -1180,11 +1181,6 @@ mod imp {
         crate::Error::invalid_request().data(format!(
             "ACP initialization must complete before `{method}` can be used",
         ))
-    }
-
-    fn null_request_id() -> crate::Error {
-        crate::Error::invalid_request()
-            .data("ACP protocol v2 request ids must be a string or an integer, not null")
     }
 
     fn invalid_initialize_direction() -> crate::Error {
@@ -2099,12 +2095,12 @@ mod imp {
                 initialized_v2_agent()?,
             ] {
                 agent.incoming_request(
-                    &RequestId::Number(1),
+                    &RawJsonRpcId::Number(1),
                     UntypedMessage::new("initialize", v2_initialize_request(ProtocolVersion::V2))?,
                 )?;
                 let error = agent
                     .incoming_request(
-                        &RequestId::Number(2),
+                        &RawJsonRpcId::Number(2),
                         UntypedMessage::new(
                             "initialize",
                             v2_initialize_request(ProtocolVersion::V2),
@@ -2129,7 +2125,7 @@ mod imp {
                     let state = initialization_state(&compat);
                     let error = compat
                         .incoming_request(
-                            &RequestId::Null,
+                            &RawJsonRpcId::Null,
                             UntypedMessage::new(
                                 method,
                                 v2_initialize_request(ProtocolVersion::V2),
@@ -2146,7 +2142,7 @@ mod imp {
             // V1 keeps accepting null ids.
             let v1_agent = ProtocolCompat::new(ProtocolMode::v1_agent());
             v1_agent.incoming_request(
-                &RequestId::Null,
+                &RawJsonRpcId::Null,
                 UntypedMessage::new(
                     "initialize",
                     serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
@@ -2263,8 +2259,8 @@ mod imp {
         fn rejected_concurrent_initialize_does_not_clear_the_active_handshake()
         -> Result<(), crate::Error> {
             let compat = ProtocolCompat::new(ProtocolMode::v2_agent());
-            let accepted_id = RequestId::Number(1);
-            let rejected_id = RequestId::Number(2);
+            let accepted_id = RawJsonRpcId::Number(1);
+            let rejected_id = RawJsonRpcId::Number(2);
 
             compat.incoming_request(
                 &accepted_id,
@@ -2306,7 +2302,7 @@ mod imp {
                 RemoteStyle::Counterpart,
             )?;
 
-            let wrong_direction_id = RequestId::Number(2);
+            let wrong_direction_id = RawJsonRpcId::Number(2);
             let wrong_direction_error = compat
                 .incoming_request(
                     &wrong_direction_id,

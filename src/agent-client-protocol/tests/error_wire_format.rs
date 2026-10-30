@@ -5,6 +5,7 @@
 //! generates itself (unknown methods, dropped responders), and initialization
 //! failures.
 
+use agent_client_protocol::RawJsonRpcId;
 use agent_client_protocol::schema::v1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, Error, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage,
@@ -90,7 +91,7 @@ async fn exchange(agent: impl ConnectTo<Client> + 'static, requests: Vec<(&str, 
                 RawJsonRpcMessage::request(
                     method.into(),
                     params,
-                    v1::RequestId::Number(i64::try_from(id).unwrap()),
+                    RawJsonRpcId::Number(i64::try_from(id).unwrap()),
                 )
                 .unwrap(),
             ))

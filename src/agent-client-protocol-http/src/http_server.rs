@@ -1,7 +1,7 @@
 use std::{convert::Infallible, error::Error as _, sync::Arc, time::Duration};
 
 use agent_client_protocol::{
-    RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse, TransportFrame, schema::v1::RequestId,
+    RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse, TransportFrame,
 };
 use axum::{
     body::Body,
@@ -166,7 +166,7 @@ fn batch_rejection(frame: &TransportFrame) -> Option<Response> {
     )
 }
 
-fn initial_initialize_request(frame: &TransportFrame) -> Option<&RequestId> {
+fn initial_initialize_request(frame: &TransportFrame) -> Option<&RawJsonRpcId> {
     let TransportFrame::Single(message) = frame else {
         return None;
     };
@@ -179,8 +179,11 @@ fn initial_initialize_request(frame: &TransportFrame) -> Option<&RequestId> {
     Some(&request.id)
 }
 
-fn initialize_response_failed(frame: &TransportFrame, initialize_id: &RequestId) -> Option<bool> {
-    fn response_failed(message: &RawJsonRpcMessage, initialize_id: &RequestId) -> Option<bool> {
+fn initialize_response_failed(
+    frame: &TransportFrame,
+    initialize_id: &RawJsonRpcId,
+) -> Option<bool> {
+    fn response_failed(message: &RawJsonRpcMessage, initialize_id: &RawJsonRpcId) -> Option<bool> {
         match message {
             RawJsonRpcMessage::Response(RpcResponse::Result { id, .. }) if id == initialize_id => {
                 Some(false)
@@ -227,7 +230,7 @@ fn collect_route(
     message: &RawJsonRpcMessage,
     route: Option<ResponseRoute>,
     session_routes: &mut Vec<String>,
-    pending_routes: &mut Vec<(agent_client_protocol::schema::v1::RequestId, ResponseRoute)>,
+    pending_routes: &mut Vec<(agent_client_protocol::RawJsonRpcId, ResponseRoute)>,
 ) {
     if let Some(ResponseRoute::Session(session_id)) = &route {
         session_routes.push(session_id.clone());
@@ -443,7 +446,7 @@ mod tests {
     use std::sync::Arc;
 
     use agent_client_protocol::{
-        Channel, ConnectionDriver, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId,
+        Channel, ConnectionDriver, RawJsonRpcId, RawJsonRpcMessage, TransportFrame,
     };
     use futures::StreamExt;
     use serde_json::json;
@@ -623,7 +626,7 @@ mod tests {
         assert!(matches!(
             message,
             RawJsonRpcMessage::Response(RpcResponse::Error {
-                id: RequestId::Number(1),
+                id: RawJsonRpcId::Number(1),
                 ..
             })
         ));

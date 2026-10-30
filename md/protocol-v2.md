@@ -407,8 +407,8 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `null` ids.
 - Since schema 1.13, v2 has its own `schema::v2::RequestId` without a `Null`
   variant. The `id()` accessors on `PreparedRequest`, `SentRequest`,
-  `Responder`, `ResponseRouter`, and `Dispatch` keep returning the
-  version-neutral `schema::v1::RequestId`. Use `v2_id()` for the v2 form, for
+  `Responder`, `ResponseRouter`, and `Dispatch` return the SDK's
+  version-neutral `RawJsonRpcId`. Use `v2_id()` for the v2 form, for
   example to match an elicitation's `requestId`. It returns the ID directly for
   requests the SDK sends, since the SDK never assigns `null`. For `Responder`
   and `Dispatch` it returns an `Option` that is `None` only for a `null` ID,

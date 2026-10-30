@@ -2,9 +2,9 @@
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 
+use crate::RawJsonRpcId;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
 use crate::jsonrpc::{OutgoingMessage, PendingReplies, RawJsonRpcMessage, TransportFrame};
-use crate::schema::v1::RequestId;
 
 pub type OutgoingMessageTx = mpsc::UnboundedSender<OutgoingMessage>;
 
@@ -172,7 +172,7 @@ pub(super) async fn outgoing_protocol_actor(
                 // JSON-RPC reports parse/invalid-request errors with id null when
                 // they cannot be correlated to a specific request.
                 (
-                    RawJsonRpcMessage::response(RequestId::Null, Err(error)),
+                    RawJsonRpcMessage::response(RawJsonRpcId::Null, Err(error)),
                     destination,
                 )
             }

@@ -5,13 +5,12 @@ use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcMessage, Responder, SessionMessage, TransportFrame, UntypedMessage,
+    RawJsonRpcId, RawJsonRpcMessage, Responder, SessionMessage, TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
-        LoadSessionResponse, RequestId, ResumeSessionRequest, ResumeSessionResponse,
-        SessionConfigOption, SessionConfigOptionCategory, SessionConfigSelectOption, SessionId,
-        SessionMode, SessionModeId, SessionModeState, SessionNotification, SessionUpdate,
-        TextContent,
+        LoadSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigSelectOption, SessionId, SessionMode,
+        SessionModeId, SessionModeState, SessionNotification, SessionUpdate, TextContent,
     },
 };
 use futures::{
@@ -317,7 +316,7 @@ async fn restore_waits_for_routing_acknowledgment_before_publication() {
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "test/block-incoming".to_owned(),
                 serde_json::json!({}),
-                RequestId::Number(1),
+                RawJsonRpcId::Number(1),
             )?))
             .expect("client should accept the blocking request");
         restore_called_rx
@@ -496,7 +495,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
         };
         let cancellation =
             CancelRequestNotification::parse_message(&notification.method, &notification.params)?;
-        assert_eq!(cancellation.request_id, restore_request_id);
+        assert_eq!(cancellation.request_id, restore_request_id.into());
 
         for message in [
             update_notification(session_id, "after cancelled restore"),

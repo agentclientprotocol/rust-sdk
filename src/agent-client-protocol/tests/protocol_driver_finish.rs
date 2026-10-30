@@ -279,7 +279,7 @@ async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Resu
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "proxy/initialize".into(),
                 json!({}),
-                v1::RequestId::Number(7),
+                agent_client_protocol::RawJsonRpcId::Number(7),
             )?))
             .map_err(Error::into_internal_error)?;
 

@@ -1622,7 +1622,7 @@ mod tests {
         } = channel;
 
         let response = crate::RawJsonRpcMessage::response(
-            crate::schema::v1::RequestId::Number(1),
+            crate::RawJsonRpcId::Number(1),
             Ok(serde_json::json!({ "payload": "x".repeat(4 * 1024 * 1024) })),
         );
         outgoing

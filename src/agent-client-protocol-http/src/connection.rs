@@ -4,7 +4,7 @@ use std::{
     task::Poll,
 };
 
-use agent_client_protocol::{Channel, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId};
+use agent_client_protocol::{Channel, RawJsonRpcId, RawJsonRpcMessage, TransportFrame};
 use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::{Mutex, RwLock, mpsc, watch};
 use tracing::{debug, error, trace};
@@ -25,7 +25,7 @@ enum OutboundTransport {
 struct HttpOutbound {
     connection_stream: OutboundMailbox,
     session_streams: RwLock<HashMap<String, Arc<OutboundMailbox>>>,
-    pending_routes: Mutex<HashMap<RequestId, VecDeque<ResponseRoute>>>,
+    pending_routes: Mutex<HashMap<RawJsonRpcId, VecDeque<ResponseRoute>>>,
 }
 
 struct WebSocketOutbound {
@@ -117,7 +117,7 @@ impl Connection {
             .map_err(|_| "agent channel closed")
     }
 
-    pub(crate) async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+    pub(crate) async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
         self.outbound_transport
             .record_pending_route(id, route)
             .await;
@@ -211,7 +211,7 @@ impl OutboundTransport {
         Self::WebSocket(WebSocketOutbound::new())
     }
 
-    async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
         let Self::Http(http) = self else {
             return;
         };
@@ -293,7 +293,7 @@ impl HttpOutbound {
         }
     }
 
-    async fn record_pending_route(&self, id: RequestId, route: ResponseRoute) {
+    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
         if let Some(key) = pending_route_key(&id) {
             self.pending_routes
                 .lock()
@@ -557,16 +557,16 @@ async fn drain_connection_router(connection: Weak<Connection>) -> Option<Arc<Con
     Some(connection)
 }
 
-fn pending_route_key(id: &RequestId) -> Option<RequestId> {
+fn pending_route_key(id: &RawJsonRpcId) -> Option<RawJsonRpcId> {
     match id {
-        RequestId::Null => None,
-        RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
+        RawJsonRpcId::Null => None,
+        RawJsonRpcId::Number(_) | RawJsonRpcId::Str(_) => Some(id.clone()),
     }
 }
 
 fn take_pending_route(
-    pending_routes: &mut HashMap<RequestId, VecDeque<ResponseRoute>>,
-    key: &RequestId,
+    pending_routes: &mut HashMap<RawJsonRpcId, VecDeque<ResponseRoute>>,
+    key: &RawJsonRpcId,
 ) -> Option<ResponseRoute> {
     let routes = pending_routes.get_mut(key)?;
     let route = routes.pop_front();
@@ -735,7 +735,7 @@ mod tests {
                 agent
                     .tx
                     .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
-                        RequestId::Number(1),
+                        RawJsonRpcId::Number(1),
                         Ok(serde_json::json!({ "done": true })),
                     )))
                     .unwrap();
@@ -948,7 +948,7 @@ mod tests {
             frame,
             TransportFrame::Single(RawJsonRpcMessage::Response(
                 agent_client_protocol::RawJsonRpcResponse::Result {
-                    id: RequestId::Number(1),
+                    id: RawJsonRpcId::Number(1),
                     ..
                 }
             ))

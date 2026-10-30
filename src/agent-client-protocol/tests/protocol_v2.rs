@@ -1,5 +1,6 @@
 #![cfg(feature = "unstable_protocol_v2")]
 
+use agent_client_protocol::RawJsonRpcId;
 use std::{
     future::{Future, ready},
     path::PathBuf,
@@ -422,7 +423,7 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "initialize".into(),
                 initialize_params_with_extensions(ProtocolVersion::V2)?,
-                v1::RequestId::Number(1),
+                RawJsonRpcId::Number(1),
             )?))
             .map_err(Error::into_internal_error)?;
 
@@ -506,7 +507,7 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             Value::Object(params),
-            v1::RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )?))
         .map_err(Error::into_internal_error)?;
 
@@ -1381,7 +1382,7 @@ async fn v2_client_and_agent_repeat_initialize() -> Result<(), Error> {
 
 async fn raw_v2_response(
     channel: &mut agent_client_protocol::Channel,
-    id: v1::RequestId,
+    id: RawJsonRpcId,
     method: &str,
     params: Value,
 ) -> Result<Value, Error> {
@@ -1419,7 +1420,7 @@ async fn v2_agent_rejects_null_request_ids() -> Result<(), Error> {
     let initialize = json_value(v2_initialize_request(ProtocolVersion::V2))?;
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Null,
+        RawJsonRpcId::Null,
         "initialize",
         initialize.clone(),
     )
@@ -1430,7 +1431,7 @@ async fn v2_agent_rejects_null_request_ids() -> Result<(), Error> {
     // The rejection does not begin initialization.
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(1),
+        RawJsonRpcId::Number(1),
         "initialize",
         initialize,
     )
@@ -1512,7 +1513,7 @@ async fn protocol_router_rejects_null_request_id_on_v2_route() -> Result<(), Err
 
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Null,
+        RawJsonRpcId::Null,
         "initialize",
         json_value(v2_initialize_request(ProtocolVersion::V2))?,
     )
@@ -1531,7 +1532,7 @@ async fn protocol_router_rejects_null_request_id_on_v2_route() -> Result<(), Err
     let task = tokio::spawn(driver.expect("router owns a connection driver"));
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Null,
+        RawJsonRpcId::Null,
         "initialize",
         json_value(v1_initialize_request(ProtocolVersion::V1))?,
     )
@@ -1556,7 +1557,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     for id in [1, 2] {
         let response = raw_v2_response(
             &mut channel,
-            v1::RequestId::Number(id),
+            RawJsonRpcId::Number(id),
             "initialize",
             json_value(v2_initialize_request(ProtocolVersion::V2))?,
         )
@@ -1565,7 +1566,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     }
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(3),
+        RawJsonRpcId::Number(3),
         "initialize",
         json_value(v1_initialize_request(ProtocolVersion::V1))?,
     )
@@ -1573,7 +1574,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     assert_eq!(response["error"]["code"], -32600, "{response}");
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(4),
+        RawJsonRpcId::Number(4),
         "session/new",
         json_value(v2::NewSessionRequest::new(cwd()?))?,
     )
@@ -1581,7 +1582,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     assert_eq!(response["result"]["sessionId"], "v2-session", "{response}");
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(5),
+        RawJsonRpcId::Number(5),
         "initialize",
         json_value(v2_initialize_request(ProtocolVersion::V2))?,
     )
@@ -1597,7 +1598,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     let task = tokio::spawn(driver.expect("router owns a connection driver"));
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(1),
+        RawJsonRpcId::Number(1),
         "initialize",
         json_value(v2_initialize_request(ProtocolVersion::V2))?,
     )
@@ -1605,7 +1606,7 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
     assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(2),
+        RawJsonRpcId::Number(2),
         "initialize",
         json_value(v1_initialize_request(ProtocolVersion::V1))?,
     )
@@ -1636,7 +1637,7 @@ async fn protocol_router_ignores_unparsable_newer_initialize_params() -> Result<
     let task = tokio::spawn(driver.expect("router owns a connection driver"));
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(1),
+        RawJsonRpcId::Number(1),
         "initialize",
         serde_json::json!({
             "protocolVersion": 3,
@@ -2342,7 +2343,7 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             json_value(v1_initialize_request(ProtocolVersion::V1))?,
-            v1::RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )?))
         .map_err(Error::into_internal_error)?;
 
@@ -2688,7 +2689,7 @@ async fn standalone_v2_agent_negotiates_future_protocol_version() -> Result<(), 
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 method.into(),
                 params,
-                v1::RequestId::Number(id),
+                RawJsonRpcId::Number(id),
             )?))
             .map_err(Error::into_internal_error)?;
         let frame = tokio::time::timeout(tokio::time::Duration::from_secs(10), channel.rx.next())
@@ -2703,7 +2704,7 @@ async fn standalone_v2_agent_negotiates_future_protocol_version() -> Result<(), 
         else {
             panic!("expected a successful {method} response, got {frame:?}");
         };
-        assert_eq!(response_id, v1::RequestId::Number(id));
+        assert_eq!(response_id, RawJsonRpcId::Number(id));
         if method == "initialize" {
             assert_eq!(result["protocolVersion"], serde_json::json!(2));
         } else {
@@ -2757,7 +2758,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             "initialize".into(),
             initialize,
-            v1::RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )?))
         .map_err(Error::into_internal_error)?;
 
@@ -3037,7 +3038,7 @@ async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
     let initialize = json_value(v2_initialize_request(ProtocolVersion::V2))?;
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Number(7),
+        RawJsonRpcId::Number(7),
         "initialize",
         initialize.clone(),
     )
@@ -3045,7 +3046,7 @@ async fn v2_responder_reports_wire_request_id_as_v2_id() -> Result<(), Error> {
     assert_eq!(response["id"], 7, "{response}");
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Str("initialize-again".into()),
+        RawJsonRpcId::Str("initialize-again".into()),
         "initialize",
         initialize,
     )
@@ -3088,7 +3089,7 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
 
     let response = raw_v2_response(
         &mut channel,
-        v1::RequestId::Null,
+        RawJsonRpcId::Null,
         "initialize",
         json_value(v1_initialize_request(ProtocolVersion::V1))?,
     )
@@ -3101,7 +3102,7 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
         .lock()
         .map_err(|_| Error::internal_error().data("received ids lock poisoned"))?
         .clone();
-    assert_eq!(received_ids, vec![(v1::RequestId::Null, None)]);
+    assert_eq!(received_ids, vec![(RawJsonRpcId::Null, None)]);
     Ok(())
 }
 

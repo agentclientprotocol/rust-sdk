@@ -509,7 +509,7 @@ fn initialize(client: HttpClient) -> (Channel, ConnectionDriver) {
             RawJsonRpcMessage::request(
                 "initialize".into(),
                 json!({}),
-                agent_client_protocol::schema::v1::RequestId::Number(1),
+                agent_client_protocol::RawJsonRpcId::Number(1),
             )
             .unwrap(),
         ))

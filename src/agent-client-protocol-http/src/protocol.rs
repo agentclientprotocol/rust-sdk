@@ -43,7 +43,7 @@ pub(crate) fn batch_rejection(frame: &agent_client_protocol::TransportFrame) -> 
         return None;
     }
     serde_json::to_string(&RawJsonRpcMessage::response(
-        agent_client_protocol::schema::v1::RequestId::Null,
+        agent_client_protocol::RawJsonRpcId::Null,
         Err(error.clone()),
     ))
     .ok()
@@ -169,7 +169,7 @@ fn apply_session_header_to_params(
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "server")]
-    use agent_client_protocol::schema::v1::RequestId;
+    use agent_client_protocol::RawJsonRpcId;
     use axum::http::{HeaderMap, HeaderValue};
     #[cfg(feature = "server")]
     use serde_json::json;
@@ -193,7 +193,7 @@ mod tests {
         let mut message = RawJsonRpcMessage::request(
             "session/prompt".to_string(),
             json!({ "prompt": [] }),
-            RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )
         .unwrap();
 
@@ -211,7 +211,7 @@ mod tests {
         let mut message = RawJsonRpcMessage::request(
             "session/prompt".to_string(),
             json!({ "sessionId": "session-1" }),
-            RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )
         .unwrap();
 

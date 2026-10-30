@@ -37,16 +37,20 @@ This separation enables:
 ### The `TransportFrame` Boundary
 
 The public, transport-neutral boundary is `TransportFrame`. A frame contains
-one `RawJsonRpcMessage` or a malformed wire value that a relay must preserve. `RawJsonRpcMessage` is backed
-by the JSON-RPC envelope types from `agent-client-protocol-schema`:
+one `RawJsonRpcMessage` or a malformed wire value that a relay must preserve.
+`RawJsonRpcMessage` is the same for every ACP protocol version:
 
 ```rust
 enum RawJsonRpcMessage {
-    Request(Request<RawJsonRpcParams>),
+    Request(RawJsonRpcRequest),
     Notification(Notification<RawJsonRpcParams>),
     Response(RawJsonRpcResponse),
 }
 ```
+
+Requests and responses carry a `RawJsonRpcId`: the JSON-RPC `id` exactly as
+it appears on the wire (an integer, a string or `null`). Each protocol
+version's schema has its own request ID type, and converts to and from it.
 
 At that boundary:
 

@@ -1,8 +1,7 @@
 //! Core JSON-RPC server support.
 
 use agent_client_protocol_schema::v1::{
-    JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification,
-    Request as RpcRequest, RequestId, SessionId,
+    JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification, SessionId,
 };
 
 // Types re-exported from crate root
@@ -33,6 +32,7 @@ mod outgoing_actor;
 mod prepared_request_tests;
 mod protocol_compat;
 mod raw_error;
+pub(crate) mod raw_id;
 pub(crate) mod run;
 mod task_actor;
 mod termination;
@@ -54,6 +54,7 @@ pub use crate::jsonrpc::protocol_compat::{
 };
 use crate::jsonrpc::protocol_compat::{ProtocolCompat, ProtocolMode};
 pub use crate::jsonrpc::raw_error::{RawJsonRpcError, RawJsonRpcResponse};
+pub use crate::jsonrpc::raw_id::RawJsonRpcId;
 use crate::jsonrpc::run::SpawnedRun;
 use crate::jsonrpc::run::{ChainRun, NullRun, RunWithConnectionTo};
 use crate::jsonrpc::task_actor::{Task, TaskTx};
@@ -71,13 +72,13 @@ use crate::{Agent, Client, ConnectTo, Proxy, RoleId};
 
 /// One valid JSON-RPC message carried inside a [`TransportFrame`].
 ///
-/// This uses the JSON-RPC envelope types from `agent-client-protocol-schema`
-/// while keeping method params and response errors protocol-neutral at the
-/// transport boundary.
+/// Raw messages are the same for every ACP protocol version: IDs are
+/// [`RawJsonRpcId`]s, and method params and response errors are not
+/// interpreted at the transport boundary.
 #[derive(Debug, Clone)]
 pub enum RawJsonRpcMessage {
     /// A JSON-RPC request with an id and expected response.
-    Request(RpcRequest<RawJsonRpcParams>),
+    Request(RawJsonRpcRequest),
     /// A JSON-RPC notification without a response.
     Notification(RpcNotification<RawJsonRpcParams>),
     /// A JSON-RPC response to a prior request.
@@ -125,6 +126,22 @@ impl TransportFrame {
             Self::Malformed { .. } => Ok(()),
         }
     }
+}
+
+/// A JSON-RPC request with uninterpreted params.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(
+    clippy::exhaustive_structs,
+    reason = "JSON-RPC defines exactly these request members"
+)]
+pub struct RawJsonRpcRequest {
+    /// The ID the response must carry.
+    pub id: RawJsonRpcId,
+    /// The method to invoke.
+    pub method: Arc<str>,
+    /// The params, if any. `None` omits the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<RawJsonRpcParams>,
 }
 
 /// Raw JSON-RPC request or notification parameters.
@@ -195,10 +212,10 @@ impl RawJsonRpcMessage {
     pub fn request(
         method: String,
         params: serde_json::Value,
-        id: RequestId,
+        id: impl Into<RawJsonRpcId>,
     ) -> Result<Self, crate::Error> {
-        Ok(Self::Request(RpcRequest {
-            id,
+        Ok(Self::Request(RawJsonRpcRequest {
+            id: id.into(),
             method: Arc::from(method),
             params: RawJsonRpcParams::from_value(params)?,
         }))
@@ -217,7 +234,10 @@ impl RawJsonRpcMessage {
     /// For other protocols, construct [`RawJsonRpcResponse`] directly so error
     /// codes and fields are not interpreted as ACP.
     #[must_use]
-    pub fn response(id: RequestId, response: Result<serde_json::Value, crate::Error>) -> Self {
+    pub fn response(
+        id: impl Into<RawJsonRpcId>,
+        response: Result<serde_json::Value, crate::Error>,
+    ) -> Self {
         Self::Response(RawJsonRpcResponse::new(
             id,
             response.map_err(|error| Box::new(error.into())),
@@ -226,7 +246,7 @@ impl RawJsonRpcMessage {
 
     /// The response id, if this is a response.
     #[must_use]
-    pub fn response_id(&self) -> Option<&RequestId> {
+    pub fn response_id(&self) -> Option<&RawJsonRpcId> {
         match self {
             Self::Response(
                 RawJsonRpcResponse::Result { id, .. } | RawJsonRpcResponse::Error { id, .. },
@@ -272,11 +292,10 @@ impl<'de> Deserialize<'de> for RawJsonRpcMessage {
 
         if has_method && !has_result && !has_error {
             if has_id {
-                let request = serde_json::from_value::<
-                    VersionedJsonRpcMessage<RpcRequest<RawJsonRpcParams>>,
-                >(value)
-                .map_err(serde::de::Error::custom)?
-                .into_inner();
+                let request =
+                    serde_json::from_value::<VersionedJsonRpcMessage<RawJsonRpcRequest>>(value)
+                        .map_err(serde::de::Error::custom)?
+                        .into_inner();
                 Ok(Self::Request(request))
             } else {
                 let notification = serde_json::from_value::<
@@ -2246,19 +2265,21 @@ impl ResponseOrdering {
 }
 
 // TODO(breaking): v1 and v2 connections share `PreparedRequest`, `SentRequest`,
-// `ResponseRouter`, `Responder` and `Dispatch`, so their `id()` reports the v1
-// `RequestId`, which allows `null`, and v2 users need the separate `v2_id()`
-// accessors. In the next breaking release, give v2 connections handle types
-// whose `id()` returns `schema::v2::RequestId`, then remove the `v2_id()`
-// accessors, `OutgoingRequestId` and `v2_request_id`.
+// `ResponseRouter`, `Responder` and `Dispatch`, so their `id()` reports the
+// version-neutral `RawJsonRpcId`, which allows `null`, and v2 users need the
+// separate `v2_id()` accessors. Give the handles a protocol marker whose `id()`
+// returns that version's request ID, then remove the `v2_id()` accessors and
+// `OutgoingRequestId`.
 
 /// The JSON-RPC ID the SDK assigns to a request it sends.
 ///
 /// The SDK never assigns `null`, so the ID is always representable as a
-/// protocol-v2 ID. Both forms are stored so the v2 accessors stay infallible.
+/// protocol-v2 ID. Both forms are stored so the borrowing v2 accessors on
+/// [`SentRequest`], [`PreparedRequest`] and [`ResponseRouter`] stay
+/// infallible.
 #[derive(Clone, Debug)]
 struct OutgoingRequestId {
-    id: RequestId,
+    id: RawJsonRpcId,
     #[cfg(feature = "unstable_protocol_v2")]
     v2_id: crate::schema::v2::RequestId,
 }
@@ -2269,20 +2290,8 @@ impl OutgoingRequestId {
         Self {
             #[cfg(feature = "unstable_protocol_v2")]
             v2_id: crate::schema::v2::RequestId::Str(id.clone()),
-            id: RequestId::Str(id),
+            id: RawJsonRpcId::Str(id),
         }
-    }
-}
-
-/// Converts a v1 JSON-RPC request ID into its protocol-v2 form.
-///
-/// Returns `None` for `null`, which protocol v2 does not allow.
-#[cfg(feature = "unstable_protocol_v2")]
-fn v2_request_id(id: &RequestId) -> Option<crate::schema::v2::RequestId> {
-    match id {
-        RequestId::Null => None,
-        RequestId::Number(id) => Some(crate::schema::v2::RequestId::Number(*id)),
-        RequestId::Str(id) => Some(crate::schema::v2::RequestId::Str(id.clone())),
     }
 }
 
@@ -2324,7 +2333,7 @@ impl PendingReply {
 struct PendingRepliesInner {
     incoming_closed: bool,
     termination: Option<ConnectionTermination>,
-    replies: HashMap<RequestId, PendingReply>,
+    replies: HashMap<RawJsonRpcId, PendingReply>,
 }
 
 #[derive(Clone, Default)]
@@ -2339,7 +2348,7 @@ impl PendingReplies {
         }
     }
 
-    fn contains(&self, id: &RequestId) -> bool {
+    fn contains(&self, id: &RawJsonRpcId) -> bool {
         self.inner
             .lock()
             .expect("pending replies mutex poisoned")
@@ -2347,7 +2356,7 @@ impl PendingReplies {
             .contains_key(id)
     }
 
-    fn remove(&self, id: &RequestId) -> Option<PendingReply> {
+    fn remove(&self, id: &RawJsonRpcId) -> Option<PendingReply> {
         self.inner
             .lock()
             .expect("pending replies mutex poisoned")
@@ -2410,7 +2419,7 @@ impl PendingRepliesRegistrar {
     /// response impossible or the connection driver is no longer running.
     fn subscribe(
         &self,
-        id: RequestId,
+        id: RawJsonRpcId,
         reply: PendingReply,
         incoming_closed: &IncomingClosed,
     ) -> Result<(), crate::Error> {
@@ -2463,7 +2472,7 @@ impl PendingRepliesRegistrar {
         }
     }
 
-    fn remove(&self, id: &RequestId) -> Option<PendingReply> {
+    fn remove(&self, id: &RawJsonRpcId) -> Option<PendingReply> {
         self.inner
             .upgrade()?
             .lock()
@@ -2612,7 +2621,7 @@ struct RequestCancellationSlot {
 
 #[derive(Debug, Default)]
 struct RequestCancellationRegistryInner {
-    slots: HashMap<RequestId, RequestCancellationSlot>,
+    slots: HashMap<RawJsonRpcId, RequestCancellationSlot>,
     next_generation: u64,
 }
 
@@ -2623,7 +2632,7 @@ struct RequestCancellationRegistry {
 
 #[derive(Debug)]
 struct ResponderCancellation {
-    id: RequestId,
+    id: RawJsonRpcId,
     generation: u64,
     registry: RequestCancellationRegistry,
 }
@@ -2633,7 +2642,7 @@ impl RequestCancellationRegistry {
         Self::default()
     }
 
-    fn register(&self, id: &RequestId) -> ResponderCancellation {
+    fn register(&self, id: &RawJsonRpcId) -> ResponderCancellation {
         let generation = {
             let mut inner = self
                 .inner
@@ -2674,7 +2683,7 @@ impl RequestCancellationRegistry {
     /// was already removed by it), every call returns a fresh *detached*
     /// marker. Detached markers can never fire, and detached markers from
     /// repeated calls do not share state with each other.
-    fn marker(&self, id: &RequestId, generation: u64) -> RequestCancellation {
+    fn marker(&self, id: &RawJsonRpcId, generation: u64) -> RequestCancellation {
         let mut inner = self
             .inner
             .lock()
@@ -2720,7 +2729,7 @@ impl RequestCancellationRegistry {
     }
 
     /// Mark whichever request currently owns `request_id` as cancelled.
-    fn cancel(&self, request_id: &RequestId) -> bool {
+    fn cancel(&self, request_id: &RawJsonRpcId) -> bool {
         let marker = {
             let mut inner = self
                 .inner
@@ -2748,7 +2757,7 @@ impl RequestCancellationRegistry {
 
     /// Remove the slot for `request_id`, but only if it still belongs to the
     /// registration identified by `generation`.
-    fn remove(&self, request_id: &RequestId, generation: u64) {
+    fn remove(&self, request_id: &RawJsonRpcId, generation: u64) {
         let mut inner = self
             .inner
             .lock()
@@ -2796,7 +2805,7 @@ impl Drop for ResponderCancellation {
     }
 }
 
-fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, crate::Error> {
+fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RawJsonRpcId>, crate::Error> {
     let Dispatch::Notification(message) = dispatch else {
         return Ok(None);
     };
@@ -2805,14 +2814,14 @@ fn cancellation_request_id(dispatch: &Dispatch) -> Result<Option<RequestId>, cra
 
 fn cancellation_request_id_from_message(
     message: &UntypedMessage,
-) -> Result<Option<RequestId>, crate::Error> {
+) -> Result<Option<RawJsonRpcId>, crate::Error> {
     let (method, params) = peel_successor_envelopes(&message.method, &message.params);
     if !crate::schema::v1::CancelRequestNotification::matches_method(method) {
         return Ok(None);
     }
 
     let notification = crate::schema::v1::CancelRequestNotification::parse_message(method, params)?;
-    Ok(Some(notification.request_id))
+    Ok(Some(notification.request_id.into()))
 }
 
 /// Peel any [`SuccessorMessage`] envelopes off a notification by reference,
@@ -3004,14 +3013,14 @@ impl ResponseDestination {
 
 #[derive(Clone, Debug)]
 struct RequestReplyTarget {
-    id: RequestId,
+    id: RawJsonRpcId,
     method: String,
     destination: ResponseDestination,
 }
 
 #[derive(Clone)]
 struct ResponseReplyTarget {
-    id: RequestId,
+    id: RawJsonRpcId,
     method: String,
     sender: Arc<Mutex<Option<oneshot::Sender<ResponsePayload>>>>,
     ordering: ResponseOrdering,
@@ -3106,7 +3115,7 @@ enum OutgoingMessage {
     /// Send a request to the server.
     Request {
         /// id assigned to this request (generated by sender)
-        id: RequestId,
+        id: RawJsonRpcId,
 
         /// the original method
         method: String,
@@ -3131,7 +3140,7 @@ enum OutgoingMessage {
 
     /// Send a response to a message from the server
     Response {
-        id: RequestId,
+        id: RawJsonRpcId,
 
         /// Method of the incoming request this response completes.
         method: String,
@@ -3151,7 +3160,7 @@ enum OutgoingMessage {
 impl OutgoingMessage {
     /// Kind, method, and ID only; params, results, and errors can carry
     /// credentials and must not appear in ordinary logs.
-    fn log_summary(&self) -> (&'static str, Option<&str>, Option<&RequestId>) {
+    fn log_summary(&self) -> (&'static str, Option<&str>, Option<&RawJsonRpcId>) {
         match self {
             Self::CloseAfterDraining { .. } => ("close_after_draining", None, None),
             Self::Request { id, method, .. } => ("request", Some(method), Some(id)),
@@ -3476,7 +3485,7 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     /// Send a `$/cancel_request` notification to the default counterpart peer.
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<RawJsonRpcId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -3488,7 +3497,7 @@ impl<Counterpart: Role> V2ConnectionTo<Counterpart> {
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<RawJsonRpcId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
@@ -4731,7 +4740,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// that is valid on this connection.
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<RawJsonRpcId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -4749,14 +4758,16 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<RawJsonRpcId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
     {
         self.send_notification_to(
             peer,
-            crate::schema::v1::CancelRequestNotification::new(request_id),
+            crate::schema::v1::CancelRequestNotification::new(crate::schema::v1::RequestId::from(
+                request_id.into(),
+            )),
         )
     }
 
@@ -4990,7 +5001,7 @@ pub struct Responder<T: JsonRpcResponse = serde_json::Value> {
     method: String,
 
     /// The `id` of the message we are replying to.
-    id: RequestId,
+    id: RawJsonRpcId,
 
     /// Where the response is sent; it is completed at most once.
     destination: ResponseDestination,
@@ -5013,7 +5024,7 @@ struct ResponderDropGuard {
     connection_state: IncomingClosed,
     /// The method of the request as received, used to route the response.
     wire_method: String,
-    id: RequestId,
+    id: RawJsonRpcId,
     destination: ResponseDestination,
     /// Request-local cancellation state.
     cancellation: ResponderCancellation,
@@ -5085,7 +5096,7 @@ impl Responder<serde_json::Value> {
         message_tx: OutgoingMessageTx,
         connection_state: IncomingClosed,
         method: String,
-        id: RequestId,
+        id: RawJsonRpcId,
         cancellation_registry: &RequestCancellationRegistry,
         destination: ResponseDestination,
     ) -> Self {
@@ -5141,7 +5152,7 @@ impl<T: JsonRpcResponse> Responder<T> {
 
     /// ID of the incoming request.
     #[must_use]
-    pub fn id(&self) -> &RequestId {
+    pub fn id(&self) -> &RawJsonRpcId {
         &self.id
     }
 
@@ -5155,7 +5166,7 @@ impl<T: JsonRpcResponse> Responder<T> {
     #[cfg(feature = "unstable_protocol_v2")]
     #[must_use]
     pub fn v2_id(&self) -> Option<crate::schema::v2::RequestId> {
-        v2_request_id(&self.id)
+        self.id.clone().try_into().ok()
     }
 
     /// Returns the cancellation marker for this request.
@@ -5366,7 +5377,7 @@ impl<T: JsonRpcResponse> ResponseRouter<T> {
 
     /// ID of the original request.
     #[must_use]
-    pub fn id(&self) -> &RequestId {
+    pub fn id(&self) -> &RawJsonRpcId {
         &self.id.id
     }
 
@@ -5628,7 +5639,7 @@ impl<Req: JsonRpcRequest, Notif: JsonRpcNotification> Dispatch<Req, Notif> {
     }
 
     /// Returns the request ID if this is a request or response, None if notification.
-    pub fn id(&self) -> Option<&RequestId> {
+    pub fn id(&self) -> Option<&RawJsonRpcId> {
         match self {
             Dispatch::Request(_, cx) => Some(cx.id()),
             Dispatch::Notification(_) => None,
@@ -5910,7 +5921,7 @@ impl UntypedMessage {
     /// Convert `self` to a raw JSON-RPC message.
     pub(crate) fn into_raw_jsonrpc_message(
         self,
-        id: Option<RequestId>,
+        id: Option<RawJsonRpcId>,
     ) -> Result<RawJsonRpcMessage, crate::Error> {
         let Self { method, params } = self;
         match id {
@@ -6166,7 +6177,7 @@ impl<T: Debug> Debug for PreparedRequest<T> {
 impl<T> PreparedRequest<T> {
     /// The ID reserved for this request, which has not been sent yet.
     #[must_use]
-    pub fn id(&self) -> &RequestId {
+    pub fn id(&self) -> &RawJsonRpcId {
         self.sent.id()
     }
 
@@ -6451,7 +6462,7 @@ impl SentRequestCancellationDisarm {
 pub struct RequestCancellationHandle {
     message_tx: OutgoingMessageTx,
     remote_style: crate::role::RemoteStyle,
-    request_id: RequestId,
+    request_id: RawJsonRpcId,
     disarm: SentRequestCancellationDisarm,
 }
 
@@ -6508,7 +6519,7 @@ impl SentRequestCancellation {
     fn new(
         message_tx: OutgoingMessageTx,
         remote_style: crate::role::RemoteStyle,
-        request_id: RequestId,
+        request_id: RawJsonRpcId,
     ) -> Self {
         Self {
             handle: RequestCancellationHandle {
@@ -6730,7 +6741,7 @@ impl<T> SentRequest<T> {
 impl<T> SentRequest<T> {
     /// The id of the outgoing request.
     #[must_use]
-    pub fn id(&self) -> &RequestId {
+    pub fn id(&self) -> &RawJsonRpcId {
         &self.id.id
     }
 
@@ -8330,7 +8341,7 @@ mod tests {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn route_test_response(
-        request_id: RequestId,
+        request_id: RawJsonRpcId,
         pending_replies: &PendingReplies,
         result: Result<serde_json::Value, crate::Error>,
     ) {
@@ -8994,7 +9005,7 @@ mod tests {
             );
             let request_id = cancellation_request_id_from_message(&message)
                 .expect("wrapped cancel should parse");
-            assert_eq!(request_id, Some(RequestId::Str("req-1".into())));
+            assert_eq!(request_id, Some(RawJsonRpcId::Str("req-1".into())));
         }
 
         #[test]
@@ -9048,7 +9059,7 @@ mod tests {
         #[test]
         fn registry_marks_and_removes_requests() {
             let registry = RequestCancellationRegistry::new();
-            let id = RequestId::Str("req-1".into());
+            let id = RawJsonRpcId::Str("req-1".into());
 
             let responder_cancellation = registry.register(&id);
             let marker = responder_cancellation.cancellation();
@@ -9065,7 +9076,7 @@ mod tests {
         #[test]
         fn reused_request_id_does_not_cross_wire_cancellation_state() {
             let registry = RequestCancellationRegistry::new();
-            let id = RequestId::Str("dup".into());
+            let id = RawJsonRpcId::Str("dup".into());
 
             // A protocol-violating peer reuses an in-flight request ID.
             let first = registry.register(&id);
