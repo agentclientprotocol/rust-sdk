@@ -238,7 +238,6 @@ async fn run_raw_client_with_conductor(
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .name("raw-v2-editor")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent("v2-conductor", components)
@@ -255,19 +254,17 @@ async fn run_raw_client_with_conductor(
 async fn assert_invalid_final_agent_initialize_response(
     response: serde_json::Value,
 ) -> Result<(), Error> {
-    let agent = Builder::new(Agent)
-        .without_acp_version_guard()
-        .on_receive_request(
-            async move |request: UntypedMessage, responder, _cx| {
-                assert_eq!(request.method(), "initialize");
-                assert_eq!(
-                    request.params().get("protocolVersion"),
-                    Some(&serde_json::json!(2))
-                );
-                responder.respond(response.clone())
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
+    let agent = Builder::new(Agent).on_receive_request(
+        async move |request: UntypedMessage, responder, _cx| {
+            assert_eq!(request.method(), "initialize");
+            assert_eq!(
+                request.params().get("protocolVersion"),
+                Some(&serde_json::json!(2))
+            );
+            responder.respond(response.clone())
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
 
     run_with_conductor(ProxiesAndAgent::new(agent), async move |cx| {
         let error = cx
@@ -1172,37 +1169,34 @@ async fn v2_proxy_session_helper_forwards_invalid_success_without_closing_connec
 -> Result<(), Error> {
     let attempts = Arc::new(AtomicUsize::new(0));
     let agent_attempts = Arc::clone(&attempts);
-    let agent = Builder::new(Agent)
-        .without_acp_version_guard()
-        .on_receive_request(
-            async move |request: UntypedMessage,
-                        responder: agent_client_protocol::Responder<serde_json::Value>,
-                        _cx| {
-                match request.method() {
-                    "initialize" => responder.respond(
-                        serde_json::to_value(initialize_response())
-                            .map_err(Error::into_internal_error)?,
-                    ),
-                    "session/new" if agent_attempts.fetch_add(1, Ordering::SeqCst) == 0 => {
-                        responder.respond(serde_json::json!({
-                            "_futureResponseField": {
-                                "preserved": false,
-                            },
-                        }))
-                    }
-                    "session/new" => responder.respond(serde_json::json!({
-                        "sessionId": "recovered-session",
+    let agent = Builder::new(Agent).on_receive_request(
+        async move |request: UntypedMessage,
+                    responder: agent_client_protocol::Responder<serde_json::Value>,
+                    _cx| {
+            match request.method() {
+                "initialize" => responder.respond(
+                    serde_json::to_value(initialize_response())
+                        .map_err(Error::into_internal_error)?,
+                ),
+                "session/new" if agent_attempts.fetch_add(1, Ordering::SeqCst) == 0 => responder
+                    .respond(serde_json::json!({
                         "_futureResponseField": {
-                            "preserved": true,
+                            "preserved": false,
                         },
                     })),
-                    method => responder.respond_with_error(
-                        Error::method_not_found().data(format!("unexpected method `{method}`")),
-                    ),
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
+                "session/new" => responder.respond(serde_json::json!({
+                    "sessionId": "recovered-session",
+                    "_futureResponseField": {
+                        "preserved": true,
+                    },
+                })),
+                method => responder.respond_with_error(
+                    Error::method_not_found().data(format!("unexpected method `{method}`")),
+                ),
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
 
     let callback_count = Arc::new(AtomicUsize::new(0));
     let proxy_callback_count = Arc::clone(&callback_count);

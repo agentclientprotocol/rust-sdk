@@ -14,8 +14,8 @@
 
 use std::{collections::HashMap, str::FromStr};
 
-use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
-use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 use agent_client_protocol::{AcpAgent, Agent, Client, Error};
 use clap::Parser;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .v2()
         .name("v2-one-shot-client")
         .on_receive_notification(
-            async move |notification: v2::UpdateSessionNotification,
+            async move |notification: schema::UpdateSessionNotification,
                         _connection: ConnectionTo<Agent>| {
                 update_tx
                     .send(notification)
@@ -51,8 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             agent_client_protocol::on_receive_notification!(),
         )
         .on_receive_request(
-            async move |request: v2::RequestPermissionRequest,
-                        responder: Responder<v2::RequestPermissionResponse>,
+            async move |request: schema::RequestPermissionRequest,
+                        responder: Responder<schema::RequestPermissionResponse>,
                         connection: ConnectionTo<Agent>| {
                 responder.respond(reject_permission(&request, &connection)?)
             },
@@ -60,9 +60,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .connect_with(agent, async move |connection| {
             let initialize = connection
-                .send_request(v2::InitializeRequest::new(
+                .send_request(schema::InitializeRequest::new(
                     ProtocolVersion::V2,
-                    v2::Implementation::new("v2-one-shot-client", env!("CARGO_PKG_VERSION")),
+                    schema::Implementation::new("v2-one-shot-client", env!("CARGO_PKG_VERSION")),
                 ))
                 .block_task()
                 .await?;
@@ -95,9 +95,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn wait_until_idle(
-    updates: &mut UnboundedReceiver<v2::UpdateSessionNotification>,
-    session_id: &v2::SessionId,
-) -> Result<(String, Option<v2::StopReason>), Error> {
+    updates: &mut UnboundedReceiver<schema::UpdateSessionNotification>,
+    session_id: &schema::SessionId,
+) -> Result<(String, Option<schema::StopReason>), Error> {
     let mut projection = AgentTextProjection::default();
     let mut observed_active = false;
     loop {
@@ -109,7 +109,7 @@ async fn wait_until_idle(
         }
 
         match notification.update {
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) => {
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(idle)) => {
                 if observed_active {
                     return Ok((projection.text(), idle.stop_reason));
                 }
@@ -117,7 +117,7 @@ async fn wait_until_idle(
             // Running, requires_action, and any state this client does not
             // recognize all mean foreground work is still active. An unknown
             // state must never be treated as idle.
-            v2::SessionUpdate::StateUpdate(_) => observed_active = true,
+            schema::SessionUpdate::StateUpdate(_) => observed_active = true,
             update if observed_active => projection.apply(update),
             _ => {}
         }
@@ -130,28 +130,28 @@ async fn wait_until_idle(
 /// `cancelled` outcome is only valid once the client has cancelled the active
 /// work, so without such an option this sends `session/cancel` first.
 fn reject_permission(
-    request: &v2::RequestPermissionRequest,
+    request: &schema::RequestPermissionRequest,
     connection: &ConnectionTo<Agent>,
-) -> Result<v2::RequestPermissionResponse, Error> {
+) -> Result<schema::RequestPermissionResponse, Error> {
     if let Some(option) = request
         .options
         .iter()
-        .find(|option| option.kind == v2::PermissionOptionKind::RejectOnce)
+        .find(|option| option.kind == schema::PermissionOptionKind::RejectOnce)
     {
         eprintln!("Agent requested permission; rejecting it once in this non-interactive example");
-        return Ok(v2::RequestPermissionResponse::new(
-            v2::RequestPermissionOutcome::Selected(v2::SelectedPermissionOutcome::new(
+        return Ok(schema::RequestPermissionResponse::new(
+            schema::RequestPermissionOutcome::Selected(schema::SelectedPermissionOutcome::new(
                 option.option_id.clone(),
             )),
         ));
     }
 
     eprintln!("Agent requested permission without a reject option; cancelling the prompt");
-    connection.send_notification(v2::CancelSessionNotification::new(
+    connection.send_notification(schema::CancelSessionNotification::new(
         request.session_id.clone(),
     ))?;
-    Ok(v2::RequestPermissionResponse::new(
-        v2::CancelledPermissionOutcome::new().into(),
+    Ok(schema::RequestPermissionResponse::new(
+        schema::CancelledPermissionOutcome::new().into(),
     ))
 }
 
@@ -172,17 +172,17 @@ fn strip_control_characters(text: &str) -> String {
 /// clears it, and an omitted field preserves it.
 #[derive(Default)]
 struct AgentTextProjection {
-    order: Vec<v2::MessageId>,
-    messages: HashMap<v2::MessageId, Vec<v2::ContentBlock>>,
+    order: Vec<schema::MessageId>,
+    messages: HashMap<schema::MessageId, Vec<schema::ContentBlock>>,
 }
 
 impl AgentTextProjection {
-    fn apply(&mut self, update: v2::SessionUpdate) {
+    fn apply(&mut self, update: schema::SessionUpdate) {
         match update {
-            v2::SessionUpdate::AgentMessageChunk(chunk) => {
+            schema::SessionUpdate::AgentMessageChunk(chunk) => {
                 self.message_content(chunk.message_id).push(chunk.content);
             }
-            v2::SessionUpdate::AgentMessage(message) => {
+            schema::SessionUpdate::AgentMessage(message) => {
                 let content = self.message_content(message.message_id);
                 match message.content {
                     MaybeUndefined::Undefined => {}
@@ -194,7 +194,7 @@ impl AgentTextProjection {
         }
     }
 
-    fn message_content(&mut self, message_id: v2::MessageId) -> &mut Vec<v2::ContentBlock> {
+    fn message_content(&mut self, message_id: schema::MessageId) -> &mut Vec<schema::ContentBlock> {
         if !self.messages.contains_key(&message_id) {
             self.order.push(message_id.clone());
         }
@@ -213,18 +213,18 @@ impl AgentTextProjection {
     }
 }
 
-fn content_text(content: &v2::ContentBlock) -> std::borrow::Cow<'_, str> {
+fn content_text(content: &schema::ContentBlock) -> std::borrow::Cow<'_, str> {
     match content {
-        v2::ContentBlock::Text(text) => text.text.as_str().into(),
-        v2::ContentBlock::Image(image) => format!("[image: {}]", image.mime_type).into(),
-        v2::ContentBlock::Audio(audio) => format!("[audio: {}]", audio.mime_type).into(),
-        v2::ContentBlock::ResourceLink(link) => format!(
+        schema::ContentBlock::Text(text) => text.text.as_str().into(),
+        schema::ContentBlock::Image(image) => format!("[image: {}]", image.mime_type).into(),
+        schema::ContentBlock::Audio(audio) => format!("[audio: {}]", audio.mime_type).into(),
+        schema::ContentBlock::ResourceLink(link) => format!(
             "[resource: {} <{}>]",
             link.title.as_deref().unwrap_or(&link.name),
             link.uri
         )
         .into(),
-        v2::ContentBlock::Resource(_) => "[embedded resource]".into(),
+        schema::ContentBlock::Resource(_) => "[embedded resource]".into(),
         _ => "[unsupported content]".into(),
     }
 }
@@ -235,13 +235,13 @@ mod tests {
 
     #[test]
     fn content_that_cannot_be_rendered_gets_a_placeholder() {
-        let message_id = v2::MessageId::new("message-1");
+        let message_id = schema::MessageId::new("message-1");
         let mut projection = AgentTextProjection::default();
-        projection.apply(v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(message_id).content(vec![
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(message_id).content(vec![
                 "see ".into(),
-                v2::ContentBlock::Image(v2::ImageContent::new("aGk=", "image/png")),
-                v2::ContentBlock::ResourceLink(v2::ResourceLink::new(
+                schema::ContentBlock::Image(schema::ImageContent::new("aGk=", "image/png")),
+                schema::ContentBlock::ResourceLink(schema::ResourceLink::new(
                     "notes.md",
                     "file:///notes.md",
                 )),
@@ -256,46 +256,43 @@ mod tests {
 
     #[test]
     fn agent_message_snapshots_patch_accumulated_chunks() {
-        let message_id = v2::MessageId::new("message-1");
+        let message_id = schema::MessageId::new("message-1");
         let mut projection = AgentTextProjection::default();
 
-        projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "hello ".into(),
-            message_id.clone(),
-        )));
-        projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "world".into(),
-            message_id.clone(),
-        )));
+        projection.apply(schema::SessionUpdate::AgentMessageChunk(
+            schema::ContentChunk::new("hello ".into(), message_id.clone()),
+        ));
+        projection.apply(schema::SessionUpdate::AgentMessageChunk(
+            schema::ContentChunk::new("world".into(), message_id.clone()),
+        ));
         assert_eq!(projection.text(), "hello world");
 
-        projection.apply(v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(message_id.clone()).content(vec!["replacement".into()]),
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(message_id.clone()).content(vec!["replacement".into()]),
         ));
         assert_eq!(projection.text(), "replacement");
 
-        projection.apply(v2::SessionUpdate::AgentMessage(v2::AgentMessage::new(
-            message_id.clone(),
-        )));
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(message_id.clone()),
+        ));
         assert_eq!(projection.text(), "replacement");
 
-        projection.apply(v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(message_id.clone()).content(MaybeUndefined::Null),
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(message_id.clone()).content(MaybeUndefined::Null),
         ));
         assert_eq!(projection.text(), "");
 
-        projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "again".into(),
-            message_id,
-        )));
+        projection.apply(schema::SessionUpdate::AgentMessageChunk(
+            schema::ContentChunk::new("again".into(), message_id),
+        ));
         assert_eq!(projection.text(), "again");
     }
 
     #[test]
     fn interleaved_messages_keep_independent_content_and_first_seen_order() {
         // Reverse lexical order so sorting by ID would not preserve arrival order.
-        let first_id = v2::MessageId::new("message-z");
-        let second_id = v2::MessageId::new("message-a");
+        let first_id = schema::MessageId::new("message-z");
+        let second_id = schema::MessageId::new("message-a");
         let mut projection = AgentTextProjection::default();
 
         for (message_id, text) in [
@@ -304,38 +301,36 @@ mod tests {
             (&first_id, "message"),
             (&second_id, "message"),
         ] {
-            projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-                text.into(),
-                message_id.clone(),
-            )));
+            projection.apply(schema::SessionUpdate::AgentMessageChunk(
+                schema::ContentChunk::new(text.into(), message_id.clone()),
+            ));
         }
         assert_eq!(projection.text(), "first messagesecond message");
         assert_eq!(projection.order, [first_id.clone(), second_id.clone()]);
 
-        projection.apply(v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(first_id.clone()).content(vec!["replacement".into()]),
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(first_id.clone()).content(vec!["replacement".into()]),
         ));
         assert_eq!(projection.text(), "replacementsecond message");
 
-        projection.apply(v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(second_id.clone()).content(MaybeUndefined::Null),
+        projection.apply(schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(second_id.clone()).content(MaybeUndefined::Null),
         ));
         assert_eq!(projection.text(), "replacement");
 
-        projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-            "again".into(),
-            second_id.clone(),
-        )));
+        projection.apply(schema::SessionUpdate::AgentMessageChunk(
+            schema::ContentChunk::new("again".into(), second_id.clone()),
+        ));
         assert_eq!(projection.text(), "replacementagain");
         assert_eq!(projection.order, [first_id, second_id]);
     }
 
     #[test]
     fn metadata_only_updates_establish_order_without_changing_text() {
-        let first_id = v2::MessageId::new("metadata-first");
-        let second_id = v2::MessageId::new("content-first");
-        let metadata_only = v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(first_id.clone()).meta(serde_json::Map::from_iter([(
+        let first_id = schema::MessageId::new("metadata-first");
+        let second_id = schema::MessageId::new("content-first");
+        let metadata_only = schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(first_id.clone()).meta(serde_json::Map::from_iter([(
                 "com.example/source".to_owned(),
                 serde_json::json!("replay"),
             )])),
@@ -346,17 +341,16 @@ mod tests {
         assert_eq!(projection.order.as_slice(), std::slice::from_ref(&first_id));
         assert_eq!(
             projection.messages[&first_id],
-            Vec::<v2::ContentBlock>::new()
+            Vec::<schema::ContentBlock>::new()
         );
         assert_eq!(projection.text(), "");
 
         // The first message's content arrives last, but its metadata already
         // established its place in the text projection.
         for (message_id, text) in [(&second_id, "second"), (&first_id, "first")] {
-            projection.apply(v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
-                text.into(),
-                message_id.clone(),
-            )));
+            projection.apply(schema::SessionUpdate::AgentMessageChunk(
+                schema::ContentChunk::new(text.into(), message_id.clone()),
+            ));
         }
         assert_eq!(projection.text(), "firstsecond");
 
@@ -367,8 +361,8 @@ mod tests {
 
     #[test]
     fn repeated_chunks_append_before_and_after_content_replacements() {
-        let message_id = v2::MessageId::new("message-1");
-        let chunk = v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+        let message_id = schema::MessageId::new("message-1");
+        let chunk = schema::SessionUpdate::AgentMessageChunk(schema::ContentChunk::new(
             "repeat ".into(),
             message_id.clone(),
         ));
@@ -387,8 +381,8 @@ mod tests {
             (MaybeUndefined::Null, ""),
             (MaybeUndefined::Value(Vec::new()), ""),
         ] {
-            projection.apply(v2::SessionUpdate::AgentMessage(
-                v2::AgentMessage::new(message_id.clone()).content(content),
+            projection.apply(schema::SessionUpdate::AgentMessage(
+                schema::AgentMessage::new(message_id.clone()).content(content),
             ));
             assert_eq!(projection.text(), expected);
 
@@ -403,46 +397,47 @@ mod tests {
 
     #[tokio::test]
     async fn prompt_completion_ignores_updates_until_running() {
-        let session_id = v2::SessionId::new("session-1");
+        let session_id = schema::SessionId::new("session-1");
         let (update_tx, mut update_rx) = unbounded_channel();
-        let notification = |update| v2::UpdateSessionNotification::new(session_id.clone(), update);
+        let notification =
+            |update| schema::UpdateSessionNotification::new(session_id.clone(), update);
 
         update_tx
-            .send(notification(v2::SessionUpdate::AgentMessageChunk(
-                v2::ContentChunk::new("stale".into(), "stale-message"),
+            .send(notification(schema::SessionUpdate::AgentMessageChunk(
+                schema::ContentChunk::new("stale".into(), "stale-message"),
             )))
             .unwrap();
         update_tx
-            .send(notification(v2::SessionUpdate::StateUpdate(
-                v2::StateUpdate::Idle(v2::IdleStateUpdate::new()),
+            .send(notification(schema::SessionUpdate::StateUpdate(
+                schema::StateUpdate::Idle(schema::IdleStateUpdate::new()),
             )))
             .unwrap();
         update_tx
-            .send(notification(v2::SessionUpdate::StateUpdate(
-                v2::StateUpdate::Running(v2::RunningStateUpdate::new()),
+            .send(notification(schema::SessionUpdate::StateUpdate(
+                schema::StateUpdate::Running(schema::RunningStateUpdate::new()),
             )))
             .unwrap();
         update_tx
-            .send(notification(v2::SessionUpdate::AgentMessageChunk(
-                v2::ContentChunk::new("current".into(), "current-message"),
+            .send(notification(schema::SessionUpdate::AgentMessageChunk(
+                schema::ContentChunk::new("current".into(), "current-message"),
             )))
             .unwrap();
         update_tx
-            .send(notification(v2::SessionUpdate::AgentMessage(
-                v2::AgentMessage::new("current-message").content(vec!["current".into()]),
+            .send(notification(schema::SessionUpdate::AgentMessage(
+                schema::AgentMessage::new("current-message").content(vec!["current".into()]),
             )))
             .unwrap();
         update_tx
-            .send(notification(v2::SessionUpdate::StateUpdate(
-                v2::StateUpdate::Idle(
-                    v2::IdleStateUpdate::new().stop_reason(v2::StopReason::EndTurn),
+            .send(notification(schema::SessionUpdate::StateUpdate(
+                schema::StateUpdate::Idle(
+                    schema::IdleStateUpdate::new().stop_reason(schema::StopReason::EndTurn),
                 ),
             )))
             .unwrap();
 
         let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
         assert_eq!(text, "current");
-        assert_eq!(stop_reason, Some(v2::StopReason::EndTurn));
+        assert_eq!(stop_reason, Some(schema::StopReason::EndTurn));
     }
 
     #[test]
@@ -455,19 +450,22 @@ mod tests {
 
     #[tokio::test]
     async fn unrecognized_states_count_as_foreground_work() {
-        let session_id = v2::SessionId::new("session-1");
+        let session_id = schema::SessionId::new("session-1");
         let (update_tx, mut update_rx) = unbounded_channel();
-        let other_state: v2::StateUpdate =
+        let other_state: schema::StateUpdate =
             serde_json::from_value(serde_json::json!({ "state": "_compacting" })).unwrap();
         for update in [
-            v2::SessionUpdate::StateUpdate(other_state),
-            v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new("busy".into(), "message-1")),
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
-                v2::IdleStateUpdate::new().stop_reason(v2::StopReason::EndTurn),
+            schema::SessionUpdate::StateUpdate(other_state),
+            schema::SessionUpdate::AgentMessageChunk(schema::ContentChunk::new(
+                "busy".into(),
+                "message-1",
+            )),
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(schema::StopReason::EndTurn),
             )),
         ] {
             update_tx
-                .send(v2::UpdateSessionNotification::new(
+                .send(schema::UpdateSessionNotification::new(
                     session_id.clone(),
                     update,
                 ))
@@ -476,24 +474,24 @@ mod tests {
 
         let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
         assert_eq!(text, "busy");
-        assert_eq!(stop_reason, Some(v2::StopReason::EndTurn));
+        assert_eq!(stop_reason, Some(schema::StopReason::EndTurn));
     }
 
     #[tokio::test]
     async fn foreground_work_can_start_blocked_and_end_without_running() {
-        let session_id = v2::SessionId::new("session-1");
+        let session_id = schema::SessionId::new("session-1");
         let (update_tx, mut update_rx) = unbounded_channel();
         for state in [
-            v2::StateUpdate::Idle(v2::IdleStateUpdate::new()),
-            v2::StateUpdate::RequiresAction(v2::RequiresActionStateUpdate::new()),
-            v2::StateUpdate::Idle(
-                v2::IdleStateUpdate::new().stop_reason(v2::StopReason::Cancelled),
+            schema::StateUpdate::Idle(schema::IdleStateUpdate::new()),
+            schema::StateUpdate::RequiresAction(schema::RequiresActionStateUpdate::new()),
+            schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(schema::StopReason::Cancelled),
             ),
         ] {
             update_tx
-                .send(v2::UpdateSessionNotification::new(
+                .send(schema::UpdateSessionNotification::new(
                     session_id.clone(),
-                    v2::SessionUpdate::StateUpdate(state),
+                    schema::SessionUpdate::StateUpdate(state),
                 ))
                 .unwrap();
         }
@@ -501,6 +499,6 @@ mod tests {
 
         let (text, stop_reason) = wait_until_idle(&mut update_rx, &session_id).await.unwrap();
         assert_eq!(text, "");
-        assert_eq!(stop_reason, Some(v2::StopReason::Cancelled));
+        assert_eq!(stop_reason, Some(schema::StopReason::Cancelled));
     }
 }

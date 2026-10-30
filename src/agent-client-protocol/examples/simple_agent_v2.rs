@@ -14,8 +14,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use agent_client_protocol::schema::v2;
-use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 use agent_client_protocol::{Agent, Client, Error, RequestCancellation, Result, Stdio};
 use tokio::sync::Notify;
 
@@ -29,7 +28,7 @@ struct EchoAgent {
 
 #[derive(Debug, Default)]
 struct AgentState {
-    sessions: HashMap<v2::SessionId, Session>,
+    sessions: HashMap<schema::SessionId, Session>,
     next_session_id: u64,
     next_message_id: u64,
     next_prompt_ticket: u64,
@@ -37,7 +36,7 @@ struct AgentState {
 
 #[derive(Clone, Debug)]
 struct Session {
-    cwd: v2::AbsolutePath,
+    cwd: schema::AbsolutePath,
     active: bool,
     foreground_work: bool,
     cancelled: bool,
@@ -46,7 +45,7 @@ struct Session {
     cancel_epoch: u64,
     /// Prompts received during foreground work, held in received order.
     held_prompts: VecDeque<u64>,
-    history: Vec<v2::SessionUpdate>,
+    history: Vec<schema::SessionUpdate>,
 }
 
 /// How an accepted `session/prompt` request proceeds.
@@ -58,12 +57,12 @@ enum PromptAdmission {
 }
 
 impl EchoAgent {
-    fn create_session(&self, request: v2::NewSessionRequest) -> Result<v2::SessionId> {
+    fn create_session(&self, request: schema::NewSessionRequest) -> Result<schema::SessionId> {
         require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_session_id += 1;
-        let session_id = v2::SessionId::new(format!("echo-session-{}", state.next_session_id));
+        let session_id = schema::SessionId::new(format!("echo-session-{}", state.next_session_id));
         state.sessions.insert(
             session_id.clone(),
             // `additionalDirectories` is not advertised, so it is ignored.
@@ -80,14 +79,15 @@ impl EchoAgent {
         Ok(session_id)
     }
 
-    fn list_sessions(&self, request: &v2::ListSessionsRequest) -> Vec<v2::SessionInfo> {
+    fn list_sessions(&self, request: &schema::ListSessionsRequest) -> Vec<schema::SessionInfo> {
         let state = self.state.lock().expect("session state lock poisoned");
         let mut sessions = state
             .sessions
             .iter()
             .filter(|(_, session)| request.cwd.as_ref().is_none_or(|cwd| cwd == &session.cwd))
             .map(|(session_id, session)| {
-                v2::SessionInfo::new(session_id.clone(), session.cwd.clone()).title(SESSION_TITLE)
+                schema::SessionInfo::new(session_id.clone(), session.cwd.clone())
+                    .title(SESSION_TITLE)
             })
             .collect::<Vec<_>>();
         sessions.sort_by(|left, right| {
@@ -98,7 +98,10 @@ impl EchoAgent {
         sessions
     }
 
-    fn resume_session(&self, request: &v2::ResumeSessionRequest) -> Result<Vec<v2::SessionUpdate>> {
+    fn resume_session(
+        &self,
+        request: &schema::ResumeSessionRequest,
+    ) -> Result<Vec<schema::SessionUpdate>> {
         require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
@@ -121,7 +124,7 @@ impl EchoAgent {
 
         let history = match &request.replay_from {
             None => Vec::new(),
-            Some(v2::ReplayFrom::Start(_)) => session.history.clone(),
+            Some(schema::ReplayFrom::Start(_)) => session.history.clone(),
             Some(_) => return Err(invalid_params("unsupported replay cursor")),
         };
         session.active = true;
@@ -135,8 +138,8 @@ impl EchoAgent {
     /// active. It may hold the prompt and insert it later, in received order.
     fn admit_prompt(
         &self,
-        session_id: &v2::SessionId,
-        prompt: &[v2::ContentBlock],
+        session_id: &schema::SessionId,
+        prompt: &[schema::ContentBlock],
     ) -> Result<PromptAdmission> {
         let mut state = self.state.lock().expect("session state lock poisoned");
         let ticket = state.next_prompt_ticket;
@@ -154,7 +157,7 @@ impl EchoAgent {
         if prompt.iter().any(|block| {
             !matches!(
                 block,
-                v2::ContentBlock::Text(_) | v2::ContentBlock::ResourceLink(_)
+                schema::ContentBlock::Text(_) | schema::ContentBlock::ResourceLink(_)
             )
         }) {
             return Err(invalid_params("unsupported prompt content block"));
@@ -177,7 +180,7 @@ impl EchoAgent {
     /// `-32800` by `session/cancel`, `session/close`, or `$/cancel_request`.
     async fn insert_held_prompt(
         &self,
-        session_id: &v2::SessionId,
+        session_id: &schema::SessionId,
         ticket: u64,
         cancel_epoch: u64,
         withdrawn: RequestCancellation,
@@ -218,17 +221,17 @@ impl EchoAgent {
     /// acknowledge it with its message ID, and run it.
     fn run_inserted_prompt(
         &self,
-        request: v2::PromptRequest,
-        responder: Responder<v2::PromptResponse>,
+        request: schema::PromptRequest,
+        responder: Responder<schema::PromptResponse>,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let user_message_id = self.next_message_id("user-message");
-        let user_message = v2::SessionUpdate::UserMessage(
-            v2::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
+        let user_message = schema::SessionUpdate::UserMessage(
+            schema::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
         );
         self.record_history(&request.session_id, user_message.clone());
         let session_id = request.session_id.clone();
-        if let Err(error) = responder.respond(v2::PromptResponse::new(user_message_id)) {
+        if let Err(error) = responder.respond(schema::PromptResponse::new(user_message_id)) {
             self.abandon_prompt(&session_id);
             return Err(error);
         }
@@ -250,7 +253,7 @@ impl EchoAgent {
 
     fn finish_prompt(
         &self,
-        session_id: &v2::SessionId,
+        session_id: &schema::SessionId,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let mut state = self.state.lock().expect("session state lock poisoned");
@@ -259,15 +262,15 @@ impl EchoAgent {
             .get_mut(session_id)
             .ok_or_else(|| session_not_found(session_id))?;
         let stop_reason = if session.cancelled || !session.active {
-            v2::StopReason::Cancelled
+            schema::StopReason::Cancelled
         } else {
-            v2::StopReason::EndTurn
+            schema::StopReason::EndTurn
         };
         send_update(
             connection,
             session_id,
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
-                v2::IdleStateUpdate::new().stop_reason(stop_reason),
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                schema::IdleStateUpdate::new().stop_reason(stop_reason),
             )),
         )?;
         session.foreground_work = false;
@@ -277,7 +280,7 @@ impl EchoAgent {
         Ok(())
     }
 
-    fn abandon_prompt(&self, session_id: &v2::SessionId) {
+    fn abandon_prompt(&self, session_id: &schema::SessionId) {
         if let Some(session) = self
             .state
             .lock()
@@ -291,13 +294,13 @@ impl EchoAgent {
         self.state_changed.notify_waiters();
     }
 
-    fn next_message_id(&self, kind: &str) -> v2::MessageId {
+    fn next_message_id(&self, kind: &str) -> schema::MessageId {
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_message_id += 1;
-        v2::MessageId::new(format!("{kind}-{}", state.next_message_id))
+        schema::MessageId::new(format!("{kind}-{}", state.next_message_id))
     }
 
-    fn record_history(&self, session_id: &v2::SessionId, update: v2::SessionUpdate) {
+    fn record_history(&self, session_id: &schema::SessionId, update: schema::SessionUpdate) {
         if let Some(session) = self
             .state
             .lock()
@@ -309,7 +312,7 @@ impl EchoAgent {
         }
     }
 
-    fn is_cancelled(&self, session_id: &v2::SessionId) -> bool {
+    fn is_cancelled(&self, session_id: &schema::SessionId) -> bool {
         self.state
             .lock()
             .expect("session state lock poisoned")
@@ -320,7 +323,7 @@ impl EchoAgent {
 
     /// `session/cancel` cancels foreground work and every prompt held before
     /// it. It is ignored for a session that is not active.
-    fn cancel(&self, session_id: &v2::SessionId) {
+    fn cancel(&self, session_id: &schema::SessionId) {
         if let Some(session) = self
             .state
             .lock()
@@ -340,7 +343,7 @@ impl EchoAgent {
     /// Close a session and report whether foreground work must finish before
     /// the close response. Closing is idempotent: an unknown or already-closed
     /// session closes successfully.
-    fn close(&self, session_id: &v2::SessionId) -> bool {
+    fn close(&self, session_id: &schema::SessionId) -> bool {
         let mut state = self.state.lock().expect("session state lock poisoned");
         let Some(session) = state
             .sessions
@@ -360,7 +363,7 @@ impl EchoAgent {
         foreground_work
     }
 
-    fn has_foreground_work(&self, session_id: &v2::SessionId) -> bool {
+    fn has_foreground_work(&self, session_id: &schema::SessionId) -> bool {
         self.state
             .lock()
             .expect("session state lock poisoned")
@@ -369,7 +372,7 @@ impl EchoAgent {
             .is_some_and(|session| session.foreground_work)
     }
 
-    async fn wait_for_foreground_work(&self, session_id: &v2::SessionId) {
+    async fn wait_for_foreground_work(&self, session_id: &schema::SessionId) {
         let notified = self.state_changed.notified();
         tokio::pin!(notified);
         loop {
@@ -384,8 +387,8 @@ impl EchoAgent {
 
     async fn process_prompt(
         &self,
-        request: v2::PromptRequest,
-        user_message: v2::SessionUpdate,
+        request: schema::PromptRequest,
+        user_message: schema::SessionUpdate,
         connection: ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id.clone();
@@ -403,8 +406,8 @@ impl EchoAgent {
 
     async fn process_prompt_inner(
         &self,
-        request: v2::PromptRequest,
-        user_message: v2::SessionUpdate,
+        request: schema::PromptRequest,
+        user_message: schema::SessionUpdate,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let session_id = request.session_id;
@@ -413,7 +416,9 @@ impl EchoAgent {
         send_update(
             connection,
             &session_id,
-            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
+            schema::SessionUpdate::StateUpdate(schema::StateUpdate::Running(
+                schema::RunningStateUpdate::new(),
+            )),
         )?;
 
         // Prompt acceptance is independent from this work. Yield once so the
@@ -427,7 +432,7 @@ impl EchoAgent {
             .prompt
             .iter()
             .filter_map(|block| match block {
-                v2::ContentBlock::Text(text) => Some(text.text.as_str()),
+                schema::ContentBlock::Text(text) => Some(text.text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -441,15 +446,15 @@ impl EchoAgent {
         send_update(
             connection,
             &session_id,
-            v2::SessionUpdate::AgentMessageChunk(v2::ContentChunk::new(
+            schema::SessionUpdate::AgentMessageChunk(schema::ContentChunk::new(
                 response.clone().into(),
                 message_id.clone(),
             )),
         )?;
         // A complete snapshot replaces the content accumulated from chunks
         // with the same message ID; clients must not render it a second time.
-        let agent_message = v2::SessionUpdate::AgentMessage(
-            v2::AgentMessage::new(message_id).content(vec![response.into()]),
+        let agent_message = schema::SessionUpdate::AgentMessage(
+            schema::AgentMessage::new(message_id).content(vec![response.into()]),
         );
         send_update(connection, &session_id, agent_message.clone())?;
         self.record_history(&session_id, agent_message);
@@ -465,16 +470,17 @@ async fn main() -> Result<()> {
         .v2()
         .name("simple-agent-v2")
         .on_receive_request(
-            async |request: v2::InitializeRequest,
-                   responder: Responder<v2::InitializeResponse>,
+            async |request: schema::InitializeRequest,
+                   responder: Responder<schema::InitializeResponse>,
                    _connection: ConnectionTo<Client>| {
                 responder.respond(
-                    v2::InitializeResponse::new(
+                    schema::InitializeResponse::new(
                         request.protocol_version,
-                        v2::Implementation::new("simple-agent-v2", env!("CARGO_PKG_VERSION")),
+                        schema::Implementation::new("simple-agent-v2", env!("CARGO_PKG_VERSION")),
                     )
                     .capabilities(
-                        v2::AgentCapabilities::new().session(v2::SessionCapabilities::new()),
+                        schema::AgentCapabilities::new()
+                            .session(schema::SessionCapabilities::new()),
                     ),
                 )
             },
@@ -483,22 +489,22 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let agent = agent.clone();
-                async move |request: v2::NewSessionRequest,
-                            responder: Responder<v2::NewSessionResponse>,
+                async move |request: schema::NewSessionRequest,
+                            responder: Responder<schema::NewSessionResponse>,
                             connection: ConnectionTo<Client>| {
                     let session_id = match agent.create_session(request) {
                         Ok(session_id) => session_id,
                         Err(error) => return responder.respond_with_error(error),
                     };
-                    responder.respond(v2::NewSessionResponse::new(session_id.clone()))?;
+                    responder.respond(schema::NewSessionResponse::new(session_id.clone()))?;
                     // A client can already have this ready-state update queued
                     // when a later prompt response arrives. Prompt completion
                     // must wait for running and the subsequent idle instead.
                     send_update(
                         &connection,
                         &session_id,
-                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
-                            v2::IdleStateUpdate::new(),
+                        schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                            schema::IdleStateUpdate::new(),
                         )),
                     )
                 }
@@ -508,8 +514,8 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let agent = agent.clone();
-                async move |request: v2::ListSessionsRequest,
-                            responder: Responder<v2::ListSessionsResponse>,
+                async move |request: schema::ListSessionsRequest,
+                            responder: Responder<schema::ListSessionsResponse>,
                             _connection: ConnectionTo<Client>| {
                     // Every session fits in one page and no `nextCursor` is ever
                     // issued, so any cursor a client sends is invalid.
@@ -523,7 +529,9 @@ async fn main() -> Result<()> {
                     {
                         return responder.respond_with_error(error);
                     }
-                    responder.respond(v2::ListSessionsResponse::new(agent.list_sessions(&request)))
+                    responder.respond(schema::ListSessionsResponse::new(
+                        agent.list_sessions(&request),
+                    ))
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -531,8 +539,8 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let agent = agent.clone();
-                async move |request: v2::ResumeSessionRequest,
-                            responder: Responder<v2::ResumeSessionResponse>,
+                async move |request: schema::ResumeSessionRequest,
+                            responder: Responder<schema::ResumeSessionResponse>,
                             connection: ConnectionTo<Client>| {
                     let history = match agent.resume_session(&request) {
                         Ok(history) => history,
@@ -547,18 +555,18 @@ async fn main() -> Result<()> {
                     send_update(
                         &connection,
                         &request.session_id,
-                        v2::SessionUpdate::SessionInfoUpdate(
-                            v2::SessionInfoUpdate::new().title(SESSION_TITLE),
+                        schema::SessionUpdate::SessionInfoUpdate(
+                            schema::SessionInfoUpdate::new().title(SESSION_TITLE),
                         ),
                     )?;
                     send_update(
                         &connection,
                         &request.session_id,
-                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
-                            v2::IdleStateUpdate::new(),
+                        schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(
+                            schema::IdleStateUpdate::new(),
                         )),
                     )?;
-                    responder.respond(v2::ResumeSessionResponse::new())
+                    responder.respond(schema::ResumeSessionResponse::new())
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -566,18 +574,18 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let agent = agent.clone();
-                async move |request: v2::CloseSessionRequest,
-                            responder: Responder<v2::CloseSessionResponse>,
+                async move |request: schema::CloseSessionRequest,
+                            responder: Responder<schema::CloseSessionResponse>,
                             connection: ConnectionTo<Client>| {
                     if !agent.close(&request.session_id) {
-                        return responder.respond(v2::CloseSessionResponse::new());
+                        return responder.respond(schema::CloseSessionResponse::new());
                     }
                     let waiting_agent = agent.clone();
                     connection.spawn(async move {
                         waiting_agent
                             .wait_for_foreground_work(&request.session_id)
                             .await;
-                        responder.respond(v2::CloseSessionResponse::new())
+                        responder.respond(schema::CloseSessionResponse::new())
                     })
                 }
             },
@@ -586,8 +594,8 @@ async fn main() -> Result<()> {
         .on_receive_request(
             {
                 let agent = agent.clone();
-                async move |request: v2::PromptRequest,
-                            responder: Responder<v2::PromptResponse>,
+                async move |request: schema::PromptRequest,
+                            responder: Responder<schema::PromptResponse>,
                             connection: ConnectionTo<Client>| {
                     match agent.admit_prompt(&request.session_id, &request.prompt) {
                         Err(error) => responder.respond_with_error(error),
@@ -626,7 +634,7 @@ async fn main() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_notification(
-            async move |notification: v2::CancelSessionNotification,
+            async move |notification: schema::CancelSessionNotification,
                         _connection: ConnectionTo<Client>| {
                 agent.cancel(&notification.session_id);
                 Ok(())
@@ -639,10 +647,10 @@ async fn main() -> Result<()> {
 
 fn send_update(
     connection: &ConnectionTo<Client>,
-    session_id: &v2::SessionId,
-    update: v2::SessionUpdate,
+    session_id: &schema::SessionId,
+    update: schema::SessionUpdate,
 ) -> Result<()> {
-    connection.send_notification(v2::UpdateSessionNotification::new(
+    connection.send_notification(schema::UpdateSessionNotification::new(
         session_id.clone(),
         update,
     ))
@@ -654,13 +662,13 @@ fn invalid_params(message: impl ToString) -> Error {
 
 /// Requests naming a session that does not exist or is not active on this
 /// connection fail with `-32002` and `data.sessionId`.
-fn session_not_found(session_id: &v2::SessionId) -> Error {
-    v2::Error::session_not_found(session_id.clone()).into()
+fn session_not_found(session_id: &schema::SessionId) -> Error {
+    schema::Error::session_not_found(session_id.clone()).into()
 }
 
 /// `cwd` must be an absolute path in the native syntax of the agent's machine;
 /// a relative one is rejected with `-32602`.
-fn require_absolute(cwd: &v2::AbsolutePath) -> Result<()> {
+fn require_absolute(cwd: &schema::AbsolutePath) -> Result<()> {
     if AsRef::<std::path::Path>::as_ref(cwd).is_absolute() {
         Ok(())
     } else {
@@ -670,7 +678,7 @@ fn require_absolute(cwd: &v2::AbsolutePath) -> Result<()> {
 
 /// This agent advertises no `session.mcp` transports, so it must reject every
 /// MCP server with `-32602` rather than silently ignoring it.
-fn reject_mcp_servers(mcp_servers: &[v2::McpServer]) -> Result<()> {
+fn reject_mcp_servers(mcp_servers: &[schema::McpServer]) -> Result<()> {
     if mcp_servers.is_empty() {
         Ok(())
     } else {
@@ -688,7 +696,7 @@ mod tests {
     fn rejects_empty_prompt_without_inserting_it() {
         let agent = EchoAgent::default();
         let session_id = agent
-            .create_session(v2::NewSessionRequest::new("/tmp"))
+            .create_session(schema::NewSessionRequest::new("/tmp"))
             .expect("session should be created");
 
         let Err(error) = agent.admit_prompt(&session_id, &[]) else {
@@ -704,7 +712,7 @@ mod tests {
         }
 
         assert!(matches!(
-            agent.admit_prompt(&session_id, &[v2::ContentBlock::from("hello")]),
+            agent.admit_prompt(&session_id, &[schema::ContentBlock::from("hello")]),
             Ok(PromptAdmission::Inserted)
         ));
     }

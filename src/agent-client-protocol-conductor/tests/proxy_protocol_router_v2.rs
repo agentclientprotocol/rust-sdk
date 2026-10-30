@@ -267,7 +267,6 @@ async fn run_raw_client(
     let (conductor_out, client_in) = duplex(4096);
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .name("future-client")
         .with_spawned(|_cx| async move {
             ConductorImpl::new_agent("conductor", components)

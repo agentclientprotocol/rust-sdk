@@ -71,7 +71,7 @@ impl Client {
     /// `unstable_protocol_v2` feature, use `Client::v2` for a protocol v2
     /// client, or `Client::protocol_connector` to support both.
     pub fn v1(self) -> crate::v1::Builder<Client> {
-        Builder::new(self).v1_client().into_protocol()
+        Builder::new(self).v1_client()
     }
 
     /// Create a client builder that requires an ACP protocol v2 agent.
@@ -318,7 +318,7 @@ impl Agent {
     /// `unstable_protocol_v2` feature, use `Agent::v2` for a protocol v2
     /// agent, or `Agent::protocol_router` to serve both.
     pub fn v1(self) -> crate::v1::Builder<Agent> {
-        Builder::new(self).v1_agent().into_protocol()
+        Builder::new(self).v1_agent()
     }
 
     /// Create an agent builder that uses the ACP protocol v2 API.
@@ -1513,13 +1513,13 @@ impl Proxy {
     ///
     /// Use `Proxy::v2` for a protocol-v2-only proxy with typed callbacks and
     /// wire validation. Protocol-routing infrastructure that deliberately
-    /// selects a version itself can disable the guard with
-    /// `Builder::without_acp_version_guard`.
+    /// selects a version itself can use the unguarded
+    /// `Builder::new(Proxy)`.
     ///
     /// Typed handlers on this builder receive [`V1`](crate::V1) request
     /// handles.
     pub fn v1(self) -> crate::v1::Builder<Proxy> {
-        Builder::new(self).into_protocol()
+        Builder::new(self).v1_proxy()
     }
 
     /// Create a proxy builder that uses the ACP protocol v2 API.

@@ -1,10 +1,9 @@
 //! Native draft protocol v2 support for Testy.
 
 use super::{TestyCommand, TestyScenario, parse_command};
-use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema as acp};
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, RequestCancellation,
-    schema::{ProtocolVersion, v2 as acp},
+    Agent, Client, ConnectTo, RequestCancellation, schema::ProtocolVersion,
 };
 use std::{
     collections::{HashMap, VecDeque},

@@ -623,30 +623,50 @@ async fn v1_entry_point_agent_negotiates_v1_for_v2_client() -> Result<(), Error>
     assert_v2_client_rejects_v1_selection(agent).await
 }
 
+/// `Builder::new` is version-neutral: unlike `Agent.v1()`, it does not
+/// negotiate a v2 client's `initialize` down to v1.
 #[tokio::test(flavor = "current_thread")]
-async fn builder_new_v1_agent_negotiates_v1_for_v2_client() -> Result<(), Error> {
+async fn builder_new_agent_applies_no_version_guard() -> Result<(), Error> {
     let agent = Builder::new(Agent).on_receive_request(
-        async |initialize: v1::InitializeRequest, responder, _cx| {
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
         },
         agent_client_protocol::on_receive_request!(),
     );
 
-    assert_v2_client_rejects_v1_selection(agent).await
+    assert_v2_client_initializes(agent).await
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn builder_new_with_v1_agent_negotiates_v1_for_v2_client() -> Result<(), Error> {
+async fn builder_new_with_agent_applies_no_version_guard() -> Result<(), Error> {
     let agent = Builder::new_with(Agent, NullHandler).on_receive_request(
-        async |initialize: v1::InitializeRequest, responder, _cx| {
-            assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
-            responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
         },
         agent_client_protocol::on_receive_request!(),
     );
 
-    assert_v2_client_rejects_v1_selection(agent).await
+    assert_v2_client_initializes(agent).await
+}
+
+async fn assert_v2_client_initializes(agent: impl ConnectTo<Client>) -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(agent, async |cx| {
+            let response = cx
+                .send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+            assert_eq!(response.protocol_version, ProtocolVersion::V2);
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1197,17 +1217,15 @@ async fn v2_client_and_agent_negotiate_v2() -> Result<(), Error> {
 async fn v2_client_does_not_send_session_requests_before_initialization() -> Result<(), Error> {
     let handler_ran = Arc::new(AtomicBool::new(false));
     let handler_flag = Arc::clone(&handler_ran);
-    let agent = Builder::new(Agent)
-        .without_acp_version_guard()
-        .on_receive_request(
-            async move |_request: v2::NewSessionRequest, responder, _cx| {
-                handler_flag.store(true, Ordering::SeqCst);
-                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
-                    "unexpected-session",
-                )))
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
+    let agent = Builder::new(Agent).on_receive_request(
+        async move |_request: v2::NewSessionRequest, responder, _cx| {
+            handler_flag.store(true, Ordering::SeqCst);
+            responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                "unexpected-session",
+            )))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
 
     Client
         .v2()
@@ -1246,7 +1264,6 @@ async fn v2_agent_rejects_session_requests_before_initialization() -> Result<(),
     );
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
                 .send_request(v2::NewSessionRequest::new(cwd()?))
@@ -1295,7 +1312,6 @@ async fn v2_agent_accepts_repeated_initialize_until_another_request() -> Result<
         );
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             for name in ["first", "second"] {
                 cx.send_request(v2::InitializeRequest::new(
@@ -1657,22 +1673,20 @@ async fn protocol_router_ignores_unparsable_newer_initialize_params() -> Result<
 async fn v2_client_can_retry_after_malformed_initialize_success() -> Result<(), Error> {
     let initialize_count = Arc::new(AtomicUsize::new(0));
     let initialize_counter = Arc::clone(&initialize_count);
-    let agent = Builder::new(Agent)
-        .without_acp_version_guard()
-        .on_receive_request(
-            async move |_initialize: RawInitializeRequest, responder, _cx| {
-                if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
-                    responder.respond(serde_json::json!({
-                        "protocolVersion": ProtocolVersion::V2,
-                    }))
-                } else {
-                    responder.respond(json_value(v2_initialize_response_with_session(
-                        ProtocolVersion::V2,
-                    ))?)
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
+    let agent = Builder::new(Agent).on_receive_request(
+        async move |_initialize: RawInitializeRequest, responder, _cx| {
+            if initialize_counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                responder.respond(serde_json::json!({
+                    "protocolVersion": ProtocolVersion::V2,
+                }))
+            } else {
+                responder.respond(json_value(v2_initialize_response_with_session(
+                    ProtocolVersion::V2,
+                ))?)
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
 
     Client
         .v2()
@@ -1723,7 +1737,6 @@ async fn v2_agent_can_retry_after_malformed_initialize_success() -> Result<(), E
     );
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
                 .send_request(v2_initialize_request(ProtocolVersion::V2))
@@ -1771,7 +1784,6 @@ async fn v2_agent_can_retry_after_initialize_responder_is_dropped() -> Result<()
     );
 
     Builder::new(Client)
-        .without_acp_version_guard()
         .connect_with(agent, async |cx| {
             let error = cx
                 .send_request(v2_initialize_request(ProtocolVersion::V2))
@@ -3111,31 +3123,29 @@ async fn v1_responder_keeps_null_request_ids() -> Result<(), Error> {
 #[tokio::test(flavor = "current_thread")]
 async fn raw_responders_convert_to_v2_responders_unless_the_id_is_null() -> Result<(), Error> {
     let converted = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let agent = Builder::new(Agent)
-        .without_acp_version_guard()
-        .on_receive_request(
-            {
-                let converted = converted.clone();
-                async move |_request: UntypedMessage,
-                            responder: agent_client_protocol::Responder<Value>,
-                            _cx| {
-                    let raw_id: RawJsonRpcId = responder.id().clone();
-                    let result =
-                        responder
-                            .into_protocol::<agent_client_protocol::V2>()
-                            .map(|responder| {
-                                let v2_id = responder.id().clone();
-                                responder.respond(json!({})).map(|()| v2_id)
-                            });
-                    converted
-                        .lock()
-                        .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
-                        .push((raw_id, result.map(Result::ok).map_err(|e| e.code)));
-                    Ok(())
-                }
-            },
-            agent_client_protocol::on_receive_request!(),
-        );
+    let agent = Builder::new(Agent).on_receive_request(
+        {
+            let converted = converted.clone();
+            async move |_request: UntypedMessage,
+                        responder: agent_client_protocol::Responder<Value>,
+                        _cx| {
+                let raw_id: RawJsonRpcId = responder.id().clone();
+                let result =
+                    responder
+                        .into_protocol::<agent_client_protocol::V2>()
+                        .map(|responder| {
+                            let v2_id = responder.id().clone();
+                            responder.respond(json!({})).map(|()| v2_id)
+                        });
+                converted
+                    .lock()
+                    .map_err(|_| Error::internal_error().data("converted lock poisoned"))?
+                    .push((raw_id, result.map(Result::ok).map_err(|e| e.code)));
+                Ok(())
+            }
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
     let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
     let task = tokio::spawn(driver.expect("agent owns a connection driver"));
 

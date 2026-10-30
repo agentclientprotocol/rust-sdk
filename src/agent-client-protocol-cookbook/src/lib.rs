@@ -156,23 +156,23 @@ pub mod v2_one_shot_prompt {
     //! ```
     //! use std::collections::HashMap;
     //! use agent_client_protocol::{Agent, Client, ConnectTo, Error};
-    //! use agent_client_protocol::v2::{ConnectionTo, Responder};
-    //! use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion, v2};
+    //! use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
+    //! use agent_client_protocol::schema::{MaybeUndefined, ProtocolVersion};
     //! use futures::{StreamExt, channel::mpsc};
     //!
     //! #[derive(Default)]
     //! struct AgentTextProjection {
-    //!     order: Vec<v2::MessageId>,
-    //!     messages: HashMap<v2::MessageId, Vec<v2::ContentBlock>>,
+    //!     order: Vec<schema::MessageId>,
+    //!     messages: HashMap<schema::MessageId, Vec<schema::ContentBlock>>,
     //! }
     //!
     //! impl AgentTextProjection {
-    //!     fn apply(&mut self, update: v2::SessionUpdate) {
+    //!     fn apply(&mut self, update: schema::SessionUpdate) {
     //!         match update {
-    //!             v2::SessionUpdate::AgentMessageChunk(chunk) => {
+    //!             schema::SessionUpdate::AgentMessageChunk(chunk) => {
     //!                 self.message_content(chunk.message_id).push(chunk.content);
     //!             }
-    //!             v2::SessionUpdate::AgentMessage(message) => {
+    //!             schema::SessionUpdate::AgentMessage(message) => {
     //!                 let content = self.message_content(message.message_id);
     //!                 match message.content {
     //!                     // Snapshots patch chunks accumulated for the same message ID.
@@ -187,8 +187,8 @@ pub mod v2_one_shot_prompt {
     //!
     //!     fn message_content(
     //!         &mut self,
-    //!         message_id: v2::MessageId,
-    //!     ) -> &mut Vec<v2::ContentBlock> {
+    //!         message_id: schema::MessageId,
+    //!     ) -> &mut Vec<schema::ContentBlock> {
     //!         if !self.messages.contains_key(&message_id) {
     //!             self.order.push(message_id.clone());
     //!         }
@@ -201,7 +201,7 @@ pub mod v2_one_shot_prompt {
     //!             .filter_map(|message_id| self.messages.get(message_id))
     //!             .flatten()
     //!             .filter_map(|content| match content {
-    //!                 v2::ContentBlock::Text(text) => Some(text.text.as_str()),
+    //!                 schema::ContentBlock::Text(text) => Some(text.text.as_str()),
     //!                 _ => None,
     //!             })
     //!             .collect()
@@ -216,7 +216,7 @@ pub mod v2_one_shot_prompt {
     //!
     //!     Client.v2()
     //!         .on_receive_notification(
-    //!             async move |update: v2::UpdateSessionNotification,
+    //!             async move |update: schema::UpdateSessionNotification,
     //!                         _connection: ConnectionTo<Agent>| {
     //!                 update_tx
     //!                     .unbounded_send(update)
@@ -225,35 +225,35 @@ pub mod v2_one_shot_prompt {
     //!             agent_client_protocol::on_receive_notification!(),
     //!         )
     //!         .on_receive_request(
-    //!             async move |request: v2::RequestPermissionRequest,
-    //!                         responder: Responder<v2::RequestPermissionResponse>,
+    //!             async move |request: schema::RequestPermissionRequest,
+    //!                         responder: Responder<schema::RequestPermissionResponse>,
     //!                         connection: ConnectionTo<Agent>| {
     //!                 // This non-interactive recipe rejects permission requests.
     //!                 let reject_once = request
     //!                     .options
     //!                     .iter()
-    //!                     .find(|option| option.kind == v2::PermissionOptionKind::RejectOnce);
+    //!                     .find(|option| option.kind == schema::PermissionOptionKind::RejectOnce);
     //!                 let outcome = match reject_once {
-    //!                     Some(option) => v2::RequestPermissionOutcome::Selected(
-    //!                         v2::SelectedPermissionOutcome::new(option.option_id.clone()),
+    //!                     Some(option) => schema::RequestPermissionOutcome::Selected(
+    //!                         schema::SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                     ),
     //!                     // `cancelled` is only valid after cancelling the work.
     //!                     None => {
-    //!                         connection.send_notification(v2::CancelSessionNotification::new(
+    //!                         connection.send_notification(schema::CancelSessionNotification::new(
     //!                             request.session_id.clone(),
     //!                         ))?;
-    //!                         v2::CancelledPermissionOutcome::new().into()
+    //!                         schema::CancelledPermissionOutcome::new().into()
     //!                     }
     //!                 };
-    //!                 responder.respond(v2::RequestPermissionResponse::new(outcome))
+    //!                 responder.respond(schema::RequestPermissionResponse::new(outcome))
     //!             },
     //!             agent_client_protocol::on_receive_request!(),
     //!         )
     //!         .connect_with(transport, async move |connection| {
     //!             let initialized = connection
-    //!                 .send_request(v2::InitializeRequest::new(
+    //!                 .send_request(schema::InitializeRequest::new(
     //!                     ProtocolVersion::V2,
-    //!                     v2::Implementation::new("example-client", "0.1.0"),
+    //!                     schema::Implementation::new("example-client", "0.1.0"),
     //!                 ))
     //!                 .block_task()
     //!                 .await?;
@@ -279,7 +279,7 @@ pub mod v2_one_shot_prompt {
     //!                     continue;
     //!                 }
     //!                 match notification.update {
-    //!                     v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_)) => {
+    //!                     schema::SessionUpdate::StateUpdate(schema::StateUpdate::Idle(_)) => {
     //!                         if observed_active {
     //!                             session.close().block_task().await?;
     //!                             return Ok(projection.text());
@@ -287,7 +287,7 @@ pub mod v2_one_shot_prompt {
     //!                     }
     //!                     // Running, requires_action, and unrecognized states all
     //!                     // mean foreground work is active, never idle.
-    //!                     v2::SessionUpdate::StateUpdate(_) => observed_active = true,
+    //!                     schema::SessionUpdate::StateUpdate(_) => observed_active = true,
     //!                     update if observed_active => projection.apply(update),
     //!                     _ => {}
     //!                 }

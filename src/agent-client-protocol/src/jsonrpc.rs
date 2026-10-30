@@ -52,6 +52,8 @@ use crate::jsonrpc::protocol::HandleId;
 #[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol::V2;
 
+#[cfg(any(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+use crate::Client;
 pub use crate::jsonrpc::protocol::{Protocol, Raw, V1};
 #[cfg(feature = "unstable_protocol_v2")]
 pub(crate) use crate::jsonrpc::protocol_compat::normalize_newer_v2_initialize_request;
@@ -76,7 +78,7 @@ use crate::jsonrpc::termination::{
 use crate::mcp_server::McpServer;
 use crate::role::HasPeer;
 use crate::role::Role;
-use crate::{Agent, Client, ConnectTo, Proxy, RoleId};
+use crate::{Agent, ConnectTo, RoleId};
 
 /// One valid JSON-RPC message carried inside a [`TransportFrame`].
 ///
@@ -838,9 +840,8 @@ where
 /// receive and of the connection type callbacks receive. `Client.v1()`,
 /// `Agent.v1()` and `Proxy.v1()` return [`V1`] builders
 /// ([`v1::Builder`](crate::v1::Builder)), the v2 builders use `V2`
-/// (`v2::Builder`), and [`Builder::new`], other roles and
-/// [`without_acp_version_guard`](Builder::without_acp_version_guard) use the
-/// version-neutral default, [`Raw`].
+/// (`v2::Builder`), and [`Builder::new`] and other roles' builders use the
+/// version-neutral default, [`Raw`], with no protocol-version guard.
 #[must_use]
 #[derive(Debug)]
 pub struct Builder<Host: Role, Handler = NullHandler, Runner = NullRun, Close = NullClose, P = Raw>
@@ -873,31 +874,29 @@ where
     protocol: PhantomData<fn() -> P>,
 }
 
-fn default_protocol_mode<Host: Role>() -> ProtocolMode {
-    let role = TypeId::of::<Host>();
-
-    if role == TypeId::of::<Agent>() {
-        ProtocolMode::v1_agent()
-    } else if role == TypeId::of::<Client>() {
-        ProtocolMode::v1_client()
-    } else if role == TypeId::of::<Proxy>() {
-        ProtocolMode::v1_proxy()
-    } else {
-        ProtocolMode::disabled()
-    }
-}
-
 impl<Host: Role> Builder<Host, NullHandler, NullRun, NullClose> {
-    /// Create a new connection builder for the given role.
+    /// Create a new version-neutral connection builder for the given role.
     /// This type follows a builder pattern; use other methods to configure and then invoke
     /// [`Self::connect_to`] (to use as a server) or [`Self::connect_with`] to use as a client.
+    ///
+    /// The builder is raw: it applies no ACP protocol-version guard, even for
+    /// [`Client`](crate::Client), [`Agent`] and [`Proxy`](crate::Proxy), and
+    /// its callbacks receive [`Raw`] request handles. Messages are sent and received exactly as
+    /// handlers produce them. This suits protocol-routing infrastructure that
+    /// validates `initialize` itself and forwarders such as the conductor,
+    /// which leave version validation to the endpoints.
+    ///
+    /// Applications should use [`Client.v1()`](crate::Client::v1),
+    /// [`Agent.v1()`](crate::Agent::v1) or [`Proxy.v1()`](crate::Proxy::v1)
+    /// (or the `v2()` entry points with the `unstable_protocol_v2` feature),
+    /// which apply that version's wire guard.
     pub fn new(role: Host) -> Self {
         Self {
             host: role,
             name: None,
             handler: NullHandler,
             runner: NullRun,
-            protocol_mode: default_protocol_mode::<Host>(),
+            protocol_mode: ProtocolMode::disabled(),
             on_close: NullClose,
             protocol: PhantomData,
         }
@@ -909,68 +908,18 @@ where
     Handler: HandleDispatchFrom<Host::Counterpart>,
 {
     /// Create a new connection builder with the given handler.
+    ///
+    /// Like [`Builder::new`], the builder applies no protocol-version guard.
     pub fn new_with(role: Host, handler: Handler) -> Self {
         Self {
             host: role,
             name: None,
             handler,
             runner: NullRun,
-            protocol_mode: default_protocol_mode::<Host>(),
+            protocol_mode: ProtocolMode::disabled(),
             on_close: NullClose,
             protocol: PhantomData,
         }
-    }
-}
-
-impl<
-    Host: Role,
-    Handler: HandleDispatchFrom<Host::Counterpart>,
-    Runner: RunWithConnectionTo<Host::Counterpart>,
-    Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close, Raw>
-{
-    /// Disable all automatic ACP protocol-version tracking and validation.
-    ///
-    /// This is a low-level escape hatch for protocol-routing infrastructure
-    /// that inspects and validates raw initialize requests and responses
-    /// itself before selecting a version-specific implementation, and for
-    /// version-agnostic forwarders such as the conductor, which leave version
-    /// validation to the endpoints. It also disables the version checks
-    /// applied to messages after initialization.
-    ///
-    /// This method is deliberately available only on [`Raw`] and [`V1`]
-    /// builders, whose callbacks receive raw [`ConnectionTo`] values. It
-    /// returns a [`Raw`] builder: handlers registered afterwards receive
-    /// version-neutral request handles. Applications should normally use
-    /// [`Client::v1`](crate::Client::v1),
-    /// [`Agent::v1`](crate::Agent::v1),
-    /// [`Proxy::v1`](crate::Proxy::v1), or, with the
-    /// `unstable_protocol_v2` feature, `Client::v2`, `Agent::v2`, or
-    /// `Proxy::v2` instead.
-    ///
-    /// ```compile_fail
-    /// # use agent_client_protocol::Client;
-    /// let _ = Client.v2().without_acp_version_guard();
-    /// ```
-    pub fn without_acp_version_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::disabled();
-        self
-    }
-}
-
-impl<
-    Host: Role,
-    Handler: HandleDispatchFrom<Host::Counterpart>,
-    Runner: RunWithConnectionTo<Host::Counterpart>,
-    Close: HandleConnectionClose<Host::Counterpart>,
-> Builder<Host, Handler, Runner, Close, V1>
-{
-    /// Disable all automatic ACP protocol-version tracking and validation,
-    /// and return a [`Raw`] builder.
-    ///
-    /// See [`Builder::without_acp_version_guard`] on [`Raw`] builders.
-    pub fn without_acp_version_guard(self) -> Builder<Host, Handler, Runner, Close, Raw> {
-        self.into_protocol::<Raw>().without_acp_version_guard()
     }
 }
 
@@ -987,8 +936,8 @@ impl<
     /// This is intended for protocol-routing infrastructure that has already
     /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
     /// and [`Raw`] request handles in its callbacks. The guarded child must still send and receive the `initialize` round trip. A router that
-    /// consumes initialization itself must use
-    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// consumes initialization itself must use an unguarded
+    /// [`Builder::new`] for the selected child. Most
     /// code should use [`Client::v2`](crate::Client::v2), which also exposes
     /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
     ///
@@ -1030,8 +979,8 @@ impl<
     /// This is intended for protocol-routing infrastructure that has already
     /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
     /// and [`Raw`] request handles in its callbacks. The guarded child must still receive and answer the `initialize` request. A router that
-    /// consumes initialization itself must use
-    /// [`Builder::without_acp_version_guard`] for the selected child. Most
+    /// consumes initialization itself must use an unguarded
+    /// [`Builder::new`] for the selected child. Most
     /// code should use [`Agent::v2`](crate::Agent::v2), which also exposes
     /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
     ///
@@ -1109,9 +1058,22 @@ impl<
         builder
     }
 
-    pub(crate) fn v1_agent(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v1_agent();
-        self
+    pub(crate) fn v1_agent(self) -> Builder<Host, Handler, Runner, Close, V1> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v1_agent();
+        builder
+    }
+
+    pub(crate) fn v1_client(self) -> Builder<Host, Handler, Runner, Close, V1> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v1_client();
+        builder
+    }
+
+    pub(crate) fn v1_proxy(self) -> Builder<Host, Handler, Runner, Close, V1> {
+        let mut builder = self.into_protocol();
+        builder.protocol_mode = ProtocolMode::v1_proxy();
+        builder
     }
 
     /// Record a request handler of type `Req`.
@@ -1130,11 +1092,6 @@ impl<
         {
             self.protocol_mode = self.protocol_mode.require_initialize();
         }
-        self
-    }
-
-    pub(crate) fn v1_client(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v1_client();
         self
     }
 
@@ -7524,6 +7481,9 @@ impl<R: Role> ConnectTo<R> for Channel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Client;
+    #[cfg(feature = "unstable_protocol_v2")]
+    use crate::Proxy;
 
     #[test]
     fn protected_cleanup_keeps_scoped_runners_polled_on_every_shutdown_path() {
