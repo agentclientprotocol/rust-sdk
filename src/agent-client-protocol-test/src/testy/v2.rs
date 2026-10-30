@@ -681,11 +681,15 @@ impl ConnectTo<Client> for V2Testy {
     }
 }
 
+/// Clients must not send an empty prompt, and Testy rejects one with `-32602`.
 /// Testy advertises no prompt capabilities, so only the baseline `text` and `resource_link`
 /// blocks are supported. v2 Agents must reject any other block with `-32602`.
 fn validate_prompt_content(
     blocks: &[acp::ContentBlock],
 ) -> Result<(), agent_client_protocol::Error> {
+    if blocks.is_empty() {
+        return Err(invalid_params("prompt must not be empty"));
+    }
     for block in blocks {
         match block {
             acp::ContentBlock::Text(_) | acp::ContentBlock::ResourceLink(_) => {}
