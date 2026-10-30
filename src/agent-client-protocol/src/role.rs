@@ -223,7 +223,7 @@ where
                 "handle_incoming_dispatch: Successor style, unwrapping SuccessorMessage"
             );
 
-            // The outer message has method="_proxy/successor" and params containing the inner message.
+            // The outer message has method="proxy/successor" and params containing the inner message.
             // We need to deserialize the params (not the whole message) to extract the inner UntypedMessage.
             let untyped_message = dispatch.message().ok_or_else(|| {
                 crate::util::internal_error(

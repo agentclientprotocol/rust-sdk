@@ -1351,7 +1351,7 @@ async fn mcp_request_cancellation_crosses_proxy_and_tears_down_backend() -> Resu
     Ok(())
 }
 
-/// `initialize` is rewritten to `_proxy/initialize` at the conductor-to-proxy
+/// `initialize` is rewritten to `proxy/initialize` at the conductor-to-proxy
 /// hop and forwarded with a result hook — cancellation must still propagate
 /// hop by hop, exactly like every other request.
 #[tokio::test]
@@ -1400,7 +1400,7 @@ async fn initialize_cancellation_propagates_through_proxy() -> Result<(), Error>
     let (conductor_write, editor_read) = duplex(8192);
 
     // The passthrough proxy is what exercises the conductor's
-    // `initialize` -> `_proxy/initialize` rewriting hop.
+    // `initialize` -> `proxy/initialize` rewriting hop.
     let conductor_handle = tokio::spawn(async move {
         ConductorImpl::new_agent(
             "cancellation-conductor".to_string(),

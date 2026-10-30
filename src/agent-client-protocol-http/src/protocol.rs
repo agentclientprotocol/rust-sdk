@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn successor_wrapped_cancel_request_ignores_session_header() {
         let mut message = RawJsonRpcMessage::notification(
-            "_proxy/successor".to_string(),
+            "proxy/successor".to_string(),
             json!({
                 "method": "$/cancel_request",
                 "params": { "requestId": 1 }

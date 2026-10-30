@@ -48,8 +48,8 @@ precedence. Enabling the local Cargo feature does not advertise peer support.
 
 | Method | JSON-RPC shape | Purpose |
 | --- | --- | --- |
-| `_proxy/initialize` | request | Initialize a component as a proxy |
-| `_proxy/successor` | request or notification | Forward one inner ACP message to the next component |
+| `proxy/initialize` | request | Initialize a component as a proxy |
+| `proxy/successor` | request or notification | Forward one inner ACP message to the next component |
 | `mcp/message` | request or notification | Invoke one MCP operation or carry its notification |
 
 There are no separate request and notification method names for successor or
@@ -71,11 +71,15 @@ representation. Other protocols should construct `RawJsonRpcResponse` directly.
 
 ## Proxy Initialization
 
-The conductor sends `_proxy/initialize` to a component that has a successor.
+> Earlier SDK releases used `_proxy/initialize` and `_proxy/successor`. See
+> [Migrating Proxy Method Names](./migration-proxy-methods.md); conductors and
+> proxies must be upgraded together.
+
+The conductor sends `proxy/initialize` to a component that has a successor.
 Its parameters are the same fields as the normal `InitializeRequest` for the
 selected ACP version. Receiving this method, rather than `initialize`, tells the
 component that it is running as a proxy and may forward messages with
-`_proxy/successor`.
+`proxy/successor`.
 
 The response is the matching version's normal `InitializeResponse` result. The
 stable flat `schema::InitializeProxyRequest` type uses v1; with
@@ -85,14 +89,14 @@ method and does not need to understand the proxy extension.
 
 ## Successor Forwarding
 
-`_proxy/successor` wraps one inner ACP method and its parameters. The inner
+`proxy/successor` wraps one inner ACP method and its parameters. The inner
 message is flattened into the outer parameters:
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 12,
-  "method": "_proxy/successor",
+  "method": "proxy/successor",
   "params": {
     "method": "session/prompt",
     "params": {

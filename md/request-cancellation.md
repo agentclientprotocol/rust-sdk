@@ -129,7 +129,7 @@ See the `concepts::cancellation` chapter in the
 the full decision matrix.
 
 When the notification targets a request that was wrapped in a
-`_proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
+`proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
 `$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
 the JSON-RPC `id` of the wrapped request on that connection.
 
@@ -140,5 +140,5 @@ next hop's request ID instead.
 
 ## Related Documentation
 
-- [Protocol Reference](./protocol.md) - The `_proxy/successor` envelope protocol
+- [Protocol Reference](./protocol.md) - The `proxy/successor` envelope protocol
 - [agent-client-protocol rustdoc](https://docs.rs/agent-client-protocol) - SDK API for sending, observing, and forwarding cancellations (see `concepts::cancellation`)

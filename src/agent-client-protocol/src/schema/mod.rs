@@ -328,12 +328,12 @@ pub mod v2 {
 
     /// Initialize request for a protocol-v2 proxy component.
     ///
-    /// This uses the same `_proxy/initialize` extension method as the stable
+    /// This uses the same `proxy/initialize` method as the stable
     /// [`super::InitializeProxyRequest`], but preserves the v2 initialize
     /// request and response schemas.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
     #[request(
-        method = "_proxy/initialize",
+        method = "proxy/initialize",
         response = InitializeResponse,
         crate = crate
     )]

@@ -63,7 +63,7 @@ fn successor_message_meta_serializes_as_reserved_meta_field()
 
     let untyped = message.to_untyped_message()?;
 
-    assert_eq!(untyped.method(), "_proxy/successor");
+    assert_eq!(untyped.method(), "proxy/successor");
     assert_eq!(untyped.params()["_meta"], envelope_meta);
     assert_eq!(
         untyped.params()["params"]["_meta"],
@@ -95,7 +95,7 @@ fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_prot
         .expect("successor metadata should be present");
     params_object.insert("meta".into(), meta);
 
-    let parsed = SuccessorMessage::<PromptRequest>::parse_message("_proxy/successor", &params)?;
+    let parsed = SuccessorMessage::<PromptRequest>::parse_message("proxy/successor", &params)?;
     assert_eq!(parsed.meta, Some(envelope_meta));
 
     Ok(())

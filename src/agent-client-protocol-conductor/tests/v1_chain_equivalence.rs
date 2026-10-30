@@ -166,7 +166,7 @@ fn assert_session_forwarded_unchanged(run: &ChainRun) {
 }
 
 /// A v1 `initialize` reaches the agent through a v1 proxy unchanged: the
-/// conductor renames it to `_proxy/initialize` for the proxy without touching
+/// conductor renames it to `proxy/initialize` for the proxy without touching
 /// its params, so unknown fields survive in both directions.
 #[tokio::test(flavor = "current_thread")]
 async fn v1_chain_forwards_initialize_unchanged() {
@@ -183,7 +183,7 @@ async fn v1_chain_forwards_initialize_unchanged() {
     assert_eq!(
         run.received[0],
         ("initialize".to_string(), initialize),
-        "unknown initialize fields survive the rewrite to `_proxy/initialize`"
+        "unknown initialize fields survive the rewrite to `proxy/initialize`"
     );
     assert_session_forwarded_unchanged(&run);
 }

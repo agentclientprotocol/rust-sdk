@@ -314,7 +314,7 @@ async fn run_bad_proxy_test(
 
 fn assert_initialize_proxy_rejection(error: &agent_client_protocol::Error) {
     // A v1 chain behaves the same with or without `unstable_protocol_v2`.
-    let expected = "_proxy/initialize";
+    let expected = "proxy/initialize";
 
     assert!(
         error.to_string().contains(expected),

@@ -11,11 +11,11 @@ use serde::{Deserialize, Serialize};
 // =============================================================================
 
 /// JSON-RPC method name for successor forwarding.
-pub const METHOD_SUCCESSOR_MESSAGE: &str = "_proxy/successor";
+pub const METHOD_SUCCESSOR_MESSAGE: &str = "proxy/successor";
 
 /// A message being sent to the successor component.
 ///
-/// Used in `_proxy/successor` when the proxy wants to forward a message downstream.
+/// Used in `proxy/successor` when the proxy wants to forward a message downstream.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SuccessorMessage<M: JsonRpcMessage = UntypedMessage> {
     /// The message to be sent to the successor component.
@@ -77,7 +77,7 @@ impl<Notif: JsonRpcNotification> JsonRpcNotification for SuccessorMessage<Notif>
 // =============================================================================
 
 /// JSON-RPC method name for proxy initialization.
-pub const METHOD_INITIALIZE_PROXY: &str = "_proxy/initialize";
+pub const METHOD_INITIALIZE_PROXY: &str = "proxy/initialize";
 
 /// Initialize request for proxy components.
 ///
@@ -85,7 +85,7 @@ pub const METHOD_INITIALIZE_PROXY: &str = "_proxy/initialize";
 /// Components that receive this (instead of `InitializeRequest`) know they
 /// are operating as a proxy and should forward messages to their successor.
 #[derive(Debug, Clone, Serialize, Deserialize, crate::JsonRpcRequest)]
-#[request(method = "_proxy/initialize", response = InitializeResponse, crate = crate)]
+#[request(method = "proxy/initialize", response = InitializeResponse, crate = crate)]
 pub struct InitializeProxyRequest {
     /// The underlying initialize request data.
     #[serde(flatten)]

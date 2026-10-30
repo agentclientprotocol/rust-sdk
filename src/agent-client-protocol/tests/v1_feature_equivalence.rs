@@ -63,7 +63,7 @@ impl WirePeer {
     }
 }
 
-/// A stable v1 proxy's default forwarding: `_proxy/initialize` and
+/// A stable v1 proxy's default forwarding: `proxy/initialize` and
 /// `session/new` are forwarded untyped, so fields the SDK does not know
 /// survive in both directions, and session notifications for the new session
 /// are routed back to the client.
@@ -75,17 +75,17 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     let mut initialize_params = serde_json::to_value(InitializeProxyRequest::from(
         v1::InitializeRequest::new(ProtocolVersion::V1),
     ))
-    .expect("serialize _proxy/initialize");
+    .expect("serialize proxy/initialize");
     initialize_params["_unknownRequestField"] = json!("kept by untyped forwarding");
     conductor.send(&json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "_proxy/initialize",
+        "method": "proxy/initialize",
         "params": initialize_params,
     }));
 
     let forwarded = conductor.recv().await;
-    assert_eq!(forwarded["method"], "_proxy/successor");
+    assert_eq!(forwarded["method"], "proxy/successor");
     assert_eq!(forwarded["params"]["method"], "initialize");
     let forwarded_initialize = &forwarded["params"]["params"];
     assert_eq!(
@@ -121,7 +121,7 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
         "params": new_session_params,
     }));
     let forwarded = conductor.recv().await;
-    assert_eq!(forwarded["method"], "_proxy/successor");
+    assert_eq!(forwarded["method"], "proxy/successor");
     assert_eq!(forwarded["params"]["method"], "session/new");
     assert_eq!(
         forwarded["params"]["params"], new_session_params,
@@ -154,7 +154,7 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     });
     conductor.send(&json!({
         "jsonrpc": "2.0",
-        "method": "_proxy/successor",
+        "method": "proxy/successor",
         "params": { "method": "session/update", "params": update },
     }));
     let routed = conductor.recv().await;

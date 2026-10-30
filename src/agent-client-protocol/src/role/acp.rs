@@ -615,7 +615,7 @@ fn select_agent_protocol(
 }
 
 /// The requested protocol version of an `initialize` (or, for a proxy,
-/// `_proxy/initialize`) request, if it has a valid one.
+/// `proxy/initialize`) request, if it has a valid one.
 #[cfg(feature = "unstable_protocol_v2")]
 fn requested_initialize_version(
     message: &RawJsonRpcMessage,
@@ -1520,7 +1520,7 @@ impl Proxy {
 
     /// Create a proxy builder that uses the ACP protocol v2 API.
     ///
-    /// This builder requires `_proxy/initialize` to select protocol v2.
+    /// This builder requires `proxy/initialize` to select protocol v2.
     /// Fluent callbacks receive [`crate::V2ConnectionTo<Conductor>`], while
     /// low-level custom handlers and runners retain the protocol-neutral
     /// [`ConnectionTo`] interface.
@@ -1535,7 +1535,7 @@ impl Proxy {
     ///
     /// Add implementations with [`ProxyProtocolRouter::with_v1`] and
     /// [`ProxyProtocolRouter::with_v2`]. The router reads the initial
-    /// `_proxy/initialize` request, selects the implementation for that exact
+    /// `proxy/initialize` request, selects the implementation for that exact
     /// protocol version, and hands over the complete initial transport frame.
     /// With a v1 implementation configured, anything other than a request for
     /// exactly v2 is handed unchanged to the v1 implementation, so a v1
@@ -1557,7 +1557,7 @@ impl Proxy {
 /// draft-v2 proxy implementations independently. Unlike
 /// [`AgentProtocolRouter`], this router requires an exact version match: the
 /// conductor has already selected and canonicalized the wire protocol before
-/// sending `_proxy/initialize` to a proxy.
+/// sending `proxy/initialize` to a proxy.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
 pub struct ProxyProtocolRouter {
@@ -1653,12 +1653,12 @@ fn select_proxy_protocol(
 ) -> Result<SelectedProtocol, crate::Error> {
     let RawJsonRpcMessage::Request(request) = message else {
         return Err(crate::Error::invalid_request()
-            .data("first ACP proxy message must be an `_proxy/initialize` request"));
+            .data("first ACP proxy message must be an `proxy/initialize` request"));
     };
 
     if request.method.as_ref() != METHOD_INITIALIZE_PROXY {
         return Err(crate::Error::invalid_request()
-            .data("first ACP proxy request must be `_proxy/initialize`"));
+            .data("first ACP proxy request must be `proxy/initialize`"));
     }
 
     let Some(RawJsonRpcParams::Object(params)) = &request.params else {
@@ -1722,7 +1722,7 @@ impl Role for Conductor {
 
 /// Default forwarding for a proxy.
 ///
-/// `_proxy/initialize` has the same wire shape in every protocol version, so
+/// `proxy/initialize` has the same wire shape in every protocol version, so
 /// one untyped path serves v1 and v2 proxies alike. Messages are forwarded
 /// without being parsed and re-serialized, so fields this SDK does not know
 /// survive. The connection's protocol guard, if any, has already validated
