@@ -142,7 +142,7 @@
 //! ```ignore
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
 //! # use agent_client_protocol::mcp_server::McpServer;
-//! # use agent_client_protocol_rmcp::McpServerExt;
+//! # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # let my_mcp_server = McpServer::<Agent, _>::builder("tools").build();
 //! # Client.v1().connect_with(transport, async |cx| {

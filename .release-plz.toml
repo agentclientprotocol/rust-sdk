@@ -32,9 +32,10 @@ version_group = "acp"
 
 # This crate publicly exposes ACP types, so every major ACP release already
 # forces a major release here. Versioning it separately from the other ACP
-# crates only confused users, so keep it in the `acp` version group. When an
-# rmcp upgrade requires a major bump of this crate, ship it alongside other
-# ACP changes in a coordinated major release.
+# crates only confused users, so keep it in the `acp` version group. Each
+# supported rmcp major version has its own feature and module (`rmcp_3`), so a
+# new rmcp major version arrives as a new feature in a minor release. Only
+# dropping an rmcp major version is breaking; ship it in an ACP major release.
 [[package]]
 name = "agent-client-protocol-rmcp"
 version_group = "acp"

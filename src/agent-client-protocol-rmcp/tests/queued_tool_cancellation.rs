@@ -1,12 +1,14 @@
 //! Cancellation of real mutable function tools shared by native providers.
-#![cfg(feature = "unstable_mcp_over_acp")]
+#![cfg(all(feature = "rmcp_3", feature = "unstable_mcp_over_acp"))]
 
 use agent_client_protocol::{
     Agent, Channel, Client, Error, RawJsonRpcMessage, RunWithConnectionTo, TransportFrame,
     mcp_server::{McpConnectionTo, McpServer, McpTool, tool_fn_mut},
 };
-use agent_client_protocol_rmcp::McpServerExt;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 use futures::{StreamExt, channel::mpsc, future::poll_fn};
+extern crate rmcp_3 as rmcp;
+
 use rmcp::{
     ErrorData, ServerHandler,
     model::{ServerCapabilities, ServerConfig, SubscriptionFilter},

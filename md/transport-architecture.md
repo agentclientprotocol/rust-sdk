@@ -331,8 +331,8 @@ the target does not imply a JavaScript host, other OS-less WebAssembly hosts
 must arrange a compatible UUID randomness backend instead. This crate does not
 provide a WebAssembly executor or host I/O adapter.
 
-The rmcp integration library also compiles for WASI with its default features
-or MCP-over-ACP features. It uses Tokio's async I/O utilities and
+The rmcp integration library also compiles for WASI with its `rmcp_3` feature,
+alone or with its MCP-over-ACP features. It uses Tokio's async I/O utilities and
 single-thread-capable runtime without requiring native stdio or a multithreaded
 executor. Embedders still provide their runtime and host transport. See
 [Cargo Features](./features.md) for configuration and migration examples.

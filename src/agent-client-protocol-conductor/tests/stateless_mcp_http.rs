@@ -23,7 +23,7 @@ use agent_client_protocol::{
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;
-use agent_client_protocol_rmcp::McpServerExt as _;
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
     model::{

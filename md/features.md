@@ -77,13 +77,14 @@ Internal crates request only the core capabilities they use:
 | --- | --- |
 | HTTP client/server | None; transport sides remain opt-in through `client` and `server` |
 | MCP-over-ACP polyfill | `unstable_mcp_over_acp`, with independent draft-v2 and session-fork passthrough features |
-| rmcp integration | `schemars`, with independent draft-v2 and MCP-over-ACP passthrough features |
+| rmcp integration | `schemars`; one feature per rmcp major version (`rmcp_3`), with independent draft-v2 and MCP-over-ACP passthrough features |
 | Conductor | `process`, `stdio`, and `unstable_mcp_over_acp` for launching components, serving stdio, and classifying MCP traces |
 | YOPO | `process` for launching the agent |
 | Test utilities | `process` and `stdio` for fixture binaries and launch helpers |
 
 Conductor integration tests and cookbook recipes explicitly enable the rmcp
-integration's `unstable_mcp_over_acp` feature when attaching native servers.
+integration's `rmcp_3` feature, and its `unstable_mcp_over_acp` feature when
+attaching native servers.
 Conductor tests request `schemars` separately from production dependencies, and
 enable draft-v2 polyfill support only with the conductor's `unstable_protocol_v2`
 feature. Internal consumers disable test-utility defaults rather than enabling
@@ -145,8 +146,8 @@ JavaScript-hosted `wasm32-unknown-unknown`, enable `wasm_js`; it selects Web
 Crypto through `wasm-bindgen` for UUID randomness. The target does not imply a
 JavaScript host, so this feature remains opt-in.
 
-The rmcp integration library also compiles for both WASI targets, including
-native MCP-over-ACP attachment support. Its production dependencies use Tokio's
+The rmcp integration library, with its `rmcp_3` feature, also compiles for both
+WASI targets, including native MCP-over-ACP attachment support. Its production dependencies use Tokio's
 single-thread-capable runtime and async I/O utilities, not Tokio stdio or the
 multithreaded runtime. Native examples and tests enable those conveniences
 separately. An application using rmcp macros or stdio transports opts into the

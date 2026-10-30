@@ -735,7 +735,7 @@ where
     /// ```ignore
     /// # use agent_client_protocol::{Client, Agent, ConnectTo};
     /// # use agent_client_protocol::mcp_server::McpServer;
-    /// # use agent_client_protocol_rmcp::McpServerExt;
+    /// # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
     /// # Client.v1().connect_with(transport, async |cx| {
     /// # let mcp = McpServer::<Agent, _>::builder("tools").build();
@@ -829,7 +829,7 @@ where
     /// # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
     /// # use agent_client_protocol::schema::v1::NewSessionRequest;
     /// # use agent_client_protocol::mcp_server::McpServer;
-    /// # use agent_client_protocol_rmcp::McpServerExt;
+    /// # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
     /// Proxy.v1()
     ///     .on_receive_request_from(Client, async |request: NewSessionRequest, responder, cx| {

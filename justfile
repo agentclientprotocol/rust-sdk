@@ -7,3 +7,4 @@ prep-tests:
 test: prep-tests
     cargo test --workspace --all-features --locked
     cargo test -p agent-client-protocol --no-default-features --locked
+    cargo test -p agent-client-protocol-rmcp --features rmcp_3 --locked
