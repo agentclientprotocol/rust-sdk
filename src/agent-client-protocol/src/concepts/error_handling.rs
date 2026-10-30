@@ -88,10 +88,12 @@
 //! ACP also defines its own error codes, with matching factory methods:
 //!
 //! - [`Error::auth_required()`][crate::Error::auth_required] - `-32000`, the
-//!   request needs authentication first
+//!   request needs authentication first; a failed or abandoned v2
+//!   `auth/login` also uses `-32000`
 //! - [`Error::resource_not_found()`][crate::Error::resource_not_found] -
 //!   `-32002` for a missing resource such as a file, with an optional
-//!   `data.uri`
+//!   `data.uri` (protocol v2's `schema::v2::Error::resource_not_found()`
+//!   takes no `uri`)
 //! - [`Error::session_not_found()`][crate::Error::session_not_found] -
 //!   `-32002` with `data.sessionId`, for a session-scoped request naming a
 //!   session that does not exist or is not active on the connection

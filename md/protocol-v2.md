@@ -167,10 +167,16 @@ V2 deliberately separates prompt submission from session observation:
   session can accept ordinary new foreground work. It is not a wire-level
   boundary assigning previous events to one prompt, and background updates may
   continue while idle.
+- `send_prompt` may be called in any state. The agent inserts the prompt right
+  away or holds it and inserts held prompts in received order; it must not
+  reject a prompt only because foreground work is active. A held prompt's
+  response stays pending until insertion, and cancelling its `SentRequest`
+  withdraws it with `-32800`.
 - `cancel_active_work` sends session-wide `session/cancel`. It covers the
-  session's foreground work and any prompts the agent has not yet inserted;
-  those prompt requests fail with `-32800` (request cancelled), while a prompt
-  whose user message was already inserted still succeeds with its message ID.
+  session's foreground work and prompts received before it that the agent has
+  not yet inserted; those prompt requests fail with `-32800` (request
+  cancelled), while a prompt whose user message was already inserted still
+  succeeds with its message ID. A prompt sent after it is not cancelled.
   Background activity is not covered, although the agent may stop it too.
   Cancellation of active foreground work completes after the required `idle`
   update with stop reason `cancelled`; cancelling an idle session need not
@@ -186,10 +192,11 @@ V2 deliberately separates prompt submission from session observation:
   successful prompt response with its message ID.
 - `set_config_option` must only name a `configId` the agent advertised for
   the session. An unknown `configId` or invalid value fails with `-32602` and
-  leaves the configuration unchanged. A successful response is the
-  authoritative replacement option set for the requesting client, even though
-  a duplicate `config_option_update` notification for the same change may
-  arrive before it. `close` returns the complete close response. Closing is
+  leaves the configuration unchanged. A successful response is the complete
+  option set as of the response and may report a different `currentValue`
+  than requested. Apply responses and `config_option_update` notifications in
+  the order received, each replacing the whole list, even though a duplicate
+  notification for the same change may arrive before the response. `close` returns the complete close response. Closing is
   idempotent, so `close` also resolves a `-32002` response (an unknown or
   already-closed session) as success. Mutable configuration is not cached on
   the command handle.
@@ -563,7 +570,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.13
+## Schema changes in schema 1.5 through 1.14
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
@@ -761,3 +768,84 @@ Client projections should also follow these rules:
   first-seen `toolCallId` creates the tool call.
 - The Agent owns remembered `allow_always` and `reject_always` decisions and
   their scope. Clients do not infer that scope from the option kind.
+
+### Schema 1.14
+
+Draft v2 type changes:
+
+- JSON-RPC batching is removed from v2, and `schema::v2::JsonRpcBatch` no
+  longer exists. The SDK dropped batch support in both protocol versions:
+  every connection answers a JSON array with a single `-32600` error with
+  `id: null` (see [JSON-RPC batches](#json-rpc-batches)).
+- `Error.data` is typed as `ErrorData`: `UnsupportedProtocolVersionErrorData`
+  for `-32022`, `SessionNotFoundErrorData` for `-32002`, or any other JSON.
+  `v2::Error::resource_not_found()` no longer takes a `uri`; use
+  `session_not_found(session_id)` for a missing session.
+  `util::unsupported_protocol_version` builds the typed data. An error
+  response's `id` may be `null`.
+- `UsageUpdate.cost` is a `MaybeUndefined<Cost>` patch field: omitted leaves
+  the cost unchanged, `null` clears it, and a value replaces it.
+  `Cost.currency` is any unit string, not only an ISO 4217 code.
+- `ElicitationContentValue::Other` holds any JSON value. Validate accepted
+  content per property against the requested schema: an unexpected value
+  invalidates only that property.
+- `ElicitationSchema` requires `type: "object"` and `properties` on the wire.
+- `PromptRequest.prompt` must not be empty, and select config options and
+  option groups must not be empty. Clients should hide a group that becomes
+  empty after skipping values they cannot parse.
+- `SessionInfo.additionalDirectories` treats `null` as `[]`, and
+  `Annotations.lastModified` accepts any ISO 8601 string.
+- With `unstable_subagents`, subagent updates gain `cwd` and
+  `additional_directories` patch fields (absolute paths; omitted leaves them
+  unchanged, `null` inherits the parent's).
+
+Connection and lifecycle rules:
+
+- A failed `initialize` leaves the connection uninitialized, and the client
+  may send `initialize` again. `Agent.protocol_router()` now keeps the
+  connection open after rejecting a first message. Agents ignore
+  notifications that arrive before initialization.
+- Each side picks its own request IDs, so the same ID may be in flight in both
+  directions. `$/cancel_request` names a request its sender issued, and is
+  ignored for unknown or already-answered requests. Unknown notifications,
+  including `$/`-prefixed ones, are ignored. A connection's end fails its
+  unanswered outgoing requests.
+- `session/close` is idempotent: closing an unknown or already-closed session
+  succeeds. `V2Session::close` treats a `-32002` response as success, and
+  Testy and `simple_agent_v2` close idempotently.
+- Closing cancels the session's work like `session/cancel`, cancels pending
+  elicitations scoped to it, answers held prompts with `-32800`, and the agent
+  sends nothing more for that session afterwards. Deleting an active session
+  first closes it.
+- `cwd` must be absolute in the native syntax of the agent's machine, and
+  agents reject a relative `cwd` in `session/new`, `session/resume`, and the
+  `session/list` filter with `-32602`. That filter matches only the exact
+  directory. Agents that advertise `additionalDirectories` reject relative
+  entries; agents that do not ignore the field. Testy and `simple_agent_v2`
+  follow these rules.
+- MCP server names must be unique within `mcpServers`. On `session/resume`
+  and `session/fork`, `mcpServers` is the complete set for the session;
+  agents do not restore servers from earlier requests. A resume must use the
+  session's `cwd`.
+- `session/new`, `session/resume`, and `session/fork` responses carry the
+  complete `configOptions` and available commands when the session has any.
+  Clients replace their lists with them, including lists from updates that
+  arrived before the response.
+- An empty-string `nextCursor` from `session/list` is a valid cursor; only an
+  omitted or `null` cursor ends the results.
+
+Client projections should also follow these rules:
+
+- A `plan_update` replaces the whole plan with that `planId`, even when its
+  `type` changed to one the client does not understand.
+- A `cancelled` permission outcome, or a `selected` outcome whose `optionId`
+  was not offered, means not approved. Clients send `cancelled` when the user
+  dismisses the request or the client declines it by policy.
+- `completed`, `failed`, and `cancelled` tool call statuses are final, and
+  agents finalize unfinished tool calls when foreground work ends.
+- A prompt invokes a slash command only when its first text block starts with
+  `/` and the command name followed by whitespace or the end of the block.
+- Show a placeholder for content you cannot render rather than dropping it.
+- A terminal's `size` is a rendering hint.
+- `_meta` keys `traceparent`, `tracestate`, and `baggage` use the W3C formats;
+  extensions use reverse-DNS prefixes such as `com.example/requestId`.

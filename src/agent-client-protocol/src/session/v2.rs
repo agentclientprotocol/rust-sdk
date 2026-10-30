@@ -849,9 +849,16 @@ where
 
     /// Submit arbitrary prompt content and return its acceptance request.
     ///
+    /// `prompt` must not be empty; an agent may reject `[]` with `-32602`.
+    ///
     /// The SDK does not track foreground state or gate prompt submission
-    /// locally. Wait for an `idle` state update before another ordinary prompt
-    /// unless using a separately defined admission mechanism.
+    /// locally. A prompt may be sent in any state, including while foreground
+    /// work is active: the agent either inserts it right away or holds it and
+    /// inserts held prompts in received order, and it must not reject a prompt
+    /// only because work is active. A held prompt's response stays pending
+    /// until it is inserted. Cancel the returned [`SentRequest`] to withdraw a
+    /// held prompt; [`Self::cancel_active_work`] and [`Self::close`] also
+    /// answer prompts that were not yet inserted with `-32800`.
     pub fn send_prompt_blocks(
         &self,
         prompt: Vec<v2::ContentBlock>,
@@ -865,9 +872,10 @@ where
     /// Ask the agent to cancel the session's current foreground work.
     ///
     /// This is independent from cancelling a prompt's [`SentRequest`].
-    /// `session/cancel` covers the session's foreground work and any prompts
-    /// the agent has not yet inserted; those prompt requests fail with
-    /// `-32800` (request cancelled). A prompt whose user message was already
+    /// `session/cancel` covers the session's foreground work and prompts
+    /// received before it that the agent has not yet inserted; those prompt
+    /// requests fail with `-32800` (request cancelled). A prompt sent after
+    /// this notification is not cancelled by it. A prompt whose user message was already
     /// inserted still succeeds with its `messageId`. Background activity is
     /// not covered, although the agent may stop it too.
     ///
@@ -894,8 +902,11 @@ where
     /// value from that option. The agent rejects an unknown `config_id` or an
     /// invalid value with `-32602` and leaves the configuration unchanged.
     ///
-    /// The response contains the full current option set and is authoritative
-    /// for the requesting client. A duplicate `config_option_update`
+    /// The response contains the complete option set as of the response and
+    /// may report a different `currentValue` than requested; `currentValue`
+    /// is always the value the agent is using. Apply responses and
+    /// `config_option_update` notifications in the order received, each
+    /// replacing the whole list. A duplicate `config_option_update`
     /// notification for the same change may arrive before the response. The
     /// response is not cached on this command handle.
     ///
