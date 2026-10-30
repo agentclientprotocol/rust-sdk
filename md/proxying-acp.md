@@ -147,10 +147,13 @@ To editors, the conductor is a normal ACP agent - no special capabilities are ad
 
 **Proxy Capability Handshake:**
 
+> The implementation replaced this capability handshake with a dedicated proxy
+> initialization request. See [Proxy Initialization](./protocol.md#proxy-initialization).
+
 The conductor uses a two-way capability handshake to verify that proxy components can fulfill their responsibilities:
 
-1. **Conductor offers proxy capability** - When initializing non-last components (proxies), the conductor includes `"proxy": true` in the `_meta` field of the InitializeRequest
-2. **Component accepts proxy capability** - The component must respond with `"proxy": true` in the `_meta` field of its InitializeResponse
+1. **Conductor offers proxy capability** - When initializing non-last components (proxies), the conductor signals the proxy role in the InitializeRequest
+2. **Component accepts proxy capability** - The component must accept the proxy role in its InitializeResponse
 3. **Last component (agent)** - The final component is treated as a standard ACP agent and does NOT receive the proxy capability offer
 
 **Why a two-way handshake?** The proxy capability is an _active protocol_ - it requires the component to handle `proxy/successor/*` messages and route communications appropriately. Unlike passive capabilities (like "http" or "sse") which are just declarations, proxy components must actively participate in message routing. If a component doesn't respond with the proxy capability, the conductor fails initialization with an error like "component X is not a proxy", since that component cannot fulfill its required function in the chain.
@@ -223,56 +226,19 @@ flowchart LR
     Editor --> Proxy --> Agent
 ```
 
-### P/ACP editor capabilities
+### P/ACP proxy handshake
 
-An P/ACP-aware editor provides the following capability during ACP initialization:
+This proposal originally signalled P/ACP support and the proxy role with a
+capability object under an unprefixed `_meta` key. ACP reserves unprefixed
+`_meta` keys for the protocol itself, so that capability was never adopted.
+The implementation uses a dedicated proxy initialization request instead; see
+[Proxy Initialization](./protocol.md#proxy-initialization) in the Protocol
+Reference.
 
-```json
-/// Including the symposium section *at all* means that the editor
-/// supports symposium proxy initialization.
-"_meta": {
-    "symposium": {
-        "version": "1.0"
-    }
-}
-```
-
-P/ACP proxies forward the capabilities they receive from their editor.
-
-### P/ACP component capabilities
-
-P/ACP uses capabilities in the `_meta` field for the proxy handshake:
-
-**Proxy capability (two-way handshake):**
-
-The conductor offers the proxy capability to non-last components in InitializeRequest:
-
-```json
-// InitializeRequest from conductor to proxy component
-"_meta": {
-    "symposium": {
-        "version": "1.0",
-        "proxy": true
-    }
-}
-```
-
-The component must accept by responding with the proxy capability in InitializeResponse:
-
-```json
-// InitializeResponse from proxy component to conductor
-"_meta": {
-    "symposium": {
-        "version": "1.0",
-        "proxy": true
-    }
-}
-```
-
-If a component that was offered the proxy capability does not respond with it, the conductor fails initialization.
-
-**Agent capability:**
-The last component in the chain (the agent) is NOT offered the proxy capability and does not need to respond with it. Agents are just normal ACP agents with no P/ACP awareness required.
+The conductor sends the proxy initialization request to every non-last
+component. The last component in the chain (the agent) receives a normal
+`initialize` request. Agents are just normal ACP agents with no P/ACP awareness
+required.
 
 ### The `proxy/successor/{send,receive}` protocol
 
@@ -771,14 +737,7 @@ sequenceDiagram
      "method": "initialize",
      "params": {
        "protocolVersion": "0.1.0",
-       "capabilities": {
-         "_meta": {
-           "symposium": {
-             "version": "1.0",
-             "proxy": true
-           }
-         }
-       },
+       "capabilities": {},
        "clientInfo": { "name": "Conductor", "version": "0.1.0" }
      }
    }
@@ -855,20 +814,13 @@ sequenceDiagram
      "id": "I0",
      "result": {
        "protocolVersion": "0.1.0",
-       "capabilities": {
-         "_meta": {
-           "symposium": {
-             "version": "1.0",
-             "proxy": true
-           }
-         }
-       },
+       "capabilities": {},
        "serverInfo": { "name": "Sparkle + claude-code-acp", "version": "0.1.0" }
      }
    }
    ```
 
-   Note: Sparkle MUST include `"proxy": true` in its response since it was offered the proxy capability. If this field is missing, Conductor will fail initialization with an error.
+   Note: The original proposal carried the proxy offer and acceptance in an unprefixed `_meta` capability object, which this example omits. The implementation sends a dedicated proxy initialization request instead; see [Proxy Initialization](./protocol.md#proxy-initialization).
 
 8. **Editor → Conductor: session/new** (id: U0)
 

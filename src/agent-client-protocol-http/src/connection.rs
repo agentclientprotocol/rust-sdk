@@ -269,10 +269,17 @@ impl OutboundTransport {
                     Self::WebSocket(websocket) => websocket.all_outbound.push(serialized),
                 }
             }
-            TransportFrame::Malformed { raw, .. } => match self {
-                Self::Http(http) => http.connection_stream.push(raw),
-                Self::WebSocket(websocket) => websocket.all_outbound.push(raw),
-            },
+            // Malformed and any other non-message frames are sent verbatim.
+            frame => {
+                let Ok(raw) = frame.to_json() else {
+                    error!("failed to serialize outbound transport frame");
+                    return Err("failed to serialize outbound transport frame");
+                };
+                match self {
+                    Self::Http(http) => http.connection_stream.push(raw),
+                    Self::WebSocket(websocket) => websocket.all_outbound.push(raw),
+                }
+            }
         }
     }
 }

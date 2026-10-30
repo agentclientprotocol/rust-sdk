@@ -269,14 +269,9 @@ HTTP client. Each connection has independent ACP transport state.
 ### Migrating Custom Client Construction
 
 `HttpClient::with_client(base_url, client)` and
-`with_endpoint_and_client(endpoint, client)` remain available but are deprecated.
-Existing HTTP/SSE calls keep their path handling, supplied client, and connection
-pool. They emit a deprecation warning so applications can migrate incrementally.
-
-For `ws://` and `wss://`, both deprecated constructors now return
-`HttpClientError::WebSocketRequiresBuilder` before any network I/O. Those callers
-must migrate to the builder: retaining the old signatures cannot make an opaque,
-already-built reqwest client enforce the WebSocket connection policies.
+`with_endpoint_and_client(endpoint, client)` have been removed. An already-built
+reqwest client cannot be reconfigured to enforce the WebSocket connection
+policies, so migrate as follows:
 
 - For HTTP/SSE or WebSocket configuration, move the reqwest builder settings into
   `HttpClient::builder(base_url).configure_http(|http| ...).build()`. Do not call

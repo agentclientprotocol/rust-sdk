@@ -138,8 +138,6 @@
 //!
 //! [`agent-client-protocol-conductor`]: https://crates.io/crates/agent-client-protocol-conductor
 
-/// Capability management for the `_meta.symposium` object
-mod capabilities;
 /// Component abstraction for agents and proxies
 pub mod component;
 /// Core concepts for understanding and using agent-client-protocol
@@ -154,8 +152,6 @@ pub mod role;
 pub mod schema;
 /// Utility functions and types
 pub mod util;
-
-pub use capabilities::*;
 
 pub use jsonrpc::{
     Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionContext,

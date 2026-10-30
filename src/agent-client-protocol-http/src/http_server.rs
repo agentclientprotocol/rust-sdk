@@ -131,15 +131,13 @@ pub(crate) async fn handle_post(
 
     let mut session_routes = Vec::new();
     let mut pending_routes = Vec::new();
-    match &mut frame {
-        TransportFrame::Single(message) => {
-            let route = match prepare_message_route(message, session_id.as_deref()) {
-                Ok(route) => route,
-                Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
-            };
-            collect_route(message, route, &mut session_routes, &mut pending_routes);
-        }
-        TransportFrame::Malformed { .. } => {}
+    // Malformed and any other non-message frames carry no routes.
+    if let TransportFrame::Single(message) = &mut frame {
+        let route = match prepare_message_route(message, session_id.as_deref()) {
+            Ok(route) => route,
+            Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
+        };
+        collect_route(message, route, &mut session_routes, &mut pending_routes);
     }
 
     for session_id in session_routes {
@@ -198,7 +196,8 @@ fn initialize_response_failed(frame: &TransportFrame, initialize_id: &RequestId)
 
     match frame {
         TransportFrame::Single(message) => response_failed(message, initialize_id),
-        TransportFrame::Malformed { .. } => None,
+        // Malformed and any other non-message frames are not responses.
+        _ => None,
     }
 }
 
@@ -492,18 +491,17 @@ mod tests {
         fn spawn_agent(&self) -> (Channel, Option<ConnectionDriver>) {
             let (mut agent, transport) = Channel::duplex();
             let future = ConnectionDriver::new(async move {
-                match agent.rx.next().await {
-                    Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) => {
-                        agent
-                            .tx
-                            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
-                                request.id,
-                                Err(agent_client_protocol::Error::invalid_request()
-                                    .data("initialize rejected")),
-                            )))
-                            .unwrap();
-                    }
-                    Some(TransportFrame::Single(_) | TransportFrame::Malformed { .. }) | None => {}
+                if let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
+                    agent.rx.next().await
+                {
+                    agent
+                        .tx
+                        .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                            request.id,
+                            Err(agent_client_protocol::Error::invalid_request()
+                                .data("initialize rejected")),
+                        )))
+                        .unwrap();
                 }
                 std::future::pending::<agent_client_protocol::Result<()>>().await
             });

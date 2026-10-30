@@ -152,36 +152,6 @@ impl HttpClient {
         Ok(Self { endpoint, http })
     }
 
-    /// Reuse an existing HTTP/SSE client with the standard ACP endpoint.
-    ///
-    /// Preserves the same base-URL path normalization as [`Self::new`].
-    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
-    /// before any network I/O; migrate those calls to [`Self::builder`].
-    #[deprecated(
-        note = "Use builder(...).configure_http(...).build(), or from_http_client with an exact HTTP/SSE endpoint"
-    )]
-    pub fn with_client(
-        base_url: impl AsRef<str>,
-        http: reqwest::Client,
-    ) -> Result<Self, HttpClientError> {
-        Self::from_http_client(parse_base_url(base_url.as_ref())?, http)
-    }
-
-    /// Reuse an existing HTTP/SSE client at an exact endpoint.
-    ///
-    /// WebSocket URLs return [`HttpClientError::WebSocketRequiresBuilder`]
-    /// before any network I/O; migrate those calls to
-    /// [`Self::builder_with_endpoint`].
-    #[deprecated(
-        note = "Use builder_with_endpoint(...).configure_http(...).build(), or from_http_client for an existing HTTP/SSE client"
-    )]
-    pub fn with_endpoint_and_client(
-        endpoint: impl AsRef<str>,
-        http: reqwest::Client,
-    ) -> Result<Self, HttpClientError> {
-        Self::from_http_client(endpoint, http)
-    }
-
     fn is_websocket(&self) -> bool {
         is_websocket_url(&self.endpoint)
     }
@@ -478,7 +448,8 @@ async fn run_with_finish(
         let is_response_only = is_response_only_frame(&frame);
         let msg = match frame {
             TransportFrame::Single(message) => message,
-            frame @ TransportFrame::Malformed { .. } => {
+            // Malformed and any other non-message frames are posted verbatim.
+            frame => {
                 if state.connection.connection_id().is_none() {
                     break Err(AcpError::invalid_request()
                         .data("ACP HTTP transport: first message must be `initialize`"));
@@ -643,12 +614,11 @@ fn queue_response_post(
 ) -> Result<(), AcpError> {
     let post = match frame {
         TransportFrame::Single(message) => state.prepare_post(message),
-        frame @ TransportFrame::Malformed { .. } => {
-            state.prepare_frame_post(frame).map(|(post, session_ids)| {
-                debug_assert_eq!(session_ids, Vec::<String>::new());
-                post
-            })
-        }
+        // Malformed and any other non-message frames are posted verbatim.
+        frame => state.prepare_frame_post(frame).map(|(post, session_ids)| {
+            debug_assert_eq!(session_ids, Vec::<String>::new());
+            post
+        }),
     }
     .map_err(|error| {
         error!("POST failed");
@@ -661,12 +631,13 @@ fn queue_response_post(
 fn is_response_only_frame(frame: &TransportFrame) -> bool {
     match frame {
         TransportFrame::Single(RawJsonRpcMessage::Response(_)) => true,
-        TransportFrame::Malformed { raw, .. } => {
-            serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
-        }
         TransportFrame::Single(
             RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_),
         ) => false,
+        // Malformed and any other non-message frames: inspect the wire value.
+        frame => frame.to_json().is_ok_and(|raw| {
+            serde_json::from_str(&raw).is_ok_and(|value| is_response_only_shape(&value))
+        }),
     }
 }
 
@@ -1080,6 +1051,9 @@ impl ClientState {
             TransportFrame::Malformed { error, .. } => {
                 return Err(format!("invalid initialize response: {error}"));
             }
+            _ => {
+                return Err("invalid initialize response: not a JSON-RPC message".to_string());
+            }
         };
 
         if matches!(
@@ -1220,7 +1194,8 @@ impl ClientState {
                 .session_to_open_for_response(message)
                 .into_iter()
                 .collect(),
-            TransportFrame::Malformed { .. } => Vec::new(),
+            // Malformed and any other non-message frames open no sessions.
+            _ => Vec::new(),
         }
     }
 
@@ -1269,9 +1244,9 @@ struct FrameBookkeeping {
 impl FrameBookkeeping {
     fn for_frame(frame: &TransportFrame) -> Result<Self, String> {
         let mut bookkeeping = Self::default();
-        match frame {
-            TransportFrame::Single(message) => bookkeeping.add_message(message)?,
-            TransportFrame::Malformed { .. } => {}
+        // Malformed and any other non-message frames need no bookkeeping.
+        if let TransportFrame::Single(message) = frame {
+            bookkeeping.add_message(message)?;
         }
         Ok(bookkeeping)
     }
@@ -1731,6 +1706,7 @@ mod tests {
         match frame {
             TransportFrame::Single(message) => Ok(message),
             TransportFrame::Malformed { error, .. } => Err(error),
+            frame => panic!("unexpected transport frame: {frame:?}"),
         }
     }
 
@@ -2032,35 +2008,6 @@ mod tests {
             HttpClient::from_http_client("ftp://example.com/acp", http),
             Err(HttpClientError::UnsupportedScheme(_))
         ));
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_constructors_preserve_http_paths_and_reject_websockets() {
-        let http = reqwest::Client::new();
-        for scheme in ["http", "https"] {
-            for path in ["", "/proxy", "/proxy/acp/"] {
-                let url = format!("{scheme}://example.com{path}?key=value");
-                let legacy = HttpClient::with_client(&url, http.clone()).unwrap();
-                assert_eq!(legacy.endpoint, HttpClient::new(&url).unwrap().endpoint);
-                let exact = HttpClient::with_endpoint_and_client(&url, http.clone()).unwrap();
-                assert_eq!(
-                    exact.endpoint,
-                    HttpClient::with_endpoint(&url).unwrap().endpoint
-                );
-            }
-        }
-        for scheme in ["ws", "wss"] {
-            let url = format!("{scheme}://example.com/custom");
-            assert!(matches!(
-                HttpClient::with_client(&url, http.clone()),
-                Err(HttpClientError::WebSocketRequiresBuilder)
-            ));
-            assert!(matches!(
-                HttpClient::with_endpoint_and_client(&url, http.clone()),
-                Err(HttpClientError::WebSocketRequiresBuilder)
-            ));
-        }
     }
 
     #[test]
