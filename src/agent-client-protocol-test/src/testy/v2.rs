@@ -2,11 +2,11 @@
 
 use super::{TestyCommand, TestyScenario, parse_command};
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, Responder, V2ConnectionTo,
+    Agent, Client, ConnectTo, RequestCancellation, Responder, V2ConnectionTo,
     schema::{ProtocolVersion, v2 as acp},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
 };
 use tokio::sync::Notify;
@@ -30,16 +30,29 @@ struct V2TestyState {
     sessions: HashMap<acp::SessionId, V2SessionData>,
     next_session_id: u64,
     next_message_id: u64,
+    next_prompt_ticket: u64,
 }
 
 #[derive(Clone, Debug)]
 struct V2SessionData {
     cwd: acp::AbsolutePath,
-    additional_directories: Vec<acp::AbsolutePath>,
     active: bool,
     foreground_work: bool,
     cancelled: bool,
+    /// Incremented by each `session/cancel` and `session/close`. A held
+    /// prompt is cancelled when this changes after it was received.
+    cancel_epoch: u64,
+    /// Prompts received during foreground work, held in received order.
+    held_prompts: VecDeque<u64>,
     history: Vec<acp::SessionUpdate>,
+}
+
+/// How an accepted `session/prompt` request proceeds.
+enum PromptAdmission {
+    /// The prompt starts foreground work now.
+    Inserted,
+    /// The prompt waits for the current foreground work to end.
+    Held { ticket: u64, cancel_epoch: u64 },
 }
 
 impl V2Testy {
@@ -61,6 +74,7 @@ impl V2Testy {
         &self,
         request: acp::NewSessionRequest,
     ) -> Result<acp::SessionId, agent_client_protocol::Error> {
+        require_absolute(&request.cwd, "cwd")?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.lock_state();
         loop {
@@ -70,12 +84,15 @@ impl V2Testy {
             if !state.sessions.contains_key(&session_id) {
                 state.sessions.insert(
                     session_id.clone(),
+                    // Testy does not advertise `additionalDirectories`, so it
+                    // ignores that field.
                     V2SessionData {
                         cwd: request.cwd,
-                        additional_directories: request.additional_directories,
                         active: true,
                         foreground_work: false,
                         cancelled: false,
+                        cancel_epoch: 0,
+                        held_prompts: VecDeque::new(),
                         history: Vec::new(),
                     },
                 );
@@ -99,7 +116,6 @@ impl V2Testy {
             .filter(|(_, session)| request.cwd.as_ref().is_none_or(|cwd| cwd == &session.cwd))
             .map(|(session_id, session)| {
                 acp::SessionInfo::new(session_id.clone(), session.cwd.clone())
-                    .additional_directories(session.additional_directories.clone())
                     .title(SESSION_TITLE)
                     .updated_at(SESSION_UPDATED_AT)
             })
@@ -116,6 +132,7 @@ impl V2Testy {
         &self,
         request: &acp::ResumeSessionRequest,
     ) -> Result<Vec<acp::SessionUpdate>, agent_client_protocol::Error> {
+        require_absolute(&request.cwd, "cwd")?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.lock_state();
         let session = state
@@ -142,34 +159,84 @@ impl V2Testy {
                 return Err(invalid_params("unsupported session replay cursor"));
             }
         };
-        session
-            .additional_directories
-            .clone_from(&request.additional_directories);
         session.active = true;
         session.cancelled = false;
         Ok(replay)
     }
 
-    fn begin_prompt(
+    /// Accept a prompt, inserting it now or holding it behind active work.
+    ///
+    /// A v2 Agent must not reject a prompt only because foreground work is
+    /// active, so Testy holds it and inserts held prompts in received order.
+    fn admit_prompt(
         &self,
         session_id: &acp::SessionId,
         prompt: &[acp::ContentBlock],
-    ) -> Result<(), agent_client_protocol::Error> {
+    ) -> Result<PromptAdmission, agent_client_protocol::Error> {
         let mut state = self.lock_state();
+        let ticket = state.next_prompt_ticket;
         let session = state
             .sessions
             .get_mut(session_id)
             .filter(|session| session.active)
             .ok_or_else(|| session_not_found(session_id))?;
-        if session.foreground_work {
-            return Err(invalid_params(format!(
-                "session `{session_id}` already has foreground work"
-            )));
-        }
         validate_prompt_content(prompt)?;
+        if session.foreground_work || !session.held_prompts.is_empty() {
+            session.held_prompts.push_back(ticket);
+            let cancel_epoch = session.cancel_epoch;
+            state.next_prompt_ticket += 1;
+            return Ok(PromptAdmission::Held {
+                ticket,
+                cancel_epoch,
+            });
+        }
         session.foreground_work = true;
         session.cancelled = false;
-        Ok(())
+        Ok(PromptAdmission::Inserted)
+    }
+
+    /// Wait until a held prompt can start foreground work.
+    ///
+    /// Fails with `-32800` when the prompt is withdrawn with
+    /// `$/cancel_request`, or when `session/cancel` or `session/close` arrives
+    /// before it is inserted.
+    async fn insert_held_prompt(
+        &self,
+        session_id: &acp::SessionId,
+        ticket: u64,
+        cancel_epoch: u64,
+        withdrawn: RequestCancellation,
+    ) -> Result<(), agent_client_protocol::Error> {
+        loop {
+            let notified = self.state_changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let mut state = self.lock_state();
+                let Some(session) = state.sessions.get_mut(session_id) else {
+                    return Err(agent_client_protocol::Error::request_cancelled());
+                };
+                if !session.active
+                    || session.cancel_epoch != cancel_epoch
+                    || withdrawn.is_cancelled()
+                {
+                    session.held_prompts.retain(|held| *held != ticket);
+                    drop(state);
+                    self.state_changed.notify_waiters();
+                    return Err(agent_client_protocol::Error::request_cancelled());
+                }
+                if !session.foreground_work && session.held_prompts.front() == Some(&ticket) {
+                    session.held_prompts.pop_front();
+                    session.foreground_work = true;
+                    session.cancelled = false;
+                    return Ok(());
+                }
+            }
+            tokio::select! {
+                () = &mut notified => {}
+                () = withdrawn.cancelled() => {}
+            }
+        }
     }
 
     fn abandon_prompt(&self, session_id: &acp::SessionId) {
@@ -210,42 +277,50 @@ impl V2Testy {
         send_result
     }
 
+    /// Handle `session/cancel`: cancel foreground work and every prompt held
+    /// before it. Agents ignore `session/cancel` for a session that is not
+    /// active.
     fn mark_cancelled(&self, session_id: &acp::SessionId) {
         let did_cancel = self
             .lock_state()
             .sessions
             .get_mut(session_id)
+            .filter(|session| session.active)
             .is_some_and(|session| {
+                session.cancel_epoch += 1;
                 if session.foreground_work {
                     session.cancelled = true;
-                    true
-                } else {
-                    false
                 }
+                true
             });
         if did_cancel {
             self.state_changed.notify_waiters();
         }
     }
 
-    fn close_session(
-        &self,
-        session_id: &acp::SessionId,
-    ) -> Result<bool, agent_client_protocol::Error> {
+    /// Close a session and report whether foreground work must finish before
+    /// the close response.
+    ///
+    /// Closing is idempotent: an unknown or already-closed session closes
+    /// successfully with nothing to wait for.
+    fn close_session(&self, session_id: &acp::SessionId) -> bool {
         let mut state = self.lock_state();
-        let session = state
+        let Some(session) = state
             .sessions
             .get_mut(session_id)
             .filter(|session| session.active)
-            .ok_or_else(|| session_not_found(session_id))?;
+        else {
+            return false;
+        };
         session.active = false;
+        session.cancel_epoch += 1;
         if session.foreground_work {
             session.cancelled = true;
         }
         let foreground_work = session.foreground_work;
         drop(state);
         self.state_changed.notify_waiters();
-        Ok(foreground_work)
+        foreground_work
     }
 
     fn is_cancelled(&self, session_id: &acp::SessionId) -> bool {
@@ -391,6 +466,39 @@ impl V2Testy {
         Ok(requested_stop_reason)
     }
 
+    /// Insert the user message for a prompt that holds the session's
+    /// foreground work, acknowledge it, and run it.
+    fn run_inserted_prompt(
+        &self,
+        request: acp::PromptRequest,
+        responder: Responder<acp::PromptResponse>,
+        connection: &V2ConnectionTo<Client>,
+    ) -> Result<(), agent_client_protocol::Error> {
+        let session_id = request.session_id.clone();
+        let user_message_id = self.next_message_id("user-message");
+        let user_update = acp::SessionUpdate::UserMessage(
+            acp::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
+        );
+        self.record_history(&session_id, user_update.clone());
+        if let Err(error) = responder.respond(acp::PromptResponse::new(user_message_id)) {
+            self.abandon_prompt(&session_id);
+            return Err(error);
+        }
+        let prompt_connection = connection.clone();
+        let spawn_result = connection.spawn({
+            let agent = self.clone();
+            async move {
+                agent
+                    .process_prompt(request, user_update, prompt_connection)
+                    .await
+            }
+        });
+        if spawn_result.is_err() {
+            self.abandon_prompt(&session_id);
+        }
+        spawn_result
+    }
+
     fn initialize_response(protocol_version: ProtocolVersion) -> acp::InitializeResponse {
         acp::InitializeResponse::new(
             protocol_version,
@@ -445,6 +553,11 @@ impl ConnectTo<Client> for V2Testy {
                                 "invalid session/list cursor `{cursor}`"
                             )));
                         }
+                        if let Some(cwd) = &request.cwd
+                            && let Err(error) = require_absolute(cwd, "cwd")
+                        {
+                            return responder.respond_with_error(error);
+                        }
                         responder.respond(acp::ListSessionsResponse::new(
                             agent.list_sessions(&request),
                         ))
@@ -496,11 +609,7 @@ impl ConnectTo<Client> for V2Testy {
                     async move |request: acp::CloseSessionRequest,
                                 responder: Responder<acp::CloseSessionResponse>,
                                 connection: V2ConnectionTo<Client>| {
-                        let has_foreground_work = match agent.close_session(&request.session_id) {
-                            Ok(has_foreground_work) => has_foreground_work,
-                            Err(error) => return responder.respond_with_error(error),
-                        };
-                        if !has_foreground_work {
+                        if !agent.close_session(&request.session_id) {
                             return responder.respond(acp::CloseSessionResponse::new());
                         }
                         let waiting_agent = agent.clone();
@@ -520,31 +629,38 @@ impl ConnectTo<Client> for V2Testy {
                     async move |request: acp::PromptRequest,
                                 responder: Responder<acp::PromptResponse>,
                                 connection: V2ConnectionTo<Client>| {
-                        let session_id = request.session_id.clone();
-                        if let Err(error) = agent.begin_prompt(&session_id, &request.prompt) {
-                            return responder.respond_with_error(error);
-                        }
-
-                        let user_message_id = agent.next_message_id("user-message");
-                        let user_update = acp::SessionUpdate::UserMessage(
-                            acp::UserMessage::new(user_message_id.clone())
-                                .content(request.prompt.clone()),
-                        );
-                        agent.record_history(&session_id, user_update.clone());
-                        responder.respond(acp::PromptResponse::new(user_message_id))?;
-                        let prompt_connection = connection.clone();
-                        let spawn_result = connection.spawn({
-                            let agent = agent.clone();
-                            async move {
-                                agent
-                                    .process_prompt(request, user_update, prompt_connection)
-                                    .await
+                        match agent.admit_prompt(&request.session_id, &request.prompt) {
+                            Err(error) => responder.respond_with_error(error),
+                            Ok(PromptAdmission::Inserted) => {
+                                agent.run_inserted_prompt(request, responder, &connection)
                             }
-                        });
-                        if spawn_result.is_err() {
-                            agent.abandon_prompt(&session_id);
+                            Ok(PromptAdmission::Held {
+                                ticket,
+                                cancel_epoch,
+                            }) => {
+                                let withdrawn = responder.cancellation();
+                                let held_connection = connection.clone();
+                                let agent = agent.clone();
+                                connection.spawn(async move {
+                                    match agent
+                                        .insert_held_prompt(
+                                            &request.session_id,
+                                            ticket,
+                                            cancel_epoch,
+                                            withdrawn,
+                                        )
+                                        .await
+                                    {
+                                        Ok(()) => agent.run_inserted_prompt(
+                                            request,
+                                            responder,
+                                            &held_connection,
+                                        ),
+                                        Err(error) => responder.respond_with_error(error),
+                                    }
+                                })
+                            }
                         }
-                        spawn_result
                     }
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -618,6 +734,19 @@ fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
 /// `-32002` for a session that does not exist or is not active on this connection.
 fn session_not_found(session_id: &acp::SessionId) -> agent_client_protocol::Error {
     agent_client_protocol::Error::session_not_found(session_id.0.clone())
+}
+
+/// `cwd` must be an absolute path in the native syntax of the Agent's machine;
+/// a relative one is rejected with `-32602`.
+fn require_absolute(
+    path: &acp::AbsolutePath,
+    field: &str,
+) -> Result<(), agent_client_protocol::Error> {
+    if AsRef::<std::path::Path>::as_ref(path).is_absolute() {
+        Ok(())
+    } else {
+        Err(invalid_params(format!("`{field}` must be an absolute path")))
+    }
 }
 
 /// Testy v2 advertises no `session.mcp` transports, so every MCP server is
