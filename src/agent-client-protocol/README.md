@@ -57,7 +57,7 @@ traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
 Use `Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
 implementations as one component; custom raw routing infrastructure can use
-`Builder::new(Proxy).without_acp_version_guard()`.
+`Builder::new(Proxy)`, which applies no protocol-version guard.
 
 ### Runnable draft-v2 pair
 

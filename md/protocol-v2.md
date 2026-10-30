@@ -312,10 +312,9 @@ unchanged initial transport frame for a request for exactly the selected
 version and does not convert later traffic.
 
 Components implementing their own raw version selector can use
-`Builder::new(Proxy).without_acp_version_guard()` and keep protocol-neutral
-`ConnectionTo` callbacks. This disables the SDK's automatic version guard and
-is not a substitute for selecting `Proxy.v2()` in an ordinary v2 proxy
-implementation. A proxy's default forwarding is the same for every builder and
+`Builder::new(Proxy)` and keep protocol-neutral `ConnectionTo` callbacks.
+`Builder::new` applies no protocol-version guard, so it is not a substitute
+for selecting `Proxy.v2()` in an ordinary v2 proxy implementation. A proxy's default forwarding is the same for every builder and
 every protocol version: `proxy/initialize` has the same wire shape in v1 and
 v2, so the proxy forwards untyped messages, and fields the SDK does not know
 survive. After a forwarded `session/new` succeeds, the proxy reads the raw

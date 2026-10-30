@@ -32,9 +32,8 @@
 //! The crate root holds what every version shares: transports, roles, the
 //! JSON-RPC traits, [`Error`], the generic request handles (which default to
 //! the version-neutral [`Raw`] marker) and, with `unstable_protocol_v2`, the
-//! routers that serve both versions. [`Builder::new`] and
-//! [`without_acp_version_guard`](Builder::without_acp_version_guard) remain
-//! as the raw, version-neutral escape hatch.
+//! routers that serve both versions. [`Builder::new`] remains as the raw,
+//! version-neutral escape hatch: it applies no protocol-version guard.
 //!
 //! ## Quick Start: Connecting to an Agent
 //!

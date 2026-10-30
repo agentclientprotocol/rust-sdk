@@ -61,7 +61,8 @@ their path.
 | `Proxy.builder()` | `Proxy.v1()` |
 | `Role::builder(role)` (generic code, other roles) | `Builder::new(role)` |
 | `Client.connect_with(agent, f)` | `Client.v1().connect_with(agent, f)` |
-| `X.builder().without_acp_version_guard()` | `Builder::new(X).without_acp_version_guard()` |
+| `X.builder().without_acp_version_guard()` | `Builder::new(X)` |
+| `Builder::without_acp_version_guard()` | removed; `Builder::new` applies no version guard |
 | `V2Builder` | `v2::Builder` |
 | `V2ConnectionTo` | `v2::ConnectionTo` |
 | `V2SessionBuilder` | `v2::SessionBuilder` |
@@ -84,9 +85,42 @@ their path.
 
 `Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
 `Conductor.builder()` and the MCP roles' `builder()` are version-neutral and
-stay. `Builder::new(Client)`, `Builder::new(Agent)` and `Builder::new(Proxy)`
-still apply the v1 wire guard until `without_acp_version_guard()` is called,
-as before.
+stay.
+
+### `Builder::new` applies no version guard
+
+`Builder::new(Client)`, `Builder::new(Agent)` and `Builder::new(Proxy)` (and
+`Builder::new_with`) used to apply the v1 wire guard, like
+`Client.builder()`. They are now raw: they apply no protocol-version guard,
+exactly like `without_acp_version_guard()` did, and their callbacks receive
+`Raw` handles. Only `.v1()` applies v1's guard and only `.v2()` applies v2's.
+`without_acp_version_guard()` is removed, because no builder needs it any
+more.
+
+This changes wire behavior for code that kept `Builder::new` with an ACP
+role and relied on the guard. Such a connection no longer:
+
+- negotiates `initialize` (or `proxy/initialize`) down to v1 before the
+  handler sees it, so the handler receives the requested version unchanged;
+- rejects a peer's response that selects a different version;
+- rejects other requests before initialization on an agent that handles
+  `initialize`.
+
+Use the versioned entry point to keep the guard:
+
+```rust,ignore
+// Before: v1 guard applied implicitly
+Builder::new(Agent).on_receive_request(...)
+
+// After
+Agent.v1().on_receive_request(...)
+
+// Before: explicitly unguarded
+Builder::new(Proxy).without_acp_version_guard()
+
+// After
+Builder::new(Proxy)
+```
 
 In `agent-client-protocol-test`, Testy follows the same layout:
 
@@ -444,7 +478,7 @@ marker selects the type that `id()` returns:
 
 | Marker | Used by | `id()` |
 | --- | --- | --- |
-| `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, builders without a version guard, `Builder::new` | `&RawJsonRpcId` |
+| `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, `Builder::new` and other unguarded builders | `&RawJsonRpcId` |
 | `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()` | `&schema::v1::RequestId` |
 | `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `v2::ConnectionTo` | `&schema::v2::RequestId` |
 
@@ -510,10 +544,9 @@ async |message: Dispatch<PromptRequest, SessionNotification>, cx| { ... }
 
 `Client.v1()`, `Agent.v1()` and `Proxy.v1()` return `v1::Builder<_>`
 (`Builder<_, _, _, _, V1>`).
-`Builder::new`, other roles' builders, and
-`without_acp_version_guard()` / `with_v2_protocol_guard()` (which now return
-a `Raw` builder) use `Raw`. The v1 session helpers that take a responder,
-such as `v1::SessionBuilder::on_proxy_session_start`, take a
+`Builder::new`, other roles' builders, and `with_v2_protocol_guard()`
+(which returns a `Raw` builder) use `Raw`. The v1 session helpers that take
+a responder, such as `v1::SessionBuilder::on_proxy_session_start`, take a
 `v1::Responder<_>`.
 
 ### v2 code

@@ -479,7 +479,6 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 host: self.host.clone(),
             },
         )
-        .without_acp_version_guard()
         .name(self.name)
         .with_runner(runner)
         .with_spawned(|_cx| trace_future)
@@ -951,7 +950,7 @@ where
             // The pass-through proxy forwards untyped messages, so one
             // guard-less proxy serves every protocol version. The endpoints
             // validate the selected version themselves.
-            let trace_proxy = DynConnectTo::new(Builder::new(Proxy).without_acp_version_guard());
+            let trace_proxy = DynConnectTo::new(Builder::new(Proxy));
 
             self.connect_to_proxy(
                 &client,
@@ -1544,7 +1543,6 @@ impl ConductorHostRole for Agent {
         // protocol version untyped and leaves validation to the endpoints.
         let connection_to_agent = client_connection.spawn_connection(
             Builder::new(Client)
-                .without_acp_version_guard()
                 .name("conductor-to-agent")
                 .on_receive_dispatch(
                     {

@@ -62,7 +62,7 @@ the draft-v2 API. The matching types live in `agent_client_protocol::v1` and
 `Builder`, `Responder`, `SessionBuilder`, ...). With `unstable_protocol_v2`,
 use `Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
 implementations as one component. Custom raw routing infrastructure can use
-`Builder::new(role).without_acp_version_guard()`.
+`Builder::new(role)`, which applies no protocol-version guard.
 
 ## Integrations
 

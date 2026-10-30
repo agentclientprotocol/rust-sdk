@@ -30,9 +30,9 @@
 //! later traffic.
 //!
 //! Low-level infrastructure implementing custom raw version routing can use
-//! `Builder::new(Proxy).without_acp_version_guard()`. Disabling the guard is an
-//! explicit version-neutral escape hatch, not the ordinary way to author a v2
-//! proxy.
+//! `Builder::new(Proxy)`, which applies no protocol-version guard. It is an
+//! explicit version-neutral escape hatch, not the ordinary way to author a v1
+//! or v2 proxy.
 //!
 //! Default forwarding is the same for every builder and every protocol
 //! version: `proxy/initialize` has the same wire shape in v1 and v2, so a
@@ -215,7 +215,7 @@
 //! | Forward everything | Just `connect_to(transport)` |
 //! | Author a v1 or v2 proxy | `Proxy.v1()` or `Proxy.v2()` |
 //! | Package v1 and v2 implementations | `Proxy.protocol_router().with_v1(...).with_v2(...)` |
-//! | Implement custom raw routing | `without_acp_version_guard` on the raw proxy builder |
+//! | Implement custom raw routing | the unguarded `Builder::new(Proxy)` |
 //! | Intercept specific messages | `on_receive_*_from` with explicit peers |
 //! | Add global tools | `with_mcp_server` on builder |
 //! | Add per-session tools | `with_mcp_server` on session builder |
