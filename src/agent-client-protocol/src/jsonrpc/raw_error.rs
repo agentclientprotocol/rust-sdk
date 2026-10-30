@@ -4,6 +4,8 @@ use agent_client_protocol_schema::MaybeUndefined;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::RawJsonRpcId;
+
 /// A JSON-RPC error without ACP-specific interpretation.
 ///
 /// Raw transports and relays preserve unknown fields and distinguish omitted
@@ -28,8 +30,51 @@ pub struct RawJsonRpcError {
 ///
 /// Errors are boxed so their extensible representation does not enlarge every
 /// request, notification, and queued frame.
-pub type RawJsonRpcResponse =
-    agent_client_protocol_schema::rpc::Response<Value, Box<RawJsonRpcError>>;
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(
+    clippy::exhaustive_enums,
+    reason = "JSON-RPC defines exactly these response kinds"
+)]
+pub enum RawJsonRpcResponse {
+    /// A successful response.
+    Result {
+        /// The ID of the request this response answers.
+        id: RawJsonRpcId,
+        /// The result, uninterpreted.
+        // Require the key even though `Value` accepts null.
+        #[serde(deserialize_with = "Deserialize::deserialize")]
+        result: Value,
+    },
+    /// An Error Response.
+    Error {
+        /// The ID of the request this response answers, or `null` when it
+        /// could not be determined.
+        id: RawJsonRpcId,
+        /// The error, uninterpreted.
+        error: Box<RawJsonRpcError>,
+    },
+}
+
+impl RawJsonRpcResponse {
+    /// Builds a response from a Rust [`Result`].
+    #[must_use]
+    pub fn new(id: impl Into<RawJsonRpcId>, result: Result<Value, Box<RawJsonRpcError>>) -> Self {
+        let id = id.into();
+        match result {
+            Ok(result) => Self::Result { id, result },
+            Err(error) => Self::Error { id, error },
+        }
+    }
+
+    /// The ID of the request this response answers.
+    #[must_use]
+    pub fn id(&self) -> &RawJsonRpcId {
+        match self {
+            Self::Result { id, .. } | Self::Error { id, .. } => id,
+        }
+    }
+}
 
 impl RawJsonRpcError {
     /// Construct an error without data or extension fields.
@@ -190,8 +235,7 @@ mod tests {
         for data in [None, Some(Value::Null), Some(json!({"detail":"kept"}))] {
             let mut error = crate::Error::invalid_params();
             error.data = data.clone();
-            let message =
-                RawJsonRpcMessage::response(crate::schema::v1::RequestId::Null, Err(error));
+            let message = RawJsonRpcMessage::response(RawJsonRpcId::Null, Err(error));
             let wire = serde_json::to_value(message).unwrap();
             assert_eq!(wire["error"]["code"], -32602);
             assert_eq!(wire["error"].get("data"), data.as_ref());

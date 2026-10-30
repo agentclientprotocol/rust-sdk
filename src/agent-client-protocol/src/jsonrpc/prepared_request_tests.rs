@@ -311,7 +311,7 @@ fn forwarding_and_success_callbacks_preserve_ordering_and_peer_errors() {
                 upstream.connection.message_tx.clone(),
                 upstream.connection.incoming_closed.clone(),
                 "upstream".into(),
-                RequestId::Str("upstream-id".into()),
+                RawJsonRpcId::Str("upstream-id".into()),
                 &registry,
                 ResponseDestination::individual(),
             );
@@ -605,7 +605,7 @@ impl Fixture {
 
     fn route(
         &self,
-        id: RequestId,
+        id: RawJsonRpcId,
         result: Result<serde_json::Value, crate::Error>,
     ) -> Option<oneshot::Receiver<()>> {
         let pending_reply = self.pending_replies.remove(&id).unwrap();

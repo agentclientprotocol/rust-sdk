@@ -13,7 +13,7 @@ use crate::{
     role::HasPeer,
     schema::v1::{
         McpError, McpRequestId, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
-        MessageMcpResponse, RequestId,
+        MessageMcpResponse,
     },
     util::MatchDispatchFrom,
 };
@@ -413,7 +413,7 @@ where
             } else {
                 let backend = connector.connect(cleanup_connection.clone());
                 let (mut client, mut driver) = backend.into_channel_and_future();
-                let inner_id = RequestId::Str(request_id.0.to_string());
+                let inner_id = crate::RawJsonRpcId::Str(request_id.0.to_string());
                 let result = {
                     let process = async {
                         let raw = RawJsonRpcMessage::request(

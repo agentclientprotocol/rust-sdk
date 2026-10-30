@@ -28,7 +28,7 @@ async fn initialize_raw_v2_proxy(
     peer: &mut Channel,
     client_name: &str,
 ) -> Result<(), agent_client_protocol::Error> {
-    let initialize_id = agent_client_protocol::schema::v1::RequestId::Number(1);
+    let initialize_id = agent_client_protocol::RawJsonRpcId::Number(1);
     let initialize = v2::InitializeProxyRequest::new(v2::InitializeRequest::new(
         ProtocolVersion::V2,
         v2::Implementation::new(client_name, env!("CARGO_PKG_VERSION")),
@@ -514,7 +514,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
     let peer = async move {
         initialize_raw_v2_proxy(&mut peer, "queued-client").await?;
 
-        let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
+        let upstream_id = agent_client_protocol::RawJsonRpcId::Number(2);
         peer.tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/new".to_owned(),
@@ -665,7 +665,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
     let peer = async move {
         initialize_raw_v2_proxy(&mut peer, "queued-fork-client").await?;
 
-        let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
+        let upstream_id = agent_client_protocol::RawJsonRpcId::Number(2);
         peer.tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/fork".to_owned(),
@@ -821,7 +821,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
     let peer = async move {
         initialize_raw_v2_proxy(&mut peer, "queued-resume-client").await?;
 
-        let upstream_id = agent_client_protocol::schema::v1::RequestId::Number(2);
+        let upstream_id = agent_client_protocol::RawJsonRpcId::Number(2);
         peer.tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "session/resume".to_owned(),

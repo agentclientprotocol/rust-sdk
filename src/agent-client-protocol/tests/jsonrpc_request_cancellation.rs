@@ -17,9 +17,9 @@ use std::{
 
 use agent_client_protocol::{
     Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage, JsonRpcRequest,
-    JsonRpcResponse, Responder, Role, RoleId, SentRequest,
+    JsonRpcResponse, RawJsonRpcId, Responder, Role, RoleId, SentRequest,
     role::UntypedRole,
-    schema::v1::{CancelRequestNotification, ProtocolLevelNotification, RequestId},
+    schema::v1::{CancelRequestNotification, ProtocolLevelNotification},
 };
 use expect_test::expect;
 use futures::channel::mpsc;
@@ -549,7 +549,9 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                     WrappedSuccessor,
                     async move |cancel: CancelRequestNotification,
                                 _cx: ConnectionTo<WrappedCounterpart>| {
-                        wrapped_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                        wrapped_cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -559,7 +561,9 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                 .on_receive_notification(
                     async move |cancel: CancelRequestNotification,
                                 _cx: ConnectionTo<WrappedCounterpart>| {
-                        plain_cancel_tx.unbounded_send(cancel.request_id).unwrap();
+                        plain_cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -621,7 +625,9 @@ async fn cancel_request_notification_can_be_sent_and_handled() {
             let server = UntypedRole.builder().on_receive_notification(
                 async move |notification: CancelRequestNotification,
                             _connection: ConnectionTo<UntypedRole>| {
-                    cancel_tx.unbounded_send(notification.request_id).unwrap();
+                    cancel_tx
+                        .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                        .unwrap();
                     Ok(())
                 },
                 agent_client_protocol::on_receive_notification!(),
@@ -644,7 +650,7 @@ async fn cancel_request_notification_can_be_sent_and_handled() {
                 .await
                 .unwrap();
 
-            assert_eq!(received, RequestId::Str("request-42".into()));
+            assert_eq!(received, RawJsonRpcId::Str("request-42".into()));
         })
         .await;
 }
@@ -683,7 +689,9 @@ async fn sent_request_can_send_cancellation_for_its_id() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -756,7 +764,9 @@ async fn dropped_sent_request_sends_cancellation_for_its_id() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -822,7 +832,9 @@ async fn detached_sent_request_does_not_send_cancellation() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -927,7 +939,9 @@ async fn late_response_after_dropped_sent_request_does_not_close_connection() {
                                     result: "late response".into(),
                                 })?;
                             }
-                            cancel_tx.unbounded_send(notification.request_id).unwrap();
+                            cancel_tx
+                                .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                                .unwrap();
                             Ok(())
                         }
                     },
@@ -1002,7 +1016,9 @@ async fn response_buffered_before_drop_disarms_auto_cancellation() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -1086,7 +1102,9 @@ async fn response_claimed_by_dispatch_handler_disarms_auto_cancellation() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -1100,7 +1118,7 @@ async fn response_claimed_by_dispatch_handler_disarms_auto_cancellation() {
 
             // The JSON-RPC id whose response the dispatch handler below
             // claims (and discards) without ever invoking the router.
-            let claimed_id: Arc<Mutex<Option<RequestId>>> = Arc::new(Mutex::new(None));
+            let claimed_id: Arc<Mutex<Option<RawJsonRpcId>>> = Arc::new(Mutex::new(None));
 
             let client_transport =
                 agent_client_protocol::ByteStreams::new(client_writer, client_reader);
@@ -1194,7 +1212,9 @@ async fn response_retained_by_dispatch_handler_disarms_auto_cancellation() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -1206,7 +1226,7 @@ async fn response_retained_by_dispatch_handler_disarms_auto_cancellation() {
                 }
             });
 
-            let claimed_id: Arc<Mutex<Option<RequestId>>> = Arc::new(Mutex::new(None));
+            let claimed_id: Arc<Mutex<Option<RawJsonRpcId>>> = Arc::new(Mutex::new(None));
             let retained_response: Arc<Mutex<Option<Dispatch>>> = Arc::new(Mutex::new(None));
 
             let client_transport =
@@ -1304,7 +1324,9 @@ async fn completed_sent_request_does_not_send_cancellation_on_drop() {
                 .on_receive_notification(
                     async move |notification: CancelRequestNotification,
                                 _connection: ConnectionTo<UntypedRole>| {
-                        cancel_tx.unbounded_send(notification.request_id).unwrap();
+                        cancel_tx
+                            .unbounded_send(RawJsonRpcId::from(notification.request_id))
+                            .unwrap();
                         Ok(())
                     },
                     agent_client_protocol::on_receive_notification!(),
@@ -1414,7 +1436,7 @@ async fn forward_response_to_propagates_cancellation_to_downstream_request() {
                                 ))?;
                             }
                             backend_cancel_tx
-                                .unbounded_send(notification.request_id)
+                                .unbounded_send(RawJsonRpcId::from(notification.request_id))
                                 .unwrap();
                             Ok(())
                         }
@@ -1566,7 +1588,7 @@ async fn send_proxied_message_does_not_tunnel_cancel_notifications() {
                                 ))?;
                             }
                             backend_cancel_tx
-                                .unbounded_send(notification.request_id)
+                                .unbounded_send(RawJsonRpcId::from(notification.request_id))
                                 .unwrap();
                             Ok(())
                         }
@@ -1783,8 +1805,8 @@ async fn send_proxied_message_does_not_tunnel_wrapped_cancel_notifications() {
 /// Returns the proxy-side connection to the backend.
 async fn spawn_parking_backend(
     honor_cancellations: bool,
-    parked_id_tx: mpsc::UnboundedSender<RequestId>,
-    backend_cancel_tx: mpsc::UnboundedSender<RequestId>,
+    parked_id_tx: mpsc::UnboundedSender<RawJsonRpcId>,
+    backend_cancel_tx: mpsc::UnboundedSender<RawJsonRpcId>,
 ) -> ConnectionTo<UntypedRole> {
     let pending_responder: Arc<Mutex<Option<Responder<SimpleResponse>>>> =
         Arc::new(Mutex::new(None));
@@ -1850,7 +1872,7 @@ async fn spawn_parking_backend(
                         ))?;
                     }
                     backend_cancel_tx
-                        .unbounded_send(notification.request_id)
+                        .unbounded_send(RawJsonRpcId::from(notification.request_id))
                         .unwrap();
                     Ok(())
                 }
@@ -2137,7 +2159,7 @@ async fn cancellation_marker_requested_after_cancel_is_already_cancelled() {
 /// A dynamic handler that claims `$/cancel_request` notifications and reports
 /// them on a channel.
 struct CancelCollector {
-    tx: mpsc::UnboundedSender<RequestId>,
+    tx: mpsc::UnboundedSender<RawJsonRpcId>,
 }
 
 impl HandleDispatchFrom<UntypedRole> for CancelCollector {
@@ -2156,7 +2178,9 @@ impl HandleDispatchFrom<UntypedRole> for CancelCollector {
                 Ok(cancel) => cancel,
                 Err(error) => return ready(Err(error)),
             };
-            self.tx.unbounded_send(cancel.request_id).unwrap();
+            self.tx
+                .unbounded_send(RawJsonRpcId::from(cancel.request_id))
+                .unwrap();
             return ready(Ok(Handled::Yes));
         }
 
@@ -2258,7 +2282,7 @@ async fn retried_protocol_level_notification_reaches_later_dynamic_handler() {
                 .await
                 .unwrap();
 
-            assert_eq!(received, RequestId::Str("req-1".into()));
+            assert_eq!(received, RawJsonRpcId::Str("req-1".into()));
             assert_no_event(&mut collector_rx);
         })
         .await;

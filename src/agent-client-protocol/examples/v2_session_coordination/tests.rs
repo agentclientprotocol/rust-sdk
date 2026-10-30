@@ -1,6 +1,6 @@
 use std::{future::Future, time::Duration};
 
-use agent_client_protocol::{Channel, RawJsonRpcMessage, TransportFrame, schema::v1::RequestId};
+use agent_client_protocol::{Channel, RawJsonRpcId, RawJsonRpcMessage, TransportFrame};
 use serde_json::{Value, json};
 
 use super::*;
@@ -11,7 +11,7 @@ const OTHER: &str = "other";
 struct Peer(Channel);
 
 impl Peer {
-    async fn request(&mut self, method: &str, session: Option<&str>) -> RequestId {
+    async fn request(&mut self, method: &str, session: Option<&str>) -> RawJsonRpcId {
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) =
             self.0.rx.next().await
         else {
@@ -29,7 +29,7 @@ impl Peer {
         request.id
     }
 
-    fn respond(&self, id: RequestId, result: Result<Value, Error>) {
+    fn respond(&self, id: RawJsonRpcId, result: Result<Value, Error>) {
         self.0
             .tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
@@ -48,7 +48,7 @@ impl Peer {
         }
     }
 
-    fn replay_and_respond(&self, id: RequestId, session: &str, text: &str) {
+    fn replay_and_respond(&self, id: RawJsonRpcId, session: &str, text: &str) {
         self.send_all([
             update(session, text),
             RawJsonRpcMessage::response(id, Ok(json!({}))),

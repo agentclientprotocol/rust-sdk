@@ -10,7 +10,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_client_protocol::schema::v1::RequestId;
+use agent_client_protocol::RawJsonRpcId;
 use agent_client_protocol::{
     Channel, Error, JsonRpcRequest, RawJsonRpcMessage, Responder, TransportFrame, UntypedRole,
 };
@@ -131,7 +131,7 @@ fn start(stashed: Stashed) -> (Channel, tokio::task::JoinHandle<Result<(), Error
 fn send_request(peer: &Channel, id: i64, method: &str) {
     peer.tx
         .unbounded_send(TransportFrame::Single(
-            RawJsonRpcMessage::request(method.into(), json!({}), RequestId::Number(id)).unwrap(),
+            RawJsonRpcMessage::request(method.into(), json!({}), RawJsonRpcId::Number(id)).unwrap(),
         ))
         .unwrap();
 }
@@ -232,7 +232,7 @@ async fn forwarded_response_sends_nothing_extra() {
     send_request(&peer, 1, "forward");
     let backend = next_frame(&mut peer).await;
     assert_eq!(backend["method"], json!("backend"), "{backend}");
-    let backend_id: RequestId = serde_json::from_value(backend["id"].clone()).unwrap();
+    let backend_id: RawJsonRpcId = serde_json::from_value(backend["id"].clone()).unwrap();
     peer.tx
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
             backend_id,

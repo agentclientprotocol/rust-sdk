@@ -117,6 +117,71 @@ Because the two used to be the same type, some code imported `Error` from
 `schema::v1` and used it with SDK callbacks. Import
 `agent_client_protocol::Error` instead, or convert with `.into()`.
 
+## A version-neutral `RawJsonRpcId`
+
+The raw JSON-RPC layer and the request handles used `schema::v1::RequestId`
+as their ID type, even on v2 connections. They now use the SDK's own
+`agent_client_protocol::RawJsonRpcId`, the same on every protocol version:
+
+```rust,ignore
+pub enum RawJsonRpcId {
+    Null,
+    Number(i64),
+    Str(String),
+}
+```
+
+It has the same variants, serialization, `Display`, `Hash` and ordering as
+`schema::v1::RequestId`, so IDs are sent on the wire exactly as before: `1`
+and `"1"` stay distinct, and integers keep the full 64-bit signed range.
+
+### What changed
+
+| Before | After |
+| --- | --- |
+| `RawJsonRpcMessage::Request(schema::v1::Request<RawJsonRpcParams>)` | `RawJsonRpcMessage::Request(RawJsonRpcRequest)`, with the same `id`, `method` and `params` fields |
+| `RawJsonRpcResponse`, an alias of `schema::v1::Response<Value, Box<RawJsonRpcError>>` | `RawJsonRpcResponse`, the SDK's own enum with the same `Result { id, result }` and `Error { id, error }` variants and `new` |
+| `RawJsonRpcMessage::response_id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
+| `id()` on `Responder`, `ResponseRouter`, `SentRequest` and `PreparedRequest` returned `&v1::RequestId` | returns `&RawJsonRpcId` |
+| `Dispatch::id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
+
+`RawJsonRpcMessage::request`, `RawJsonRpcMessage::response` and
+`RawJsonRpcResponse::new` take `impl Into<RawJsonRpcId>`, so passing a
+`v1::RequestId`, `v2::RequestId`, `i64` or `String` still compiles. So do
+`ConnectionTo::send_cancel_request` and `send_cancel_request_to`. A bare
+`1.into()` no longer infers its type; write `RawJsonRpcId::Number(1)`.
+
+### Updating your code
+
+Replace `schema::v1::RequestId` with `RawJsonRpcId` where you build or match
+raw messages or store handle IDs:
+
+```rust,ignore
+use agent_client_protocol::{RawJsonRpcId, RawJsonRpcMessage};
+
+// Before
+let request = RawJsonRpcMessage::request(method, params, v1::RequestId::Number(1))?;
+let pending: HashMap<v1::RequestId, Route> = HashMap::new();
+
+// After
+let request = RawJsonRpcMessage::request(method, params, RawJsonRpcId::Number(1))?;
+let pending: HashMap<RawJsonRpcId, Route> = HashMap::new();
+```
+
+Where a schema type needs a request ID, such as `v1::CancelRequestNotification`
+or an elicitation's `requestId`, convert. `RawJsonRpcId` converts losslessly to
+and from `v1::RequestId`, and from `v2::RequestId`. Converting to
+`v2::RequestId` fails only for `null`, with the same Invalid Request error
+(`-32600`) a v2 connection sends for a `null` request ID:
+
+```rust,ignore
+let v1_id = v1::RequestId::from(responder.id().clone());
+let raw_id = RawJsonRpcId::from(cancel.request_id);
+let v2_id = v2::RequestId::try_from(responder.id().clone())?;
+```
+
+The `v2_id()` accessors are unchanged.
+
 ## Proxy method names
 
 The proxy protocol now uses the method names defined by the

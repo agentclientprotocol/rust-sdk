@@ -12,11 +12,10 @@ use std::time::Instant;
 use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
     MessageMcpNotification, MessageMcpRequest, MessageMcpResponse, Notification as RpcNotification,
-    Request as RpcRequest, RequestId,
 };
 use agent_client_protocol::{
-    DynConnectTo, JsonRpcMessage, RawJsonRpcMessage, RawJsonRpcParams,
-    RawJsonRpcResponse as RpcResponse, Role, UntypedMessage,
+    DynConnectTo, JsonRpcMessage, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcParams,
+    RawJsonRpcRequest, RawJsonRpcResponse as RpcResponse, Role, UntypedMessage,
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -390,7 +389,7 @@ impl TraceWriter {
         component_index: ComponentIndex,
         successor_index: ComponentIndex,
         successor: Successor,
-        id: Option<RequestId>,
+        id: Option<RawJsonRpcId>,
         protocol: Protocol,
         method: String,
         params: serde_json::Value,
@@ -522,8 +521,8 @@ impl TraceHandle {
 }
 
 /// Convert a JSON-RPC id to serde_json::Value.
-fn id_to_json(id: &RequestId) -> serde_json::Value {
-    serde_json::to_value(id).expect("RequestId serializes infallibly")
+fn id_to_json(id: &RawJsonRpcId) -> serde_json::Value {
+    serde_json::to_value(id).expect("RawJsonRpcId serializes infallibly")
 }
 
 fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value {
@@ -706,7 +705,7 @@ struct TracedMessage {
 #[derive(Debug)]
 struct MessageInfo {
     successor: Successor,
-    id: Option<RequestId>,
+    id: Option<RawJsonRpcId>,
     protocol: Protocol,
     method: String,
     params: serde_json::Value,
@@ -726,7 +725,7 @@ impl MessageInfo {
     /// - `mcp/message` messages are detected and marked as MCP protocol
     ///
     /// Returns (protocol, method, params).
-    fn from_request(req: RpcRequest<RawJsonRpcParams>) -> Self {
+    fn from_request(req: RawJsonRpcRequest) -> Self {
         let untyped =
             UntypedMessage::parse_message(&req.method, &params_from_transport(req.params))
                 .expect("untyped message is infallible");
@@ -744,7 +743,7 @@ impl MessageInfo {
 
     fn from_untyped_request(
         successor: Successor,
-        id: Option<RequestId>,
+        id: Option<RawJsonRpcId>,
         protocol: Protocol,
         untyped: UntypedMessage,
     ) -> Self {
@@ -798,7 +797,7 @@ impl MessageInfo {
 
     fn new(
         successor: Successor,
-        id: Option<RequestId>,
+        id: Option<RawJsonRpcId>,
         protocol: Protocol,
         untyped: UntypedMessage,
     ) -> Self {
@@ -926,7 +925,7 @@ mod tests {
             let bridge = tokio::task::spawn_local(bridge.connect_to(client));
             drop(handle);
 
-            let request = RawJsonRpcMessage::request("test/request".into(), payload.clone(), 1.into()).unwrap();
+            let request = RawJsonRpcMessage::request("test/request".into(), payload.clone(), agent_client_protocol::RawJsonRpcId::Number(1)).unwrap();
             let notification = RawJsonRpcMessage::notification("test/notification".into(), payload.clone()).unwrap();
             for message in [request, notification] {
                 let frame = TransportFrame::Single(message);
@@ -935,7 +934,7 @@ mod tests {
                 let forwarded = base_peer.rx.next().await.unwrap();
                 assert_eq!(forwarded.to_json().unwrap(), original_wire);
             }
-            let response = TransportFrame::Single(RawJsonRpcMessage::response(1.into(), Ok(payload.clone())));
+            let response = TransportFrame::Single(RawJsonRpcMessage::response(agent_client_protocol::RawJsonRpcId::Number(1), Ok(payload.clone())));
             let original_wire = response.to_json().unwrap();
             base_peer.tx.unbounded_send(response).unwrap();
             assert_eq!(client_peer.rx.next().await.unwrap().to_json().unwrap(), original_wire);

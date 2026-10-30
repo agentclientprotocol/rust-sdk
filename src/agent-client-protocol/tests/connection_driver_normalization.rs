@@ -13,10 +13,9 @@ use std::{
 
 use agent_client_protocol::{
     Agent, ByteStreams, Channel, Client, ConnectTo, ConnectionDriver, Error, JsonRpcMessage,
-    JsonRpcNotification, Lines, RawJsonRpcMessage, RawJsonRpcResponse, TransportFrame,
-    UntypedMessage,
+    JsonRpcNotification, Lines, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcResponse,
+    TransportFrame, UntypedMessage,
     role::{Role, UntypedRole},
-    schema::v1::RequestId,
 };
 use futures::{FutureExt as _, StreamExt as _, future::Either};
 use serde::{Deserialize, Serialize};
@@ -604,7 +603,7 @@ async fn normalized_split_duplex_half_close_allows_final_reverse_response() {
         RawJsonRpcMessage::request(
             "normalization-request".into(),
             serde_json::json!({}),
-            RequestId::Number(41),
+            RawJsonRpcId::Number(41),
         )
         .unwrap(),
     ))
@@ -619,7 +618,7 @@ async fn normalized_split_duplex_half_close_allows_final_reverse_response() {
         let RawJsonRpcMessage::Request(request) = serde_json::from_str(&request).unwrap() else {
             panic!("peer expected a request");
         };
-        assert_eq!(request.id, RequestId::Number(41));
+        assert_eq!(request.id, RawJsonRpcId::Number(41));
         peer_stage.store(1, Ordering::SeqCst);
         assert!(
             lines.next_line().await.unwrap().is_none(),
@@ -642,7 +641,7 @@ async fn normalized_split_duplex_half_close_allows_final_reverse_response() {
         else {
             panic!("SDK read half lost the final reverse response");
         };
-        assert_eq!(id, RequestId::Number(41));
+        assert_eq!(id, RawJsonRpcId::Number(41));
         assert_eq!(result["status"], "final");
     });
     // Borrow all three futures so timeout does not first destroy either read

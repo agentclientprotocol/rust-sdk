@@ -1,3 +1,4 @@
+use agent_client_protocol::RawJsonRpcId;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -22,7 +23,7 @@ async fn request(
         .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
             method.into(),
             params,
-            v1::RequestId::Number(id),
+            RawJsonRpcId::Number(id),
         )?))
         .map_err(Error::into_internal_error)?;
     let frame = tokio::time::timeout(std::time::Duration::from_secs(5), channel.rx.next())
@@ -35,7 +36,7 @@ async fn request(
             result,
             ..
         })) => {
-            assert_eq!(response_id, v1::RequestId::Number(id));
+            assert_eq!(response_id, RawJsonRpcId::Number(id));
             Ok(json!({ "result": result }))
         }
         TransportFrame::Single(RawJsonRpcMessage::Response(RawJsonRpcResponse::Error {
@@ -43,7 +44,7 @@ async fn request(
             error,
             ..
         })) => {
-            assert_eq!(response_id, v1::RequestId::Number(id));
+            assert_eq!(response_id, RawJsonRpcId::Number(id));
             Ok(json!({
                 "error": {
                     "code": error.code,

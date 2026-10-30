@@ -4,8 +4,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectTo, ConnectionDriver, Error as AcpError, RawJsonRpcMessage,
-    RawJsonRpcResponse as RpcResponse, TransportFrame, schema::v1::RequestId,
+    Agent, Channel, Client, ConnectTo, ConnectionDriver, Error as AcpError, RawJsonRpcId,
+    RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse, TransportFrame,
 };
 use async_tungstenite::tungstenite::Message as WsMessage;
 use futures::{
@@ -932,12 +932,12 @@ impl SseTasks {
 struct ClientState {
     connection: HttpConnection,
     open_session_streams: HashSet<String>,
-    pending_requests: HashMap<RequestId, VecDeque<String>>,
+    pending_requests: HashMap<RawJsonRpcId, VecDeque<String>>,
     incoming: futures::channel::mpsc::UnboundedSender<TransportFrame>,
 }
 
 struct PendingPost {
-    pending_requests: Vec<(RequestId, String)>,
+    pending_requests: Vec<(RawJsonRpcId, String)>,
     response: BoxFuture<'static, Result<(), String>>,
 }
 
@@ -959,7 +959,7 @@ impl PendingPost {
 
 #[derive(Debug)]
 struct CompletedPost {
-    pending_requests: Vec<(RequestId, String)>,
+    pending_requests: Vec<(RawJsonRpcId, String)>,
     result: Result<(), String>,
 }
 
@@ -1144,7 +1144,7 @@ impl ClientState {
         ))
     }
 
-    fn track_pending_requests(&mut self, pending_requests: &[(RequestId, String)]) {
+    fn track_pending_requests(&mut self, pending_requests: &[(RawJsonRpcId, String)]) {
         for (id, method) in pending_requests {
             self.pending_requests
                 .entry(id.clone())
@@ -1153,7 +1153,7 @@ impl ClientState {
         }
     }
 
-    fn remove_pending_requests(&mut self, pending_requests: &[(RequestId, String)]) {
+    fn remove_pending_requests(&mut self, pending_requests: &[(RawJsonRpcId, String)]) {
         for (id, method) in pending_requests.iter().rev() {
             let remove_entry = self.pending_requests.get_mut(id).is_some_and(|methods| {
                 if let Some(index) = methods.iter().rposition(|candidate| candidate == method) {
@@ -1167,7 +1167,7 @@ impl ClientState {
         }
     }
 
-    fn take_pending_request_method(&mut self, id: &RequestId) -> Option<String> {
+    fn take_pending_request_method(&mut self, id: &RawJsonRpcId) -> Option<String> {
         let (method, remove_entry) = {
             let methods = self.pending_requests.get_mut(id)?;
             (methods.pop_front(), methods.is_empty())
@@ -1238,7 +1238,7 @@ impl ClientState {
 #[derive(Default)]
 struct FrameBookkeeping {
     session_ids: Vec<String>,
-    pending_requests: Vec<(RequestId, String)>,
+    pending_requests: Vec<(RawJsonRpcId, String)>,
 }
 
 impl FrameBookkeeping {
@@ -1319,17 +1319,17 @@ async fn read_sse(
     Ok(())
 }
 
-fn pending_request_for_message(msg: &RawJsonRpcMessage) -> Option<(RequestId, String)> {
+fn pending_request_for_message(msg: &RawJsonRpcMessage) -> Option<(RawJsonRpcId, String)> {
     let RawJsonRpcMessage::Request(request) = msg else {
         return None;
     };
     pending_request_key(&request.id).map(|id| (id, request.method.to_string()))
 }
 
-fn pending_request_key(id: &RequestId) -> Option<RequestId> {
+fn pending_request_key(id: &RawJsonRpcId) -> Option<RawJsonRpcId> {
     match id {
-        RequestId::Null => None,
-        RequestId::Number(_) | RequestId::Str(_) => Some(id.clone()),
+        RawJsonRpcId::Null => None,
+        RawJsonRpcId::Number(_) | RawJsonRpcId::Str(_) => Some(id.clone()),
     }
 }
 
@@ -1586,7 +1586,7 @@ mod tests {
         time::Duration,
     };
 
-    use agent_client_protocol::{UntypedMessage, schema::v1::RequestId};
+    use agent_client_protocol::{RawJsonRpcId, UntypedMessage};
     use axum::{
         Json, Router,
         extract::{WebSocketUpgrade, ws::Message as AxumWsMessage},
@@ -1829,7 +1829,7 @@ mod tests {
                         RawJsonRpcMessage::request(
                             "initialize".to_string(),
                             json!({}),
-                            RequestId::Number(1),
+                            RawJsonRpcId::Number(1),
                         )
                         .unwrap(),
                     ))
@@ -1881,7 +1881,7 @@ mod tests {
                         RawJsonRpcMessage::request(
                             "initialize".to_string(),
                             json!({}),
-                            RequestId::Number(1),
+                            RawJsonRpcId::Number(1),
                         )
                         .unwrap(),
                     ))
@@ -2076,7 +2076,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -2163,7 +2163,7 @@ mod tests {
                             response_ready.notified().await;
                             yield Ok::<_, Infallible>(sse_event(
                                 RawJsonRpcMessage::response(
-                                    RequestId::Number(2),
+                                    RawJsonRpcId::Number(2),
                                     Ok(json!({ "sessionId": "session-1" })),
                                 ),
                             ));
@@ -2190,7 +2190,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -2214,7 +2214,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "custom/sessionish".to_string(),
                     json!({}),
-                    RequestId::Number(2),
+                    RawJsonRpcId::Number(2),
                 )
                 .unwrap(),
             ))
@@ -2227,7 +2227,7 @@ mod tests {
         assert!(matches!(
             response,
             RawJsonRpcMessage::Response(RpcResponse::Result {
-                id: RequestId::Number(2),
+                id: RawJsonRpcId::Number(2),
                 ..
             })
         ));
@@ -2291,7 +2291,7 @@ mod tests {
                                 response_ready.notified().await;
                                 yield Ok::<_, Infallible>(sse_event(
                                     RawJsonRpcMessage::response(
-                                        RequestId::Number(2),
+                                        RawJsonRpcId::Number(2),
                                         Ok(json!({ "sessionId": "forked-session" })),
                                     ),
                                 ));
@@ -2319,7 +2319,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -2343,7 +2343,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "session/fork".to_string(),
                     json!({ "sessionId": "source-session" }),
-                    RequestId::Number(2),
+                    RawJsonRpcId::Number(2),
                 )
                 .unwrap(),
             ))
@@ -2362,7 +2362,7 @@ mod tests {
         assert!(matches!(
             response,
             RawJsonRpcMessage::Response(RpcResponse::Result {
-                id: RequestId::Number(2),
+                id: RawJsonRpcId::Number(2),
                 ..
             })
         ));
@@ -2440,7 +2440,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -2476,7 +2476,7 @@ mod tests {
         caller
             .tx
             .unbounded_send(single_frame(RawJsonRpcMessage::response(
-                RequestId::Number(10),
+                RawJsonRpcId::Number(10),
                 Ok(json!({})),
             )))
             .unwrap();
@@ -2874,7 +2874,7 @@ mod tests {
             pending_requests: HashMap::new(),
             incoming,
         };
-        let pending_request = (RequestId::Number(7), "custom/earlier".to_string());
+        let pending_request = (RawJsonRpcId::Number(7), "custom/earlier".to_string());
         state.track_pending_requests(std::slice::from_ref(&pending_request));
         let mut posts = PostQueues::default();
         posts.ordered.push(PendingPost {
@@ -2975,7 +2975,7 @@ mod tests {
                     RawJsonRpcMessage::request(
                         "test/callback".to_string(),
                         json!({}),
-                        RequestId::Number(99),
+                        RawJsonRpcId::Number(99),
                     )
                     .unwrap(),
                 ),
@@ -2994,7 +2994,7 @@ mod tests {
             ));
             outgoing_tx
                 .unbounded_send(single_frame(RawJsonRpcMessage::response(
-                    RequestId::Number(99),
+                    RawJsonRpcId::Number(99),
                     Ok(json!({})),
                 )))
                 .unwrap();
@@ -3070,7 +3070,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3133,11 +3133,11 @@ mod tests {
                             }
                             RawJsonRpcMessage::Response(
                                 RpcResponse::Result {
-                                    id: RequestId::Number(99),
+                                    id: RawJsonRpcId::Number(99),
                                     ..
                                 }
                                 | RpcResponse::Error {
-                                    id: RequestId::Number(99),
+                                    id: RawJsonRpcId::Number(99),
                                     ..
                                 },
                             ) => {
@@ -3164,7 +3164,7 @@ mod tests {
                                 RawJsonRpcMessage::request(
                                     "client/callback".to_string(),
                                     json!({}),
-                                    RequestId::Number(99),
+                                    RawJsonRpcId::Number(99),
                                 )
                                 .unwrap(),
                             ));
@@ -3191,7 +3191,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3212,7 +3212,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "custom/slow".to_string(),
                     json!({}),
-                    RequestId::Number(2),
+                    RawJsonRpcId::Number(2),
                 )
                 .unwrap(),
             ))
@@ -3227,13 +3227,13 @@ mod tests {
             callback,
             RawJsonRpcMessage::Request(request)
                 if request.method.as_ref() == "client/callback"
-                    && request.id == RequestId::Number(99)
+                    && request.id == RawJsonRpcId::Number(99)
         ));
 
         caller
             .tx
             .unbounded_send(single_frame(RawJsonRpcMessage::response(
-                RequestId::Number(99),
+                RawJsonRpcId::Number(99),
                 Ok(json!({})),
             )))
             .unwrap();
@@ -3244,7 +3244,7 @@ mod tests {
         assert!(matches!(
             callback_response,
             RawJsonRpcMessage::Response(RpcResponse::Result {
-                id: RequestId::Number(99),
+                id: RawJsonRpcId::Number(99),
                 ..
             })
         ));
@@ -3288,7 +3288,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3306,7 +3306,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "session/prompt".to_string(),
                     json!({}),
-                    RequestId::Number(2),
+                    RawJsonRpcId::Number(2),
                 )
                 .unwrap(),
             ))
@@ -3352,7 +3352,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3407,7 +3407,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3922,7 +3922,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -3980,7 +3980,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -4031,7 +4031,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -4045,7 +4045,7 @@ mod tests {
         assert!(matches!(
             init_response,
             RawJsonRpcMessage::Response(RpcResponse::Error {
-                id: RequestId::Number(1),
+                id: RawJsonRpcId::Number(1),
                 ..
             })
         ));
@@ -4090,7 +4090,7 @@ mod tests {
                 RawJsonRpcMessage::request(
                     "initialize".to_string(),
                     json!({}),
-                    RequestId::Number(1),
+                    RawJsonRpcId::Number(1),
                 )
                 .unwrap(),
             ))
@@ -4132,7 +4132,7 @@ mod tests {
             StatusCode::OK,
             headers,
             Json(RawJsonRpcMessage::response(
-                RequestId::Number(1),
+                RawJsonRpcId::Number(1),
                 Ok(json!({})),
             )),
         )
@@ -4140,7 +4140,7 @@ mod tests {
 
     async fn initialize_error_response() -> Json<RawJsonRpcMessage> {
         Json(RawJsonRpcMessage::response(
-            RequestId::Number(1),
+            RawJsonRpcId::Number(1),
             Err(AcpError::invalid_request().data("initialize rejected")),
         ))
     }
@@ -4170,7 +4170,7 @@ mod tests {
         ws.on_upgrade(|mut socket| async move {
             drop(socket.send(AxumWsMessage::Text("{not json".into())).await);
             let valid = serde_json::to_string(&RawJsonRpcMessage::response(
-                RequestId::Number(1),
+                RawJsonRpcId::Number(1),
                 Ok(json!({})),
             ))
             .unwrap();

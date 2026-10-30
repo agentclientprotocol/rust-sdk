@@ -234,8 +234,8 @@ where
 #[cfg(test)]
 mod tests {
     use agent_client_protocol::{
-        Channel, ConnectionDriver, RawJsonRpcMessage, RawJsonRpcResponse as RpcResponse,
-        TransportFrame, schema::v1::RequestId,
+        Channel, ConnectionDriver, RawJsonRpcId, RawJsonRpcMessage,
+        RawJsonRpcResponse as RpcResponse, TransportFrame,
     };
     use async_tungstenite::{tokio::connect_async, tungstenite::Message as ClientWsMessage};
     use axum::{Router, extract::WebSocketUpgrade, routing::get};
@@ -275,7 +275,7 @@ mod tests {
                         TransportFrame::Malformed { error, .. } => {
                             outgoing
                                 .unbounded_send(TransportFrame::Single(
-                                    RawJsonRpcMessage::response(RequestId::Null, Err(error)),
+                                    RawJsonRpcMessage::response(RawJsonRpcId::Null, Err(error)),
                                 ))
                                 .unwrap();
                         }
@@ -608,7 +608,7 @@ mod tests {
         assert!(matches!(
             parsed,
             RawJsonRpcMessage::Response(RpcResponse::Error {
-                id: RequestId::Null,
+                id: RawJsonRpcId::Null,
                 ..
             })
         ));

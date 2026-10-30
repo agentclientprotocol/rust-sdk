@@ -13,11 +13,10 @@ use std::{
 
 use agent_client_protocol::{
     ByteStreams, Channel, ConnectTo, ConnectionDriver, ConnectionTermination, ConnectionTo,
-    Dispatch, DynConnectTo, Error, Handled, JsonRpcMessage, JsonRpcRequest, Lines,
+    Dispatch, DynConnectTo, Error, Handled, JsonRpcMessage, JsonRpcRequest, Lines, RawJsonRpcId,
     RawJsonRpcMessage, RawJsonRpcResponse as Response, TransportFrame, UntypedMessage,
     is_connection_terminated, is_incoming_transport_closed,
     role::{Role, UntypedRole},
-    schema::v1::RequestId,
 };
 use agent_client_protocol_test::{MyRequest, MyResponse};
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, future::join, stream};
@@ -205,7 +204,7 @@ impl ConnectTo<UntypedRole> for RequestReplyClient {
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                 "myRequest".into(),
                 serde_json::json!({}),
-                RequestId::Number(42),
+                RawJsonRpcId::Number(42),
             )?))
             .map_err(Error::into_internal_error)?;
 
@@ -218,7 +217,7 @@ impl ConnectTo<UntypedRole> for RequestReplyClient {
         else {
             panic!("active component lost its response");
         };
-        assert_eq!(id, RequestId::Number(42));
+        assert_eq!(id, RawJsonRpcId::Number(42));
         assert_eq!(result, serde_json::json!({ "status": "received" }));
         drop(channel);
         if let Some(driver) = driver {
@@ -317,7 +316,7 @@ async fn assert_connect_to_flushes_final_response(
         let request = RawJsonRpcMessage::request(
             "myRequest".into(),
             serde_json::json!({}),
-            RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )
         .unwrap();
         let mut request_bytes = serde_json::to_vec(&request).unwrap();
@@ -339,7 +338,7 @@ async fn assert_connect_to_flushes_final_response(
         else {
             panic!("expected successful JSON-RPC response");
         };
-        assert_eq!(id, RequestId::Number(1));
+        assert_eq!(id, RawJsonRpcId::Number(1));
         assert_eq!(
             serde_json::from_value::<MyResponse>(result).unwrap().status,
             "received"
@@ -375,7 +374,7 @@ async fn assert_passive_bridge_preserves_half_close(
             RawJsonRpcMessage::request(
                 "myRequest".into(),
                 serde_json::json!({}),
-                RequestId::Number(43),
+                RawJsonRpcId::Number(43),
             )
             .unwrap(),
         ))
@@ -391,7 +390,7 @@ async fn assert_passive_bridge_preserves_half_close(
         let Some(TransportFrame::Single(RawJsonRpcMessage::Request(request))) = frame else {
             panic!("passive bridge lost the request");
         };
-        assert_eq!(request.id, RequestId::Number(43));
+        assert_eq!(request.id, RawJsonRpcId::Number(43));
         assert_eq!(&*request.method, "myRequest");
 
         let eof = tokio::select! {
@@ -410,7 +409,7 @@ async fn assert_passive_bridge_preserves_half_close(
         client_peer
             .tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
-                RequestId::Number(43),
+                RawJsonRpcId::Number(43),
                 Ok(serde_json::json!({ "status": "received" })),
             )))
             .expect("reverse direction must remain open after the first EOF");
@@ -424,7 +423,7 @@ async fn assert_passive_bridge_preserves_half_close(
             else {
                 panic!("passive bridge lost the final reverse-direction response");
             };
-            assert_eq!(id, RequestId::Number(43));
+            assert_eq!(id, RawJsonRpcId::Number(43));
             assert_eq!(result, serde_json::json!({ "status": "received" }));
             assert!(
                 transport_peer.rx.next().await.is_none(),
@@ -518,7 +517,7 @@ async fn active_channel_output_is_copied_before_component_completion() {
         else {
             panic!("bridge did not copy the active component's request");
         };
-        assert_eq!(request.id, RequestId::Number(42));
+        assert_eq!(request.id, RawJsonRpcId::Number(42));
         assert_eq!(&*request.method, "myRequest");
         peer.tx
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
@@ -635,7 +634,7 @@ async fn channel_peer_receives_final_response_after_write_half_closes() {
             RawJsonRpcMessage::request(
                 "myRequest".into(),
                 serde_json::json!({}),
-                RequestId::Number(40),
+                RawJsonRpcId::Number(40),
             )
             .unwrap(),
         ))
@@ -650,7 +649,7 @@ async fn channel_peer_receives_final_response_after_write_half_closes() {
         else {
             panic!("channel read half closed before the final response");
         };
-        assert_eq!(id, RequestId::Number(40));
+        assert_eq!(id, RawJsonRpcId::Number(40));
         assert_eq!(
             serde_json::from_value::<MyResponse>(result).unwrap().status,
             "received"
@@ -690,7 +689,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
         RawJsonRpcMessage::request(
             "myRequest".into(),
             serde_json::json!({}),
-            RequestId::Number(41),
+            RawJsonRpcId::Number(41),
         )
         .unwrap(),
     ))
@@ -715,7 +714,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
         );
 
         let response = RawJsonRpcMessage::response(
-            RequestId::Number(41),
+            RawJsonRpcId::Number(41),
             Ok(serde_json::json!({ "status": "received" })),
         );
         let mut response_bytes = serde_json::to_vec(&response).unwrap();
@@ -732,7 +731,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
         else {
             panic!("read half closed before delivering the peer's final response");
         };
-        assert_eq!(id, RequestId::Number(41));
+        assert_eq!(id, RawJsonRpcId::Number(41));
         assert_eq!(result["status"], "received");
     };
 
@@ -1391,7 +1390,7 @@ async fn request_finishing_conversion_after_eof_keeps_the_eof_cause() {
             RawJsonRpcMessage::request(
                 "myRequest".into(),
                 serde_json::json!({}),
-                RequestId::Number(1),
+                RawJsonRpcId::Number(1),
             )
             .unwrap(),
         ))

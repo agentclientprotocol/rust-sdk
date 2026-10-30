@@ -32,8 +32,8 @@ use crate::jsonrpc::outgoing_actor::send_raw_message;
 use crate::jsonrpc::protocol_compat::ProtocolCompat;
 use crate::jsonrpc::raw_is_response_only_shape;
 
+use crate::RawJsonRpcId;
 use crate::role::Role;
-use crate::schema::v1::RequestId;
 
 use super::Handled;
 
@@ -409,7 +409,7 @@ fn dispatch_from_message<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
     method: std::sync::Arc<str>,
     params: Option<RawJsonRpcParams>,
-    id: Option<RequestId>,
+    id: Option<RawJsonRpcId>,
     protocol_compat: &ProtocolCompat,
     request_cancellations: &super::RequestCancellationRegistry,
     response_destination: Option<ResponseDestination>,

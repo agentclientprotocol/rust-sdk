@@ -7,6 +7,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::DynConnectTo;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::RawJsonRpcId;
 use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, V2Builder, raw_is_response_only_shape};
@@ -14,8 +16,6 @@ use crate::role::{HasPeer, RemoteStyle};
 use crate::schema::METHOD_INITIALIZE_PROXY;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::InitializeRequest;
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v1::RequestId;
 use crate::schema::v1::SessionId;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
@@ -606,9 +606,8 @@ fn select_initialize_protocol(
         .map_err(|_| invalid_initialize_protocol_version())?;
     let selected = select_configured_protocol(requested, supported)?;
     // V2 request ids must be strings or integers; v1 still accepts null.
-    if selected == SelectedProtocol::V2 && request.id == RequestId::Null {
-        return Err(crate::Error::invalid_request()
-            .data("ACP protocol v2 request ids must be a string or an integer, not null"));
+    if selected == SelectedProtocol::V2 && request.id == RawJsonRpcId::Null {
+        return Err(crate::jsonrpc::raw_id::null_v2_request_id());
     }
     rewrite_initialize_params(params, requested, selected)?;
 
@@ -874,7 +873,7 @@ mod initialize_normalization_tests {
         let message = RawJsonRpcMessage::request(
             "initialize".into(),
             serde_json::Value::Object(params.clone()),
-            RequestId::Number(1),
+            RawJsonRpcId::Number(1),
         )
         .expect("build initialize request");
 
@@ -1017,7 +1016,7 @@ fn send_initialize_error(
         }
         TransportFrame::Malformed { raw, error } if !raw_is_response_only_shape(raw) => {
             TransportFrame::Single(RawJsonRpcMessage::response(
-                RequestId::Null,
+                RawJsonRpcId::Null,
                 Err(error.clone()),
             ))
         }
@@ -1277,7 +1276,7 @@ async fn pipe_protocol_peers_until_done(
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug)]
 struct InitializeResponse {
-    id: RequestId,
+    id: RawJsonRpcId,
     result: Result<serde_json::Value, Box<RawJsonRpcError>>,
 }
 
@@ -1303,7 +1302,7 @@ impl InitializeResponse {
         RawJsonRpcMessage::Response(RpcResponse::new(self.id, self.result))
     }
 
-    fn with_id(self, id: RequestId) -> RawJsonRpcMessage {
+    fn with_id(self, id: RawJsonRpcId) -> RawJsonRpcMessage {
         RawJsonRpcMessage::Response(RpcResponse::new(id, self.result))
     }
 
@@ -1337,7 +1336,7 @@ mod raw_initialize_tests {
             assert_eq!(serde_json::to_value(response.into_message()).unwrap(), wire);
             let response =
                 InitializeResponse::from_message(serde_json::from_value(wire).unwrap()).unwrap();
-            let forwarded = response.with_id(RequestId::Str("replacement".into()));
+            let forwarded = response.with_id(RawJsonRpcId::Str("replacement".into()));
             assert_eq!(
                 serde_json::to_value(forwarded).unwrap(),
                 json!({"jsonrpc":"2.0", "id":"replacement", "error":error})
@@ -1461,7 +1460,7 @@ fn ensure_client_initialize_request(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-fn initialize_request_id(message: &RawJsonRpcMessage) -> Option<RequestId> {
+fn initialize_request_id(message: &RawJsonRpcMessage) -> Option<RawJsonRpcId> {
     let RawJsonRpcMessage::Request(request) = message else {
         return None;
     };
@@ -1950,7 +1949,7 @@ mod lifetime_tests {
                     .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
                         "initialize".into(),
                         serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
-                        RequestId::Number(1),
+                        RawJsonRpcId::Number(1),
                     )?))
                     .unwrap();
                 assert!(channel.rx.next().await.is_some(), "initialize response");
