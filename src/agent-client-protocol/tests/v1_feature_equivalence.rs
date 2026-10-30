@@ -13,7 +13,7 @@ use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled, Lines,
     Proxy, Role, UntypedMessage,
-    schema::{InitializeProxyRequest, ProtocolVersion, v1},
+    schema::{ProtocolVersion, v1},
 };
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};
@@ -73,7 +73,7 @@ async fn v1_proxy_default_forwarding_is_feature_independent() {
     // The test plays the conductor.
     let mut conductor = WirePeer::connect(Proxy.v1());
 
-    let mut initialize_params = serde_json::to_value(InitializeProxyRequest::from(
+    let mut initialize_params = serde_json::to_value(v1::InitializeProxyRequest::from(
         v1::InitializeRequest::new(ProtocolVersion::V1),
     ))
     .expect("serialize proxy/initialize");

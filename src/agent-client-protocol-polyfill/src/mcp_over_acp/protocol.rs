@@ -1,7 +1,7 @@
 use agent_client_protocol::{
     Error, JsonRpcMessage, JsonRpcResponse, UntypedMessage,
     schema::{
-        InitializeProxyRequest, METHOD_INITIALIZE_PROXY, ProtocolVersion,
+        METHOD_INITIALIZE_PROXY, ProtocolVersion,
         v1::{self, LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest},
     },
 };
@@ -84,7 +84,7 @@ impl PolyfillProtocol {
         };
         match protocol {
             Self::V1 => {
-                InitializeProxyRequest::parse_message(request.method(), request.params())?;
+                v1::InitializeProxyRequest::parse_message(request.method(), request.params())?;
             }
             #[cfg(feature = "unstable_protocol_v2")]
             Self::V2 => {

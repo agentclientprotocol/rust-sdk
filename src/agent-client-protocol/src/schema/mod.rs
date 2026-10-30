@@ -319,6 +319,39 @@ mod v2_impls;
 /// Agent Client Protocol v1 schema types.
 pub mod v1 {
     pub use agent_client_protocol_schema::v1::*;
+
+    /// Initialize request for a protocol-v1 proxy component.
+    ///
+    /// A conductor sends this (`proxy/initialize`) instead of `initialize` to
+    /// components that have a successor in the chain. Components that receive
+    /// it know they are operating as a proxy and should forward messages to
+    /// their successor. With `unstable_protocol_v2`, `schema::v2` has the
+    /// protocol-v2 request of the same name.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
+    #[request(
+        method = "proxy/initialize",
+        response = InitializeResponse,
+        crate = crate
+    )]
+    pub struct InitializeProxyRequest {
+        /// The underlying protocol-v1 initialize request data.
+        #[serde(flatten)]
+        pub initialize: InitializeRequest,
+    }
+
+    impl InitializeProxyRequest {
+        /// Create a proxy initialization request from a normal v1 initialization request.
+        #[must_use]
+        pub fn new(initialize: InitializeRequest) -> Self {
+            Self { initialize }
+        }
+    }
+
+    impl From<InitializeRequest> for InitializeProxyRequest {
+        fn from(initialize: InitializeRequest) -> Self {
+            Self::new(initialize)
+        }
+    }
 }
 
 /// Agent Client Protocol v2 draft schema types.
@@ -328,9 +361,9 @@ pub mod v2 {
 
     /// Initialize request for a protocol-v2 proxy component.
     ///
-    /// This uses the same `proxy/initialize` method as the stable
-    /// [`super::InitializeProxyRequest`], but preserves the v2 initialize
-    /// request and response schemas.
+    /// This uses the same `proxy/initialize` method as
+    /// [`schema::v1::InitializeProxyRequest`](super::v1::InitializeProxyRequest),
+    /// but carries the v2 initialize request and response schemas.
     #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
     #[request(
         method = "proxy/initialize",

@@ -14,7 +14,7 @@ use std::{
 use agent_client_protocol::{
     Agent, Channel, Client, Conductor, ConnectTo, ConnectionDriver, Error, JsonRpcNotification,
     Lines, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, TransportFrame,
-    schema::{InitializeProxyRequest, ProtocolVersion, v1},
+    schema::{ProtocolVersion, v1},
 };
 use futures::{
     FutureExt as _, SinkExt as _, StreamExt as _,
@@ -86,7 +86,7 @@ impl ConnectTo<Conductor> for FiniteProxy {
             .v1()
             .on_receive_request_from(
                 Client,
-                async move |request: InitializeProxyRequest, responder, _cx| {
+                async move |request: v1::InitializeProxyRequest, responder, _cx| {
                     assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);
                     responder.respond(v1::InitializeResponse::new(
                         request.initialize.protocol_version,
@@ -373,9 +373,9 @@ async fn finite_proxy_router_flushes_response_and_final_notification() -> Result
     let frames = run_over_lines(
         Proxy.protocol_router().with_v1(FiniteProxy),
         "proxy/initialize",
-        serde_json::to_value(InitializeProxyRequest::from(v1::InitializeRequest::new(
-            ProtocolVersion::V1,
-        )))
+        serde_json::to_value(v1::InitializeProxyRequest::from(
+            v1::InitializeRequest::new(ProtocolVersion::V1),
+        ))
         .map_err(Error::into_internal_error)?,
     )
     .await?;

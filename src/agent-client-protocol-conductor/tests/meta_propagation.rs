@@ -5,7 +5,7 @@ use agent_client_protocol::schema::v1::{
     NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId, StopReason,
     TextContent,
 };
-use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion};
+use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
@@ -54,7 +54,7 @@ impl ConnectTo<Conductor> for PassthroughProxy {
             .name("passthrough-proxy")
             .on_receive_request_from(
                 Client,
-                async |request: InitializeProxyRequest, responder, cx| {
+                async |request: v1::InitializeProxyRequest, responder, cx| {
                     cx.send_request_to(Agent, request.initialize)
                         .forward_response_to(responder)
                 },

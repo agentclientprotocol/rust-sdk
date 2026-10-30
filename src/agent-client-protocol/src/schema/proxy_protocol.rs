@@ -3,7 +3,6 @@
 //! These types are intended to become part of the ACP protocol specification.
 
 use crate::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, UntypedMessage};
-use agent_client_protocol_schema::v1::{InitializeRequest, InitializeResponse};
 use serde::{Deserialize, Serialize};
 
 // =============================================================================
@@ -78,22 +77,3 @@ impl<Notif: JsonRpcNotification> JsonRpcNotification for SuccessorMessage<Notif>
 
 /// JSON-RPC method name for proxy initialization.
 pub const METHOD_INITIALIZE_PROXY: &str = "proxy/initialize";
-
-/// Initialize request for proxy components.
-///
-/// This is sent to components that have a successor in the chain.
-/// Components that receive this (instead of `InitializeRequest`) know they
-/// are operating as a proxy and should forward messages to their successor.
-#[derive(Debug, Clone, Serialize, Deserialize, crate::JsonRpcRequest)]
-#[request(method = "proxy/initialize", response = InitializeResponse, crate = crate)]
-pub struct InitializeProxyRequest {
-    /// The underlying initialize request data.
-    #[serde(flatten)]
-    pub initialize: InitializeRequest,
-}
-
-impl From<InitializeRequest> for InitializeProxyRequest {
-    fn from(initialize: InitializeRequest) -> Self {
-        Self { initialize }
-    }
-}

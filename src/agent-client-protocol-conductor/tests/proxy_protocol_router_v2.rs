@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use agent_client_protocol::schema::{InitializeProxyRequest, ProtocolVersion, v1, v2};
+use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     Agent, Builder, ByteStreams, Client, Conductor, ConnectionTo, Error, Proxy,
 };
@@ -95,7 +95,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
         .name("v1-proxy")
         .on_receive_request_from(
             Client,
-            async move |request: InitializeProxyRequest, responder, cx| {
+            async move |request: v1::InitializeProxyRequest, responder, cx| {
                 v1_proxy_initialize
                     .v1
                     .record_proxy_initialize(request.initialize.protocol_version);
