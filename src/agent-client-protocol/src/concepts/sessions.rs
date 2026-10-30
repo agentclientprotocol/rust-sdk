@@ -17,7 +17,9 @@
 //!
 //! # Creating a Session
 //!
-//! Use the session builder to create a new session:
+//! Use the session builder to create a new session. Every setup method hands
+//! back a [`SessionSetup`]: the session plus the complete response of the
+//! request that set it up:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
@@ -25,8 +27,8 @@
 //! # Client.v1().connect_with(transport, async |cx| {
 //! cx.build_session_cwd()?          // Use current working directory
 //!     .block_task()                // Mark as blocking
-//!     .run_until(async |session| {
-//!         // Use the session here
+//!     .run_until(async |setup| {
+//!         // Use `setup.session` and `setup.response` here
 //!         Ok(())
 //!     })
 //!     .await?;
@@ -55,20 +57,24 @@
 //! # Restoring a Session
 //!
 //! Stable protocol v1 direct clients can turn `session/load` and
-//! `session/resume` into a [`OpenedSession`](crate::v1::OpenedSession) without
-//! manually installing session handlers. It contains both the [`ActiveSession`]
-//! and the complete operation-specific response:
+//! `session/resume` into a [`SessionSetup`] without manually installing session
+//! handlers. It contains both the [`ActiveSession`] and the complete
+//! operation-specific response:
 //!
 //! ```no_run
 //! # use agent_client_protocol::{Client, ConnectTo};
+//! use agent_client_protocol::v1::SessionSetup;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.v1().connect_with(transport, async |cx| {
-//! let restored = cx
+//! let SessionSetup {
+//!     mut session,
+//!     response: load_response,
+//!     ..
+//! } = cx
 //!     .load_session("session-1", "/path/to/project")
 //!     .block_task()
 //!     .start_session()
 //!     .await?;
-//! let (mut session, load_response) = restored.into_parts();
 //! println!("load response: {load_response:?}");
 //! session.send_prompt("Continue where we left off")?;
 //! # Ok(())
@@ -93,15 +99,16 @@
 //!
 //! # Sending Prompts
 //!
-//! Inside `run_until`, you get an [`ActiveSession`] that lets you interact
-//! with the agent:
+//! Inside `run_until`, the [`SessionSetup`] holds an [`ActiveSession`] that
+//! lets you interact with the agent:
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
+//! use agent_client_protocol::v1::SessionSetup;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! # Client.v1().connect_with(transport, async |cx| {
 //! # cx.build_session_cwd()?.block_task()
-//! .run_until(async |mut session| {
+//! .run_until(async |SessionSetup { mut session, .. }| {
 //!     // Send a prompt
 //!     session.send_prompt("What is 2 + 2?")?;
 //!
@@ -171,8 +178,8 @@
 //! Client.v1()
 //!     .on_receive_request(async |req: NewSessionRequest, responder, cx| {
 //!         cx.build_session_from(req)
-//!             .on_session_start(async |session| {
-//!                 // Handle the session
+//!             .on_session_start(async |setup| {
+//!                 // Handle `setup.session` and `setup.response`
 //!                 Ok(())
 //!             })?;
 //!         Ok(())
@@ -194,7 +201,7 @@
 //! `v2::ResumeSessionBuilder::on_proxy_session_start` instead. The feature-gated
 //! `v2::ForkSessionBuilder` exposes the same helper. Each forwards the complete
 //! operation-specific response and then spawns the callback with an
-//! `v2::OpenedSession`, so the callback keeps both the command-only session
+//! `v2::SessionSetup`, so the callback keeps both the command-only session
 //! handle and that exact response:
 //!
 //! ```rust,ignore
@@ -203,9 +210,9 @@
 //!         Client,
 //!         async |request: schema::v2::NewSessionRequest, responder, cx| {
 //!             cx.build_session_from(request)
-//!                 .on_proxy_session_start(responder, async |opened| {
-//!                     let (session, setup_response) = opened.into_parts();
-//!                     track_session(session.session_id(), setup_response);
+//!                 .on_proxy_session_start(responder, async |setup| {
+//!                     let SessionSetup { session, response, .. } = setup;
+//!                     track_session(session.session_id(), response);
 //!                     Ok(())
 //!                 })
 //!         },
@@ -232,3 +239,4 @@
 //! - [Ordering](super::ordering) - Understand when to use `block_task` vs `on_*`
 //!
 //! [`ActiveSession`]: crate::v1::ActiveSession
+//! [`SessionSetup`]: crate::v1::SessionSetup

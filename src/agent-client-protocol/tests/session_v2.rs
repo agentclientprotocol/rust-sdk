@@ -174,9 +174,9 @@ async fn v2_prompt_acceptance_is_independent_from_session_updates() {
                 .start_session()
                 .block_task()
                 .await?;
-            assert_eq!(opened.response(), &expected_new_response);
+            assert_eq!(&opened.response, &expected_new_response);
 
-            let (session, response) = opened.into_parts();
+            let (session, response) = (opened.session, opened.response);
             assert_eq!(response, expected_new_response);
             assert_eq!(session.session_id(), &session_id);
 
@@ -279,11 +279,11 @@ async fn v2_fork_builder_uses_the_forked_response_id_and_preserves_the_response(
             .start_session()
             .block_task()
             .await?;
-        assert_eq!(opened.session().session_id(), &forked_session_id);
-        assert_ne!(opened.session().session_id(), &source_session_id);
-        assert_eq!(opened.response(), &expected_response);
+        assert_eq!(opened.session.session_id(), &forked_session_id);
+        assert_ne!(opened.session.session_id(), &source_session_id);
+        assert_eq!(&opened.response, &expected_response);
 
-        let (session, response) = opened.into_parts();
+        let (session, response) = (opened.session, opened.response);
         assert_eq!(session.session_id(), &forked_session_id);
         assert_eq!(response, expected_response);
         Ok(())
@@ -384,7 +384,7 @@ async fn v2_session_cancellation_completes_at_cancelled_idle() {
                 .start_session()
                 .block_task()
                 .await?;
-            let (session, _) = opened.into_parts();
+            let session = opened.session;
             session.send_prompt("cancel me").block_task().await?;
 
             assert!(matches!(
@@ -487,7 +487,7 @@ async fn cloned_v2_session_handles_do_not_own_prompt_state() {
                 .start_session()
                 .block_task()
                 .await?
-                .into_session();
+                .session;
             let other_task = session.clone();
 
             assert_eq!(
@@ -580,7 +580,7 @@ async fn v2_prompt_error_does_not_stop_session_updates() {
                 .start_session()
                 .block_task()
                 .await?;
-            let (session, _) = opened.into_parts();
+            let session = opened.session;
 
             let error = session
                 .send_prompt("reject this")
@@ -710,7 +710,7 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
                 .start_session()
                 .block_task()
                 .await?;
-            let (session, _) = opened.into_parts();
+            let session = opened.session;
             session.send_prompt("ask").block_task().await?;
 
             let (request, responder) = permission_rx
@@ -813,7 +813,7 @@ async fn unhandled_v2_session_messages_are_not_deferred() {
             .start_session()
             .block_task()
             .await?
-            .into_session();
+            .session;
         session.send_prompt("ask").block_task().await?;
 
         let error = permission_result_rx
@@ -916,8 +916,8 @@ async fn v2_resume_replay_is_handled_before_the_response() {
                 .block_task()
                 .await?;
 
-            assert_eq!(opened.session().session_id(), &session_id);
-            assert_eq!(opened.response(), &expected_response);
+            assert_eq!(opened.session.session_id(), &session_id);
+            assert_eq!(&opened.response, &expected_response);
             assert_eq!(
                 *applied_replay
                     .lock()
@@ -1018,7 +1018,7 @@ async fn v2_session_commands_cover_configuration_and_close() {
             .start_session()
             .block_task()
             .await?;
-        let (session, _) = opened.into_parts();
+        let session = opened.session;
 
         assert_eq!(
             session
@@ -1120,7 +1120,7 @@ async fn dropping_v2_session_does_not_unregister_update_handling() {
                 .start_session()
                 .block_task()
                 .await?;
-            let (session, _) = opened.into_parts();
+            let session = opened.session;
             assert_eq!(session.session_id(), &session_id);
             drop(session);
 

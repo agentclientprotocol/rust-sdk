@@ -406,7 +406,7 @@ async fn v2_session_mcp_attachment_is_ready_during_setup_and_lives_for_connectio
 
                 assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
 
-                let session = pending_session.block_task().await?.into_session();
+                let session = pending_session.block_task().await?.session;
                 let remaining_session = session.clone();
                 drop(session);
                 drop(remaining_session);
@@ -599,10 +599,10 @@ async fn v2_fork_mcp_attachment_preserves_request_and_lives_for_connection() -> 
                 assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
 
                 let opened = pending_session.block_task().await?;
-                assert_eq!(opened.session().session_id(), &expected_forked_session_id);
-                assert_ne!(opened.session().session_id(), &source_session_id);
-                assert_eq!(opened.response(), &expected_response);
-                let session = opened.into_session();
+                assert_eq!(opened.session.session_id(), &expected_forked_session_id);
+                assert_ne!(opened.session.session_id(), &source_session_id);
+                assert_eq!(&opened.response, &expected_response);
+                let session = opened.session;
                 let remaining_session = session.clone();
                 drop(session);
                 drop(remaining_session);
@@ -799,9 +799,9 @@ async fn v2_resume_mcp_attachment_preserves_request_and_lives_for_connection() -
                 assert_round_trip(1, &mut round_trip_rx, &mut context_rx, &mut notice_rx).await?;
 
                 let opened = pending_session.block_task().await?;
-                assert_eq!(opened.session().session_id(), &session_id);
-                assert_eq!(opened.response(), &expected_response);
-                let session = opened.into_session();
+                assert_eq!(opened.session.session_id(), &session_id);
+                assert_eq!(&opened.response, &expected_response);
+                let session = opened.session;
                 let remaining_session = session.clone();
                 drop(session);
                 drop(remaining_session);

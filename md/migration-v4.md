@@ -38,7 +38,7 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 | `SentRequest<T>`, `PreparedRequest<T>` | `SentRequest<T, V1>`, `PreparedRequest<T, V1>` | `SentRequest<T, V2>`, `PreparedRequest<T, V2>` |
 | `SessionBuilder` | new session (`build_session*`) | new session (`build_session*`) |
 | `ResumeSessionBuilder` | `resume_session*` | `resume_session*` |
-| `OpenedSession` | a restored session and its response | an opened session and its response |
+| `SessionSetup` | a session and the response of the request that set it up | a session and the response of the request that set it up |
 | `ActiveSession` | the session handle with its update stream | the command-only session handle |
 | `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
 | `LoadSessionBuilder`, `RestoreSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
@@ -89,6 +89,52 @@ fn send(cx: &ConnectionTo<Agent>) -> SentRequest<PromptResponse> { ... }
 Where code compared a v1 request's `id()` with IDs from the raw layer, use
 `raw_id()`.
 
+### Every session setup method returns `SessionSetup`
+
+`v1::SessionSetup` and `v2::SessionSetup` replace `v1::OpenedSession`
+(formerly `RestoredSession`) and `v2::OpenedSession` (formerly
+`OpenedV2Session`). A `SessionSetup` is the session plus the complete
+response of the request that set it up, as public fields. It is
+`#[non_exhaustive]`, so destructure it with `..`:
+
+```rust,ignore
+#[non_exhaustive]
+pub struct SessionSetup<'runner, Link, Response> {   // v2: SessionSetup<Link, Response>
+    pub session: ActiveSession<'runner, Link>,
+    pub response: Response,
+}
+```
+
+Every setup method returns one, in both versions: v1 `start_session` for
+`session/new` (which used to return a bare `ActiveSession`), `session/load`
+and `session/resume`; v2 `session/new`, `session/resume` and
+`session/fork`. The v1 `run_until` and `on_session_start` callbacks receive
+one too, as do the v2 `on_proxy_session_start` callbacks. The v1
+`on_proxy_session_start` callback still receives the `SessionId`, because the
+session is proxied rather than handed to the caller.
+
+The accessors are removed in favor of the fields: `session()`,
+`session_mut()`, `response()`, `into_parts()` and `into_session()`. The v1
+`ActiveSession` no longer stores the `session/new` response:
+`ActiveSession::response()`, `modes()`, `config_options()` and `meta()` are
+removed; read them from `SessionSetup::response`.
+
+```rust,ignore
+// Before
+let mut session = cx.build_session_cwd()?.block_task().start_session().await?;
+let response = session.response();
+.run_until(async |mut session| { ... })
+let (session, response) = restored.into_parts();
+let session = opened.into_session();
+
+// After
+let SessionSetup { mut session, response, .. } =
+    cx.build_session_cwd()?.block_task().start_session().await?;
+.run_until(async |SessionSetup { mut session, .. }| { ... })
+let SessionSetup { session, response, .. } = restored;
+let session = opened.session;
+```
+
 ### Renamed and moved items
 
 Every path is relative to `agent_client_protocol`. Items not listed keep
@@ -108,18 +154,22 @@ their path.
 | `V2SessionBuilder` | `v2::SessionBuilder` |
 | `V2ResumeSessionBuilder` | `v2::ResumeSessionBuilder` |
 | `V2ForkSessionBuilder` | `v2::ForkSessionBuilder` |
-| `OpenedV2Session` | `v2::OpenedSession` |
+| `OpenedV2Session` | `v2::SessionSetup` |
 | `V2Session` | `v2::ActiveSession` |
 | `InitializeOutcome` | `v2::InitializeOutcome` |
 | `InitializationVersionMismatch` | `v2::InitializationVersionMismatch` |
 | `SelectedInitializeResponse` | `v2::SelectedInitializeResponse` |
 | `SessionBuilder` | `v1::SessionBuilder` |
 | `ActiveSession` | `v1::ActiveSession` |
-| `RestoredSession` | `v1::OpenedSession` |
+| `RestoredSession` | `v1::SessionSetup` |
 | `RestoreSessionBuilder` | `v1::RestoreSessionBuilder` (also `v1::LoadSessionBuilder` / `v1::ResumeSessionBuilder` for each request) |
 | `SessionMessage` | `v1::SessionMessage` |
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
 | `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
+| `OpenedSession` (`v1` and `v2`) | `v1::SessionSetup`, `v2::SessionSetup` (public `session` and `response` fields) |
+| `OpenedSession::session()`, `session_mut()`, `response()`, `into_parts()`, `into_session()` | the `session` and `response` fields |
+| `v1::ActiveSession::response()`, `modes()`, `config_options()`, `meta()` | removed; use `SessionSetup::response` |
+| v1 `SessionBuilder::start_session() -> ActiveSession` | returns `v1::SessionSetup<'static, _, NewSessionResponse>` |
 | `Responder<T, V1>` (and the other handles) | unchanged, or `v1::Responder<T>` |
 | `ConnectionTo` in v1 callbacks and session helpers | `v1::ConnectionTo` |
 | `SentRequest<T>`, `PreparedRequest<T>` from a v1 connection | `v1::SentRequest<T>`, `v1::PreparedRequest<T>` |
@@ -219,12 +269,20 @@ Client
 // After
 use agent_client_protocol::{Agent, Client, ConnectTo};
 use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
-use agent_client_protocol::v1::{ActiveSession, ConnectionTo};
+use agent_client_protocol::v1::{ConnectionTo, SessionSetup};
 
 Client
     .v1()
     .connect_with(transport, async |cx: ConnectionTo<Agent>| {
-        // ... unchanged ...
+        cx.send_request(InitializeRequest::new(ProtocolVersion::V1)).block_task().await?;
+        cx.build_session_cwd()?
+            .block_task()
+            .run_until(async |SessionSetup { mut session, .. }| {
+                session.send_prompt("Hello")?;
+                println!("{}", session.read_to_string().await?);
+                Ok(())
+            })
+            .await
     })
     .await
 ```
@@ -287,7 +345,7 @@ Client
 // After
 use agent_client_protocol::{Agent, Client};
 use agent_client_protocol::schema::{ProtocolVersion, v2};
-use agent_client_protocol::v2::{ActiveSession, ConnectionTo, InitializeOutcome};
+use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, SessionSetup};
 
 Client
     .v2()
@@ -295,8 +353,8 @@ Client
         let InitializeOutcome::Initialized(_) = cx.send_initialize(request).block_task().await? else {
             return Err(Error::internal_error());
         };
-        let session: ActiveSession<Agent> =
-            cx.build_session_cwd()?.start_session().block_task().await?.into_session();
+        let SessionSetup { session, .. } =
+            cx.build_session_cwd()?.start_session().block_task().await?;
         session.send_prompt("Hello").block_task().await?;
         Ok(())
     })

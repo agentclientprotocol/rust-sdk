@@ -45,8 +45,8 @@ pub use crate::schema::v1 as schema;
 pub use crate::jsonrpc::v1_connection::ConnectionTo;
 
 pub use crate::session::{
-    ActiveSession, Blocking, LoadSessionBuilder, NonBlocking, OpenedSession, RestoreSessionBuilder,
-    ResumeSessionBuilder, SessionBlockState, SessionBuilder, SessionMessage,
+    ActiveSession, Blocking, LoadSessionBuilder, NonBlocking, RestoreSessionBuilder,
+    ResumeSessionBuilder, SessionBlockState, SessionBuilder, SessionMessage, SessionSetup,
 };
 
 /// A protocol v1 connection builder, returned by

@@ -114,7 +114,8 @@ pub async fn prompt_with_callback(
                     .build_session(PathBuf::from("."))
                     .block_task()
                     .start_session()
-                    .await?;
+                    .await?
+                    .session;
 
                 session.send_prompt(prompt_text)?;
 

@@ -2,7 +2,7 @@ use std::{path::Path, time::Duration};
 
 use agent_client_protocol::V1;
 use agent_client_protocol::v1::ConnectionTo;
-use agent_client_protocol::v1::{ActiveSession, SessionMessage};
+use agent_client_protocol::v1::{SessionMessage, SessionSetup};
 use agent_client_protocol::{
     Agent, Channel, Client, Conductor, RawJsonRpcMessage, Responder, TransportFrame,
     schema::v1::{
@@ -80,8 +80,10 @@ mod callback_future_lifetimes {
     }
 
     fn session_callback<'a>()
-    -> impl FnOnce(ActiveSession<'static, Agent>) -> LifetimeTaggedFuture<'a> + Send + 'static {
-        |_session| LifetimeTaggedFuture(PhantomData)
+    -> impl FnOnce(SessionSetup<'static, Agent, NewSessionResponse>) -> LifetimeTaggedFuture<'a>
+    + Send
+    + 'static {
+        |_setup| LifetimeTaggedFuture(PhantomData)
     }
 
     fn proxy_session_callback<'a>()
@@ -91,29 +93,29 @@ mod callback_future_lifetimes {
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_proxy_session_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::v2::OpenedSession<Conductor, v2::NewSessionResponse>,
+        agent_client_protocol::v2::SessionSetup<Conductor, v2::NewSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
-        |_opened| LifetimeTaggedFuture(PhantomData)
+        |_setup| LifetimeTaggedFuture(PhantomData)
     }
 
     #[cfg(feature = "unstable_protocol_v2")]
     fn v2_proxy_resume_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::v2::OpenedSession<Conductor, v2::ResumeSessionResponse>,
+        agent_client_protocol::v2::SessionSetup<Conductor, v2::ResumeSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
-        |_opened| LifetimeTaggedFuture(PhantomData)
+        |_setup| LifetimeTaggedFuture(PhantomData)
     }
 
     #[cfg(all(feature = "unstable_protocol_v2", feature = "unstable_session_fork"))]
     fn v2_proxy_fork_callback<'a>() -> impl FnOnce(
-        agent_client_protocol::v2::OpenedSession<Conductor, v2::ForkSessionResponse>,
+        agent_client_protocol::v2::SessionSetup<Conductor, v2::ForkSessionResponse>,
     ) -> LifetimeTaggedFuture<'a>
     + Send
     + 'static {
-        |_opened| LifetimeTaggedFuture(PhantomData)
+        |_setup| LifetimeTaggedFuture(PhantomData)
     }
 
     fn on_session_start_accepts_non_static_callback_future<'a>(
@@ -201,14 +203,17 @@ async fn active_session_preserves_config_options_from_new_session_response() {
     );
 
     let client = Client.v1().connect_with(agent, async move |connection| {
-        let session = connection
+        let setup = connection
             .build_session_cwd()?
             .block_task()
             .start_session()
             .await?;
 
-        assert_eq!(session.config_options(), Some(config_options.as_slice()));
-        assert_eq!(session.response(), expected_response);
+        assert_eq!(
+            setup.response.config_options.as_deref(),
+            Some(config_options.as_slice())
+        );
+        assert_eq!(setup.response, expected_response);
         Ok(())
     });
 
@@ -252,15 +257,15 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
 
     let (result_tx, result_rx) = oneshot::channel();
     let client = Client.v1().connect_with(agent, async move |connection| {
-        connection
-            .build_session_cwd()?
-            .on_session_start(async move |mut session| {
+        connection.build_session_cwd()?.on_session_start(
+            async move |SessionSetup { mut session, .. }| {
                 session.send_prompt("test ordering")?;
                 let text = session.read_to_string().await?;
                 result_tx
                     .send(text)
                     .map_err(|_| agent_client_protocol::Error::internal_error())
-            })?;
+            },
+        )?;
 
         let text = result_rx
             .await
@@ -286,15 +291,15 @@ async fn on_session_start_installs_routing_before_later_message() {
     let client = Client
         .v1()
         .connect_with(transport, async move |connection| {
-            connection
-                .build_session_cwd()?
-                .on_session_start(async move |mut session| {
+            connection.build_session_cwd()?.on_session_start(
+                async move |SessionSetup { mut session, .. }| {
                     let update = session.read_update().await?;
                     assert!(matches!(update, SessionMessage::SessionMessage(_)));
                     result_tx
                         .send(())
                         .map_err(|()| agent_client_protocol::Error::internal_error())
-                })?;
+                },
+            )?;
 
             result_rx
                 .await
@@ -358,7 +363,8 @@ async fn start_session_installs_routing_before_later_message() {
                 .build_session_cwd()?
                 .block_task()
                 .start_session()
-                .await?;
+                .await?
+                .session;
             let update = session.read_update().await?;
             assert!(matches!(update, SessionMessage::SessionMessage(_)));
             Ok(())
@@ -440,7 +446,8 @@ async fn start_session_returns_session_new_error_without_closing_connection() {
             .build_session("/accepted")
             .block_task()
             .start_session()
-            .await?;
+            .await?
+            .session;
         assert_eq!(session.session_id(), &SessionId::new("accepted-session"));
         Ok(())
     });
@@ -488,8 +495,8 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
                 connection
                     .build_session_from(request)
                     .on_proxy_session_start(responder, move |opened| async move {
-                        assert_eq!(opened.session().session_id(), &response_session_id);
-                        assert_eq!(opened.response(), &callback_response);
+                        assert_eq!(opened.session.session_id(), &response_session_id);
+                        assert_eq!(&opened.response, &callback_response);
                         callback_tx.unbounded_send(()).map_err(|_| {
                             agent_client_protocol::Error::internal_error()
                                 .data("v2 proxy callback receiver was dropped")
@@ -639,8 +646,8 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
                 connection
                     .fork_session_from(request)
                     .on_proxy_session_start(responder, move |opened| async move {
-                        assert_eq!(opened.session().session_id(), &callback_session_id);
-                        assert_eq!(opened.response(), &callback_response);
+                        assert_eq!(opened.session.session_id(), &callback_session_id);
+                        assert_eq!(&opened.response, &callback_response);
                         callback_tx.unbounded_send(()).map_err(|_| {
                             agent_client_protocol::Error::internal_error()
                                 .data("v2 fork callback receiver was dropped")
@@ -794,8 +801,8 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
                 connection
                     .resume_session_from(request)
                     .on_proxy_session_start(responder, move |opened| async move {
-                        assert_eq!(opened.session().session_id(), &callback_session_id);
-                        assert_eq!(opened.response(), &callback_response);
+                        assert_eq!(opened.session.session_id(), &callback_session_id);
+                        assert_eq!(&opened.response, &callback_response);
                         callback_tx.unbounded_send(()).map_err(|_| {
                             agent_client_protocol::Error::internal_error()
                                 .data("v2 resume callback receiver was dropped")

@@ -355,9 +355,7 @@ where
     /// promotes them to the connection lifetime, independently from how this
     /// request handle is consumed. Setup errors clean up the pending
     /// attachment.
-    pub fn start_session(
-        self,
-    ) -> SentRequest<OpenedSession<Counterpart, v2::NewSessionResponse>, V2>
+    pub fn start_session(self) -> SentRequest<SessionSetup<Counterpart, v2::NewSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -367,7 +365,7 @@ where
                 session_id: response.session_id.clone(),
                 connection: session_connection,
             };
-            Ok(OpenedSession { session, response })
+            Ok(SessionSetup { session, response })
         })
     }
 
@@ -376,7 +374,7 @@ where
     /// The downstream request is ordered and inherits cancellation from the
     /// upstream request. On success, this helper installs session routing before
     /// later inbound traffic is processed, forwards the complete response, and
-    /// spawns `op` with an [`OpenedSession`] containing the command-only
+    /// spawns `op` with an [`SessionSetup`] containing the command-only
     /// session handle plus the complete setup response. Inbound updates and
     /// interactive requests remain independent connection traffic.
     ///
@@ -390,7 +388,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedSession<Counterpart, v2::NewSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(SessionSetup<Counterpart, v2::NewSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
@@ -406,7 +404,7 @@ where
                     Err(error) => return responder.respond_with_error(error),
                 };
 
-                let opened = OpenedSession {
+                let setup = SessionSetup {
                     session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
@@ -415,7 +413,7 @@ where
                 };
                 responder.respond(response)?;
                 route.detach();
-                raw_connection.spawn(async move { op(opened).await })
+                raw_connection.spawn(async move { op(setup).await })
             })
     }
 }
@@ -534,7 +532,7 @@ where
     /// attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedSession<Counterpart, v2::ForkSessionResponse>, V2>
+    ) -> SentRequest<SessionSetup<Counterpart, v2::ForkSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -544,7 +542,7 @@ where
                 session_id: response.session_id.clone(),
                 connection: session_connection,
             };
-            Ok(OpenedSession { session, response })
+            Ok(SessionSetup { session, response })
         })
     }
 
@@ -554,7 +552,7 @@ where
     /// upstream request. On success, this helper obtains the new session ID
     /// from the response, installs session routing before later inbound traffic
     /// is processed, forwards the complete response, and spawns `op` with an
-    /// [`OpenedSession`] containing the fork's command handle and response.
+    /// [`SessionSetup`] containing the fork's command handle and response.
     /// Inbound updates and interactive requests remain independent connection
     /// traffic.
     ///
@@ -568,7 +566,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedSession<Counterpart, v2::ForkSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(SessionSetup<Counterpart, v2::ForkSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
@@ -584,7 +582,7 @@ where
                     Err(error) => return responder.respond_with_error(error),
                 };
 
-                let opened = OpenedSession {
+                let setup = SessionSetup {
                     session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
@@ -593,7 +591,7 @@ where
                 };
                 responder.respond(response)?;
                 route.detach();
-                raw_connection.spawn(async move { op(opened).await })
+                raw_connection.spawn(async move { op(setup).await })
             })
     }
 }
@@ -707,7 +705,7 @@ where
     /// consumed; setup errors clean up the pending attachment.
     pub fn start_session(
         self,
-    ) -> SentRequest<OpenedSession<Counterpart, v2::ResumeSessionResponse>, V2>
+    ) -> SentRequest<SessionSetup<Counterpart, v2::ResumeSessionResponse>, V2>
     where
         Run: 'static,
     {
@@ -718,7 +716,7 @@ where
                 session_id,
                 connection: session_connection,
             };
-            Ok(OpenedSession { session, response })
+            Ok(SessionSetup { session, response })
         })
     }
 
@@ -731,7 +729,7 @@ where
     /// cancellation from the upstream request.
     ///
     /// On success, the helper forwards the complete response and spawns `op`
-    /// with an [`OpenedSession`] containing the command-only session handle
+    /// with an [`SessionSetup`] containing the command-only session handle
     /// plus that response. The callback runs outside the ordered response
     /// barrier, so it may wait for later connection traffic without
     /// deadlocking the dispatch loop.
@@ -743,7 +741,7 @@ where
     where
         Counterpart: HasPeer<Client>,
         Run: 'static,
-        F: FnOnce(OpenedSession<Counterpart, v2::ResumeSessionResponse>) -> Fut + Send + 'static,
+        F: FnOnce(SessionSetup<Counterpart, v2::ResumeSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_id = self.request.session_id.clone();
@@ -759,7 +757,7 @@ where
         self.send_resume_session(true)
             .forward_cancellation_from(responder.cancellation())
             .on_receiving_ok_result(responder, async move |response, responder| {
-                let opened = OpenedSession {
+                let setup = SessionSetup {
                     session: ActiveSession {
                         session_id,
                         connection: session_connection.clone(),
@@ -769,49 +767,37 @@ where
                 responder.respond(response)?;
                 session_connection
                     .raw_connection()
-                    .spawn(async move { op(opened).await })
+                    .spawn(async move { op(setup).await })
             })
     }
 }
 
-/// A newly available protocol v2 session and its operation-specific response.
+/// A protocol v2 session and the response of the request that set it up.
 ///
-/// Keeping the response separate from [`ActiveSession`] avoids treating
-/// `session/new` setup data as mutable session state and lets each setup
-/// operation, including `session/resume`, retain its own complete response
-/// type.
+/// Every setup method returns one: [`SessionBuilder::start_session`]
+/// (`session/new`), [`ResumeSessionBuilder::start_session`]
+/// (`session/resume`) and, with `unstable_session_fork`,
+/// `ForkSessionBuilder::start_session` (`session/fork`), and their
+/// `on_proxy_session_start` callbacks receive one too. The response is the
+/// complete, operation-specific setup response; it is kept next to the
+/// session rather than inside [`ActiveSession`], so the setup response lives
+/// in the same place for every setup method.
+///
+/// New fields may be added, so destructure with `..`:
+///
+/// ```ignore
+/// let SessionSetup { session, response, .. } = setup;
+/// ```
+#[non_exhaustive]
 #[derive(Debug)]
-pub struct OpenedSession<Link, Response>
+pub struct SessionSetup<Link, Response>
 where
     Link: HasPeer<Agent>,
 {
-    session: ActiveSession<Link>,
-    response: Response,
-}
-
-impl<Link, Response> OpenedSession<Link, Response>
-where
-    Link: HasPeer<Agent>,
-{
-    /// Access the command handle for the opened session.
-    pub fn session(&self) -> &ActiveSession<Link> {
-        &self.session
-    }
-
-    /// Access the complete response from the operation that opened the session.
-    pub fn response(&self) -> &Response {
-        &self.response
-    }
-
-    /// Split this result into the command handle and complete setup response.
-    pub fn into_parts(self) -> (ActiveSession<Link>, Response) {
-        (self.session, self.response)
-    }
-
-    /// Consume this result and return only the command handle.
-    pub fn into_session(self) -> ActiveSession<Link> {
-        self.session
-    }
+    /// The command handle for the session.
+    pub session: ActiveSession<Link>,
+    /// The complete response of the request that set the session up.
+    pub response: Response,
 }
 
 /// Cloneable command handle for a draft protocol v2 session.
