@@ -448,7 +448,8 @@ async fn run_with_finish(
         let is_response_only = is_response_only_frame(&frame);
         let msg = match frame {
             TransportFrame::Single(message) => message,
-            frame @ TransportFrame::Malformed { .. } => {
+            // Malformed and any other non-message frames are posted verbatim.
+            frame => {
                 if state.connection.connection_id().is_none() {
                     break Err(AcpError::invalid_request()
                         .data("ACP HTTP transport: first message must be `initialize`"));
@@ -613,12 +614,11 @@ fn queue_response_post(
 ) -> Result<(), AcpError> {
     let post = match frame {
         TransportFrame::Single(message) => state.prepare_post(message),
-        frame @ TransportFrame::Malformed { .. } => {
-            state.prepare_frame_post(frame).map(|(post, session_ids)| {
-                debug_assert_eq!(session_ids, Vec::<String>::new());
-                post
-            })
-        }
+        // Malformed and any other non-message frames are posted verbatim.
+        frame => state.prepare_frame_post(frame).map(|(post, session_ids)| {
+            debug_assert_eq!(session_ids, Vec::<String>::new());
+            post
+        }),
     }
     .map_err(|error| {
         error!("POST failed");
@@ -631,12 +631,13 @@ fn queue_response_post(
 fn is_response_only_frame(frame: &TransportFrame) -> bool {
     match frame {
         TransportFrame::Single(RawJsonRpcMessage::Response(_)) => true,
-        TransportFrame::Malformed { raw, .. } => {
-            serde_json::from_str(raw).is_ok_and(|value| is_response_only_shape(&value))
-        }
         TransportFrame::Single(
             RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_),
         ) => false,
+        // Malformed and any other non-message frames: inspect the wire value.
+        frame => frame.to_json().is_ok_and(|raw| {
+            serde_json::from_str(&raw).is_ok_and(|value| is_response_only_shape(&value))
+        }),
     }
 }
 
@@ -1050,6 +1051,9 @@ impl ClientState {
             TransportFrame::Malformed { error, .. } => {
                 return Err(format!("invalid initialize response: {error}"));
             }
+            _ => {
+                return Err("invalid initialize response: not a JSON-RPC message".to_string());
+            }
         };
 
         if matches!(
@@ -1190,7 +1194,8 @@ impl ClientState {
                 .session_to_open_for_response(message)
                 .into_iter()
                 .collect(),
-            TransportFrame::Malformed { .. } => Vec::new(),
+            // Malformed and any other non-message frames open no sessions.
+            _ => Vec::new(),
         }
     }
 
@@ -1239,9 +1244,9 @@ struct FrameBookkeeping {
 impl FrameBookkeeping {
     fn for_frame(frame: &TransportFrame) -> Result<Self, String> {
         let mut bookkeeping = Self::default();
-        match frame {
-            TransportFrame::Single(message) => bookkeeping.add_message(message)?,
-            TransportFrame::Malformed { .. } => {}
+        // Malformed and any other non-message frames need no bookkeeping.
+        if let TransportFrame::Single(message) = frame {
+            bookkeeping.add_message(message)?;
         }
         Ok(bookkeeping)
     }
@@ -1701,6 +1706,7 @@ mod tests {
         match frame {
             TransportFrame::Single(message) => Ok(message),
             TransportFrame::Malformed { error, .. } => Err(error),
+            frame => panic!("unexpected transport frame: {frame:?}"),
         }
     }
 

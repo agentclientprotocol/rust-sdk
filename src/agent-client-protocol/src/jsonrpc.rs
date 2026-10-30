@@ -91,6 +91,7 @@ pub enum RawJsonRpcMessage {
 /// explicitly; transport failures are reported by the future that drives the
 /// transport rather than sent through a [`Channel`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub enum TransportFrame {
     /// One valid JSON-RPC message.
     Single(RawJsonRpcMessage),

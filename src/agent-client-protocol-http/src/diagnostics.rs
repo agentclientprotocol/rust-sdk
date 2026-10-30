@@ -10,6 +10,7 @@ pub(crate) fn inbound(frame: &TransportFrame, byte_len: usize, transport: &'stat
         TransportFrame::Single(RawJsonRpcMessage::Notification(_)) => "notification",
         TransportFrame::Single(RawJsonRpcMessage::Response(_)) => "response",
         TransportFrame::Malformed { .. } => "malformed",
+        _ => "other",
     };
     tracing::trace!(byte_len, kind, transport, "Client → agent");
 }

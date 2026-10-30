@@ -279,6 +279,7 @@ mod tests {
                                 ))
                                 .unwrap();
                         }
+                        frame => panic!("unexpected transport frame: {frame:?}"),
                     }
                 }
                 Ok(())
