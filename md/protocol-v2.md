@@ -823,7 +823,10 @@ Connection and lifecycle rules:
   directory. Agents that advertise `additionalDirectories` reject relative
   entries; agents that do not ignore the field. Testy and `simple_agent_v2`
   follow these rules.
-- MCP server names must be unique within `mcpServers`. On `session/resume`
+- MCP server names must be unique within `mcpServers`, and agents reject
+  duplicates with `-32602`. The v2 `with_mcp_server` builders fail with
+  `-32602` instead of declaring a server whose name is already in the
+  request. On `session/resume`
   and `session/fork`, `mcpServers` is the complete set for the session;
   agents do not restore servers from earlier requests. A resume must use the
   session's `cwd`.
