@@ -128,9 +128,9 @@ pub mod one_shot_prompt {
     //! [`RequestPermissionRequest`] messages.
     //!
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
-    //! [`send_request`]: agent_client_protocol::ConnectionTo::send_request
+    //! [`send_request`]: agent_client_protocol::v1::ConnectionTo::send_request
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
-    //! [`build_session_cwd`]: agent_client_protocol::ConnectionTo::build_session_cwd
+    //! [`build_session_cwd`]: agent_client_protocol::v1::ConnectionTo::build_session_cwd
     //! [`start_session`]: agent_client_protocol::v1::SessionBuilder::start_session
     //! [`ActiveSession`]: agent_client_protocol::v1::ActiveSession
     //! [`send_prompt`]: agent_client_protocol::v1::ActiveSession::send_prompt
@@ -394,9 +394,9 @@ pub mod connecting_as_client {
     //!
     //! [`connect_with`]: agent_client_protocol::Builder::connect_with
     //! [`block_task`]: agent_client_protocol::SentRequest::block_task
-    //! [`build_session`]: agent_client_protocol::ConnectionTo::build_session
-    //! [`load_session`]: agent_client_protocol::ConnectionTo::load_session
-    //! [`resume_session`]: agent_client_protocol::ConnectionTo::resume_session
+    //! [`build_session`]: agent_client_protocol::v1::ConnectionTo::build_session
+    //! [`load_session`]: agent_client_protocol::v1::ConnectionTo::load_session
+    //! [`resume_session`]: agent_client_protocol::v1::ConnectionTo::resume_session
     //! [`SessionBuilder`]: agent_client_protocol::v1::SessionBuilder
     //! [`v1::OpenedSession`]: agent_client_protocol::v1::OpenedSession
     //! [`send_prompt`]: agent_client_protocol::v1::ActiveSession::send_prompt

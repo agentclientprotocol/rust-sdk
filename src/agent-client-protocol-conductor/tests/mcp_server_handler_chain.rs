@@ -38,7 +38,7 @@ struct EchoOutput {
 
 /// Test helper to receive a JSON-RPC response
 async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
-    response: agent_client_protocol::SentRequest<T>,
+    response: agent_client_protocol::v1::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
@@ -200,7 +200,7 @@ async fn run_test(
     proxies: Vec<DynConnectTo<Conductor>>,
     agent: DynConnectTo<Client>,
     editor_task: impl AsyncFnOnce(
-        agent_client_protocol::ConnectionTo<Agent>,
+        agent_client_protocol::v1::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
     let (editor_out, conductor_in) = duplex(1024);

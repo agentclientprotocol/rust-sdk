@@ -23,7 +23,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// Test helper to receive a JSON-RPC response
 async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
-    response: agent_client_protocol::SentRequest<T>,
+    response: agent_client_protocol::v1::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
@@ -74,7 +74,7 @@ async fn test_agent_handles_prompt() -> Result<(), agent_client_protocol::Error>
             {
                 let mut log_tx = log_tx.clone();
                 async move |notification: SessionNotification,
-                            _cx: agent_client_protocol::ConnectionTo<Agent>| {
+                            _cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
                     // Log the notification in debug format
                     log_tx
                         .send(format!("{notification:?}"))

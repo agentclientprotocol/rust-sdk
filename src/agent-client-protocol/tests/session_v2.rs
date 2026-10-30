@@ -41,6 +41,7 @@ struct V1SessionGuardRunner {
 impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
     async fn run_with_connection_to(self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
         let error = connection
+            .into_protocol::<agent_client_protocol::V1>()
             .build_session(self.cwd)
             .block_task()
             .start_session()

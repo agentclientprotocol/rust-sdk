@@ -1,7 +1,9 @@
 # Sending Requests
 
-Both `v1::ConnectionTo` (the version-neutral `ConnectionTo`) and
-`v2::ConnectionTo` support two request APIs:
+`v1::ConnectionTo`, `v2::ConnectionTo` and the version-neutral
+`ConnectionTo` support two request APIs. The versioned connections return
+`v1::SentRequest` / `v1::PreparedRequest` and `v2::SentRequest` /
+`v2::PreparedRequest`, whose `id()` is that version's request ID:
 
 - **`send_request(request)`** sends immediately and returns a `SentRequest`.
   Keep this when eager publication is useful, such as starting work before

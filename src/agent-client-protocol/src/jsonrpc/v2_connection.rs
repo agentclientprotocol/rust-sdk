@@ -21,7 +21,9 @@ use crate::v2::InitializeOutcome;
 ///
 /// This is a thin, cheaply cloneable handle to the underlying JSON-RPC
 /// connection. It intentionally does not implement [`Deref`](std::ops::Deref)
-/// to the version-neutral [`ConnectionTo`](crate::ConnectionTo).
+/// to the version-neutral [`ConnectionTo`](crate::ConnectionTo); convert
+/// explicitly with [`into_raw`](Self::into_raw) and
+/// [`ConnectionTo::into_protocol`](crate::ConnectionTo::into_protocol).
 #[derive(Clone, Debug)]
 pub struct ConnectionTo<Counterpart: Role> {
     pub(crate) inner: RawConnectionTo<Counterpart>,
@@ -98,6 +100,15 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Access the underlying version-neutral connection inside the SDK.
     pub(crate) fn raw_connection(&self) -> &RawConnectionTo<Counterpart> {
         &self.inner
+    }
+
+    /// The underlying version-neutral connection.
+    ///
+    /// Requests sent through it return [`Raw`](crate::Raw) handles. Convert
+    /// back with [`ConnectionTo::into_protocol`](crate::ConnectionTo::into_protocol).
+    #[must_use]
+    pub fn into_raw(self) -> RawConnectionTo<Counterpart> {
+        self.inner
     }
 
     /// Return the counterpart role this connection is talking to.

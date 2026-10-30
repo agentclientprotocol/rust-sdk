@@ -11,9 +11,9 @@ use std::{
 };
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, DynConnectTo, Error, Lines, Proxy, Responder,
-    UntypedMessage,
+    Agent, Client, ConnectTo, DynConnectTo, Error, Lines, Proxy, Responder, UntypedMessage,
     schema::{ProtocolVersion, v1},
 };
 use agent_client_protocol_conductor::{ConductorImpl, SelectedInitializeRequest};

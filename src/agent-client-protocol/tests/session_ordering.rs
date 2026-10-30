@@ -1,9 +1,10 @@
 use std::{path::Path, time::Duration};
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::{ActiveSession, SessionMessage};
 use agent_client_protocol::{
-    Agent, Channel, Client, Conductor, ConnectionTo, RawJsonRpcMessage, Responder, TransportFrame,
+    Agent, Channel, Client, Conductor, RawJsonRpcMessage, Responder, TransportFrame,
     schema::v1::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionConfigOption, SessionConfigOptionCategory,

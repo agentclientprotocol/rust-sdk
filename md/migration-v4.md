@@ -30,12 +30,12 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 
 | Name | `agent_client_protocol::v1` | `agent_client_protocol::v2` |
 | --- | --- | --- |
-| `ConnectionTo<Counterpart>` | the version-neutral `ConnectionTo` | the v2 connection |
+| `ConnectionTo<Counterpart>` | the v1 connection | the v2 connection |
 | `Builder<Host>` | `Builder<Host, .., V1>` | `Builder<Host, .., V2>` |
 | `Responder<T>` | `Responder<T, V1>` | `Responder<T, V2>` |
 | `ResponseRouter<T>` | `ResponseRouter<T, V1>` | `ResponseRouter<T, V2>` |
 | `Dispatch<Req, Notif>` | `Dispatch<Req, Notif, V1>` | `Dispatch<Req, Notif, V2>` |
-| `SentRequest<T>`, `PreparedRequest<T>` | not defined (see below) | `SentRequest<T, V2>`, `PreparedRequest<T, V2>` |
+| `SentRequest<T>`, `PreparedRequest<T>` | `SentRequest<T, V1>`, `PreparedRequest<T, V1>` | `SentRequest<T, V2>`, `PreparedRequest<T, V2>` |
 | `SessionBuilder` | new session (`build_session*`) | new session (`build_session*`) |
 | `ResumeSessionBuilder` | `resume_session*` | `resume_session*` |
 | `OpenedSession` | a restored session and its response | an opened session and its response |
@@ -45,11 +45,49 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 | `InitializeOutcome`, `InitializationVersionMismatch`, `SelectedInitializeResponse` | - | the result of `send_initialize` |
 | `schema` | `schema::v1` | `schema::v2` |
 
-`v1::ConnectionTo` is the crate root's version-neutral `ConnectionTo`, which
-also carries the v1 session helpers. Requests sent through it return the root
-`SentRequest<T>` and `PreparedRequest<T>`, whose `id()` is the wire
-`RawJsonRpcId`, so `v1` does not define its own `SentRequest` or
-`PreparedRequest`.
+### `v1::ConnectionTo` is its own type
+
+`v1::ConnectionTo` is a v1 connection type, like `v2::ConnectionTo`, not the
+crate root's version-neutral `ConnectionTo`. It is what callbacks on
+`Client.v1()`, `Agent.v1()` and `Proxy.v1()` receive, and it carries the v1
+session helpers (`build_session*`, `load_session*`, `resume_session*`).
+Requests sent through it return `v1::SentRequest<T>` and
+`v1::PreparedRequest<T>`, whose `id()` is a `schema::v1::RequestId`
+(`raw_id()` still gives the wire `RawJsonRpcId`). The wire format is
+unchanged.
+
+The root `ConnectionTo` stays the raw connection: `HandleDispatchFrom`
+handlers, `RunWithConnectionTo` runners, dynamic handlers, `Builder::new`
+callbacks and the conductor receive it, and its sends return `Raw` handles.
+It no longer has the v1 session helpers. Convert explicitly between the two;
+`v2::ConnectionTo` offers the same conversions:
+
+```rust,ignore
+use agent_client_protocol::{ConnectionTo, V1, v1};
+
+// raw -> v1, for example in a custom runner that opens a v1 session
+let v1_cx: v1::ConnectionTo<Agent> = raw_cx.into_protocol::<V1>();
+v1_cx.build_session_cwd()?.block_task().start_session().await?;
+
+// v1 -> raw, for example to drive a `RunWithConnectionTo` runner
+let raw_cx: ConnectionTo<Agent> = v1_cx.into_raw();
+```
+
+Code that spelled out the root type on v1 callbacks or helpers changes the
+import:
+
+```rust,ignore
+// Before
+use agent_client_protocol::{ConnectionTo, SentRequest};
+fn send(cx: &ConnectionTo<Agent>) -> SentRequest<PromptResponse> { ... }
+
+// After
+use agent_client_protocol::v1::{ConnectionTo, SentRequest};
+fn send(cx: &ConnectionTo<Agent>) -> SentRequest<PromptResponse> { ... }
+```
+
+Where code compared a v1 request's `id()` with IDs from the raw layer, use
+`raw_id()`.
 
 ### Renamed and moved items
 
@@ -83,6 +121,8 @@ their path.
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
 | `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
 | `Responder<T, V1>` (and the other handles) | unchanged, or `v1::Responder<T>` |
+| `ConnectionTo` in v1 callbacks and session helpers | `v1::ConnectionTo` |
+| `SentRequest<T>`, `PreparedRequest<T>` from a v1 connection | `v1::SentRequest<T>`, `v1::PreparedRequest<T>` |
 | `Responder<T, V2>` (and the other handles) | unchanged, or `v2::Responder<T>` |
 
 `Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
@@ -488,7 +528,7 @@ marker selects the type that `id()` returns:
 | Marker | Used by | `id()` |
 | --- | --- | --- |
 | `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, `Builder::new` and other unguarded builders | `&RawJsonRpcId` |
-| `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()` | `&schema::v1::RequestId` |
+| `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()`; `v1::ConnectionTo` | `&schema::v1::RequestId` |
 | `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `v2::ConnectionTo` | `&schema::v2::RequestId` |
 
 `Dispatch::id()` returns an `Option` of the same type. A `V2` `id()` never
@@ -625,8 +665,8 @@ marker, so forwarding between connections needs no conversion.
 The hidden `ConnectionContext` trait and its `RawConnectionContext` and
 `V2ConnectionContext` implementations are replaced by `Protocol`, `Raw`, `V1`
 and `V2`. `Protocol::Connection<Counterpart>` is the connection type builder
-callbacks receive (`ConnectionTo` for `Raw` and `V1`, `v2::ConnectionTo` for
-`V2`), so code generic over a builder's context changes
+callbacks receive (`ConnectionTo` for `Raw`, `v1::ConnectionTo` for `V1`,
+`v2::ConnectionTo` for `V2`), so code generic over a builder's context changes
 `Context: ConnectionContext` to `P: Protocol`.
 
 ## Proxy method names

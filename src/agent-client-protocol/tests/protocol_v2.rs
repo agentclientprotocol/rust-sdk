@@ -568,12 +568,12 @@ async fn v2_context_preserves_protocol_neutral_connection_management() -> Result
         .connect_with(Agent.v2(), async |connection| {
             let dynamic_handler: DynamicHandlerGuard<Agent> =
                 connection.add_dynamic_handler(NullHandler)?;
-            let raw_child: ConnectionTo<Agent> =
-                connection.spawn_connection::<Client, _>(Client.v1(), MockTransport)?;
+            let v1_child: agent_client_protocol::v1::ConnectionTo<Agent> =
+                connection.spawn_connection(Client.v1(), MockTransport)?;
             let v2_child: agent_client_protocol::v2::ConnectionTo<Agent> =
                 connection.spawn_connection(Client.v2(), MockTransport)?;
 
-            drop((dynamic_handler, raw_child, v2_child));
+            drop((dynamic_handler, v1_child, v2_child));
             Ok(())
         })
         .await

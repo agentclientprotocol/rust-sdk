@@ -4,10 +4,11 @@
 use std::{future::pending, path::PathBuf, time::Duration};
 
 use agent_client_protocol::V1;
+use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::SessionMessage;
 use agent_client_protocol::{
-    Agent, Channel, Client, ConnectionTo, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification,
-    RawJsonRpcId, RawJsonRpcMessage, Responder, TransportFrame, UntypedMessage,
+    Agent, Channel, Client, Error, ErrorCode, JsonRpcMessage, JsonRpcNotification, RawJsonRpcId,
+    RawJsonRpcMessage, Responder, TransportFrame, UntypedMessage,
     schema::v1::{
         CancelRequestNotification, ContentBlock, ContentChunk, LoadSessionRequest,
         LoadSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionConfigOption,

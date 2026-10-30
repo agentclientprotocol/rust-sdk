@@ -9,7 +9,7 @@ use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
-    JsonRpcResponse, Proxy, SentRequest,
+    JsonRpcResponse, Proxy,
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use serde_json::Value;
@@ -17,7 +17,7 @@ use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 async fn recv<T: JsonRpcResponse + Send>(
-    response: SentRequest<T>,
+    response: agent_client_protocol::v1::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
@@ -136,7 +136,9 @@ impl ConnectTo<Client> for RecordingAgent {
 
 async fn run_with_conductor(
     components: ProxiesAndAgent,
-    editor_task: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), agent_client_protocol::Error>,
+    editor_task: impl AsyncFnOnce(
+        agent_client_protocol::v1::ConnectionTo<Agent>,
+    ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);

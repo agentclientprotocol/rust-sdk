@@ -1,7 +1,7 @@
 //! The protocol v1 Testy agent.
 
 use super::{TestyCommand, TestyScenario, parse_command};
-use agent_client_protocol::v1::Responder;
+use agent_client_protocol::v1::{ConnectionTo, Responder, SentRequest};
 
 use agent_client_protocol::schema::v1::{
     AgentAuthCapabilities, AgentCapabilities, AudioContent, AuthMethod, AuthMethodAgent,
@@ -31,7 +31,7 @@ use agent_client_protocol::schema::v1::{
     ElicitationSessionScope, ElicitationUrlMode, MultiSelectPropertySchema, RequestId,
     StringPropertySchema,
 };
-use agent_client_protocol::{Agent, Client, ConnectTo, ConnectionTo, JsonRpcRequest, SentRequest};
+use agent_client_protocol::{Agent, Client, ConnectTo, JsonRpcRequest};
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};

@@ -295,7 +295,7 @@ async fn subscription_events(stream: &mut tokio::net::TcpStream) -> Vec<serde_js
 }
 
 async fn recv<T: agent_client_protocol::JsonRpcResponse + Send>(
-    response: agent_client_protocol::SentRequest<T>,
+    response: agent_client_protocol::v1::SentRequest<T>,
 ) -> Result<T, agent_client_protocol::Error> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     response.on_receiving_result(async move |result| {
@@ -310,7 +310,7 @@ async fn run_with_polyfill(
     agent: RecordingAgent,
     provider_request_count: Arc<AtomicUsize>,
     editor_task: impl AsyncFnOnce(
-        agent_client_protocol::ConnectionTo<Agent>,
+        agent_client_protocol::v1::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
     run_with_provider(
@@ -328,7 +328,7 @@ async fn run_with_provider(
     agent: RecordingAgent,
     provider: NativeMcpProvider,
     editor_task: impl AsyncFnOnce(
-        agent_client_protocol::ConnectionTo<Agent>,
+        agent_client_protocol::v1::ConnectionTo<Agent>,
     ) -> Result<(), agent_client_protocol::Error>,
 ) -> Result<(), agent_client_protocol::Error> {
     drop(

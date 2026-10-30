@@ -4,8 +4,8 @@ use futures::channel::mpsc;
 use futures::future::{self, Either};
 
 use crate::{
-    Agent, Client, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcRequest, Responder,
-    Role,
+    Agent, Client, ConnectionTo as RawConnectionTo, Dispatch, HandleDispatchFrom, Handled,
+    JsonRpcRequest, Responder, Role,
     jsonrpc::{
         DynamicHandlerCleanup, DynamicHandlerGuard,
         run::{NullRun, RunWithConnectionTo, RunnerErrorScope},
@@ -18,6 +18,7 @@ use crate::{
         SessionNotification, SessionUpdate, StopReason,
     },
     util::{MatchDispatch, MatchDispatchFrom},
+    v1::ConnectionTo,
 };
 
 use crate::Raw;
@@ -47,9 +48,9 @@ async fn wait_session_cleanup(cleanup: SessionCleanup) {
 }
 
 fn session_runner_connection<R: Role>(
-    connection: ConnectionTo<R>,
+    connection: RawConnectionTo<R>,
     cleanup: &SessionCleanup,
-) -> (ConnectionTo<R>, RunnerErrorScope) {
+) -> (RawConnectionTo<R>, RunnerErrorScope) {
     let closing = cleanup.clone();
     let scope = RunnerErrorScope::new(
         move || close_session_registrations(&closing),
@@ -471,9 +472,10 @@ where
     } = builder;
     let session_id = request.session_id().clone();
     let prepared = connection.prepare_session_routing(&session_id)?;
-    let routing_ready = connection.dynamic_handler_barrier();
+    let routing_ready = connection.raw_connection().dynamic_handler_barrier();
 
     connection
+        .raw_connection()
         .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .on_receiving_result({
             let connection = connection.clone();
@@ -506,10 +508,11 @@ where
     } = builder;
     let session_id = request.session_id().clone();
     let prepared = connection.prepare_session_routing(&session_id)?;
-    let routing_ready = connection.dynamic_handler_barrier();
+    let routing_ready = connection.raw_connection().dynamic_handler_barrier();
     let session_connection = connection.clone();
 
     connection
+        .raw_connection()
         .send_ordered_request_to_after::<Raw, _, _, _>(Agent, request, routing_ready)
         .block_task_with_ordered_result(move |result| {
             let response = result?;
@@ -709,8 +712,9 @@ where
         McpRun: RunWithConnectionTo<Counterpart>,
     {
         let (handler, mcp_run) = mcp_server.into_handler_and_runner();
-        self.dynamic_handler_registrations
-            .push(handler.into_dynamic_handler(&mut self.request, &self.connection)?);
+        self.dynamic_handler_registrations.push(
+            handler.into_dynamic_handler(&mut self.request, self.connection.raw_connection())?,
+        );
         Ok(SessionBuilder {
             connection: self.connection,
             request: self.request,
@@ -782,7 +786,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -790,6 +794,7 @@ where
         ))?;
 
         connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .on_receiving_result({
                 let connection = connection.clone();
@@ -879,7 +884,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -887,7 +892,9 @@ where
         ))?;
 
         // Send the "new session" request to the agent.
-        let sent = connection.send_ordered_request_to::<Raw, _, _>(Agent, request);
+        let sent = connection
+            .raw_connection()
+            .send_ordered_request_to::<Raw, _, _>(Agent, request);
         let sent = sent.forward_cancellation_from(responder.cancellation());
 
         sent.on_receiving_ok_result(responder, {
@@ -969,7 +976,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         run_session_scope(
             run.run_with_connection_to(runner_connection),
             async move {
@@ -1018,7 +1025,7 @@ where
 
         let cleanup = session_cleanup(&dynamic_handler_registrations);
         let (runner_connection, error_scope) =
-            session_runner_connection(connection.clone(), &cleanup);
+            session_runner_connection(connection.raw_connection().clone(), &cleanup);
         connection.spawn(run_attached_session_runner(
             run.run_with_connection_to(runner_connection),
             cleanup,
@@ -1027,6 +1034,7 @@ where
 
         let session_connection = connection.clone();
         connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(Agent, request)
             .block_task_with_ordered_result(move |result| {
                 let response = result?;
@@ -1163,6 +1171,7 @@ where
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
+            .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(
                 Agent,
                 PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
@@ -1330,7 +1339,7 @@ where
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
-        cx: ConnectionTo<Counterpart>,
+        cx: RawConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
         // If this is a message for our session, grab it.
         tracing::trace!(
@@ -1372,7 +1381,7 @@ where
 fn ensure_v1_session_protocol<Counterpart: Role>(
     connection: &ConnectionTo<Counterpart>,
 ) -> Result<(), crate::Error> {
-    if !connection.is_acp_v2() {
+    if !connection.raw_connection().is_acp_v2() {
         return Ok(());
     }
 
