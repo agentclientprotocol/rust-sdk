@@ -113,7 +113,11 @@ enum BridgeMessage {
 }
 
 /// Adapts native MCP-over-ACP servers to loopback Streamable HTTP for HTTP-only agents.
+///
+/// Create one with [`McpOverAcpPolyfill::http`]. Configuration may be added
+/// in later releases.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct McpOverAcpPolyfill;
 
 impl McpOverAcpPolyfill {
@@ -229,11 +233,27 @@ impl PolyfillHandler {
         match message {
             Dispatch::Request(mut request, responder) => {
                 if request.method() == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY {
-                    if self.protocol.is_some() {
-                        return Err(agent_client_protocol::Error::invalid_request()
-                            .data("MCP-over-ACP polyfill was already initialized"));
-                    }
-                    let protocol = PolyfillProtocol::from_initialize_request(&request)?;
+                    // A repeated `proxy/initialize` is forwarded like the
+                    // first one, as long as it stays on the connection's
+                    // protocol version. Invalid requests are answered with an
+                    // error instead of closing the connection.
+                    let protocol = match PolyfillProtocol::from_initialize_request(&request) {
+                        Ok(protocol) => match self.protocol {
+                            Some(initialized) if initialized != protocol => {
+                                responder.respond_with_error(
+                                    agent_client_protocol::Error::invalid_request().data(format!(
+                                        "MCP-over-ACP polyfill was initialized with {initialized}, not {protocol}",
+                                    )),
+                                )?;
+                                return Ok(Handled::Yes);
+                            }
+                            _ => protocol,
+                        },
+                        Err(error) => {
+                            responder.respond_with_error(error)?;
+                            return Ok(Handled::Yes);
+                        }
+                    };
                     self.protocol = Some(protocol);
                     request.method = "initialize".into();
                     let sent = cx

@@ -16,7 +16,9 @@ use agent_client_protocol::{
     Agent, Client, ConnectTo, DynConnectTo, Error, Lines, Proxy, Responder, UntypedMessage,
     schema::{ProtocolVersion, v1},
 };
-use agent_client_protocol_conductor::{ConductorImpl, SelectedInitializeRequest};
+use agent_client_protocol_conductor::{
+    ConductorImpl, InstantiatedChain, SelectedInitializeRequest,
+};
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};
 
@@ -88,7 +90,7 @@ async fn run_v1_chain(initialize: &Value) -> ChainRun {
             let request = request.into_v1()?;
             let proxies = vec![DynConnectTo::new(Proxy.v1())];
             let agent = DynConnectTo::new(recording_v1_agent(received));
-            Ok((request.into(), proxies, agent))
+            Ok(InstantiatedChain::new(request, proxies, agent))
         }
     });
 

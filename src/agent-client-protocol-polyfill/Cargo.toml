@@ -10,6 +10,10 @@ description = "Polyfill proxies for Agent Client Protocol backward compatibility
 keywords = ["acp", "agent", "mcp", "polyfill"]
 categories = ["development-tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = []
 unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]

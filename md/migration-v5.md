@@ -764,6 +764,72 @@ implemented outside the conductor crate. Its methods take a `ConductorRunner`,
 whose fields are private, so no external implementation could be written
 before either. Use the provided `Agent` and `Proxy` host roles.
 
+`ConductorHostRole` is now a marker trait: its `Instantiator` type and its
+`initialize_method`, `select_protocol_version`, `instantiate` and
+`handle_dispatch` methods moved to a private supertrait and take an argument
+only the conductor crate can create, so code outside it cannot call them.
+`ConductorImpl::new`
+is private. Create conductors with `ConductorImpl::new_agent` or
+`ConductorImpl::new_proxy`.
+
+### Conductor internals are no longer exported
+
+The conductor crate exports its API explicitly instead of through a glob.
+`ConductorRunner`, `ConductorMessage`, `ConductorSuccessor`, `ComponentIndex`
+and `SourceComponentIndex` are no longer public; they only described the
+conductor's internal routing.
+
+### Instantiators return `InstantiatedChain` and `InstantiatedProxies`
+
+`InstantiateProxiesAndAgent` and `InstantiateProxies`, including instantiator
+closures, return `#[non_exhaustive]` structs instead of tuples. The
+`ProxiesAndAgentComponents` type alias is removed.
+
+| Before | After |
+| --- | --- |
+| `Ok((request, proxies, agent))` | `Ok(InstantiatedChain::new(request, proxies, agent))` |
+| `Ok((request, proxies))` | `Ok(InstantiatedProxies::new(request, proxies))` |
+| `ProxiesAndAgentComponents` | `InstantiatedChain` |
+
+`new` takes `impl Into<SelectedInitializeRequest>`, so a `v1::InitializeRequest`
+needs no `.into()`.
+
+### Instantiators can negotiate down
+
+`SelectedInitializeRequest::into_v1` now converts a v2 request to v1 the way
+the SDK's agents negotiate `initialize`, instead of failing. An instantiator
+may return a request for a lower version than the one the conductor selected,
+and the chain then initializes with that version. A v1-only instantiator that
+calls `into_v1()?` therefore accepts a v2 client and answers it with a v1
+`initialize` response, where it used to reject it with `-32600`. Returning a
+request for a version above the selected one is still rejected.
+
+### Other conductor changes
+
+- `ConductorArgs`, `ConductorCommand` and its variants are `#[non_exhaustive]`.
+  Create `ConductorArgs` by parsing arguments with `clap::Parser`.
+- `trace::Protocol` is renamed to `trace::MessageProtocol`, so it no longer
+  shares a name with the core `Protocol` trait. The serialized trace format is
+  unchanged.
+- The conductor's `unstable_protocol_v2` feature no longer enables the
+  polyfill's feature (it only did so for the conductor's own tests). Enable
+  `unstable_protocol_v2` on `agent-client-protocol-polyfill` yourself for a v2
+  chain.
+- `McpOverAcpPolyfill` is `#[non_exhaustive]`. Create it with
+  `McpOverAcpPolyfill::http()`.
+- The polyfill rewrites `McpServer::Acp` entries in `session/fork` in every
+  build. It used to forward them unchanged unless `unstable_session_fork` was
+  enabled.
+- The polyfill forwards a repeated `proxy/initialize` on the connection's
+  protocol version instead of closing its connection. An invalid
+  `protocolVersion` is answered with `-32602` instead of `-32603`, and a
+  request for a different version than the first one with `-32600`.
+- Conductor traces record the messages between the last proxy and the agent.
+  Trace snapshots and tools that read traces see these extra events.
+- `agent_client_protocol_trace_viewer::TraceViewerConfig` is
+  `#[non_exhaustive]`. Start from `TraceViewerConfig::default()` and use the
+  `port` and `open_browser` setters. `TraceSource` is no longer public.
+
 ## The rmcp integration moves behind the `rmcp_3` feature
 
 `agent-client-protocol-rmcp` now has one module per supported rmcp major

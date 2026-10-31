@@ -96,10 +96,13 @@
 //!
 //! ```ignore
 //! use agent_client_protocol::{Client, Conductor, DynConnectTo};
-//! use agent_client_protocol_conductor::{ConductorImpl, SelectedInitializeRequest};
+//! use agent_client_protocol_conductor::{
+//!     ConductorImpl, InstantiatedChain, SelectedInitializeRequest,
+//! };
 //!
 //! let conductor = ConductorImpl::new_agent("my-conductor", |init_req: SelectedInitializeRequest| async move {
-//!     // This chain supports only v1; reject any other selected version.
+//!     // This chain supports only v1: a request for a newer version is
+//!     // negotiated down to v1.
 //!     let init_req = init_req.into_v1()?;
 //!     let mut proxies: Vec<DynConnectTo<Conductor>> = Vec::new();
 //!     if has_auth_capability(&init_req) {
@@ -107,7 +110,7 @@
 //!     }
 //!
 //!     let agent: DynConnectTo<Client> = DynConnectTo::new(make_agent());
-//!     Ok((init_req.into(), proxies, agent))
+//!     Ok(InstantiatedChain::new(init_req, proxies, agent))
 //! });
 //! ```
 //!
@@ -155,7 +158,9 @@ use tracing::{debug, info};
 /// chain's components. The conductor selects the version before
 /// instantiation, as an agent does: v2 for a request for v2 or newer (with the
 /// `unstable_protocol_v2` feature) and v1 otherwise. A conductor acting as a
-/// proxy negotiates its `proxy/initialize` the same way.
+/// proxy negotiates its `proxy/initialize` the same way. An instantiator may
+/// return the request for a lower version than the one selected, for example
+/// with [`Self::into_v1`], to negotiate the chain down to that version.
 ///
 /// The selected version is the highest the chain may speak. The conductor
 /// forwards the request at that version, and each proxy negotiates its
@@ -197,18 +202,33 @@ impl SelectedInitializeRequest {
         }
     }
 
-    /// The v1 request, for an instantiator that only supports v1.
+    /// The request as a v1 request, for an instantiator that only supports
+    /// v1.
+    ///
+    /// A request for a newer version is negotiated down to v1 the way the
+    /// SDK's agents negotiate `initialize`: only what parses under v1, such
+    /// as the capabilities v1 shares with the newer version, is kept. An
+    /// instantiator that returns the v1 request initializes the chain with
+    /// v1, and the client receives a v1 `initialize` response.
     ///
     /// # Errors
     ///
-    /// Returns an invalid-request error naming the selected version when the
-    /// conductor selected another version, so a v1-only instantiator can
-    /// reject it with `request.into_v1()?`.
+    /// Returns an error when the request cannot be represented as a v1
+    /// request.
     pub fn into_v1(self) -> Result<v1::InitializeRequest, Error> {
         match self {
             Self::V1(request) => Ok(request),
             #[cfg(feature = "unstable_protocol_v2")]
-            other => Err(unsupported_by_instantiator(other.protocol_version())),
+            Self::V2(request) => {
+                let params = serde_json::to_value(&request).map_err(Error::into_internal_error)?;
+                let params = serde_json::Value::Object(
+                    agent_client_protocol::util::initialize_params_for_version(
+                        &params,
+                        ProtocolVersion::V1,
+                    )?,
+                );
+                v1::InitializeRequest::parse_message("initialize", &params)
+            }
         }
     }
 
@@ -259,15 +279,6 @@ impl From<v2::InitializeRequest> for SelectedInitializeRequest {
     }
 }
 
-/// The error an instantiator returns for a protocol version it does not
-/// support.
-#[cfg(feature = "unstable_protocol_v2")]
-fn unsupported_by_instantiator(version: ProtocolVersion) -> Error {
-    Error::invalid_request().data(format!(
-        "this conductor instantiator does not support ACP protocol version {version}"
-    ))
-}
-
 /// The protocol version requested by an `initialize` or `proxy/initialize`
 /// request.
 fn requested_protocol_version(request: &UntypedMessage) -> Result<ProtocolVersion, Error> {
@@ -285,9 +296,11 @@ fn requested_protocol_version(request: &UntypedMessage) -> Result<ProtocolVersio
 /// The `initialize` message to forward into the chain after the
 /// instantiator returned `modified` for `original`.
 ///
-/// An unchanged request for exactly the selected version is forwarded with the
-/// client's original `params`, so unknown fields survive. Anything else is
-/// forwarded as serialized from the typed request.
+/// The instantiator may return a request for the selected version or a lower
+/// one, which negotiates the chain down to that version. An unchanged request
+/// for exactly the selected version is forwarded with the client's original
+/// `params`, so unknown fields survive. Anything else is forwarded as
+/// serialized from the typed request.
 fn forwarded_initialize_request(
     params: serde_json::Value,
     requested: ProtocolVersion,
@@ -295,9 +308,9 @@ fn forwarded_initialize_request(
     mut modified: SelectedInitializeRequest,
 ) -> Result<UntypedMessage, Error> {
     let selected = original.protocol_version();
-    if modified.protocol_version() != selected {
+    if modified.protocol_version() > selected {
         return Err(Error::invalid_request().data(format!(
-            "the conductor instantiator must return an initialize request for the selected ACP protocol version {selected}, not {}",
+            "the conductor instantiator must return an initialize request for the selected ACP protocol version {selected} or lower, not {}",
             modified.protocol_version(),
         )));
     }
@@ -327,12 +340,15 @@ struct AcceptedInitialize {
 /// Returns `None` after answering a message that cannot initialize the
 /// conductor: the conductor stays uninitialized and the client may retry.
 /// Notifications before initialization are dropped.
-fn accept_initialize<Host: ConductorHostRole>(
+fn accept_initialize<Host: HostRole>(
     host: &Host,
     message: Dispatch,
 ) -> Result<Option<AcceptedInitialize>, Error> {
     let expected = || {
-        Error::invalid_request().data(format!("expected `{}` request", host.initialize_method()))
+        Error::invalid_request().data(format!(
+            "expected `{}` request",
+            host.initialize_method(Token::new())
+        ))
     };
     let (request, responder) = match message {
         Dispatch::Request(request, responder) => (request, responder),
@@ -348,9 +364,9 @@ fn accept_initialize<Host: ConductorHostRole>(
             return Ok(None);
         }
     };
-    let accepted = if request.method() == host.initialize_method() {
+    let accepted = if request.method() == host.initialize_method(Token::new()) {
         requested_protocol_version(&request).and_then(|requested| {
-            let selected = host.select_protocol_version(requested)?;
+            let selected = host.select_protocol_version(Token::new(), requested)?;
             let parsed = SelectedInitializeRequest::parse(selected, request.params())?;
             Ok((requested, parsed))
         })
@@ -376,6 +392,8 @@ fn accept_initialize<Host: ConductorHostRole>(
 /// It maintains connections to all components in the chain and routes messages
 /// bidirectionally between the editor, components, and agent.
 ///
+/// Create one with [`ConductorImpl::new_agent`] or
+/// [`ConductorImpl::new_proxy`].
 #[derive(Debug)]
 pub struct ConductorImpl<Host: ConductorHostRole> {
     host: Host,
@@ -385,7 +403,7 @@ pub struct ConductorImpl<Host: ConductorHostRole> {
 }
 
 impl<Host: ConductorHostRole> ConductorImpl<Host> {
-    pub fn new(host: Host, name: impl ToString, instantiator: Host::Instantiator) -> Self {
+    fn new(host: Host, name: impl ToString, instantiator: Host::Instantiator) -> Self {
         ConductorImpl {
             name: name.to_string(),
             host,
@@ -522,21 +540,19 @@ impl<Host: ConductorHostRole> ConnectTo<Host::Counterpart> for ConductorImpl<Hos
     }
 }
 
-struct ConductorMessageHandler<Host: ConductorHostRole> {
+struct ConductorMessageHandler<Host: HostRole> {
     conductor_tx: mpsc::Sender<ConductorMessage>,
     host: Host,
 }
 
-impl<Host: ConductorHostRole> HandleDispatchFrom<Host::Counterpart>
-    for ConductorMessageHandler<Host>
-{
+impl<Host: HostRole> HandleDispatchFrom<Host::Counterpart> for ConductorMessageHandler<Host> {
     async fn handle_dispatch_from(
         &mut self,
         message: Dispatch,
         connection: agent_client_protocol::ConnectionTo<Host::Counterpart>,
     ) -> Result<agent_client_protocol::Handled<Dispatch>, agent_client_protocol::Error> {
         self.host
-            .handle_dispatch(message, connection, &mut self.conductor_tx)
+            .handle_dispatch(Token::new(), message, connection, &mut self.conductor_tx)
             .await
     }
 
@@ -545,14 +561,15 @@ impl<Host: ConductorHostRole> HandleDispatchFrom<Host::Counterpart>
     }
 }
 
-/// The conductor manages the proxy chain lifecycle and message routing.
+/// The conductor's central actor: it owns the chain's connections and routes
+/// every [`ConductorMessage`].
 ///
-/// It maintains connections to all components in the chain and routes messages
-/// bidirectionally between the editor, components, and agent.
-///
+/// Declared `pub` only because the sealed [`HostRole`] trait names it. The
+/// `conductor` module is private and does not re-export it, so it is not part
+/// of the crate's public API.
 pub struct ConductorRunner<Host>
 where
-    Host: ConductorHostRole,
+    Host: HostRole,
 {
     conductor_rx: mpsc::Receiver<ConductorMessage>,
 
@@ -588,7 +605,7 @@ enum InitializationState<Instantiator> {
 
 impl<Host> std::fmt::Debug for ConductorRunner<Host>
 where
-    Host: ConductorHostRole,
+    Host: HostRole,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ConductorRunner")
@@ -603,7 +620,7 @@ where
 
 impl<Host> RunWithConnectionTo<Host::Counterpart> for ConductorRunner<Host>
 where
-    Host: ConductorHostRole,
+    Host: HostRole,
 {
     async fn run_with_connection_to(
         mut self,
@@ -624,7 +641,7 @@ where
 
 impl<Host> ConductorRunner<Host>
 where
-    Host: ConductorHostRole,
+    Host: HostRole,
 {
     /// Recursively spawns components and builds the proxy chain.
     ///
@@ -876,7 +893,10 @@ where
                     "ensure_initialized: instantiating chain"
                 );
                 let original = request.clone();
-                let forwarded = match host.instantiate(request, client, instantiator, self).await {
+                let forwarded = match host
+                    .instantiate(Token::new(), request, client, instantiator, self)
+                    .await
+                {
                     Ok(modified) => {
                         forwarded_initialize_request(params, requested, &original, modified)
                     }
@@ -1151,14 +1171,16 @@ fn forward_message_to_agent(
 /// The error for a `proxy/initialize` request that arrives from outside the
 /// conductor: only the conductor initializes its proxies.
 fn initialize_proxy_from_outside() -> Error {
-    Error::invalid_request().data("initialize/proxy requests are only sent by the conductor")
+    Error::invalid_request().data(format!(
+        "`{METHOD_INITIALIZE_PROXY}` requests are only sent by the conductor"
+    ))
 }
 
 /// Identifies a component in the conductor's chain for tracing purposes.
 ///
 /// Used to track message sources and destinations through the proxy chain.
-#[derive(Debug, Clone, Copy)]
-pub enum ComponentIndex {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComponentIndex {
     /// The client (editor) at the start of the chain.
     Client,
 
@@ -1171,18 +1193,17 @@ pub enum ComponentIndex {
 
 impl ComponentIndex {
     /// Return the index for the predecessor of `proxy_index`, which might be `Client`.
-    #[must_use]
-    pub fn predecessor_of(proxy_index: usize) -> Self {
+    pub(crate) fn predecessor_of(proxy_index: usize) -> Self {
         match proxy_index.checked_sub(1) {
             Some(p_i) => ComponentIndex::Proxy(p_i),
             None => ComponentIndex::Client,
         }
     }
 
-    /// Return the index for the predecessor of `proxy_index`, which might be `Client`.
-    #[must_use]
-    pub fn successor_of(proxy_index: usize, num_proxies: usize) -> Self {
-        if proxy_index == num_proxies {
+    /// Return the index for the successor of `proxy_index` in a chain of
+    /// `num_proxies` proxies, which is `Agent` for the last proxy.
+    pub(crate) fn successor_of(proxy_index: usize, num_proxies: usize) -> Self {
+        if proxy_index + 1 == num_proxies {
             ComponentIndex::Agent
         } else {
             ComponentIndex::Proxy(proxy_index + 1)
@@ -1195,6 +1216,9 @@ impl ComponentIndex {
 /// This enum handles the fact that the conductor may receive messages from two different sources:
 /// 1. From one of its managed components (identified by index)
 /// 2. From the conductor's own successor in a larger proxy chain (when in proxy mode)
+///
+/// Declared `pub` only because [`ConductorMessage`] names it; it is not part
+/// of the crate's public API.
 #[derive(Debug, Clone, Copy)]
 pub enum SourceComponentIndex {
     /// Message from a specific component at the given index in the managed chain.
@@ -1204,37 +1228,93 @@ pub enum SourceComponentIndex {
     Successor,
 }
 
+/// The result of [`InstantiateProxies::instantiate_proxies`]: the (possibly
+/// modified) `initialize` request and the proxy components of a conductor
+/// acting as a proxy.
+///
+/// New fields may be added in later releases, so create one with
+/// [`InstantiatedProxies::new`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct InstantiatedProxies {
+    /// The request to forward into the chain.
+    ///
+    /// See [`SelectedInitializeRequest`] for how the conductor forwards it.
+    pub request: SelectedInitializeRequest,
+    /// The proxy components, in chain order.
+    pub proxies: Vec<DynConnectTo<Conductor>>,
+}
+
+impl InstantiatedProxies {
+    /// Create the result from the request to forward and the proxies, in
+    /// chain order.
+    pub fn new(
+        request: impl Into<SelectedInitializeRequest>,
+        proxies: Vec<DynConnectTo<Conductor>>,
+    ) -> Self {
+        Self {
+            request: request.into(),
+            proxies,
+        }
+    }
+}
+
+/// The result of [`InstantiateProxiesAndAgent::instantiate_proxies_and_agent`]:
+/// the (possibly modified) `initialize` request, the proxy components, and
+/// the agent component of a conductor acting as an agent.
+///
+/// New fields may be added in later releases, so create one with
+/// [`InstantiatedChain::new`].
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct InstantiatedChain {
+    /// The request to forward into the chain.
+    ///
+    /// See [`SelectedInitializeRequest`] for how the conductor forwards it.
+    pub request: SelectedInitializeRequest,
+    /// The proxy components, in chain order.
+    pub proxies: Vec<DynConnectTo<Conductor>>,
+    /// The agent at the end of the chain.
+    pub agent: DynConnectTo<Client>,
+}
+
+impl InstantiatedChain {
+    /// Create the result from the request to forward, the proxies in chain
+    /// order, and the agent.
+    pub fn new(
+        request: impl Into<SelectedInitializeRequest>,
+        proxies: Vec<DynConnectTo<Conductor>>,
+        agent: DynConnectTo<Client>,
+    ) -> Self {
+        Self {
+            request: request.into(),
+            proxies,
+            agent,
+        }
+    }
+}
+
 /// Trait for lazy proxy instantiation (proxy mode).
 ///
-/// Used by conductors in proxy mode (`ConductorToConductor`) where all components
-/// are proxies that forward to an outer conductor.
+/// Used by conductors created with [`ConductorImpl::new_proxy`], where all
+/// components are proxies and the conductor's own successor is the agent.
 pub trait InstantiateProxies: Send {
     /// Instantiate proxy components based on the `initialize` request.
     ///
     /// The request is parsed for the protocol version the conductor selected;
     /// see [`SelectedInitializeRequest`]. An implementation that supports only
-    /// some versions rejects the others with an error, for example with
+    /// lower versions negotiates down, for example with
     /// [`SelectedInitializeRequest::into_v1`].
     ///
-    /// Returns the (possibly modified) request and the proxy components, typed
-    /// as `DynConnectTo<Conductor>` since proxies communicate with the
-    /// conductor.
+    /// Returns the (possibly modified) request and the proxy components.
     fn instantiate_proxies(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol::Error,
-        >,
-    >;
+    ) -> BoxFuture<'static, Result<InstantiatedProxies, Error>>;
 }
 
 /// Simple implementation: provide all proxy components unconditionally, for
 /// every protocol version.
-///
-/// Requires `T: ConnectTo<Conductor>`.
 impl<T> InstantiateProxies for Vec<T>
 where
     T: ConnectTo<Conductor> + 'static,
@@ -1242,17 +1322,10 @@ where
     fn instantiate_proxies(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol::Error,
-        >,
-    > {
+    ) -> BoxFuture<'static, Result<InstantiatedProxies, Error>> {
         Box::pin(async move {
-            let components: Vec<DynConnectTo<Conductor>> =
-                (*self).into_iter().map(|c| DynConnectTo::new(c)).collect();
-            Ok((req, components))
+            let components = (*self).into_iter().map(DynConnectTo::new).collect();
+            Ok(InstantiatedProxies::new(req, components))
         })
     }
 }
@@ -1261,59 +1334,34 @@ where
 impl<F, Fut> InstantiateProxies for F
 where
     F: FnOnce(SelectedInitializeRequest) -> Fut + Send + 'static,
-    Fut: std::future::Future<
-            Output = Result<
-                (SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>),
-                agent_client_protocol::Error,
-            >,
-        > + Send
-        + 'static,
+    Fut: Future<Output = Result<InstantiatedProxies, Error>> + Send + 'static,
 {
     fn instantiate_proxies(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol::Error,
-        >,
-    > {
+    ) -> BoxFuture<'static, Result<InstantiatedProxies, Error>> {
         Box::pin(async move { (*self)(req).await })
     }
 }
 
-/// The result of [`InstantiateProxiesAndAgent::instantiate_proxies_and_agent`]:
-/// the (possibly modified) request, the proxy components, and the agent
-/// component.
-pub type ProxiesAndAgentComponents = (
-    SelectedInitializeRequest,
-    Vec<DynConnectTo<Conductor>>,
-    DynConnectTo<Client>,
-);
-
 /// Trait for lazy proxy and agent instantiation (agent mode).
 ///
-/// Used by conductors in agent mode (`ConductorToClient`) where there are
-/// zero or more proxies followed by an agent component.
+/// Used by conductors created with [`ConductorImpl::new_agent`], where zero
+/// or more proxies are followed by an agent component.
 pub trait InstantiateProxiesAndAgent: Send {
     /// Instantiate proxy and agent components based on the `initialize` request.
     ///
     /// The request is parsed for the protocol version the conductor selected;
     /// see [`SelectedInitializeRequest`]. An implementation that supports only
-    /// some versions rejects the others with an error, for example with
+    /// lower versions negotiates down, for example with
     /// [`SelectedInitializeRequest::into_v1`].
     ///
-    /// Returns the (possibly modified) request, a vector of proxy components
-    /// (typed as `DynConnectTo<Conductor>`), and the agent component
-    /// (typed as `DynConnectTo<Client>`).
+    /// Returns the (possibly modified) request, the proxy components, and the
+    /// agent component.
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-    >;
+    ) -> BoxFuture<'static, Result<InstantiatedChain, Error>>;
 }
 
 /// Wrapper to convert a single agent component (no proxies) into
@@ -1325,11 +1373,14 @@ impl<A: ConnectTo<Client> + 'static> InstantiateProxiesAndAgent for AgentOnly<A>
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-    > {
-        Box::pin(async move { Ok((req, Vec::new(), DynConnectTo::new(self.0))) })
+    ) -> BoxFuture<'static, Result<InstantiatedChain, Error>> {
+        Box::pin(async move {
+            Ok(InstantiatedChain::new(
+                req,
+                Vec::new(),
+                DynConnectTo::new(self.0),
+            ))
+        })
     }
 }
 
@@ -1382,11 +1433,8 @@ impl InstantiateProxiesAndAgent for ProxiesAndAgent {
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-    > {
-        Box::pin(async move { Ok((req, self.proxies, self.agent)) })
+    ) -> BoxFuture<'static, Result<InstantiatedChain, Error>> {
+        Box::pin(async move { Ok(InstantiatedChain::new(req, self.proxies, self.agent)) })
     }
 }
 
@@ -1394,18 +1442,12 @@ impl InstantiateProxiesAndAgent for ProxiesAndAgent {
 impl<F, Fut> InstantiateProxiesAndAgent for F
 where
     F: FnOnce(SelectedInitializeRequest) -> Fut + Send + 'static,
-    Fut: std::future::Future<
-            Output = Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-        > + Send
-        + 'static,
+    Fut: Future<Output = Result<InstantiatedChain, Error>> + Send + 'static,
 {
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-    > {
+    ) -> BoxFuture<'static, Result<InstantiatedChain, Error>> {
         Box::pin(async move { (*self)(req).await })
     }
 }
@@ -1419,6 +1461,9 @@ where
 ///
 /// All spawned tasks send messages via this enum through a shared channel,
 /// allowing centralized routing logic in the conductor runner's event loop.
+///
+/// Declared `pub` only because the sealed [`HostRole`] trait names it; it is
+/// not part of the crate's public API.
 #[derive(Debug)]
 pub enum ConductorMessage {
     /// If this message is a request or notification, then it is going "left-to-right"
@@ -1442,52 +1487,18 @@ pub enum ConductorMessage {
     },
 }
 
-/// Trait implemented for the two links the conductor can use:
-///
-/// * ConductorToClient -- conductor is acting as an agent, so when its last proxy sends to its successor, the conductor sends that message to its agent component
-/// * ConductorToConductor -- conductor is acting as a proxy, so when its last proxy sends to its successor, the (inner) conductor sends that message to its successor, via the outer conductor
+/// The role a conductor plays toward its own client: [`Agent`] for a
+/// conductor created with [`ConductorImpl::new_agent`], whose last proxy talks
+/// to the conductor's agent component, or [`Proxy`] for one created with
+/// [`ConductorImpl::new_proxy`], whose last proxy talks to the conductor's own
+/// successor.
 ///
 /// This trait is sealed: it is implemented for [`Agent`] and [`Proxy`] and
 /// cannot be implemented outside this crate.
-pub trait ConductorHostRole: sealed::Sealed + Role<Counterpart: HasPeer<Client>> {
-    /// The type used to instantiate components for this link type.
-    type Instantiator: Send;
+pub trait ConductorHostRole: sealed::HostRole + Role<Counterpart: HasPeer<Client>> {}
 
-    /// The method of the request that initializes the conductor:
-    /// `initialize`, or `proxy/initialize` for a conductor acting as a proxy.
-    fn initialize_method(&self) -> &'static str;
-
-    /// Select the chain's protocol version for an initialization that
-    /// requested `requested`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the error that answers the initialization when the conductor
-    /// supports no suitable version.
-    fn select_protocol_version(&self, requested: ProtocolVersion)
-    -> Result<ProtocolVersion, Error>;
-
-    /// Instantiate and spawn the chain's components for `request`.
-    ///
-    /// Takes ownership of the instantiator and returns the (possibly
-    /// modified) request to forward into the chain. An error answers the
-    /// initialization and every later message.
-    fn instantiate(
-        &self,
-        request: SelectedInitializeRequest,
-        connection: ConnectionTo<Self::Counterpart>,
-        instantiator: Self::Instantiator,
-        runner: &mut ConductorRunner<Self>,
-    ) -> impl Future<Output = Result<SelectedInitializeRequest, agent_client_protocol::Error>> + Send;
-
-    /// Handle an incoming message from the client or conductor, depending on `Self`
-    fn handle_dispatch(
-        &self,
-        message: Dispatch,
-        connection: ConnectionTo<Self::Counterpart>,
-        conductor_tx: &mut mpsc::Sender<ConductorMessage>,
-    ) -> impl Future<Output = Result<Handled<Dispatch>, agent_client_protocol::Error>> + Send;
-}
+impl ConductorHostRole for Agent {}
+impl ConductorHostRole for Proxy {}
 
 /// Select the highest version this build supports at or below `requested`,
 /// as an agent does, keeping v1's fallback-to-latest rule for a request below
@@ -1501,19 +1512,80 @@ fn select_like_an_agent(requested: ProtocolVersion) -> ProtocolVersion {
     ProtocolVersion::V1
 }
 
-mod sealed {
-    /// Prevents implementations of [`super::ConductorHostRole`] outside this crate.
-    pub trait Sealed {}
+pub(crate) use sealed::{HostRole, Token};
 
-    impl Sealed for agent_client_protocol::Agent {}
-    impl Sealed for agent_client_protocol::Proxy {}
+mod sealed {
+    use super::*;
+
+    /// A value only this crate can create.
+    ///
+    /// Every [`HostRole`] method takes one, so code outside this crate cannot
+    /// call those methods through a [`ConductorHostRole`] bound.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token(());
+
+    impl Token {
+        pub(crate) const fn new() -> Self {
+            Self(())
+        }
+    }
+
+    /// The conductor's behavior for each [`ConductorHostRole`].
+    ///
+    /// Private to this crate, so [`ConductorHostRole`] cannot be implemented
+    /// outside it. Its methods take a [`Token`], so they cannot be called
+    /// outside it either. `Instantiator` is not a stable extension point.
+    pub trait HostRole: Role<Counterpart: HasPeer<Client>> {
+        /// The type used to instantiate components for this role.
+        type Instantiator: Send;
+
+        /// The method of the request that initializes the conductor:
+        /// `initialize`, or `proxy/initialize` for a conductor acting as a proxy.
+        fn initialize_method(&self, token: Token) -> &'static str;
+
+        /// Select the chain's protocol version for an initialization that
+        /// requested `requested`.
+        ///
+        /// # Errors
+        ///
+        /// Returns the error that answers the initialization when the conductor
+        /// supports no suitable version.
+        fn select_protocol_version(
+            &self,
+            token: Token,
+            requested: ProtocolVersion,
+        ) -> Result<ProtocolVersion, Error>;
+
+        /// Instantiate and spawn the chain's components for `request`.
+        ///
+        /// Takes ownership of the instantiator and returns the (possibly
+        /// modified) request to forward into the chain. An error answers the
+        /// initialization and every later message.
+        fn instantiate(
+            &self,
+            token: Token,
+            request: SelectedInitializeRequest,
+            connection: ConnectionTo<Self::Counterpart>,
+            instantiator: Self::Instantiator,
+            runner: &mut ConductorRunner<Self>,
+        ) -> impl Future<Output = Result<SelectedInitializeRequest, Error>> + Send;
+
+        /// Handle an incoming message from the client or conductor, depending on `Self`
+        fn handle_dispatch(
+            &self,
+            token: Token,
+            message: Dispatch,
+            connection: ConnectionTo<Self::Counterpart>,
+            conductor_tx: &mut mpsc::Sender<ConductorMessage>,
+        ) -> impl Future<Output = Result<Handled<Dispatch>, Error>> + Send;
+    }
 }
 
 /// Conductor acting as an agent
-impl ConductorHostRole for Agent {
+impl HostRole for Agent {
     type Instantiator = Box<dyn InstantiateProxiesAndAgent>;
 
-    fn initialize_method(&self) -> &'static str {
+    fn initialize_method(&self, _: Token) -> &'static str {
         "initialize"
     }
 
@@ -1522,6 +1594,7 @@ impl ConductorHostRole for Agent {
     /// v1.
     fn select_protocol_version(
         &self,
+        _: Token,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
         Ok(select_like_an_agent(requested))
@@ -1529,13 +1602,17 @@ impl ConductorHostRole for Agent {
 
     async fn instantiate(
         &self,
+        _: Token,
         request: SelectedInitializeRequest,
         client_connection: ConnectionTo<Client>,
         instantiator: Self::Instantiator,
         runner: &mut ConductorRunner<Self>,
     ) -> Result<SelectedInitializeRequest, agent_client_protocol::Error> {
-        let (modified_req, proxy_components, agent_component) =
-            instantiator.instantiate_proxies_and_agent(request).await?;
+        let InstantiatedChain {
+            request: modified_req,
+            proxies: proxy_components,
+            agent: agent_component,
+        } = instantiator.instantiate_proxies_and_agent(request).await?;
 
         debug!(?agent_component, "spawning agent");
 
@@ -1570,6 +1647,7 @@ impl ConductorHostRole for Agent {
 
     async fn handle_dispatch(
         &self,
+        _: Token,
         message: Dispatch,
         client_connection: ConnectionTo<Client>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
@@ -1593,10 +1671,10 @@ impl ConductorHostRole for Agent {
 }
 
 /// Conductor acting as a proxy
-impl ConductorHostRole for Proxy {
+impl HostRole for Proxy {
     type Instantiator = Box<dyn InstantiateProxies>;
 
-    fn initialize_method(&self) -> &'static str {
+    fn initialize_method(&self, _: Token) -> &'static str {
         METHOD_INITIALIZE_PROXY
     }
 
@@ -1605,6 +1683,7 @@ impl ConductorHostRole for Proxy {
     /// requested one, keeping v1's fallback-to-latest rule below v1.
     fn select_protocol_version(
         &self,
+        _: Token,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
         Ok(select_like_an_agent(requested))
@@ -1612,12 +1691,16 @@ impl ConductorHostRole for Proxy {
 
     async fn instantiate(
         &self,
+        _: Token,
         request: SelectedInitializeRequest,
         client_connection: ConnectionTo<Conductor>,
         instantiator: Self::Instantiator,
         runner: &mut ConductorRunner<Self>,
     ) -> Result<SelectedInitializeRequest, agent_client_protocol::Error> {
-        let (modified_req, proxy_components) = instantiator.instantiate_proxies(request).await?;
+        let InstantiatedProxies {
+            request: modified_req,
+            proxies: proxy_components,
+        } = instantiator.instantiate_proxies(request).await?;
 
         runner.successor = Arc::new(GrandSuccessor);
         runner.spawn_proxies(client_connection, proxy_components)?;
@@ -1627,6 +1710,7 @@ impl ConductorHostRole for Proxy {
 
     async fn handle_dispatch(
         &self,
+        _: Token,
         message: Dispatch,
         client_connection: ConnectionTo<Conductor>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
@@ -1676,7 +1760,8 @@ impl ConductorHostRole for Proxy {
     }
 }
 
-pub trait ConductorSuccessor<Host: ConductorHostRole>: Send + Sync + 'static {
+/// Where the conductor's last proxy sends messages for its successor.
+pub(crate) trait ConductorSuccessor<Host: HostRole>: Send + Sync + 'static {
     /// Send a message to the successor.
     fn send_message<'a>(
         &self,
@@ -1686,7 +1771,7 @@ pub trait ConductorSuccessor<Host: ConductorHostRole>: Send + Sync + 'static {
     ) -> BoxFuture<'a, Result<(), agent_client_protocol::Error>>;
 }
 
-impl<Host: ConductorHostRole> ConductorSuccessor<Host> for agent_client_protocol::Error {
+impl<Host: HostRole> ConductorSuccessor<Host> for agent_client_protocol::Error {
     fn send_message<'a>(
         &self,
         _message: Dispatch,

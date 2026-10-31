@@ -11,8 +11,8 @@ use agent_client_protocol::{
     JsonRpcRequest, JsonRpcResponse, Proxy, UntypedMessage,
 };
 use agent_client_protocol_conductor::{
-    ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent, ProxiesAndAgent,
-    ProxiesAndAgentComponents, SelectedInitializeRequest,
+    ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent, InstantiatedChain,
+    InstantiatedProxies, ProxiesAndAgent, SelectedInitializeRequest,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use serde::{Deserialize, Serialize};
@@ -117,7 +117,7 @@ impl InstantiateProxiesAndAgent for MutatingInstantiator {
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         request: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<'static, Result<ProxiesAndAgentComponents, Error>> {
+    ) -> futures::future::BoxFuture<'static, Result<InstantiatedChain, Error>> {
         let SelectedInitializeRequest::V2(mut request) = request else {
             return Box::pin(async {
                 Err(Error::internal_error()
@@ -133,7 +133,7 @@ impl InstantiateProxiesAndAgent for MutatingInstantiator {
             }
         }
         let agent = self.agent;
-        Box::pin(async move { Ok((request.into(), Vec::new(), agent)) })
+        Box::pin(async move { Ok(InstantiatedChain::new(request, Vec::new(), agent)) })
     }
 }
 
@@ -143,10 +143,7 @@ impl InstantiateProxies for VersionMutatingProxyInstantiator {
     fn instantiate_proxies(
         self: Box<Self>,
         request: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<(SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>), Error>,
-    > {
+    ) -> futures::future::BoxFuture<'static, Result<InstantiatedProxies, Error>> {
         let SelectedInitializeRequest::V2(mut request) = request else {
             return Box::pin(async {
                 Err(Error::internal_error()
@@ -154,7 +151,7 @@ impl InstantiateProxies for VersionMutatingProxyInstantiator {
             });
         };
         request.protocol_version = ProtocolVersion::from(3_u16);
-        Box::pin(async move { Ok((request.into(), Vec::new())) })
+        Box::pin(async move { Ok(InstantiatedProxies::new(request, Vec::new())) })
     }
 }
 
@@ -230,7 +227,7 @@ async fn run_with_conductor(
 }
 
 async fn run_raw_client_with_conductor(
-    components: ProxiesAndAgent,
+    components: impl InstantiateProxiesAndAgent + 'static,
     editor_task: impl AsyncFnOnce(ConnectionTo<Agent>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     let (editor_out, conductor_in) = duplex(4096);
@@ -533,12 +530,14 @@ async fn v2_nested_proxy_instantiator_cannot_change_selected_version() -> Result
 }
 
 #[tokio::test]
-async fn v2_nested_proxy_rejection_is_flushed_and_remains_failed() -> Result<(), Error> {
-    let v1_only_proxy = |request: SelectedInitializeRequest| async move {
-        let request = request.into_v1()?;
-        Ok::<_, Error>((request.into(), Vec::<DynConnectTo<Conductor>>::new()))
+async fn v2_nested_proxy_instantiation_failure_is_flushed_and_remains_failed() -> Result<(), Error>
+{
+    let failing_proxy = |_request: SelectedInitializeRequest| async move {
+        Err::<InstantiatedProxies, Error>(
+            Error::invalid_request().data("nested instantiator refused the chain"),
+        )
     };
-    let nested_conductor = ConductorImpl::new_proxy("v1-only-proxy", v1_only_proxy);
+    let nested_conductor = ConductorImpl::new_proxy("failing-proxy", failing_proxy);
     let request = initialize_request();
 
     run_with_conductor(
@@ -551,11 +550,11 @@ async fn v2_nested_proxy_rejection_is_flushed_and_remains_failed() -> Result<(),
                 )
                 .await
                 .expect("nested proxy rejection should not hang")
-                .expect_err("v1-only nested proxy must reject v2 initialize");
+                .expect_err("failing nested instantiator must reject initialize");
                 assert!(
                     error
                         .to_string()
-                        .contains("instantiator does not support ACP protocol version 2"),
+                        .contains("nested instantiator refused the chain"),
                     "unexpected nested proxy rejection on attempt {attempt}: {error:?}"
                 );
             }
@@ -1345,33 +1344,106 @@ async fn v2_nested_conductor_canonicalizes_future_version_fields() -> Result<(),
 }
 
 #[tokio::test]
-async fn v2_initialize_rejects_v1_only_instantiator_with_response() -> Result<(), Error> {
+async fn v2_instantiator_failure_is_answered_and_remains_failed() -> Result<(), Error> {
     let request = initialize_request();
-    let v1_only_instantiator = |request: SelectedInitializeRequest| async move {
-        let _request = request.into_v1()?;
-        Err::<ProxiesAndAgentComponents, Error>(
-            Error::internal_error().data("v1 instantiator unexpectedly called for v2"),
+    let failing_instantiator = |_request: SelectedInitializeRequest| async move {
+        Err::<InstantiatedChain, Error>(
+            Error::invalid_request().data("instantiator refused the chain"),
         )
     };
-    run_with_conductor(v1_only_instantiator, async move |cx| {
+    run_with_conductor(failing_instantiator, async move |cx| {
         for attempt in 1..=2 {
             let error = tokio::time::timeout(
                 std::time::Duration::from_secs(2),
                 cx.send_request(request.clone()).block_task(),
             )
             .await
-            .expect("v1-only instantiator rejection should not hang")
-            .expect_err("v1-only instantiator must reject v2 initialize");
+            .expect("instantiator rejection should not hang")
+            .expect_err("failing instantiator must reject initialize");
             assert!(
-                error
-                    .to_string()
-                    .contains("does not support ACP protocol version 2"),
-                "unexpected v2 rejection on attempt {attempt}: {error:?}"
+                error.to_string().contains("instantiator refused the chain"),
+                "unexpected rejection on attempt {attempt}: {error:?}"
             );
         }
         Ok(())
     })
     .await
+}
+
+/// A v1-only instantiator negotiates a v2 client down to v1 with
+/// [`SelectedInitializeRequest::into_v1`], whether the conductor acts as an
+/// agent or as a nested proxy: the chain initializes with v1 and the client
+/// receives a v1 `initialize` response.
+#[tokio::test]
+async fn v1_only_instantiator_negotiates_a_v2_chain_down_to_v1() -> Result<(), Error> {
+    for nested in [false, true] {
+        let v1_hits = Arc::new(AtomicUsize::new(0));
+        let v2_hits = Arc::new(AtomicUsize::new(0));
+        let agent = counting_agent_router(Arc::clone(&v1_hits), Arc::clone(&v2_hits));
+        let selected = Arc::new(Mutex::new(None));
+        let run = {
+            let selected = Arc::clone(&selected);
+            async move |cx: ConnectionTo<Agent>| {
+                let response = cx
+                    .send_request(UntypedMessage::new(
+                        "initialize",
+                        serde_json::to_value(initialize_request())
+                            .map_err(Error::into_internal_error)?,
+                    )?)
+                    .block_task()
+                    .await?;
+                assert_eq!(response["protocolVersion"], 1, "{response}");
+                assert_eq!(
+                    *selected.lock().expect("selected lock"),
+                    Some(ProtocolVersion::V2),
+                    "the conductor selects v2 before the instantiator negotiates down"
+                );
+
+                let response = cx
+                    .send_request(UntypedMessage::new(
+                        "session/new",
+                        serde_json::json!({ "cwd": "/tmp", "mcpServers": [] }),
+                    )?)
+                    .block_task()
+                    .await?;
+                assert_eq!(response["sessionId"], "v1-session", "{response}");
+                Ok(())
+            }
+        };
+        if nested {
+            let v1_only_proxy = move |request: SelectedInitializeRequest| async move {
+                *selected.lock().expect("selected lock") = Some(request.protocol_version());
+                let request = request.into_v1()?;
+                assert_eq!(request.protocol_version, ProtocolVersion::V1);
+                Ok(InstantiatedProxies::new(
+                    request,
+                    vec![DynConnectTo::<Conductor>::new(Proxy.v1())],
+                ))
+            };
+            run_raw_client_with_conductor(
+                ProxiesAndAgent::new(agent)
+                    .proxy(ConductorImpl::new_proxy("v1-only-proxy", v1_only_proxy)),
+                run,
+            )
+            .await?;
+        } else {
+            let v1_only_instantiator = move |request: SelectedInitializeRequest| async move {
+                *selected.lock().expect("selected lock") = Some(request.protocol_version());
+                let request = request.into_v1()?;
+                assert_eq!(request.protocol_version, ProtocolVersion::V1);
+                Ok(InstantiatedChain::new(
+                    request,
+                    Vec::new(),
+                    DynConnectTo::new(agent),
+                ))
+            };
+            run_raw_client_with_conductor(v1_only_instantiator, run).await?;
+        }
+
+        assert_eq!(v1_hits.load(Ordering::SeqCst), 1, "nested: {nested}");
+        assert_eq!(v2_hits.load(Ordering::SeqCst), 0, "nested: {nested}");
+    }
+    Ok(())
 }
 
 /// A v1 agent and a v2 agent behind one router, counting how often each

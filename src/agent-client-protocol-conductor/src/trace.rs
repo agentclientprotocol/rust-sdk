@@ -20,7 +20,7 @@ use agent_client_protocol::{
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-use crate::ComponentIndex;
+use crate::conductor::ComponentIndex;
 use crate::snoop::SnooperComponent;
 
 /// A trace event representing message flow between components.
@@ -38,11 +38,11 @@ pub enum TraceEvent {
     Notification(NotificationEvent),
 }
 
-/// Protocol type for messages.
+/// The protocol a traced message belongs to.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum Protocol {
+pub enum MessageProtocol {
     /// Standard ACP protocol messages.
     Acp,
     /// MCP messages carried over ACP.
@@ -57,7 +57,7 @@ pub struct RequestEvent {
     pub ts: f64,
 
     /// Protocol: ACP or MCP.
-    pub protocol: Protocol,
+    pub protocol: MessageProtocol,
 
     /// Source component (e.g., "client", "proxy:0", "proxy:1", "agent").
     pub from: String,
@@ -101,7 +101,7 @@ pub struct ResponseEvent {
     /// Whether an error belongs to the ACP binding or the inner MCP peer.
     /// Older trace files omit this provenance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error_domain: Option<Protocol>,
+    pub error_domain: Option<MessageProtocol>,
 
     /// Response result or error object.
     pub payload: serde_json::Value,
@@ -115,7 +115,7 @@ pub struct NotificationEvent {
     pub ts: f64,
 
     /// Protocol: ACP or MCP.
-    pub protocol: Protocol,
+    pub protocol: MessageProtocol,
 
     /// Source component.
     pub from: String,
@@ -186,7 +186,7 @@ impl std::fmt::Debug for TraceWriter {
 }
 
 struct RequestDetails {
-    protocol: Protocol,
+    protocol: MessageProtocol,
     request_from: ComponentIndex,
     request_to: ComponentIndex,
 }
@@ -226,7 +226,7 @@ impl TraceWriter {
     #[expect(clippy::too_many_arguments)]
     fn request(
         &mut self,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         from: ComponentIndex,
         to: ComponentIndex,
         id: serde_json::Value,
@@ -261,7 +261,7 @@ impl TraceWriter {
         from: ComponentIndex,
         to: ComponentIndex,
         id: serde_json::Value,
-        error_domain: Option<Protocol>,
+        error_domain: Option<MessageProtocol>,
         mut payload: serde_json::Value,
     ) {
         redact_credentials(&mut payload);
@@ -279,7 +279,7 @@ impl TraceWriter {
     /// Write a notification event.
     fn notification(
         &mut self,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         from: ComponentIndex,
         to: ComponentIndex,
         method: impl Into<String>,
@@ -390,7 +390,7 @@ impl TraceWriter {
         successor_index: ComponentIndex,
         successor: Successor,
         id: Option<RawJsonRpcId>,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         method: String,
         params: serde_json::Value,
     ) {
@@ -531,19 +531,19 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 
 /// Keep an MCP outcome separate from a failure of its ACP binding.
 fn response_outcome(
-    protocol: Protocol,
+    protocol: MessageProtocol,
     outer_error: bool,
     payload: serde_json::Value,
-) -> (Option<Protocol>, serde_json::Value) {
+) -> (Option<MessageProtocol>, serde_json::Value) {
     if outer_error {
-        return (Some(Protocol::Acp), payload);
+        return (Some(MessageProtocol::Acp), payload);
     }
-    if protocol == Protocol::Mcp {
+    if protocol == MessageProtocol::Mcp {
         match serde_json::from_value::<MessageMcpResponse>(payload.clone()) {
             Ok(MessageMcpResponse::Result { result, .. }) => return (None, result),
             Ok(MessageMcpResponse::Error { error, .. }) => {
                 return (
-                    Some(Protocol::Mcp),
+                    Some(MessageProtocol::Mcp),
                     serde_json::to_value(error).expect("MCP errors contain only JSON values"),
                 );
             }
@@ -706,7 +706,7 @@ struct TracedMessage {
 struct MessageInfo {
     successor: Successor,
     id: Option<RawJsonRpcId>,
-    protocol: Protocol,
+    protocol: MessageProtocol,
     method: String,
     params: serde_json::Value,
 }
@@ -729,7 +729,12 @@ impl MessageInfo {
         let untyped =
             UntypedMessage::parse_message(&req.method, &params_from_transport(req.params))
                 .expect("untyped message is infallible");
-        Self::from_untyped_request(Successor(false), Some(req.id), Protocol::Acp, untyped)
+        Self::from_untyped_request(
+            Successor(false),
+            Some(req.id),
+            MessageProtocol::Acp,
+            untyped,
+        )
     }
 
     fn from_notification(notification: RpcNotification<RawJsonRpcParams>) -> Self {
@@ -738,13 +743,13 @@ impl MessageInfo {
             &params_from_transport(notification.params),
         )
         .expect("untyped message is infallible");
-        Self::from_untyped_notification(Successor(false), Protocol::Acp, untyped)
+        Self::from_untyped_notification(Successor(false), MessageProtocol::Acp, untyped)
     }
 
     fn from_untyped_request(
         successor: Successor,
         id: Option<RawJsonRpcId>,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         untyped: UntypedMessage,
     ) -> Self {
         if let Ok(m) = SuccessorMessage::parse_message(&untyped.method, &untyped.params) {
@@ -758,7 +763,7 @@ impl MessageInfo {
             return Self::from_untyped_request(
                 successor,
                 id,
-                Protocol::Mcp,
+                MessageProtocol::Mcp,
                 UntypedMessage {
                     method: m.method,
                     params,
@@ -771,7 +776,7 @@ impl MessageInfo {
 
     fn from_untyped_notification(
         successor: Successor,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         untyped: UntypedMessage,
     ) -> Self {
         if let Ok(m) = SuccessorMessage::parse_message(&untyped.method, &untyped.params) {
@@ -784,7 +789,7 @@ impl MessageInfo {
                 .map_or(serde_json::Value::Null, serde_json::Value::Object);
             return Self::from_untyped_notification(
                 successor,
-                Protocol::Mcp,
+                MessageProtocol::Mcp,
                 UntypedMessage {
                     method: m.method,
                     params,
@@ -798,7 +803,7 @@ impl MessageInfo {
     fn new(
         successor: Successor,
         id: Option<RawJsonRpcId>,
-        protocol: Protocol,
+        protocol: MessageProtocol,
         untyped: UntypedMessage,
     ) -> Self {
         Self {
@@ -816,7 +821,9 @@ mod tests {
     use agent_client_protocol::RawJsonRpcMessage;
     use serde_json::json;
 
-    use super::{MessageInfo, Protocol, ResponseEvent, redact_credentials, response_outcome};
+    use super::{
+        MessageInfo, MessageProtocol, ResponseEvent, redact_credentials, response_outcome,
+    };
 
     #[test]
     fn http_url_redaction_handles_encoded_keys_duplicates_and_userinfo() {
@@ -967,20 +974,20 @@ mod tests {
     fn mcp_and_binding_errors_keep_their_domains() {
         let inner = json!({"code":-32000,"message":"peer","data":null,"extension":true});
         assert_eq!(
-            response_outcome(Protocol::Mcp, false, json!({"error":inner})),
-            (Some(Protocol::Mcp), inner)
+            response_outcome(MessageProtocol::Mcp, false, json!({"error":inner})),
+            (Some(MessageProtocol::Mcp), inner)
         );
         let outer = json!({"code":-33002,"message":"binding failure"});
         assert_eq!(
-            response_outcome(Protocol::Mcp, true, outer.clone()),
-            (Some(Protocol::Acp), outer)
+            response_outcome(MessageProtocol::Mcp, true, outer.clone()),
+            (Some(MessageProtocol::Acp), outer)
         );
         for result in [
             json!(null),
             json!({"resultType":"input_required","requestState":"opaque"}),
         ] {
             assert_eq!(
-                response_outcome(Protocol::Mcp, false, json!({"result":result})),
+                response_outcome(MessageProtocol::Mcp, false, json!({"result":result})),
                 (None, result)
             );
         }
@@ -1077,7 +1084,7 @@ mod tests {
 
         // Schema 1.10.1 requires named inner parameters. Do not pretend this
         // malformed envelope was a successfully decoded MCP notification.
-        assert_eq!(info.protocol, Protocol::Acp);
+        assert_eq!(info.protocol, MessageProtocol::Acp);
         assert_eq!(info.method, "mcp/message");
         assert_eq!(info.params, params);
     }
@@ -1096,7 +1103,7 @@ mod tests {
             unreachable!("notification constructor")
         };
         let info = MessageInfo::from_notification(notification);
-        assert_eq!(info.protocol, Protocol::Mcp);
+        assert_eq!(info.protocol, MessageProtocol::Mcp);
         assert_eq!(info.method, "notifications/progress");
         assert_eq!(info.params, params);
     }
