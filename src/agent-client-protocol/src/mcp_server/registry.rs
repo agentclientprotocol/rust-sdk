@@ -408,12 +408,12 @@ mod tests {
             "Echoes the message".to_string()
         }
 
-        async fn call_tool(
+        fn call_tool(
             &self,
             input: EchoInput,
             _context: McpConnectionTo<mcp::Client>,
-        ) -> Result<String, Error> {
-            Ok(input.message)
+        ) -> impl Future<Output = Result<String, Error>> + Send {
+            std::future::ready(Ok(input.message))
         }
     }
 
