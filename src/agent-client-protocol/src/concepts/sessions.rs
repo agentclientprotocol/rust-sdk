@@ -129,6 +129,13 @@
 //! # }
 //! ```
 //!
+//! The `session/prompt` response arrives on the session's update stream as
+//! [`SessionMessage::PromptResponse`](crate::v1::SessionMessage::PromptResponse),
+//! after the updates the agent sent for that turn. An error response arrives
+//! there too, and `read_to_string` returns it. It does not close the
+//! connection. Use `read_update` to see each
+//! [`SessionMessage`](crate::v1::SessionMessage), including the stop reason.
+//!
 //! # Adding MCP Servers
 //!
 //! You can attach MCP (Model Context Protocol) servers to a session to provide

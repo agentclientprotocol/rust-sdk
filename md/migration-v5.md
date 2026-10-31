@@ -148,6 +148,49 @@ their path.
 | `Role::builder(role)` (generic code, other roles) | `Builder::new(role)` |
 | `Client.connect_with(agent, f)` | `Client.v1().connect_with(agent, f)` |
 | `X.builder().without_acp_version_guard()` | `Builder::new(X)` |
+### The v1 session stream reports prompt responses and errors
+
+`v1::ActiveSession::send_prompt` used to close the whole connection, and every
+session on it, when the agent answered `session/prompt` with an error. The
+caller never saw the error. The response, or the error, now arrives on the
+session's update stream, and `v1::SessionMessage` changed to carry it:
+
+- `SessionMessage::StopReason(StopReason)` is now
+  `SessionMessage::PromptResponse(Result<PromptResponse, Error>)`. It keeps
+  the full `PromptResponse`, including `usage` and `_meta`, which used to be
+  dropped.
+- `SessionMessage::SessionMessage(Dispatch)` is now
+  `SessionMessage::Message(v1::Dispatch)`, whose request handles are typed
+  for v1. Call `.into_raw()` before handing it to `MatchDispatch`.
+- `read_to_string` returns the prompt's error instead of the connection
+  closing.
+- `send_prompt_blocks(Vec<ContentBlock>)` sends prompts that are not plain
+  text.
+
+`v1::SessionBlockState` is sealed. `v1::Blocking` and `v1::NonBlocking` are
+its only implementations.
+
+```rust,ignore
+// Before
+match session.read_update().await? {
+    SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
+        /* .if_notification(..) */,
+    SessionMessage::StopReason(stop_reason) => { /* .. */ }
+    _ => {}
+}
+
+// After
+match session.read_update().await? {
+    SessionMessage::Message(dispatch) => MatchDispatch::new(dispatch.into_raw())
+        /* .if_notification(..) */,
+    SessionMessage::PromptResponse(response) => {
+        let stop_reason = response?.stop_reason;
+        /* .. */
+    }
+    _ => {}
+}
+```
+
 | `Builder::without_acp_version_guard()` | removed; `Builder::new` applies no version guard |
 | `V2Builder` | `v2::Builder` |
 | `V2ConnectionTo` | `v2::ConnectionTo` |
@@ -177,6 +220,8 @@ their path.
 
 `Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
 `Conductor.builder()` and the MCP roles' `builder()` are version-neutral and
+| `SessionMessage::SessionMessage(Dispatch)` | `v1::SessionMessage::Message(v1::Dispatch)` |
+| `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 stay.
 
 ### `Builder::new` applies no version guard

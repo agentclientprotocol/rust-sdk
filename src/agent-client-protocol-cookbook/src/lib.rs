@@ -346,7 +346,9 @@ pub mod connecting_as_client {
     //!
     //! - [`send_prompt`] - Send a text prompt to the agent
     //! - [`read_update`] - Read the next update (text chunk, tool call, etc.)
-    //! - [`read_to_string`] - Read all text until the turn ends
+    //!   or the prompt's response
+    //! - [`read_to_string`] - Read all text until the turn ends. If the agent
+    //!   answers the prompt with an error, this returns that error.
     //!
     //! With the core SDK's `unstable_mcp_over_acp` feature, the session builder
     //! also supports adding MCP servers with [`with_mcp_server`].

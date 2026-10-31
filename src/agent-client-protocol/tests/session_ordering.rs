@@ -281,6 +281,108 @@ async fn on_session_start_callback_can_consume_later_session_messages() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn prompt_error_reaches_the_session_stream_and_keeps_the_connection() {
+    let session_id = SessionId::new("prompt-error-session");
+    let new_session_id = session_id.clone();
+    let other_session_id = SessionId::new("other-session");
+    let other_new_session_id = other_session_id.clone();
+    let meta = agent_client_protocol::schema::v1::Meta::from_iter([(
+        "turn".to_owned(),
+        serde_json::json!({ "kept": true }),
+    )]);
+    let expected_response = PromptResponse::new(StopReason::EndTurn).meta(meta.clone());
+
+    let agent = Agent
+        .v1()
+        .on_receive_request(
+            {
+                let created = std::sync::Mutex::new(0_u8);
+                async move |_request: NewSessionRequest,
+                            responder: Responder<NewSessionResponse, V1>,
+                            _connection: ConnectionTo<Client>| {
+                    let id = {
+                        let mut created = created.lock().expect("lock poisoned");
+                        *created += 1;
+                        if *created == 1 {
+                            new_session_id.clone()
+                        } else {
+                            other_new_session_id.clone()
+                        }
+                    };
+                    responder.respond(NewSessionResponse::new(id))
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: PromptRequest,
+                        responder: Responder<PromptResponse, V1>,
+                        connection: ConnectionTo<Client>| {
+                let ContentBlock::Text(text) = &request.prompt[0] else {
+                    panic!("expected a text prompt");
+                };
+                if text.text == "fail" {
+                    return responder.respond_with_error(
+                        agent_client_protocol::Error::invalid_params().data("rejected prompt"),
+                    );
+                }
+                connection.send_notification(SessionNotification::new(
+                    request.session_id,
+                    SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("ok"),
+                    ))),
+                ))?;
+                responder.respond(PromptResponse::new(StopReason::EndTurn).meta(meta.clone()))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let client = Client.v1().connect_with(agent, async move |connection| {
+        let mut session = connection
+            .build_session_cwd()?
+            .block_task()
+            .start_session()
+            .await?
+            .session;
+        let mut other = connection
+            .build_session_cwd()?
+            .block_task()
+            .start_session()
+            .await?
+            .session;
+        assert_eq!(session.session_id(), &session_id);
+        assert_eq!(other.session_id(), &other_session_id);
+
+        session.send_prompt("fail")?;
+        let error = session
+            .read_to_string()
+            .await
+            .expect_err("the prompt error should be returned");
+        assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
+
+        // The error did not close the connection or the other session.
+        other.send_prompt("hello")?;
+        assert_eq!(other.read_to_string().await?, "ok");
+
+        // The same session keeps working, and the complete response arrives.
+        session.send_prompt_blocks(vec![ContentBlock::Text(TextContent::new("hello"))])?;
+        let SessionMessage::Message(_) = session.read_update().await? else {
+            panic!("expected the agent message chunk first");
+        };
+        let SessionMessage::PromptResponse(response) = session.read_update().await? else {
+            panic!("expected the prompt response");
+        };
+        assert_eq!(response?, expected_response);
+        Ok(())
+    });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("prompt error test timed out")
+        .expect("session connection failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn on_session_start_installs_routing_before_later_message() {
     let session_id = SessionId::new("queued-session");
     let response_session_id = session_id.clone();
@@ -294,7 +396,7 @@ async fn on_session_start_installs_routing_before_later_message() {
             connection.build_session_cwd()?.on_session_start(
                 async move |SessionSetup { mut session, .. }| {
                     let update = session.read_update().await?;
-                    assert!(matches!(update, SessionMessage::SessionMessage(_)));
+                    assert!(matches!(update, SessionMessage::Message(_)));
                     result_tx
                         .send(())
                         .map_err(|()| agent_client_protocol::Error::internal_error())
@@ -366,7 +468,7 @@ async fn start_session_installs_routing_before_later_message() {
                 .await?
                 .session;
             let update = session.read_update().await?;
-            assert!(matches!(update, SessionMessage::SessionMessage(_)));
+            assert!(matches!(update, SessionMessage::Message(_)));
             Ok(())
         });
 
