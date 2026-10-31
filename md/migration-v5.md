@@ -843,3 +843,20 @@ breaking change and only happens in an ACP major release.
 The crate re-exports `axum` (with `server`) and `reqwest` and `url` (with
 `client`), so callers can name `axum::Router`, `reqwest::ClientBuilder`, and
 `url::ParseError` without adding matching dependencies.
+
+## `AcpAgent`
+
+- `AcpAgent::spawn_process` is no longer public. It returned `async_process`
+  types and skipped the process-group teardown that `ConnectTo` installs.
+  Connect the `AcpAgent` itself instead.
+- `AcpAgent::claude_agent()` and `AcpAgent::codex()` are removed. They ran
+  `npx -y ...@latest`, which installs whatever version was published last.
+  Name the adapter version yourself:
+
+```rust
+use std::str::FromStr;
+use agent_client_protocol::AcpAgent;
+
+let agent = AcpAgent::from_str("npx -y @agentclientprotocol/claude-agent-acp@<version>")?;
+# Ok::<(), agent_client_protocol::Error>(())
+```
