@@ -63,7 +63,7 @@ impl PolyfillProtocol {
                     Error::invalid_params().data("missing initialize.protocolVersion")
                 })?,
         )
-        .map_err(Error::into_internal_error)?;
+        .map_err(|_| Error::invalid_params().data("invalid initialize.protocolVersion"))?;
         let protocol = if requested == ProtocolVersion::V1 {
             Self::V1
         } else {
@@ -152,17 +152,21 @@ impl PolyfillProtocol {
         Ok(mode)
     }
 
+    /// Whether `method` creates a session whose `mcpServers` the polyfill
+    /// rewrites.
+    ///
+    /// `session/fork` counts in every build: without the
+    /// `unstable_session_fork` feature the polyfill cannot validate a fork
+    /// request, but forwarding its `McpServer::Acp` entries unchanged would
+    /// hand the agent servers it cannot reach.
     pub(crate) fn is_session_setup_method(self, method: &str) -> bool {
         match self {
-            Self::V1 => {
-                matches!(method, "session/new" | "session/load" | "session/resume")
-                    || cfg!(feature = "unstable_session_fork") && method == "session/fork"
-            }
+            Self::V1 => matches!(
+                method,
+                "session/new" | "session/load" | "session/resume" | "session/fork"
+            ),
             #[cfg(feature = "unstable_protocol_v2")]
-            Self::V2 => {
-                matches!(method, "session/new" | "session/resume")
-                    || cfg!(feature = "unstable_session_fork") && method == "session/fork"
-            }
+            Self::V2 => matches!(method, "session/new" | "session/resume" | "session/fork"),
         }
     }
 
@@ -185,6 +189,9 @@ impl PolyfillProtocol {
                 "session/fork" => {
                     ForkSessionRequest::parse_message(request.method(), request.params())?;
                 }
+                // Without the typed request, the agent validates the fork.
+                #[cfg(not(feature = "unstable_session_fork"))]
+                "session/fork" => {}
                 _ => return Err(Error::invalid_request().data("not a session setup method")),
             },
             #[cfg(feature = "unstable_protocol_v2")]
@@ -199,6 +206,9 @@ impl PolyfillProtocol {
                 "session/fork" => {
                     v2::ForkSessionRequest::parse_message(request.method(), request.params())?;
                 }
+                // Without the typed request, the agent validates the fork.
+                #[cfg(not(feature = "unstable_session_fork"))]
+                "session/fork" => {}
                 _ => return Err(Error::invalid_request().data("not a session setup method")),
             },
         }
@@ -358,6 +368,23 @@ pub(crate) struct NativeMcpNotification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_fork_is_a_setup_method_in_every_build() {
+        let fork = UntypedMessage::new(
+            "session/fork",
+            serde_json::json!({ "sessionId": "s", "cwd": "/tmp", "mcpServers": [] }),
+        )
+        .unwrap();
+        for protocol in [
+            PolyfillProtocol::V1,
+            #[cfg(feature = "unstable_protocol_v2")]
+            PolyfillProtocol::V2,
+        ] {
+            assert!(protocol.is_session_setup_method("session/fork"));
+            protocol.validate_session_setup_request(&fork).unwrap();
+        }
+    }
 
     #[test]
     fn request_wrappers_keep_request_metadata_in_inner_params() {
