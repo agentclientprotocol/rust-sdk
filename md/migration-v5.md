@@ -802,3 +802,20 @@ Future rmcp major versions arrive as new features and modules (such as
 `rmcp_4`) in minor releases, so you can enable both while moving your services
 to the new rmcp major version. Removing support for an rmcp major version is a
 breaking change and only happens in an ACP major release.
+
+## HTTP transport
+
+`agent-client-protocol-http` narrows two public types:
+
+- `HttpClientError` is `#[non_exhaustive]`, so matches need a wildcard arm.
+  `InvalidUrl` and `Reqwest` keep their payloads but no longer implement
+  `From`, and their `Display` text no longer repeats the underlying error. Walk
+  `std::error::Error::source` to see it.
+- `CorsOptions` is an opaque struct. The `Disabled`, `AllowOrigins`, and
+  `AllowAnyOrigin` variants are gone. Use `CorsOptions::disabled()`,
+  `CorsOptions::allow_origins(...)`, and `CorsOptions::allow_any_origin()`, and
+  compare policies with `==`.
+
+The crate re-exports `axum` (with `server`) and `reqwest` and `url` (with
+`client`), so callers can name `axum::Router`, `reqwest::ClientBuilder`, and
+`url::ParseError` without adding matching dependencies.

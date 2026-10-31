@@ -47,7 +47,7 @@ use crate::connection::ConnectionRegistry;
 pub struct ServerOptions {
     /// ACP endpoint path. Defaults to `/acp`.
     pub path: String,
-    /// Browser origin policy. Defaults to [`CorsOptions::Disabled`].
+    /// Browser origin policy. Defaults to [`CorsOptions::disabled`].
     pub cors: CorsOptions,
     /// Whether to expose `GET /health`. Defaults to `true`.
     pub health_endpoint: bool,
@@ -95,73 +95,71 @@ impl Default for ServerOptions {
 /// This is not authentication: requests without an `Origin` header are accepted
 /// by the origin check. Enforce authentication in the host router.
 ///
-/// Prefer the constructors; matches outside this crate must include a wildcard
-/// arm to accommodate future policies:
+/// Build a policy with [`Self::disabled`] (the default),
+/// [`Self::allow_origins`], or [`Self::allow_any_origin`]. Policies compare
+/// with `==`:
 ///
 /// ```
 /// use agent_client_protocol_http::CorsOptions;
 ///
-/// let policy = CorsOptions::disabled();
-/// let disabled = match policy {
-///     CorsOptions::Disabled => true,
-///     _ => false,
-/// };
-/// assert!(disabled);
-/// ```
-///
-/// ```compile_fail
-/// use agent_client_protocol_http::CorsOptions;
-///
-/// let policy = CorsOptions::disabled();
-/// match policy {
-///     CorsOptions::Disabled => {},
-///     CorsOptions::AllowOrigins(_) => {},
-///     CorsOptions::AllowAnyOrigin => {},
-/// }
+/// assert_eq!(CorsOptions::default(), CorsOptions::disabled());
+/// assert_ne!(CorsOptions::allow_any_origin(), CorsOptions::disabled());
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum CorsOptions {
-    /// Disable cross-origin HTTP access and reject WebSocket browser origins.
+pub struct CorsOptions {
+    policy: CorsPolicy,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum CorsPolicy {
     #[default]
     Disabled,
-    /// Allow only the listed browser origins.
     AllowOrigins(Vec<HeaderValue>),
-    /// Allow all browser origins. Does not enable credentialed CORS.
     AllowAnyOrigin,
 }
 
 impl CorsOptions {
-    /// Disable cross-origin browser access.
+    /// Disable cross-origin HTTP access and reject WebSocket browser origins.
     #[must_use]
     pub fn disabled() -> Self {
-        Self::Disabled
+        Self {
+            policy: CorsPolicy::Disabled,
+        }
     }
 
     /// Allow any browser origin, without enabling credentialed CORS.
     #[must_use]
     pub fn allow_any_origin() -> Self {
-        Self::AllowAnyOrigin
+        Self {
+            policy: CorsPolicy::AllowAnyOrigin,
+        }
     }
 
-    /// Allow the given browser origins.
+    /// Allow only the given browser origins.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidHeaderValue`] if an origin is not a valid HTTP header
+    /// value.
     pub fn allow_origins<I, S>(origins: I) -> Result<Self, InvalidHeaderValue>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        origins
+        let origins = origins
             .into_iter()
             .map(|origin| HeaderValue::from_str(origin.as_ref()))
-            .collect::<Result<Vec<_>, _>>()
-            .map(Self::AllowOrigins)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            policy: CorsPolicy::AllowOrigins(origins),
+        })
     }
 
     fn allow_origin_layer(&self) -> Option<AllowOrigin> {
-        match self {
-            Self::Disabled => None,
-            Self::AllowOrigins(origins) => Some(AllowOrigin::list(origins.clone())),
-            Self::AllowAnyOrigin => Some(AllowOrigin::any()),
+        match &self.policy {
+            CorsPolicy::Disabled => None,
+            CorsPolicy::AllowOrigins(origins) => Some(AllowOrigin::list(origins.clone())),
+            CorsPolicy::AllowAnyOrigin => Some(AllowOrigin::any()),
         }
     }
 
@@ -169,10 +167,10 @@ impl CorsOptions {
         let Some(origin) = origin else {
             return true;
         };
-        match self {
-            Self::Disabled => false,
-            Self::AllowOrigins(origins) => origins.iter().any(|allowed| allowed == origin),
-            Self::AllowAnyOrigin => true,
+        match &self.policy {
+            CorsPolicy::Disabled => false,
+            CorsPolicy::AllowOrigins(origins) => origins.iter().any(|allowed| allowed == origin),
+            CorsPolicy::AllowAnyOrigin => true,
         }
     }
 }
@@ -183,6 +181,60 @@ struct ServerState {
     cors: CorsOptions,
 }
 
+/// Serves ACP agents over HTTP/SSE and WebSocket as an [`axum::Router`].
+///
+/// [`Self::new`] takes a factory that builds one agent component per
+/// connection. Each `initialize` POST or WebSocket upgrade calls it once, and
+/// the component runs until the client sends `DELETE` or disconnects.
+///
+/// The transport forwards JSON-RPC messages unchanged, so the component decides
+/// which protocol versions it speaks. To serve ACP v1 and v2 on one endpoint,
+/// return an `AgentProtocolRouter`
+/// from the factory (requires the core `unstable_protocol_v2` feature):
+///
+/// ```no_run
+/// use agent_client_protocol::schema::{v1, v2};
+/// use agent_client_protocol::{Agent, Client, ConnectTo, on_receive_request};
+/// use agent_client_protocol_http::AcpHttpServer;
+///
+/// fn v1_agent() -> impl ConnectTo<Client> {
+///     Agent.v1().on_receive_request(
+///         async |init: v1::InitializeRequest, responder, _cx| {
+///             responder.respond(v1::InitializeResponse::new(init.protocol_version))
+///         },
+///         on_receive_request!(),
+///     )
+/// }
+///
+/// fn v2_agent() -> impl ConnectTo<Client> {
+///     Agent.v2().on_receive_request(
+///         async |init: v2::InitializeRequest, responder, _cx| {
+///             responder.respond(v2::InitializeResponse::new(
+///                 init.protocol_version,
+///                 v2::Implementation::new("example", "0.1.0"),
+///             ))
+///         },
+///         on_receive_request!(),
+///     )
+/// }
+///
+/// # async fn serve() -> Result<(), Box<dyn std::error::Error>> {
+/// let app = AcpHttpServer::new(|| {
+///     Agent
+///         .protocol_router()
+///         .with_v1(v1_agent())
+///         .with_v2(v2_agent())
+/// })
+/// .into_router();
+///
+/// let listener = tokio::net::TcpListener::bind("127.0.0.1:8080").await?;
+/// axum::serve(listener, app).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// Use [`Self::with_options`] to change the endpoint path, the browser origin
+/// policy, or the `/health` route.
 pub struct AcpHttpServer {
     registry: Arc<ConnectionRegistry>,
     options: ServerOptions,
@@ -197,6 +249,9 @@ impl std::fmt::Debug for AcpHttpServer {
 }
 
 impl AcpHttpServer {
+    /// Create a server that calls `factory` once per ACP connection.
+    ///
+    /// The server starts with [`ServerOptions::default`].
     pub fn new<F, C>(factory: F) -> Self
     where
         F: Fn() -> C + Send + Sync + 'static,
@@ -208,12 +263,24 @@ impl AcpHttpServer {
         }
     }
 
+    /// Replace the server options.
     #[must_use]
     pub fn with_options(mut self, options: ServerOptions) -> Self {
         self.options = options;
         self
     }
 
+    /// Build the axum router.
+    ///
+    /// The router serves `POST`, `GET`, and `DELETE` on
+    /// [`ServerOptions::path`] and, unless disabled, `GET /health`. Nest or
+    /// merge it into a larger router to add authentication or other routes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if [`ServerOptions::path`] is empty or does not start with `/`,
+    /// or if it is `/health` while [`ServerOptions::health_endpoint`] is
+    /// enabled. These are the conditions under which [`Router::route`] panics.
     pub fn into_router(self) -> Router {
         let registry = self.registry.clone();
         let path = self.options.path.clone();
@@ -295,9 +362,44 @@ mod tests {
     use axum::body::Body;
     use tower::{Layer as _, ServiceExt as _, service_fn};
 
+    fn build_router(options: ServerOptions) {
+        drop(
+            AcpHttpServer::new(|| agent_client_protocol::Agent.v1())
+                .with_options(options)
+                .into_router(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Paths must start with a `/`")]
+    fn into_router_panics_on_a_path_without_a_leading_slash() {
+        build_router(ServerOptions::default().with_path("acp"));
+    }
+
+    #[test]
+    #[should_panic(expected = "Paths must start with a `/`")]
+    fn into_router_panics_on_an_empty_path() {
+        build_router(ServerOptions::default().with_path(""));
+    }
+
+    #[test]
+    #[should_panic(expected = "Overlapping method route")]
+    fn into_router_panics_when_the_path_is_the_health_route() {
+        build_router(ServerOptions::default().with_path("/health"));
+    }
+
+    #[test]
+    fn into_router_accepts_the_health_path_without_the_health_route() {
+        build_router(
+            ServerOptions::default()
+                .with_path("/health")
+                .with_health_endpoint(false),
+        );
+    }
+
     #[test]
     fn cors_is_disabled_by_default() {
-        assert_eq!(ServerOptions::default().cors, CorsOptions::Disabled);
+        assert_eq!(ServerOptions::default().cors, CorsOptions::disabled());
     }
 
     #[test]
