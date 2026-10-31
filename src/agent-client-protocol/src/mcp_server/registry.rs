@@ -381,3 +381,71 @@ fn schema_for_output<T: JsonSchema>() -> Option<Arc<McpToolSchema>> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::{Channel, mcp_server::McpConnectionContext, role::mcp};
+
+    #[derive(Deserialize, JsonSchema)]
+    struct EchoInput {
+        message: String,
+    }
+
+    struct Echo;
+
+    impl McpTool<mcp::Client> for Echo {
+        type Input = EchoInput;
+        type Output = String;
+
+        fn name(&self) -> String {
+            "echo".to_string()
+        }
+
+        fn description(&self) -> String {
+            "Echoes the message".to_string()
+        }
+
+        async fn call_tool(
+            &self,
+            input: EchoInput,
+            _context: McpConnectionTo<mcp::Client>,
+        ) -> Result<String, Error> {
+            Ok(input.message)
+        }
+    }
+
+    #[test]
+    fn call_tool_reports_bad_arguments_as_invalid_params() {
+        let (channel, _peer) = Channel::duplex();
+        futures::executor::block_on(mcp::Server.builder().connect_with(
+            channel,
+            async |connection| {
+                let context = McpConnectionTo {
+                    context: McpConnectionContext::Standalone,
+                    connection,
+                    #[cfg(feature = "unstable_mcp_over_acp")]
+                    cleanup: None,
+                };
+                let mut registry = McpToolRegistry::default();
+                registry.register_tool(Echo);
+                let tool = registry.tool("echo").expect("echo is registered");
+
+                let output = tool
+                    .call_tool(serde_json::json!({ "message": "hi" }), context.clone())
+                    .await?;
+                assert_eq!(output, Value::String("hi".to_string()));
+
+                let error = tool
+                    .call_tool(serde_json::json!({ "msg": "hi" }), context)
+                    .await
+                    .expect_err("mismatched arguments are rejected");
+                assert_eq!(error.code, Error::invalid_params().code);
+                Ok(())
+            },
+        ))
+        .unwrap();
+    }
+}

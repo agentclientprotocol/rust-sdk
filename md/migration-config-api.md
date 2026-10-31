@@ -42,10 +42,11 @@ value and preserve the other options.
 
 ## CORS policies
 
-Existing variants and constructors remain available. **Breaking:** exhaustive
-matches on `CorsOptions` outside the HTTP crate must add a wildcard arm.
+In 3.x, `CorsOptions` was a `#[non_exhaustive]` enum, so exhaustive matches
+outside the HTTP crate needed a wildcard arm.
 
-In v5, `CorsOptions` is an opaque struct and its variants are no longer public.
+**Breaking:** in v5, `CorsOptions` is an opaque struct and its variants are no
+longer public. Code that matched on the variants no longer compiles.
 Build policies with `CorsOptions::disabled()`, `CorsOptions::allow_origins(...)`,
 or `CorsOptions::allow_any_origin()`, and compare them with `==`:
 

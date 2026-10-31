@@ -97,7 +97,10 @@ pub use tool_fn::{tool_fn, tool_fn_mut};
 /// MCP integrations in other crates use this to pick the native
 /// MCP-over-ACP path from this crate's features rather than their own, so
 /// feature unification cannot leave them on the per-request fallback while
-/// ACP attachment is available. Not part of the public API.
+/// ACP attachment is available. Hidden from the docs, but
+/// `agent-client-protocol-rmcp` depends on it, so it is a stable cross-crate
+/// contract for the 5.x line: renaming it or changing its syntax is a
+/// breaking change.
 #[cfg(feature = "unstable_mcp_over_acp")]
 #[doc(hidden)]
 #[macro_export]
@@ -113,7 +116,10 @@ macro_rules! __if_mcp_over_acp {
 /// MCP integrations in other crates use this to pick the native
 /// MCP-over-ACP path from this crate's features rather than their own, so
 /// feature unification cannot leave them on the per-request fallback while
-/// ACP attachment is available. Not part of the public API.
+/// ACP attachment is available. Hidden from the docs, but
+/// `agent-client-protocol-rmcp` depends on it, so it is a stable cross-crate
+/// contract for the 5.x line: renaming it or changing its syntax is a
+/// breaking change.
 #[cfg(not(feature = "unstable_mcp_over_acp"))]
 #[doc(hidden)]
 #[macro_export]

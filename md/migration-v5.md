@@ -718,6 +718,18 @@ fn respond<P: agent_client_protocol::Protocol>(responder: Responder<MyResponse, 
 `send_proxied_message` / `send_proxied_message_to` accept a `Dispatch` of any
 marker, so forwarding between connections needs no conversion.
 
+### `MatchDispatch::otherwise_ignore` answers unmatched requests
+
+`MatchDispatch::otherwise_ignore` now answers an unmatched request with a
+method not found error (`-32601`). Before, it dropped the responder, so the
+peer got the dropped-responder error instead. Unmatched notifications and
+responses are still ignored.
+
+`v1::ActiveSession::read_to_string` uses `otherwise_ignore`, so a request routed
+to the session that it does not handle, such as `session/request_permission`,
+now gets `-32601`. Handle such requests yourself if the peer needs a different
+answer.
+
 ### Renamed builder context types
 
 The hidden `ConnectionContext` trait and its `RawConnectionContext` and
