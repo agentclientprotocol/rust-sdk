@@ -87,8 +87,8 @@ mod callback_future_lifetimes {
     }
 
     fn proxy_session_callback<'a>()
-    -> impl FnOnce(SessionId) -> LifetimeTaggedFuture<'a> + Send + 'static {
-        |_session_id| LifetimeTaggedFuture(PhantomData)
+    -> impl FnOnce(NewSessionResponse) -> LifetimeTaggedFuture<'a> + Send + 'static {
+        |_response| LifetimeTaggedFuture(PhantomData)
     }
 
     #[cfg(feature = "unstable_protocol_v2")]

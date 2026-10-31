@@ -135,8 +135,8 @@
 //!         let my_mcp_server = McpServer::<Conductor, _>::builder("tools").build();
 //!         cx.build_session_from(req)
 //!             .with_mcp_server(my_mcp_server)?
-//!             .on_proxy_session_start(responder, async |session_id| {
-//!                 // Session started with MCP server attached
+//!             .on_proxy_session_start(responder, async |response| {
+//!                 // Session `response.session_id` started with MCP server attached
 //!                 Ok(())
 //!             })
 //!     }, agent_client_protocol::on_receive_request!())

@@ -336,6 +336,9 @@ impl RestoreRequest for ResumeSessionRequest {
 
 /// Stable protocol v1 builder for `session/load` or `session/resume`.
 ///
+/// This type is not exported. Callers name it through the
+/// [`LoadSessionBuilder`] and [`ResumeSessionBuilder`] aliases.
+///
 /// Use [`ConnectionTo::load_session`] or [`ConnectionTo::resume_session`] to
 /// construct this builder. Use the matching `_from` method to send an existing
 /// typed request without rebuilding it.
@@ -363,12 +366,34 @@ where
 }
 
 /// Stable protocol v1 builder for a `session/load` request, returned by
-/// [`ConnectionTo::load_session`].
+/// [`ConnectionTo::load_session`] and [`ConnectionTo::load_session_from`].
+///
+/// The `BlockState` parameter mirrors [`SessionBuilder`]:
+/// - [`NonBlocking`] exposes `on_session_start`.
+/// - [`Blocking`], selected with `block_task`, exposes `start_session`.
+///
+/// Session routing is installed before the request can reach the peer, so
+/// replay notifications sent before the response are kept on the restored
+/// [`ActiveSession`].
+///
+/// Unlike [`SessionBuilder`], this builder has no `with_mcp_server` and no
+/// proxy helpers (`on_proxy_session_start`, `start_session_proxy`). To add an
+/// MCP server to load requests a proxy forwards, use `with_mcp_server` on the
+/// proxy's [`v1::Builder`](crate::v1::Builder).
 pub type LoadSessionBuilder<Counterpart, BlockState = NonBlocking> =
     RestoreSessionBuilder<Counterpart, LoadSessionRequest, BlockState>;
 
 /// Stable protocol v1 builder for a `session/resume` request, returned by
-/// [`ConnectionTo::resume_session`].
+/// [`ConnectionTo::resume_session`] and [`ConnectionTo::resume_session_from`].
+///
+/// The `BlockState` parameter mirrors [`SessionBuilder`]:
+/// - [`NonBlocking`] exposes `on_session_start`.
+/// - [`Blocking`], selected with `block_task`, exposes `start_session`.
+///
+/// Unlike [`SessionBuilder`], this builder has no `with_mcp_server` and no
+/// proxy helpers (`on_proxy_session_start`, `start_session_proxy`). To add an
+/// MCP server to resume requests a proxy forwards, use `with_mcp_server` on
+/// the proxy's [`v1::Builder`](crate::v1::Builder).
 pub type ResumeSessionBuilder<Counterpart, BlockState = NonBlocking> =
     RestoreSessionBuilder<Counterpart, ResumeSessionRequest, BlockState>;
 
@@ -530,7 +555,7 @@ where
     /// Publish `session/load`, wait on the current task, and return an
     /// [`ActiveSession`] together with the exact [`LoadSessionResponse`].
     ///
-    /// Requires [`block_task`](RestoreSessionBuilder::block_task). Dropping
+    /// Requires [`block_task`](LoadSessionBuilder::block_task). Dropping
     /// this future while it is pending cancels the request and removes the
     /// provisional session route.
     pub async fn start_session(
@@ -547,7 +572,7 @@ where
     /// Publish `session/resume`, wait on the current task, and return an
     /// [`ActiveSession`] together with the exact [`ResumeSessionResponse`].
     ///
-    /// Requires [`block_task`](RestoreSessionBuilder::block_task). Dropping
+    /// Requires [`block_task`](LoadSessionBuilder::block_task). Dropping
     /// this future while it is pending cancels the request and removes the
     /// provisional session route.
     pub async fn start_session(
@@ -561,8 +586,8 @@ where
 /// up.
 ///
 /// Every setup method returns one: [`SessionBuilder::start_session`]
-/// (`session/new`) and [`RestoreSessionBuilder::start_session`]
-/// (`session/load` and `session/resume`), and the `on_session_start` and
+/// (`session/new`), and `start_session` on [`LoadSessionBuilder`]
+/// (`session/load`) and [`ResumeSessionBuilder`] (`session/resume`). The `on_session_start` and
 /// [`run_until`](SessionBuilder::run_until) callbacks receive one too. The
 /// response is the complete, operation-specific setup response; it is kept
 /// next to the session rather than inside [`ActiveSession`], so the setup
@@ -752,7 +777,7 @@ where
             })
     }
 
-    /// Spawn a proxy session and run a closure with the session ID.
+    /// Spawn a proxy session and run a closure with the `session/new` response.
     ///
     /// A **proxy session** starts the session with the agent and then automatically
     /// proxies all session updates (prompts, tool calls, etc.) from the agent back
@@ -765,7 +790,9 @@ where
     /// immediately without blocking the current task. The session handshake, client
     /// response, and proxy setup all happen in a spawned background task.
     ///
-    /// The closure receives the `SessionId` once the session is established. Use it for logging
+    /// The closure receives a clone of the complete [`NewSessionResponse`], which was also
+    /// forwarded to the client, once the session is established. Read the session ID from its
+    /// `session_id` field. Use it for logging
     /// or eventual tracking; it runs concurrently with later connection traffic. Register
     /// ID-independent state that later handlers must observe before calling this helper. For
     /// ID-keyed bookkeeping, install a gate or placeholder first, make later handlers await it,
@@ -784,7 +811,7 @@ where
     ///         let mcp = McpServer::<Conductor, _>::builder("tools").build();
     ///         cx.build_session_from(request)
     ///             .with_mcp_server(mcp)?
-    ///             .on_proxy_session_start(responder, async |session_id| {
+    ///             .on_proxy_session_start(responder, async |response| {
     ///                 // Session started
     ///                 Ok(())
     ///             })
@@ -810,7 +837,7 @@ where
         op: F,
     ) -> Result<(), crate::Error>
     where
-        F: FnOnce(SessionId) -> Fut + Send + 'static,
+        F: FnOnce(NewSessionResponse) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
         Counterpart: HasPeer<Client>,
         R: 'static,
@@ -846,11 +873,11 @@ where
                 // Extract the session-id from the response and forward
                 // the response back to the client
                 let session_id = response.session_id.clone();
-                responder.respond(response)?;
+                responder.respond(response.clone())?;
 
                 // Install a dynamic handler to proxy messages from this session
                 connection
-                    .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
+                    .add_dynamic_handler(ProxySessionMessages::new(session_id))?
                     .detach();
 
                 // Keep dynamic handlers live for the connection.
@@ -858,7 +885,7 @@ where
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
 
-                connection.spawn(async move { op(session_id).await })
+                connection.spawn(async move { op(response).await })
             }
         })
     }
@@ -1006,11 +1033,14 @@ where
     /// [`start_session`](Self::start_session) instead and call
     /// [`proxy_remaining_messages`](ActiveSession::proxy_remaining_messages) manually.
     ///
+    /// Returns a clone of the complete [`NewSessionResponse`] forwarded to the
+    /// client.
+    ///
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn start_session_proxy(
         self,
         responder: Responder<NewSessionResponse, crate::V1>,
-    ) -> Result<SessionId, crate::Error>
+    ) -> Result<NewSessionResponse, crate::Error>
     where
         Counterpart: HasPeer<Client>,
         R: 'static,
@@ -1018,10 +1048,9 @@ where
         let SessionSetup {
             session, response, ..
         } = self.start_session().await?;
-        let session_id = session.session_id().clone();
-        responder.respond(response)?;
+        responder.respond(response.clone())?;
         session.proxy_remaining_messages()?;
-        Ok(session_id)
+        Ok(response)
     }
 }
 

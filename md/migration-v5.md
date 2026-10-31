@@ -41,7 +41,7 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 | `SessionSetup` | a session and the response of the request that set it up | a session and the response of the request that set it up |
 | `ActiveSession` | the session handle with its update stream | the command-only session handle |
 | `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
-| `LoadSessionBuilder`, `RestoreSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
+| `LoadSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
 | `InitializeOutcome`, `InitializationVersionMismatch`, `SelectedInitializeResponse` | - | the result of `send_initialize` |
 | `schema` | `schema::v1` | `schema::v2` |
 
@@ -110,8 +110,21 @@ Every setup method returns one, in both versions: v1 `start_session` for
 and `session/resume`; v2 `session/new`, `session/resume` and
 `session/fork`. The v1 `run_until` and `on_session_start` callbacks receive
 one too, as do the v2 `on_proxy_session_start` callbacks. The v1
-`on_proxy_session_start` callback still receives the `SessionId`, because the
-session is proxied rather than handed to the caller.
+`on_proxy_session_start` callback receives a clone of the complete
+`NewSessionResponse` forwarded to the client, and `start_session_proxy`
+returns it. Both used to give only the `SessionId`. There is no
+`SessionSetup` here, because the session is proxied rather than handed to the
+caller.
+
+```rust,ignore
+// Before
+.on_proxy_session_start(responder, async |session_id| { ... })
+let session_id = builder.block_task().start_session_proxy(responder).await?;
+
+// After
+.on_proxy_session_start(responder, async |response| { let session_id = response.session_id; ... })
+let session_id = builder.block_task().start_session_proxy(responder).await?.session_id;
+```
 
 The accessors are removed in favor of the fields: `session()`,
 `session_mut()`, `response()`, `into_parts()` and `into_session()`. The v1
@@ -135,19 +148,6 @@ let SessionSetup { session, response, .. } = restored;
 let session = opened.session;
 ```
 
-### Renamed and moved items
-
-Every path is relative to `agent_client_protocol`. Items not listed keep
-their path.
-
-| Before (3.x) | After |
-| --- | --- |
-| `Client.builder()` | `Client.v1()` |
-| `Agent.builder()` | `Agent.v1()` |
-| `Proxy.builder()` | `Proxy.v1()` |
-| `Role::builder(role)` (generic code, other roles) | `Builder::new(role)` |
-| `Client.connect_with(agent, f)` | `Client.v1().connect_with(agent, f)` |
-| `X.builder().without_acp_version_guard()` | `Builder::new(X)` |
 ### The v1 session stream reports prompt responses and errors
 
 `v1::ActiveSession::send_prompt` used to close the whole connection, and every
@@ -191,6 +191,19 @@ match session.read_update().await? {
 }
 ```
 
+### Renamed and moved items
+
+Every path is relative to `agent_client_protocol`. Items not listed keep
+their path.
+
+| Before (3.x) | After |
+| --- | --- |
+| `Client.builder()` | `Client.v1()` |
+| `Agent.builder()` | `Agent.v1()` |
+| `Proxy.builder()` | `Proxy.v1()` |
+| `Role::builder(role)` (generic code, other roles) | `Builder::new(role)` |
+| `Client.connect_with(agent, f)` | `Client.v1().connect_with(agent, f)` |
+| `X.builder().without_acp_version_guard()` | `Builder::new(X)` |
 | `Builder::without_acp_version_guard()` | removed; `Builder::new` applies no version guard |
 | `V2Builder` | `v2::Builder` |
 | `V2ConnectionTo` | `v2::ConnectionTo` |
@@ -205,8 +218,10 @@ match session.read_update().await? {
 | `SessionBuilder` | `v1::SessionBuilder` |
 | `ActiveSession` | `v1::ActiveSession` |
 | `RestoredSession` | `v1::SessionSetup` |
-| `RestoreSessionBuilder` | `v1::RestoreSessionBuilder` (also `v1::LoadSessionBuilder` / `v1::ResumeSessionBuilder` for each request) |
+| `RestoreSessionBuilder` | `v1::LoadSessionBuilder` / `v1::ResumeSessionBuilder` (the generic builder is no longer exported) |
 | `SessionMessage` | `v1::SessionMessage` |
+| `SessionMessage::SessionMessage(Dispatch)` | `v1::SessionMessage::Message(v1::Dispatch)` |
+| `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
 | `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
 | `OpenedSession` (`v1` and `v2`) | `v1::SessionSetup`, `v2::SessionSetup` (public `session` and `response` fields) |
@@ -220,8 +235,6 @@ match session.read_update().await? {
 
 `Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
 `Conductor.builder()` and the MCP roles' `builder()` are version-neutral and
-| `SessionMessage::SessionMessage(Dispatch)` | `v1::SessionMessage::Message(v1::Dispatch)` |
-| `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 stay.
 
 ### `Builder::new` applies no version guard

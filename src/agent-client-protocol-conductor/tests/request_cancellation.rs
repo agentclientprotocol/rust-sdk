@@ -849,7 +849,7 @@ async fn proxy_session_helper_cancellation_propagates_to_agent() -> Result<(), E
                responder: Responder<NewSessionResponse, V1>,
                cx: ConnectionTo<Conductor>| {
             cx.build_session_from(request)
-                .on_proxy_session_start(responder, async |_session_id| Ok::<(), Error>(()))
+                .on_proxy_session_start(responder, async |_response| Ok::<(), Error>(()))
         },
         agent_client_protocol::on_receive_request!(),
     );
@@ -1056,7 +1056,7 @@ async fn proxy_session_helper_cleans_up_mcp_handlers_after_cancelled_session() -
             );
             cx.build_session_from(request)
                 .with_mcp_server(mcp_server)?
-                .on_proxy_session_start(responder, async |_session_id| Ok::<(), Error>(()))
+                .on_proxy_session_start(responder, async |_response| Ok::<(), Error>(()))
         },
         agent_client_protocol::on_receive_request!(),
     );
