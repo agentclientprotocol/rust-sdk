@@ -421,6 +421,57 @@ async fn wrapped_cancel_request_cancels_wrapped_request() {
         .await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn malformed_successor_request_is_rejected_as_invalid_params() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(4096);
+            let (server_writer, client_reader) = tokio::io::duplex(4096);
+
+            let server_transport = agent_client_protocol::ByteStreams::new(
+                server_writer.compat_write(),
+                server_reader.compat(),
+            );
+            let server = Builder::new(WrappedHost).on_receive_request_from(
+                WrappedSuccessor,
+                async |_request: SimpleRequest,
+                       _responder: Responder<SimpleResponse>,
+                       _cx: ConnectionTo<WrappedCounterpart>|
+                       -> Result<(), agent_client_protocol::Error> {
+                    panic!("a malformed envelope must not reach the handler")
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                drop(server.connect_to(server_transport).await);
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            // The envelope's params have no inner `method`, so they are
+            // invalid params for `proxy/successor`, not a parse error.
+            client_writer
+                .write_all(
+                    br#"{"jsonrpc":"2.0","id":7,"method":"proxy/successor","params":{"bogus":true}}
+"#,
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let response = read_jsonrpc_response_line(&mut client_reader).await;
+            assert_eq!(response["id"], 7);
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+        })
+        .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_delivers_callback() {
     use agent_client_protocol::{RawJsonRpcMessage, TransportFrame, UntypedMessage};

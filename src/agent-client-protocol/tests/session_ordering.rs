@@ -545,15 +545,10 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
             forwarded.id,
             Ok(serde_json::to_value(setup_response).expect("session response should serialize")),
         );
-        let update = SuccessorMessage {
-            message: v2::UpdateSessionNotification::new(
-                notification_session_id,
-                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
-                    v2::RunningStateUpdate::new(),
-                )),
-            ),
-            meta: None,
-        }
+        let update = SuccessorMessage::new(v2::UpdateSessionNotification::new(
+            notification_session_id,
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
+        ))
         .to_untyped_message()?;
         let (method, params) = update.into_parts();
         let notification = RawJsonRpcMessage::notification(method, params)?;
@@ -700,15 +695,10 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
             forwarded.id,
             Ok(serde_json::to_value(setup_response).expect("fork response should serialize")),
         );
-        let update = SuccessorMessage {
-            message: v2::UpdateSessionNotification::new(
-                notification_session_id,
-                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
-                    v2::RunningStateUpdate::new(),
-                )),
-            ),
-            meta: None,
-        }
+        let update = SuccessorMessage::new(v2::UpdateSessionNotification::new(
+            notification_session_id,
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
+        ))
         .to_untyped_message()?;
         let (method, params) = update.into_parts();
         let notification = RawJsonRpcMessage::notification(method, params)?;
@@ -848,15 +838,10 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
         )?;
         assert_eq!(successor.message.session_id, session_id);
 
-        let update = SuccessorMessage {
-            message: v2::UpdateSessionNotification::new(
-                notification_session_id,
-                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
-                    v2::RunningStateUpdate::new(),
-                )),
-            ),
-            meta: None,
-        }
+        let update = SuccessorMessage::new(v2::UpdateSessionNotification::new(
+            notification_session_id,
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(v2::RunningStateUpdate::new())),
+        ))
         .to_untyped_message()?;
         let (method, params) = update.into_parts();
         let notification = RawJsonRpcMessage::notification(method, params)?;

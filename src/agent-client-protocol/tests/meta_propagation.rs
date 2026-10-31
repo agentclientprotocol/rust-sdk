@@ -29,10 +29,6 @@ fn prompt_request(meta: Meta) -> PromptRequest {
     .meta(meta)
 }
 
-fn trace_context_meta_value() -> Value {
-    Value::Object(trace_context_meta())
-}
-
 #[test]
 fn prompt_request_meta_round_trips_with_root_trace_context_keys()
 -> Result<(), agent_client_protocol::Error> {
@@ -54,17 +50,18 @@ fn prompt_request_meta_round_trips_with_root_trace_context_keys()
 #[test]
 fn successor_message_meta_serializes_as_reserved_meta_field()
 -> Result<(), agent_client_protocol::Error> {
-    let envelope_meta = trace_context_meta_value();
+    let envelope_meta = trace_context_meta();
     let inner_meta = trace_context_meta();
-    let message = SuccessorMessage {
-        message: prompt_request(inner_meta.clone()),
-        meta: Some(envelope_meta.clone()),
-    };
+    let message =
+        SuccessorMessage::new(prompt_request(inner_meta.clone())).meta(envelope_meta.clone());
 
     let untyped = message.to_untyped_message()?;
 
     assert_eq!(untyped.method(), "proxy/successor");
-    assert_eq!(untyped.params()["_meta"], envelope_meta);
+    assert_eq!(
+        untyped.params()["_meta"],
+        Value::Object(envelope_meta.clone())
+    );
     assert_eq!(
         untyped.params()["params"]["_meta"],
         Value::Object(inner_meta.clone())
@@ -80,14 +77,11 @@ fn successor_message_meta_serializes_as_reserved_meta_field()
 }
 
 #[test]
-fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_protocol::Error> {
-    let envelope_meta = trace_context_meta_value();
-    let mut params = SuccessorMessage {
-        message: prompt_request(Meta::new()),
-        meta: Some(envelope_meta.clone()),
-    }
-    .to_untyped_message()?
-    .params;
+fn successor_message_ignores_non_spec_meta_key() -> Result<(), agent_client_protocol::Error> {
+    let mut params = SuccessorMessage::new(prompt_request(Meta::new()))
+        .meta(trace_context_meta())
+        .to_untyped_message()?
+        .params;
 
     let params_object = params.as_object_mut().expect("params should be an object");
     let meta = params_object
@@ -96,9 +90,25 @@ fn successor_message_accepts_legacy_meta_alias() -> Result<(), agent_client_prot
     params_object.insert("meta".into(), meta);
 
     let parsed = SuccessorMessage::<PromptRequest>::parse_message("proxy/successor", &params)?;
-    assert_eq!(parsed.meta, Some(envelope_meta));
+    assert_eq!(parsed.meta, None);
 
     Ok(())
+}
+
+#[test]
+fn successor_message_rejects_non_object_meta() {
+    let mut params = SuccessorMessage::new(prompt_request(Meta::new()))
+        .to_untyped_message()
+        .expect("successor message should serialize")
+        .params;
+    params
+        .as_object_mut()
+        .expect("params should be an object")
+        .insert("_meta".into(), Value::String("not an object".into()));
+
+    let error = SuccessorMessage::<PromptRequest>::parse_message("proxy/successor", &params)
+        .expect_err("a non-object `_meta` must be rejected");
+    assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
 }
 
 #[test]

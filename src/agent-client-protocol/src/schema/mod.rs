@@ -333,6 +333,7 @@ pub mod v1 {
         response = InitializeResponse,
         crate = crate
     )]
+    #[non_exhaustive]
     pub struct InitializeProxyRequest {
         /// The underlying protocol-v1 initialize request data.
         #[serde(flatten)]
@@ -370,6 +371,7 @@ pub mod v2 {
         response = InitializeResponse,
         crate = crate
     )]
+    #[non_exhaustive]
     pub struct InitializeProxyRequest {
         /// The underlying protocol-v2 initialize request data.
         #[serde(flatten)]

@@ -8021,14 +8021,13 @@ mod tests {
             ProtocolMode::v2_proxy(),
         );
 
-        let request = crate::schema::SuccessorMessage {
-            message: UntypedMessage::new(
+        let request = crate::schema::SuccessorMessage::new(
+            UntypedMessage::new(
                 "initialize",
                 serde_json::json!({ "protocolVersion": crate::schema::ProtocolVersion::V1 }),
             )
             .expect("test initialize request should serialize"),
-            meta: None,
-        };
+        );
         let sent = connection.send_request_to(Agent, request);
 
         let (transport_tx, mut transport_rx) = mpsc::unbounded();

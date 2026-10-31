@@ -753,10 +753,7 @@ where
         if source_component_index == 0 {
             client_connection.send_request_to(Client, request)
         } else {
-            self.proxies[source_component_index - 1].send_request(SuccessorMessage {
-                message: request,
-                meta: None,
-            })
+            self.proxies[source_component_index - 1].send_request(SuccessorMessage::new(request))
         }
     }
 
@@ -789,10 +786,8 @@ where
                 target_proxy = source_component_index - 1,
                 "Sending notification wrapped as SuccessorMessage to proxy"
             );
-            self.proxies[source_component_index - 1].send_notification(SuccessorMessage {
-                message: notification,
-                meta: None,
-            })
+            self.proxies[source_component_index - 1]
+                .send_notification(SuccessorMessage::new(notification))
         }
     }
 

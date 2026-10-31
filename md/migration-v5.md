@@ -741,8 +741,9 @@ extensions.
 | `_proxy/successor` | `proxy/successor` |
 
 The message shapes are unchanged. `proxy/successor` still flattens the inner
-ACP message into its params and sends optional metadata as `_meta` (`meta` is
-also accepted on receive).
+ACP message into its params and sends optional metadata as `_meta`. The
+non-spec `meta` key is no longer read on receive; see
+[`SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive](#successormessage-and-initializeproxyrequest-are-non-exhaustive).
 
 ### Upgrade conductors and proxies together
 
@@ -757,6 +758,30 @@ Code that uses the SDK types (`schema::v1::InitializeProxyRequest`, formerly
 `SuccessorMessage`, `METHOD_INITIALIZE_PROXY`, `METHOD_SUCCESSOR_MESSAGE`, or
 the `Proxy` and `Conductor` roles) needs no changes for the rename. Update any hard-coded method
 strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
+
+### `SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive
+
+`schema::SuccessorMessage`, `schema::v1::InitializeProxyRequest` and
+`schema::v2::InitializeProxyRequest` are `#[non_exhaustive]`, so the proxy
+protocol can add fields in a minor release. Their fields stay public for
+reading, but outside the SDK you build them with constructors:
+
+```rust,ignore
+// Before
+let message = SuccessorMessage { message: request, meta: None };
+let init = v1::InitializeProxyRequest { initialize };
+
+// After
+let message = SuccessorMessage::new(request);
+let message = SuccessorMessage::new(request).meta(meta);
+let init = v1::InitializeProxyRequest::new(initialize); // or initialize.into()
+```
+
+`SuccessorMessage::meta` is now `Option<serde_json::Map<String, Value>>`
+instead of `Option<Value>`, because ACP `_meta` is always an object. A
+`proxy/successor` request whose `_meta` is not an object is rejected with
+Invalid params (`-32602`), and the non-spec `meta` key is ignored instead of
+being read as `_meta`.
 
 ### `ConductorHostRole` is sealed
 
