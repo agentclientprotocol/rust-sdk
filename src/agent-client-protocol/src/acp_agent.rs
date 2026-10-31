@@ -239,21 +239,6 @@ impl AcpAgent {
         }
     }
 
-    /// Create an ACP agent for the Claude Agent adapter.
-    /// Just runs `npx -y @agentclientprotocol/claude-agent-acp@latest`.
-    #[must_use]
-    pub fn claude_agent() -> Self {
-        Self::from_str("npx -y @agentclientprotocol/claude-agent-acp@latest")
-            .expect("valid bash command")
-    }
-
-    /// Create an ACP agent for the Codex adapter.
-    /// Just runs `npx -y @agentclientprotocol/codex-acp@latest`.
-    #[must_use]
-    pub fn codex() -> Self {
-        Self::from_str("npx -y @agentclientprotocol/codex-acp@latest").expect("valid bash command")
-    }
-
     /// Get the process-launch configuration.
     #[must_use]
     pub fn config(&self) -> &AcpAgentConfig {
@@ -294,10 +279,9 @@ impl AcpAgent {
 
     /// Spawn the configured process and return its stdio streams and raw child handle.
     ///
-    /// This is a low-level escape hatch. The caller owns the returned child process and is
-    /// responsible for terminating it. Connections created through [`crate::ConnectTo`] instead
-    /// install a guard that tears down the spawned process group on Unix.
-    pub fn spawn_process(
+    /// The caller owns the returned child process and is responsible for terminating it.
+    /// [`crate::ConnectTo`] wraps it in a guard that tears down the process group on Unix.
+    pub(crate) fn spawn_process(
         &self,
     ) -> Result<
         (
@@ -1725,6 +1709,9 @@ mod tests {
         }
 
         /// An agent running `script` as `sh -c script sh <pid file> <term file>`.
+        ///
+        /// Scripts install their `TERM` trap before writing the PID file, since
+        /// [`shut_down_once_started`] starts shutdown as soon as that file exists.
         fn agent(&self, script: &str, timeouts: ShutdownTimeouts) -> AcpAgent {
             let mut agent = AcpAgent::from_args([
                 "/bin/sh",
@@ -1785,7 +1772,7 @@ mod tests {
     async fn graceful_shutdown_child_exiting_on_stdin_eof_never_receives_sigterm() {
         let markers = ShutdownMarkers::new("eof");
         let agent = markers.agent(
-            r#"echo $$ > "$1"; trap 'echo term > "$2"' TERM; cat >/dev/null; echo eof > "$1.eof"; exit 0"#,
+            r#"trap 'echo term > "$2"' TERM; echo $$ > "$1"; cat >/dev/null; echo eof > "$1.eof"; exit 0"#,
             ShutdownTimeouts {
                 exit: Duration::from_secs(5),
                 terminate: Duration::from_secs(5),
@@ -1812,7 +1799,7 @@ mod tests {
     async fn graceful_shutdown_sigterms_child_ignoring_stdin_eof() {
         let markers = ShutdownMarkers::new("term");
         let agent = markers.agent(
-            r#"echo $$ > "$1"; trap 'echo term > "$2"; exit 0' TERM; while :; do sleep 1; done"#,
+            r#"trap 'echo term > "$2"; exit 0' TERM; echo $$ > "$1"; while :; do sleep 1; done"#,
             ShutdownTimeouts {
                 exit: Duration::from_millis(200),
                 terminate: Duration::from_secs(5),
@@ -1838,12 +1825,15 @@ mod tests {
     async fn graceful_shutdown_sigkills_child_ignoring_sigterm() {
         let markers = ShutdownMarkers::new("kill");
         // The trap records SIGTERM but keeps running; `sleep` itself is
-        // killed by the group SIGTERM, and the loop starts another one.
+        // killed by the group SIGTERM, and the loop starts another one. The
+        // trap is installed before the PID is written, so shutdown cannot
+        // start before it. The terminate window leaves a loaded machine time
+        // to run the trap before SIGKILL.
         let agent = markers.agent(
-            r#"echo $$ > "$1"; trap 'echo term > "$2"' TERM; while :; do sleep 1; done"#,
+            r#"trap 'echo term > "$2"' TERM; echo $$ > "$1"; while :; do sleep 1; done"#,
             ShutdownTimeouts {
                 exit: Duration::from_millis(100),
-                terminate: Duration::from_millis(300),
+                terminate: Duration::from_secs(1),
             },
         );
 
@@ -1854,7 +1844,7 @@ mod tests {
         result.expect("an agent killed during shutdown is not an error");
         assert!(markers.received_sigterm(), "SIGTERM should precede SIGKILL");
         assert!(
-            elapsed >= Duration::from_millis(400),
+            elapsed >= Duration::from_millis(1100),
             "SIGKILL should wait for the SIGTERM grace period ({elapsed:?})"
         );
         assert_process_exits(pid).await;

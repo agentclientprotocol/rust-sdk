@@ -80,8 +80,10 @@ agent-client-protocol-http = { version = "3", features = ["client"] }
 # agent-client-protocol-http = { version = "3", features = ["client", "server"] }
 ```
 
-The `client` feature exposes `HttpClient`. The `server` feature exposes
-`AcpHttpServer`, `ServerOptions`, and `CorsOptions`.
+The `client` feature exposes `HttpClient` and re-exports `reqwest` and `url`.
+The `server` feature exposes `AcpHttpServer`, `ServerOptions`, and
+`CorsOptions`, and re-exports `axum`. Use the re-exports to name the types in
+this crate's signatures without depending on matching versions yourself.
 
 ## Request Cancellation
 

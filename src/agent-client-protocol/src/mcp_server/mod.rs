@@ -70,7 +70,7 @@ pub use context::{McpConnectionContext, McpConnectionTo};
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use registry::{
-    EnabledTools, McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool,
+    McpToolMetadata, McpToolRegistry, McpToolSchema, RegisteredMcpTool, UnknownToolError,
 };
 pub use server::McpServer;
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -90,3 +90,35 @@ pub use tool::McpTool;
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool_fn::{tool_fn, tool_fn_mut};
+
+/// Expands to the first block when this crate was built with
+/// `unstable_mcp_over_acp`, and to the `else` block otherwise.
+///
+/// MCP integrations in other crates use this to pick the native
+/// MCP-over-ACP path from this crate's features rather than their own, so
+/// feature unification cannot leave them on the per-request fallback while
+/// ACP attachment is available. Not part of the public API.
+#[cfg(feature = "unstable_mcp_over_acp")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_mcp_over_acp {
+    ({ $($then:tt)* } else { $($else:tt)* }) => {
+        $($then)*
+    };
+}
+
+/// Expands to the first block when this crate was built with
+/// `unstable_mcp_over_acp`, and to the `else` block otherwise.
+///
+/// MCP integrations in other crates use this to pick the native
+/// MCP-over-ACP path from this crate's features rather than their own, so
+/// feature unification cannot leave them on the per-request fallback while
+/// ACP attachment is available. Not part of the public API.
+#[cfg(not(feature = "unstable_mcp_over_acp"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __if_mcp_over_acp {
+    ({ $($then:tt)* } else { $($else:tt)* }) => {
+        $($else)*
+    };
+}

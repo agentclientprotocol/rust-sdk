@@ -362,30 +362,44 @@ pub mod connecting_as_client {
     //! # Handling Permission Requests
     //!
     //! Agents may send [`RequestPermissionRequest`] to ask for user approval
-    //! before taking actions. Handle these with [`on_receive_request`]:
+    //! before taking actions. Handle these with [`on_receive_request`]. Answer
+    //! `cancelled` only after cancelling the turn with `session/cancel`:
     //!
-    //! ```ignore
-    //! Client.v1()
-    //!     .on_receive_request(async |req: RequestPermissionRequest, responder, _connection| {
-    //!         // Auto-approve (YOLO mode) by option `kind`, never by position
-    //!         // or name: the agent decides which options exist and in what order.
-    //!         let allow = req.options.iter().find(|option| {
-    //!             matches!(
-    //!                 option.kind,
-    //!                 PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-    //!             )
-    //!         });
-    //!         responder.respond(RequestPermissionResponse::new(
-    //!             match allow {
+    //! ```
+    //! use agent_client_protocol::schema::v1::{
+    //!     CancelNotification, PermissionOptionKind, RequestPermissionOutcome,
+    //!     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    //! };
+    //! use agent_client_protocol::{Client, ConnectTo};
+    //!
+    //! async fn run(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
+    //!     Client.v1()
+    //!         .on_receive_request(async |req: RequestPermissionRequest, responder, connection| {
+    //!             // Auto-approve (YOLO mode) by option `kind`, never by position
+    //!             // or name: the agent decides which options exist and in what order.
+    //!             let allow = req.options.iter().find(|option| {
+    //!                 matches!(
+    //!                     option.kind,
+    //!                     PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+    //!                 )
+    //!             });
+    //!             let outcome = match allow {
     //!                 Some(option) => RequestPermissionOutcome::Selected(
     //!                     SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                 ),
-    //!                 None => RequestPermissionOutcome::Cancelled,
-    //!             }
-    //!         ))
-    //!     }, agent_client_protocol::on_receive_request!())
-    //!     .connect_with(transport, async |connection| { /* ... */ })
-    //!     .await
+    //!                 // `cancelled` is only valid after cancelling the turn.
+    //!                 None => {
+    //!                     connection.send_notification(CancelNotification::new(
+    //!                         req.session_id.clone(),
+    //!                     ))?;
+    //!                     RequestPermissionOutcome::Cancelled
+    //!                 }
+    //!             };
+    //!             responder.respond(RequestPermissionResponse::new(outcome))
+    //!         }, agent_client_protocol::on_receive_request!())
+    //!         .connect_with(transport, async |_connection| Ok(()))
+    //!         .await
+    //! }
     //! ```
     //!
     //! # Note on `block_task`
@@ -622,6 +636,11 @@ pub mod custom_message_handlers {
     //!     }
     //! }
     //! ```
+    //!
+    //! `Dispatch` is the raw, version-neutral message, so a handler decides
+    //! which protocol version's types to parse it as. This one parses v1
+    //! `InitializeRequest`s, so install it only on a connection that speaks
+    //! ACP v1. A v2 handler would parse `schema::v2` types instead.
     //!
     //! # When to use `MatchDispatch` vs `MatchDispatchFrom`
     //!
@@ -1059,13 +1078,16 @@ pub mod filtering_tools {
     //!         // Only enable the safe tool
     //!         .enable_tool("safe")
     //!         .map(|b| b.build())
+    //!         .map_err(agent_client_protocol::Error::from)
     //! }
     //! ```
     //!
     //! # Error handling
     //!
-    //! Both [`enable_tool`] and [`disable_tool`] return `Result` and will error
-    //! if the tool name doesn't match any registered tool. This helps catch typos:
+    //! Both [`enable_tool`] and [`disable_tool`] return an [`UnknownToolError`]
+    //! if the tool name doesn't match any registered tool. This helps catch typos.
+    //! It is a local error, and `?` converts it into an
+    //! [`agent_client_protocol::Error`]:
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
@@ -1076,7 +1098,8 @@ pub mod filtering_tools {
     //! let result = McpServer::<Conductor, _>::builder("server")
     //!     .disable_tool("ech");  // Typo! Should be "echo"
     //!
-    //! assert!(result.is_err());
+    //! let Err(error) = result else { panic!("expected an unknown tool") };
+    //! assert_eq!(error.name(), "ech");
     //! ```
     //!
     //! Calling enable/disable on an already enabled/disabled tool is not an error -
@@ -1085,6 +1108,7 @@ pub mod filtering_tools {
     //! [`disable_tool`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::disable_tool
     //! [`enable_tool`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::enable_tool
     //! [`disable_all_tools`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::disable_all_tools
+    //! [`UnknownToolError`]: agent_client_protocol_rmcp::rmcp_3::UnknownToolError
 }
 
 pub mod running_proxies_with_conductor {

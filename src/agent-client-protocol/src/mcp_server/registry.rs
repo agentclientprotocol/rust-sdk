@@ -19,7 +19,7 @@ pub type McpToolSchema = Map<String, Value>;
 /// - `DenyList`: All tools enabled except those in the set (default)
 /// - `AllowList`: Only tools in the set are enabled
 #[derive(Clone, Debug)]
-pub enum EnabledTools {
+enum EnabledTools {
     /// All tools enabled except those in the deny set.
     DenyList(HashSet<String>),
     /// Only tools in the allow set are enabled.
@@ -34,12 +34,51 @@ impl Default for EnabledTools {
 
 impl EnabledTools {
     /// Check if a tool is enabled.
-    #[must_use]
-    pub fn is_enabled(&self, name: &str) -> bool {
+    fn is_enabled(&self, name: &str) -> bool {
         match self {
             EnabledTools::DenyList(deny) => !deny.contains(name),
             EnabledTools::AllowList(allow) => allow.contains(name),
         }
+    }
+}
+
+/// [`McpToolRegistry::enable_tool`] or [`McpToolRegistry::disable_tool`] named
+/// a tool that is not registered.
+///
+/// This is a local configuration error, usually a typo, not a JSON-RPC error.
+/// Converting it into an [`Error`] with `?` produces an internal error
+/// (`-32603`) whose data names the tool.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UnknownToolError {
+    name: String,
+}
+
+impl UnknownToolError {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
+    }
+
+    /// The tool name that is not registered.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+impl std::fmt::Display for UnknownToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown MCP tool `{}`", self.name)
+    }
+}
+
+impl std::error::Error for UnknownToolError {}
+
+impl From<UnknownToolError> for Error {
+    fn from(error: UnknownToolError) -> Self {
+        Error::internal_error().data(error.to_string())
     }
 }
 
@@ -138,6 +177,12 @@ impl<Counterpart: Role> RegisteredMcpTool<Counterpart> {
     }
 
     /// Invoke the registered tool using JSON input and output values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid params error (`-32602`) if `input` does not
+    /// deserialize into the tool's input type, an internal error (`-32603`) if
+    /// the output does not serialize, and otherwise the tool's own error.
     pub fn call_tool(
         &self,
         input: Value,
@@ -239,10 +284,12 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
 
     /// Disable a specific tool by name.
     ///
-    /// Returns an error if the tool is not registered.
-    pub fn disable_tool(&mut self, name: &str) -> Result<(), Error> {
+    /// # Errors
+    ///
+    /// Returns [`UnknownToolError`] if no tool with this name is registered.
+    pub fn disable_tool(&mut self, name: &str) -> Result<(), UnknownToolError> {
         if !self.contains_tool(name) {
-            return Err(Error::invalid_request().data(format!("unknown tool: {name}")));
+            return Err(UnknownToolError::new(name));
         }
         match &mut self.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -257,10 +304,12 @@ impl<Counterpart: Role> McpToolRegistry<Counterpart> {
 
     /// Enable a specific tool by name.
     ///
-    /// Returns an error if the tool is not registered.
-    pub fn enable_tool(&mut self, name: &str) -> Result<(), Error> {
+    /// # Errors
+    ///
+    /// Returns [`UnknownToolError`] if no tool with this name is registered.
+    pub fn enable_tool(&mut self, name: &str) -> Result<(), UnknownToolError> {
         if !self.contains_tool(name) {
-            return Err(Error::invalid_request().data(format!("unknown tool: {name}")));
+            return Err(UnknownToolError::new(name));
         }
         match &mut self.enabled_tools {
             EnabledTools::DenyList(deny) => {
@@ -303,9 +352,10 @@ where
             context: McpConnectionTo<R>,
         ) -> BoxFuture<'_, Result<Value, Error>> {
             Box::pin(async move {
-                let input = serde_json::from_value(input).map_err(crate::util::internal_error)?;
+                let input = serde_json::from_value(input)
+                    .map_err(|error| Error::invalid_params().data(error.to_string()))?;
                 serde_json::to_value(self.tool.call_tool(input, context).await?)
-                    .map_err(crate::util::internal_error)
+                    .map_err(|error| Error::internal_error().data(error.to_string()))
             })
         }
     }

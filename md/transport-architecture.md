@@ -331,6 +331,12 @@ the target does not imply a JavaScript host, other OS-less WebAssembly hosts
 must arrange a compatible UUID randomness backend instead. This crate does not
 provide a WebAssembly executor or host I/O adapter.
 
+Handlers, transports, and connection futures must be `Send` on every target,
+including WebAssembly. JavaScript host values such as `wasm_bindgen::JsValue`
+are `!Send`, so keep them outside the connection and exchange `Send` data with
+it through `Channel` or `ByteStreams`. A later release may relax these bounds
+on WebAssembly. That change would not affect native code.
+
 The rmcp integration library also compiles for WASI with its `rmcp_3` feature,
 alone or with its MCP-over-ACP features. It uses Tokio's async I/O utilities and
 single-thread-capable runtime without requiring native stdio or a multithreaded

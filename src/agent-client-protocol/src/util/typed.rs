@@ -61,7 +61,7 @@ fn preserve_retry(
 ///     .otherwise(|message| async move {
 ///         match message {
 ///             Dispatch::Request(_, responder) => {
-///                 responder.respond_with_error(agent_client_protocol::util::internal_error("unknown method"))
+///                 responder.respond_with_error(agent_client_protocol::Error::method_not_found())
 ///             }
 ///             Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(()),
 ///         }
@@ -88,9 +88,11 @@ impl MatchDispatch {
 
     /// Try to handle the message as a request of type `Req`.
     ///
-    /// If the message can be parsed as `Req`, the handler `op` is called with the parsed
-    /// request and a typed request context. If parsing fails or the message was already
-    /// handled by a previous call, this has no effect.
+    /// If the message is a request for one of `Req`'s methods, it is parsed and
+    /// `op` is called with the request and a typed responder. If the method
+    /// matches but the params do not parse, matching stops with the parse
+    /// error. Other messages, and messages already handled by a previous call,
+    /// pass through unchanged.
     pub async fn if_request<Req: JsonRpcRequest, H>(
         mut self,
         op: impl AsyncFnOnce(Req, Responder<Req::Response>) -> Result<H, crate::Error>,
@@ -150,8 +152,11 @@ impl MatchDispatch {
 
     /// Try to handle the message as a notification of type `N`.
     ///
-    /// If the message can be parsed as `N`, the handler `op` is called with the parsed
-    /// notification. If parsing fails or the message was already handled, this has no effect.
+    /// If the message is a notification for one of `N`'s methods, it is parsed
+    /// and `op` is called with the notification. If the method matches but the
+    /// params do not parse, matching stops with the parse error. Other
+    /// messages, and messages already handled by a previous call, pass through
+    /// unchanged.
     pub async fn if_notification<N: JsonRpcNotification, H>(
         mut self,
         op: impl AsyncFnOnce(N) -> Result<H, crate::Error>,
@@ -404,9 +409,15 @@ impl MatchDispatch {
         }
     }
 
-    /// Handle messages that didn't match any previous handler.
+    /// Finish matching, answering an unmatched request with a method not
+    /// found error (`-32601`) and ignoring an unmatched notification or
+    /// response.
     pub fn otherwise_ignore(self) -> Result<(), crate::Error> {
         match self.state {
+            Ok(Handled::No {
+                message: Dispatch::Request(_, responder),
+                retry: _,
+            }) => responder.respond_with_error(crate::Error::method_not_found()),
             Ok(_) => Ok(()),
             Err(err) => Err(err),
         }
@@ -451,7 +462,7 @@ impl MatchDispatch {
 ///     .otherwise(|message| async move {
 ///         // Fallback for unrecognized messages
 ///         match message {
-///             Dispatch::Request(_, responder) => responder.respond_with_error(agent_client_protocol::util::internal_error("unknown method")),
+///             Dispatch::Request(_, responder) => responder.respond_with_error(agent_client_protocol::Error::method_not_found()),
 ///             Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(()),
 ///         }
 ///     })
@@ -479,14 +490,16 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 
     /// Try to handle the message as a request of type `Req`.
     ///
-    /// If the message can be parsed as `Req`, the handler `op` is called with the parsed
-    /// request and a typed request context. If parsing fails or the message was already
-    /// handled by a previous `handle_if`, this call has no effect.
+    /// If the message is a request for one of `Req`'s methods, it is parsed and
+    /// `op` is called with the request and a typed responder. If the method
+    /// matches but the params do not parse, matching stops with the parse
+    /// error. Other messages, and messages already handled by a previous
+    /// `if_*` call, pass through unchanged.
     ///
     /// The handler can return either `()` (which becomes `Handled::Yes`) or an explicit
     /// `Handled` value to control whether the message should be passed to the next handler.
     ///
-    /// Returns `self` to allow chaining multiple `handle_if` calls.
+    /// Returns `self` to allow chaining multiple `if_*` calls.
     pub async fn if_request<Req: JsonRpcRequest, H>(
         self,
         op: impl AsyncFnOnce(Req, Responder<Req::Response>) -> Result<H, crate::Error>,
@@ -537,14 +550,16 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
 
     /// Try to handle the message as a notification of type `N`.
     ///
-    /// If the message can be parsed as `N`, the handler `op` is called with the parsed
-    /// notification and connection context. If parsing fails or the message was already
-    /// handled by a previous `handle_if`, this call has no effect.
+    /// If the message is a notification for one of `N`'s methods, it is parsed
+    /// and `op` is called with the notification. If the method matches but the
+    /// params do not parse, matching stops with the parse error. Other
+    /// messages, and messages already handled by a previous `if_*` call, pass
+    /// through unchanged.
     ///
     /// The handler can return either `()` (which becomes `Handled::Yes`) or an explicit
     /// `Handled` value to control whether the message should be passed to the next handler.
     ///
-    /// Returns `self` to allow chaining multiple `handle_if` calls.
+    /// Returns `self` to allow chaining multiple `if_*` calls.
     pub async fn if_notification<N: JsonRpcNotification, H>(
         self,
         op: impl AsyncFnOnce(N) -> Result<H, crate::Error>,
@@ -768,7 +783,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         }
     }
 
-    /// Handle messages that didn't match any previous `handle_if` call.
+    /// Handle messages that didn't match any previous `if_*` call.
     ///
     /// This is the fallback handler that receives the original untyped message if none
     /// of the typed handlers matched. You must call this method to complete the pattern
@@ -784,7 +799,7 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
         }
     }
 
-    /// Handle messages that didn't match any previous `handle_if` call.
+    /// Handle messages that didn't match any previous `if_*` call.
     ///
     /// This is the fallback handler that receives the original untyped message if none
     /// of the typed handlers matched. You must call this method to complete the pattern

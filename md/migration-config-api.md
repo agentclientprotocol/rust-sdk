@@ -43,16 +43,17 @@ value and preserve the other options.
 ## CORS policies
 
 Existing variants and constructors remain available. **Breaking:** exhaustive
-matches on `CorsOptions` outside the HTTP crate must add a wildcard arm:
+matches on `CorsOptions` outside the HTTP crate must add a wildcard arm.
+
+In v5, `CorsOptions` is an opaque struct and its variants are no longer public.
+Build policies with `CorsOptions::disabled()`, `CorsOptions::allow_origins(...)`,
+or `CorsOptions::allow_any_origin()`, and compare them with `==`:
 
 ```rust
 use agent_client_protocol_http::CorsOptions;
 
 fn is_disabled(policy: &CorsOptions) -> bool {
-    match policy {
-        CorsOptions::Disabled => true,
-        _ => false,
-    }
+    *policy == CorsOptions::disabled()
 }
 ```
 
