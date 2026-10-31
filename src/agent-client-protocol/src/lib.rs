@@ -207,6 +207,7 @@ pub use component::{ConnectTo, ConnectionDriver, DynConnectTo};
 /// Implementation details used by the derive macros.
 #[doc(hidden)]
 pub mod __private {
+    pub use crate::util::{json_cast, json_cast_params};
     pub use serde;
     pub use serde_json;
 }
