@@ -20,7 +20,7 @@ pub const VIEWER_HTML: &str = include_str!("viewer.html");
 
 /// Source of trace events for the viewer.
 #[derive(Debug, Clone)]
-pub enum TraceSource {
+enum TraceSource {
     /// Read events from a file (re-reads on each request for live updates).
     File(PathBuf),
     /// Read events from shared memory.
@@ -63,12 +63,39 @@ struct AppState {
 }
 
 /// Configuration for the trace viewer server.
-#[derive(Debug)]
+///
+/// New options may be added in later releases, so start from
+/// [`TraceViewerConfig::default`] and use the setters.
+///
+/// ```
+/// let config = agent_client_protocol_trace_viewer::TraceViewerConfig::default()
+///     .port(8080)
+///     .open_browser(false);
+/// assert_eq!(config.port, 8080);
+/// ```
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct TraceViewerConfig {
     /// Port to serve on (0 = auto-select).
     pub port: u16,
     /// Whether to open browser automatically.
     pub open_browser: bool,
+}
+
+impl TraceViewerConfig {
+    /// Serve on `port`, or on a free port when `port` is 0.
+    #[must_use]
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+
+    /// Whether to open the viewer in a browser once the server is listening.
+    #[must_use]
+    pub fn open_browser(mut self, open_browser: bool) -> Self {
+        self.open_browser = open_browser;
+        self
+    }
 }
 
 impl Default for TraceViewerConfig {
