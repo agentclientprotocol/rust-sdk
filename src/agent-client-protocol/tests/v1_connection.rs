@@ -56,10 +56,7 @@ async fn v1_and_raw_connections_convert_explicitly() -> Result<(), Error> {
                     .clone()
                     .into_protocol::<agent_client_protocol::V2>()
                     .expect_err("a v1 connection must not convert to v2");
-                assert_eq!(
-                    error.code,
-                    agent_client_protocol::ErrorCode::INVALID_REQUEST
-                );
+                assert_eq!(error.code, agent_client_protocol::ErrorCode::INTERNAL_ERROR);
             }
             let v1_cx: agent_client_protocol::v1::ConnectionTo<Agent> =
                 raw.into_protocol::<V1>()?;

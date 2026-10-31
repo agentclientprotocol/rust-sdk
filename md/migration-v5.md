@@ -95,10 +95,10 @@ Where code compared a v1 request's `id()` with IDs from the raw layer, use
 ### Converting, spawning and cancelling on connections
 
 - `ConnectionTo::into_protocol::<P>()` returns
-  `Result<P::Connection<_>, Error>`. It fails with `-32600` when the
-  connection's builder guards another version, for example
-  `into_protocol::<V2>()` on a connection from `Client.v1()`, which used to
-  succeed and then send v2 payloads over the v1 wire. Connections from
+  `Result<P::Connection<_>, Error>`. It fails with an Internal error
+  (`-32603`) when the connection's builder guards another version, for
+  example `into_protocol::<V2>()` on a connection from `Client.v1()`, which
+  used to succeed and then send v2 payloads over the v1 wire. Connections from
   unguarded builders such as `Builder::new` convert to every version. Add `?`
   to existing calls. The new `ConnectionTo::protocol_version()` returns the
   guarded version, or `None` for an unguarded connection.
@@ -113,8 +113,11 @@ Where code compared a v1 request's `id()` with IDs from the raw layer, use
 - `v1::ConnectionTo::send_cancel_request(_to)` takes
   `impl Into<schema::v1::RequestId>` and `v2::ConnectionTo::send_cancel_request(_to)`
   takes `impl Into<schema::v2::RequestId>`, the type their requests' `id()`
-  returns. The v2 methods can no longer send `{"requestId": null}`, which v2
-  forbids. Only the raw `ConnectionTo` methods take any `RawJsonRpcId`.
+  returns. The v1 change is source-compatible: `RawJsonRpcId` converts into
+  `schema::v1::RequestId`, so v1 calls that pass one still compile. V2 calls
+  that pass a `RawJsonRpcId` must pass a `schema::v2::RequestId` instead, so
+  the v2 methods can no longer send `{"requestId": null}`, which v2 forbids.
+  The raw `ConnectionTo` methods still take any `RawJsonRpcId`.
 - `Builder::with_v2_protocol_guard` (`unstable_protocol_v2`) is removed. A
   builder that needs the v2 guard is `Client.v2()` or `Agent.v2()`; code that
   needs raw handles in its callbacks converts them with `into_raw()`.

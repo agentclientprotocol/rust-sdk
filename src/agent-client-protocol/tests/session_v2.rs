@@ -49,7 +49,7 @@ impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
             .clone()
             .into_protocol::<agent_client_protocol::V1>()
             .expect_err("a protocol v2 connection must not convert to v1");
-        assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
+        assert_eq!(error.code, ErrorCode::INTERNAL_ERROR);
 
         let data = error
             .data

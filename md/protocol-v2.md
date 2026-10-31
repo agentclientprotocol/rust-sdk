@@ -115,7 +115,7 @@ the same low-level `HandleDispatchFrom` interface and therefore also receive
 `ConnectionTo<_>`. Raw code converts explicitly: `connection.into_protocol::<V1>()`
 returns a `v1::ConnectionTo` (and `into_protocol::<V2>()` a `v2::ConnectionTo`),
 and either versioned connection's `into_raw()` returns the version-neutral one.
-`into_protocol` fails with `-32600` when the connection's builder guards a
+`into_protocol` fails with `-32603` when the connection's builder guards a
 different version, so a connection from `Client.v1()` never becomes a
 `v2::ConnectionTo`. `ConnectionTo::protocol_version()` reports the guarded
 version, or `None` for an unguarded `Builder::new` connection.
@@ -439,8 +439,8 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `v2::InitializeOutcome::Initialized` for a v2 selection, or
   `v2::InitializeOutcome::LowerVersion` with the agent's validated response for
   the selected version, an `InitializationVersionMismatch` whose `response` is a
-`SelectedInitializeResponse::V1`. Both types are at the crate root because
-every version's negotiation reports a lower selection with them. After a lower
+  `SelectedInitializeResponse::V1`. Both types are at the crate root because
+  they are not tied to one protocol version. After a lower
   selection the connection stays uninitialized, and the caller can explicitly
   fall back to a v1 client implementation if that is acceptable. Errors
   returned by the agent, including `-32022`, malformed responses, and transport

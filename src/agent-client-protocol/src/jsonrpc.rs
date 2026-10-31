@@ -3823,9 +3823,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// # Errors
     ///
-    /// Returns an Invalid Request error (`-32600`) when the builder's guard
-    /// selected a different version than `P`, for example
-    /// `into_protocol::<V2>()` on a connection from `Client.v1()`. A
+    /// Returns an Internal error (`-32603`) when the builder's guard selected
+    /// a different version than `P`, for example `into_protocol::<V2>()` on a
+    /// connection from `Client.v1()`. The mismatch is a local programming
+    /// error, not a malformed message from the peer. A
     /// connection whose builder applies no guard (see
     /// [`protocol_version`](Self::protocol_version)) converts to every
     /// protocol, and `into_protocol::<Raw>()` never fails.
@@ -3841,7 +3842,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             (self.protocol_version(), protocol::protocol_version::<P>())
             && guard != requested
         {
-            return Err(crate::Error::invalid_request().data(format!(
+            return Err(crate::Error::internal_error().data(format!(
                 "cannot use a connection guarded for ACP protocol version {guard} \
                  as a protocol version {requested} connection",
             )));

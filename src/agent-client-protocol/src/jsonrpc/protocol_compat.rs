@@ -183,8 +183,8 @@ pub enum InitializeOutcome {
 /// returns when it supports no version at or below the requested one.
 ///
 /// It lives at the crate root because it is not tied to one protocol
-/// version: every version's `send_initialize` reports a lower selection with
-/// it.
+/// version. `v2::ConnectionTo::send_initialize` reports a lower selection
+/// with it.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
