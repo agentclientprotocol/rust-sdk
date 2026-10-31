@@ -766,7 +766,9 @@ before either. Use the provided `Agent` and `Proxy` host roles.
 
 `ConductorHostRole` is now a marker trait: its `Instantiator` type and its
 `initialize_method`, `select_protocol_version`, `instantiate` and
-`handle_dispatch` methods moved to a private supertrait. `ConductorImpl::new`
+`handle_dispatch` methods moved to a private supertrait and take an argument
+only the conductor crate can create, so code outside it cannot call them.
+`ConductorImpl::new`
 is private. Create conductors with `ConductorImpl::new_agent` or
 `ConductorImpl::new_proxy`.
 

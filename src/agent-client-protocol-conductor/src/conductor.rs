@@ -345,7 +345,10 @@ fn accept_initialize<Host: HostRole>(
     message: Dispatch,
 ) -> Result<Option<AcceptedInitialize>, Error> {
     let expected = || {
-        Error::invalid_request().data(format!("expected `{}` request", host.initialize_method()))
+        Error::invalid_request().data(format!(
+            "expected `{}` request",
+            host.initialize_method(Token::new())
+        ))
     };
     let (request, responder) = match message {
         Dispatch::Request(request, responder) => (request, responder),
@@ -361,9 +364,9 @@ fn accept_initialize<Host: HostRole>(
             return Ok(None);
         }
     };
-    let accepted = if request.method() == host.initialize_method() {
+    let accepted = if request.method() == host.initialize_method(Token::new()) {
         requested_protocol_version(&request).and_then(|requested| {
-            let selected = host.select_protocol_version(requested)?;
+            let selected = host.select_protocol_version(Token::new(), requested)?;
             let parsed = SelectedInitializeRequest::parse(selected, request.params())?;
             Ok((requested, parsed))
         })
@@ -549,7 +552,7 @@ impl<Host: HostRole> HandleDispatchFrom<Host::Counterpart> for ConductorMessageH
         connection: agent_client_protocol::ConnectionTo<Host::Counterpart>,
     ) -> Result<agent_client_protocol::Handled<Dispatch>, agent_client_protocol::Error> {
         self.host
-            .handle_dispatch(message, connection, &mut self.conductor_tx)
+            .handle_dispatch(Token::new(), message, connection, &mut self.conductor_tx)
             .await
     }
 
@@ -890,7 +893,10 @@ where
                     "ensure_initialized: instantiating chain"
                 );
                 let original = request.clone();
-                let forwarded = match host.instantiate(request, client, instantiator, self).await {
+                let forwarded = match host
+                    .instantiate(Token::new(), request, client, instantiator, self)
+                    .await
+                {
                     Ok(modified) => {
                         forwarded_initialize_request(params, requested, &original, modified)
                     }
@@ -1506,22 +1512,36 @@ fn select_like_an_agent(requested: ProtocolVersion) -> ProtocolVersion {
     ProtocolVersion::V1
 }
 
-pub(crate) use sealed::HostRole;
+pub(crate) use sealed::{HostRole, Token};
 
 mod sealed {
     use super::*;
 
+    /// A value only this crate can create.
+    ///
+    /// Every [`HostRole`] method takes one, so code outside this crate cannot
+    /// call those methods through a [`ConductorHostRole`] bound.
+    #[derive(Debug, Clone, Copy)]
+    pub struct Token(());
+
+    impl Token {
+        pub(crate) const fn new() -> Self {
+            Self(())
+        }
+    }
+
     /// The conductor's behavior for each [`ConductorHostRole`].
     ///
     /// Private to this crate, so [`ConductorHostRole`] cannot be implemented
-    /// outside it.
+    /// outside it. Its methods take a [`Token`], so they cannot be called
+    /// outside it either. `Instantiator` is not a stable extension point.
     pub trait HostRole: Role<Counterpart: HasPeer<Client>> {
         /// The type used to instantiate components for this role.
         type Instantiator: Send;
 
         /// The method of the request that initializes the conductor:
         /// `initialize`, or `proxy/initialize` for a conductor acting as a proxy.
-        fn initialize_method(&self) -> &'static str;
+        fn initialize_method(&self, token: Token) -> &'static str;
 
         /// Select the chain's protocol version for an initialization that
         /// requested `requested`.
@@ -1532,6 +1552,7 @@ mod sealed {
         /// supports no suitable version.
         fn select_protocol_version(
             &self,
+            token: Token,
             requested: ProtocolVersion,
         ) -> Result<ProtocolVersion, Error>;
 
@@ -1542,6 +1563,7 @@ mod sealed {
         /// initialization and every later message.
         fn instantiate(
             &self,
+            token: Token,
             request: SelectedInitializeRequest,
             connection: ConnectionTo<Self::Counterpart>,
             instantiator: Self::Instantiator,
@@ -1551,6 +1573,7 @@ mod sealed {
         /// Handle an incoming message from the client or conductor, depending on `Self`
         fn handle_dispatch(
             &self,
+            token: Token,
             message: Dispatch,
             connection: ConnectionTo<Self::Counterpart>,
             conductor_tx: &mut mpsc::Sender<ConductorMessage>,
@@ -1562,7 +1585,7 @@ mod sealed {
 impl HostRole for Agent {
     type Instantiator = Box<dyn InstantiateProxiesAndAgent>;
 
-    fn initialize_method(&self) -> &'static str {
+    fn initialize_method(&self, _: Token) -> &'static str {
         "initialize"
     }
 
@@ -1571,6 +1594,7 @@ impl HostRole for Agent {
     /// v1.
     fn select_protocol_version(
         &self,
+        _: Token,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
         Ok(select_like_an_agent(requested))
@@ -1578,6 +1602,7 @@ impl HostRole for Agent {
 
     async fn instantiate(
         &self,
+        _: Token,
         request: SelectedInitializeRequest,
         client_connection: ConnectionTo<Client>,
         instantiator: Self::Instantiator,
@@ -1622,6 +1647,7 @@ impl HostRole for Agent {
 
     async fn handle_dispatch(
         &self,
+        _: Token,
         message: Dispatch,
         client_connection: ConnectionTo<Client>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
@@ -1648,7 +1674,7 @@ impl HostRole for Agent {
 impl HostRole for Proxy {
     type Instantiator = Box<dyn InstantiateProxies>;
 
-    fn initialize_method(&self) -> &'static str {
+    fn initialize_method(&self, _: Token) -> &'static str {
         METHOD_INITIALIZE_PROXY
     }
 
@@ -1657,6 +1683,7 @@ impl HostRole for Proxy {
     /// requested one, keeping v1's fallback-to-latest rule below v1.
     fn select_protocol_version(
         &self,
+        _: Token,
         requested: ProtocolVersion,
     ) -> Result<ProtocolVersion, Error> {
         Ok(select_like_an_agent(requested))
@@ -1664,6 +1691,7 @@ impl HostRole for Proxy {
 
     async fn instantiate(
         &self,
+        _: Token,
         request: SelectedInitializeRequest,
         client_connection: ConnectionTo<Conductor>,
         instantiator: Self::Instantiator,
@@ -1682,6 +1710,7 @@ impl HostRole for Proxy {
 
     async fn handle_dispatch(
         &self,
+        _: Token,
         message: Dispatch,
         client_connection: ConnectionTo<Conductor>,
         conductor_tx: &mut mpsc::Sender<ConductorMessage>,
