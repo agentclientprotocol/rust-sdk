@@ -56,7 +56,7 @@ serialization and deserialization. Within `mcp_server`, these typed APIs require
 `schemars`:
 
 - `McpTool`
-- `McpToolRegistry`, `RegisteredMcpTool`, and `EnabledTools`
+- `McpToolRegistry`, `RegisteredMcpTool`, and `UnknownToolError`
 - `McpToolMetadata` and `McpToolSchema`
 - The `tool_fn` and `tool_fn_mut` functions
 

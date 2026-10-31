@@ -42,28 +42,43 @@
 
 use ::rmcp_3 as rmcp;
 use agent_client_protocol::mcp_server::{McpConnectionTo, McpServer, McpServerConnect};
-#[cfg(feature = "unstable_mcp_over_acp")]
-use agent_client_protocol::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
 use agent_client_protocol::role;
 use agent_client_protocol::{ByteStreams, ConnectTo, DynConnectTo, NullRun, Role};
-#[cfg(feature = "unstable_mcp_over_acp")]
-use futures::future::BoxFuture;
 use futures_concurrency::future::TryJoin as _;
 use rmcp::ServiceExt;
-#[cfg(feature = "unstable_mcp_over_acp")]
-use std::sync::{Arc, OnceLock};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 mod builder;
-#[cfg(feature = "unstable_mcp_over_acp")]
-mod native;
 
-pub use agent_client_protocol::mcp_server::{EnabledTools, McpTool};
+// The native MCP-over-ACP path follows the core crate's
+// `unstable_mcp_over_acp` feature, not this crate's passthrough feature, so a
+// feature-unified build never falls back to bridging a fresh rmcp service for
+// every request.
+agent_client_protocol::__if_mcp_over_acp! {
+    {
+        mod native;
+        use agent_client_protocol::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
+        use futures::future::BoxFuture;
+        use std::sync::{Arc, OnceLock};
+    } else {}
+}
+
+pub use agent_client_protocol::mcp_server::{McpTool, UnknownToolError};
 pub use agent_client_protocol::{tool_fn, tool_fn_mut};
 pub use builder::McpServerBuilder;
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+impl<Counterpart: Role, Run> sealed::Sealed for McpServer<Counterpart, Run> {}
+
 /// Extension constructors for MCP servers backed by `rmcp`.
-pub trait McpServerExt<Counterpart: Role> {
+///
+/// This trait is sealed: it is implemented for
+/// [`McpServer`] and cannot be
+/// implemented outside this crate.
+pub trait McpServerExt<Counterpart: Role>: sealed::Sealed {
     /// Create an MCP server builder for defining tools in Rust code.
     fn builder(name: impl ToString) -> McpServerBuilder<Counterpart, NullRun> {
         McpServerBuilder::new(name.to_string())
@@ -90,29 +105,6 @@ pub trait McpServerExt<Counterpart: Role> {
             new_fn: F,
         }
 
-        #[cfg(feature = "unstable_mcp_over_acp")]
-        struct SharedRmcp<F, S> {
-            new_fn: Arc<F>,
-            service: OnceLock<Arc<S>>,
-        }
-
-        #[cfg(feature = "unstable_mcp_over_acp")]
-        impl<Counterpart, F, S> McpService<Counterpart> for SharedRmcp<F, S>
-        where
-            Counterpart: Role,
-            F: Fn() -> S + Send + Sync + 'static,
-            S: rmcp::Service<rmcp::RoleServer>,
-        {
-            fn execute(
-                &self,
-                request: McpRequest,
-                context: McpRequestContext<Counterpart>,
-            ) -> BoxFuture<'static, Result<McpOutcome, agent_client_protocol::Error>> {
-                let service = self.service.get_or_init(|| Arc::new((self.new_fn)()));
-                native::execute(service.clone(), request, context)
-            }
-        }
-
         impl<Counterpart, F, S> McpServerConnect<Counterpart> for RmcpServer<F>
         where
             Counterpart: Role,
@@ -132,32 +124,52 @@ pub trait McpServerExt<Counterpart: Role> {
             }
         }
 
-        #[cfg(feature = "unstable_mcp_over_acp")]
-        {
-            // Standalone use under feature unification must not initialize an
-            // unused native service. The factory remains per-connection there.
-            let new_fn = Arc::new(new_fn);
-            McpServer::new_service_with_standalone(
-                SharedRmcp {
-                    new_fn: new_fn.clone(),
-                    service: OnceLock::new(),
-                },
-                RmcpServer {
-                    name: name.to_string(),
-                    new_fn: move || new_fn(),
-                },
-                NullRun,
-            )
-        }
-        #[cfg(not(feature = "unstable_mcp_over_acp"))]
-        {
-            McpServer::new(
-                RmcpServer {
-                    name: name.to_string(),
-                    new_fn,
-                },
-                NullRun,
-            )
+        agent_client_protocol::__if_mcp_over_acp! {
+            {
+                struct SharedRmcp<F, S> {
+                    new_fn: Arc<F>,
+                    service: OnceLock<Arc<S>>,
+                }
+
+                impl<Counterpart, F, S> McpService<Counterpart> for SharedRmcp<F, S>
+                where
+                    Counterpart: Role,
+                    F: Fn() -> S + Send + Sync + 'static,
+                    S: rmcp::Service<rmcp::RoleServer>,
+                {
+                    fn execute(
+                        &self,
+                        request: McpRequest,
+                        context: McpRequestContext<Counterpart>,
+                    ) -> BoxFuture<'static, Result<McpOutcome, agent_client_protocol::Error>> {
+                        let service = self.service.get_or_init(|| Arc::new((self.new_fn)()));
+                        native::execute(service.clone(), request, context)
+                    }
+                }
+
+                // Standalone use under feature unification must not initialize an
+                // unused native service. The factory remains per-connection there.
+                let new_fn = Arc::new(new_fn);
+                McpServer::new_service_with_standalone(
+                    SharedRmcp {
+                        new_fn: new_fn.clone(),
+                        service: OnceLock::new(),
+                    },
+                    RmcpServer {
+                        name: name.to_string(),
+                        new_fn: move || new_fn(),
+                    },
+                    NullRun,
+                )
+            } else {
+                McpServer::new(
+                    RmcpServer {
+                        name: name.to_string(),
+                        new_fn,
+                    },
+                    NullRun,
+                )
+            }
         }
     }
 }

@@ -1059,13 +1059,16 @@ pub mod filtering_tools {
     //!         // Only enable the safe tool
     //!         .enable_tool("safe")
     //!         .map(|b| b.build())
+    //!         .map_err(agent_client_protocol::Error::from)
     //! }
     //! ```
     //!
     //! # Error handling
     //!
-    //! Both [`enable_tool`] and [`disable_tool`] return `Result` and will error
-    //! if the tool name doesn't match any registered tool. This helps catch typos:
+    //! Both [`enable_tool`] and [`disable_tool`] return an [`UnknownToolError`]
+    //! if the tool name doesn't match any registered tool. This helps catch typos.
+    //! It is a local error, and `?` converts it into an
+    //! [`agent_client_protocol::Error`]:
     //!
     //! ```
     //! use agent_client_protocol::mcp_server::McpServer;
@@ -1076,7 +1079,8 @@ pub mod filtering_tools {
     //! let result = McpServer::<Conductor, _>::builder("server")
     //!     .disable_tool("ech");  // Typo! Should be "echo"
     //!
-    //! assert!(result.is_err());
+    //! let Err(error) = result else { panic!("expected an unknown tool") };
+    //! assert_eq!(error.name(), "ech");
     //! ```
     //!
     //! Calling enable/disable on an already enabled/disabled tool is not an error -
@@ -1085,6 +1089,7 @@ pub mod filtering_tools {
     //! [`disable_tool`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::disable_tool
     //! [`enable_tool`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::enable_tool
     //! [`disable_all_tools`]: agent_client_protocol_rmcp::rmcp_3::McpServerBuilder::disable_all_tools
+    //! [`UnknownToolError`]: agent_client_protocol_rmcp::rmcp_3::UnknownToolError
 }
 
 pub mod running_proxies_with_conductor {

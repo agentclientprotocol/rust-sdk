@@ -708,8 +708,8 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                         "cacheScope": String("private"),
                         "_meta": Object {
                             "io.modelcontextprotocol/serverInfo": Object {
-                                "name": String("rmcp"),
-                                "version": String("<rmcp version>"),
+                                "name": String("test"),
+                                "version": String("0.0.0"),
                             },
                         },
                     },

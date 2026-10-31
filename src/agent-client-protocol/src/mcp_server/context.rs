@@ -16,6 +16,7 @@ pub enum McpConnectionContext {
 
     /// The MCP server was attached to an ACP session.
     #[cfg(feature = "unstable_mcp_over_acp")]
+    #[non_exhaustive]
     Acp {
         /// The identifier advertised in the session's `McpServer::Acp` declaration.
         server_id: McpServerAcpId,
