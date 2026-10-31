@@ -268,7 +268,7 @@ async fn v1_mcp_proxy_keeps_unmodeled_session_fields() {
         json!({
             "cwd": "/v1-equivalence",
             "mcpServers": [],
-            "systemPrompt": "keep me",
+            "futureField": { "nested": ["keep me"] },
             "_unknownRequestField": true,
         }),
         || {
@@ -289,7 +289,11 @@ async fn v1_mcp_proxy_keeps_unmodeled_session_fields() {
     );
     let (method, params) = &run.received[1];
     assert_eq!(method, "session/new");
-    assert_eq!(params["systemPrompt"], "keep me", "{params}");
+    assert_eq!(
+        params["futureField"],
+        json!({ "nested": ["keep me"] }),
+        "{params}"
+    );
     assert_eq!(params["_unknownRequestField"], true, "{params}");
     let servers = params["mcpServers"].as_array().expect("mcpServers array");
     assert_eq!(servers.len(), 1, "{params}");
