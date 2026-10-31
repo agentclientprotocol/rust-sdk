@@ -2050,6 +2050,7 @@ impl<
     ///
     /// The same native MCP server declaration is added to new, load, and resume
     /// requests, plus fork requests when `unstable_session_fork` is enabled.
+    /// Unrelated request fields are preserved exactly.
     ///
     /// Only applicable to proxies. Use the same method on `v2::Builder` to
     /// attach the server to protocol v2 setup requests.

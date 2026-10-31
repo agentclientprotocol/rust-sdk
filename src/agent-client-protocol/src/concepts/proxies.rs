@@ -119,8 +119,8 @@
 //!
 //! The v1 builder injects the declaration into new, load, resume, and
 //! feature-gated fork requests. The v2 builder injects it into new, resume,
-//! and feature-gated fork requests while preserving unrelated setup fields.
-//! Both reuse one connection-scoped server ID.
+//! and feature-gated fork requests. Both preserve unrelated setup fields and
+//! reuse one connection-scoped server ID.
 //!
 //! ## Per-Session MCP Server
 //!
@@ -135,8 +135,8 @@
 //!         let my_mcp_server = McpServer::<Conductor, _>::builder("tools").build();
 //!         cx.build_session_from(req)
 //!             .with_mcp_server(my_mcp_server)?
-//!             .on_proxy_session_start(responder, async |session_id| {
-//!                 // Session started with MCP server attached
+//!             .on_proxy_session_start(responder, async |response| {
+//!                 // Session `response.session_id` started with MCP server attached
 //!                 Ok(())
 //!             })
 //!     }, agent_client_protocol::on_receive_request!())

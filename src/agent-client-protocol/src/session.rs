@@ -14,7 +14,7 @@ use crate::{
     schema::v1::{
         ContentBlock, ContentChunk, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
         NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
-        ResumeSessionResponse, SessionId, SessionNotification, SessionUpdate, StopReason,
+        ResumeSessionResponse, SessionId, SessionNotification, SessionUpdate,
     },
     util::{MatchDispatch, MatchDispatchFrom},
     v1::ConnectionTo,
@@ -131,16 +131,25 @@ async fn run_session_scope<T>(
 /// Marker type indicating the session builder will block the current task.
 #[derive(Debug)]
 pub struct Blocking;
+impl block_state::Sealed for Blocking {}
 impl SessionBlockState for Blocking {}
 
 /// Marker type indicating the session builder will not block the current task.
 #[derive(Debug)]
 pub struct NonBlocking;
+impl block_state::Sealed for NonBlocking {}
 impl SessionBlockState for NonBlocking {}
+
+mod block_state {
+    pub trait Sealed {}
+}
 
 /// Trait for marker types that indicate blocking vs non-blocking API.
 /// See [`SessionBuilder::block_task`].
-pub trait SessionBlockState: Send + 'static + Sync + std::fmt::Debug {}
+///
+/// This trait is sealed: [`Blocking`] and [`NonBlocking`] are its only
+/// implementations.
+pub trait SessionBlockState: block_state::Sealed + Send + 'static + Sync + std::fmt::Debug {}
 
 impl<Counterpart: Role> ConnectionTo<Counterpart>
 where
@@ -327,6 +336,9 @@ impl RestoreRequest for ResumeSessionRequest {
 
 /// Stable protocol v1 builder for `session/load` or `session/resume`.
 ///
+/// This type is not exported. Callers name it through the
+/// [`LoadSessionBuilder`] and [`ResumeSessionBuilder`] aliases.
+///
 /// Use [`ConnectionTo::load_session`] or [`ConnectionTo::resume_session`] to
 /// construct this builder. Use the matching `_from` method to send an existing
 /// typed request without rebuilding it.
@@ -354,12 +366,34 @@ where
 }
 
 /// Stable protocol v1 builder for a `session/load` request, returned by
-/// [`ConnectionTo::load_session`].
+/// [`ConnectionTo::load_session`] and [`ConnectionTo::load_session_from`].
+///
+/// The `BlockState` parameter mirrors [`SessionBuilder`]:
+/// - [`NonBlocking`] exposes `on_session_start`.
+/// - [`Blocking`], selected with `block_task`, exposes `start_session`.
+///
+/// Session routing is installed before the request can reach the peer, so
+/// replay notifications sent before the response are kept on the restored
+/// [`ActiveSession`].
+///
+/// Unlike [`SessionBuilder`], this builder has no `with_mcp_server` and no
+/// proxy helpers (`on_proxy_session_start`, `start_session_proxy`). To add an
+/// MCP server to load requests a proxy forwards, use `with_mcp_server` on the
+/// proxy's [`v1::Builder`](crate::v1::Builder).
 pub type LoadSessionBuilder<Counterpart, BlockState = NonBlocking> =
     RestoreSessionBuilder<Counterpart, LoadSessionRequest, BlockState>;
 
 /// Stable protocol v1 builder for a `session/resume` request, returned by
-/// [`ConnectionTo::resume_session`].
+/// [`ConnectionTo::resume_session`] and [`ConnectionTo::resume_session_from`].
+///
+/// The `BlockState` parameter mirrors [`SessionBuilder`]:
+/// - [`NonBlocking`] exposes `on_session_start`.
+/// - [`Blocking`], selected with `block_task`, exposes `start_session`.
+///
+/// Unlike [`SessionBuilder`], this builder has no `with_mcp_server` and no
+/// proxy helpers (`on_proxy_session_start`, `start_session_proxy`). To add an
+/// MCP server to resume requests a proxy forwards, use `with_mcp_server` on
+/// the proxy's [`v1::Builder`](crate::v1::Builder).
 pub type ResumeSessionBuilder<Counterpart, BlockState = NonBlocking> =
     RestoreSessionBuilder<Counterpart, ResumeSessionRequest, BlockState>;
 
@@ -521,7 +555,7 @@ where
     /// Publish `session/load`, wait on the current task, and return an
     /// [`ActiveSession`] together with the exact [`LoadSessionResponse`].
     ///
-    /// Requires [`block_task`](RestoreSessionBuilder::block_task). Dropping
+    /// Requires [`block_task`](LoadSessionBuilder::block_task). Dropping
     /// this future while it is pending cancels the request and removes the
     /// provisional session route.
     pub async fn start_session(
@@ -538,7 +572,7 @@ where
     /// Publish `session/resume`, wait on the current task, and return an
     /// [`ActiveSession`] together with the exact [`ResumeSessionResponse`].
     ///
-    /// Requires [`block_task`](RestoreSessionBuilder::block_task). Dropping
+    /// Requires [`block_task`](ResumeSessionBuilder::block_task). Dropping
     /// this future while it is pending cancels the request and removes the
     /// provisional session route.
     pub async fn start_session(
@@ -552,8 +586,8 @@ where
 /// up.
 ///
 /// Every setup method returns one: [`SessionBuilder::start_session`]
-/// (`session/new`) and [`RestoreSessionBuilder::start_session`]
-/// (`session/load` and `session/resume`), and the `on_session_start` and
+/// (`session/new`), and `start_session` on [`LoadSessionBuilder`]
+/// (`session/load`) and [`ResumeSessionBuilder`] (`session/resume`). The `on_session_start` and
 /// [`run_until`](SessionBuilder::run_until) callbacks receive one too. The
 /// response is the complete, operation-specific setup response; it is kept
 /// next to the session rather than inside [`ActiveSession`], so the setup
@@ -743,7 +777,7 @@ where
             })
     }
 
-    /// Spawn a proxy session and run a closure with the session ID.
+    /// Spawn a proxy session and run a closure with the `session/new` response.
     ///
     /// A **proxy session** starts the session with the agent and then automatically
     /// proxies all session updates (prompts, tool calls, etc.) from the agent back
@@ -756,7 +790,9 @@ where
     /// immediately without blocking the current task. The session handshake, client
     /// response, and proxy setup all happen in a spawned background task.
     ///
-    /// The closure receives the `SessionId` once the session is established. Use it for logging
+    /// The closure receives a clone of the complete [`NewSessionResponse`], which was also
+    /// forwarded to the client, once the session is established. Read the session ID from its
+    /// `session_id` field. Use it for logging
     /// or eventual tracking; it runs concurrently with later connection traffic. Register
     /// ID-independent state that later handlers must observe before calling this helper. For
     /// ID-keyed bookkeeping, install a gate or placeholder first, make later handlers await it,
@@ -775,7 +811,7 @@ where
     ///         let mcp = McpServer::<Conductor, _>::builder("tools").build();
     ///         cx.build_session_from(request)
     ///             .with_mcp_server(mcp)?
-    ///             .on_proxy_session_start(responder, async |session_id| {
+    ///             .on_proxy_session_start(responder, async |response| {
     ///                 // Session started
     ///                 Ok(())
     ///             })
@@ -801,7 +837,7 @@ where
         op: F,
     ) -> Result<(), crate::Error>
     where
-        F: FnOnce(SessionId) -> Fut + Send + 'static,
+        F: FnOnce(NewSessionResponse) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
         Counterpart: HasPeer<Client>,
         R: 'static,
@@ -837,11 +873,11 @@ where
                 // Extract the session-id from the response and forward
                 // the response back to the client
                 let session_id = response.session_id.clone();
-                responder.respond(response)?;
+                responder.respond(response.clone())?;
 
                 // Install a dynamic handler to proxy messages from this session
                 connection
-                    .add_dynamic_handler(ProxySessionMessages::new(session_id.clone()))?
+                    .add_dynamic_handler(ProxySessionMessages::new(session_id))?
                     .detach();
 
                 // Keep dynamic handlers live for the connection.
@@ -849,7 +885,7 @@ where
                     .into_iter()
                     .for_each(DynamicHandlerGuard::detach);
 
-                connection.spawn(async move { op(session_id).await })
+                connection.spawn(async move { op(response).await })
             }
         })
     }
@@ -997,11 +1033,14 @@ where
     /// [`start_session`](Self::start_session) instead and call
     /// [`proxy_remaining_messages`](ActiveSession::proxy_remaining_messages) manually.
     ///
+    /// Returns a clone of the complete [`NewSessionResponse`] forwarded to the
+    /// client.
+    ///
     /// Requires calling [`block_task`](Self::block_task) first.
     pub async fn start_session_proxy(
         self,
         responder: Responder<NewSessionResponse, crate::V1>,
-    ) -> Result<SessionId, crate::Error>
+    ) -> Result<NewSessionResponse, crate::Error>
     where
         Counterpart: HasPeer<Client>,
         R: 'static,
@@ -1009,14 +1048,25 @@ where
         let SessionSetup {
             session, response, ..
         } = self.start_session().await?;
-        let session_id = session.session_id().clone();
-        responder.respond(response)?;
+        responder.respond(response.clone())?;
         session.proxy_remaining_messages()?;
-        Ok(session_id)
+        Ok(response)
     }
 }
 
 /// Stable protocol v1 active session that lets you send prompts and receive updates.
+///
+/// The session owns a stream of [`SessionMessage`]s: the requests and
+/// notifications the agent sends for this session, and the responses to
+/// prompts sent with [`send_prompt`](Self::send_prompt) or
+/// [`send_prompt_blocks`](Self::send_prompt_blocks).
+///
+/// This handle covers prompting and reading the stream only. It has no
+/// helpers for `session/cancel`, `session/set_mode`,
+/// `session/set_config_option`, `session/close` or `session/fork`. Send those
+/// messages through [`connection`](Self::connection) with
+/// [`session_id`](Self::session_id), for example
+/// `session.connection().send_notification_to(Agent, CancelNotification::new(session.session_id().clone()))`.
 ///
 /// The `'runner` lifetime represents the span during which session support runners
 /// (such as MCP servers) are active. When created via [`SessionBuilder::start_session`],
@@ -1048,20 +1098,31 @@ where
     _runner: PhantomData<&'runner ()>,
 }
 
-/// Incoming stable protocol v1 message from the agent.
+/// An item on a stable protocol v1 session's update stream, returned by
+/// [`ActiveSession::read_update`].
 #[non_exhaustive]
 #[derive(Debug)]
 #[allow(
     clippy::large_enum_variant,
-    reason = "Dispatch messages vastly outnumber StopReason; boxing would add a heap allocation"
+    reason = "messages vastly outnumber prompt responses; boxing would add a heap allocation"
 )]
 pub enum SessionMessage {
-    /// Periodic updates with new content, tool requests, etc.
-    /// Use [`MatchDispatch`] to match on the message type.
-    SessionMessage(Dispatch),
+    /// A request or notification the agent sent for this session, such as a
+    /// `session/update` notification or a `session/request_permission`
+    /// request.
+    ///
+    /// Request handles are typed for protocol v1. To match on the message
+    /// type with [`MatchDispatch`], convert it with
+    /// [`Dispatch::into_raw`](crate::Dispatch::into_raw) first.
+    Message(crate::v1::Dispatch),
 
-    /// When a prompt completes, the stop reason.
-    StopReason(StopReason),
+    /// The response to a `session/prompt` request sent with
+    /// [`ActiveSession::send_prompt`] or
+    /// [`ActiveSession::send_prompt_blocks`], which ends that prompt turn.
+    ///
+    /// An error response from the agent arrives here as `Err`. It does not
+    /// close the connection or affect other sessions.
+    PromptResponse(Result<PromptResponse, crate::Error>),
 }
 
 impl<Link> ActiveSession<'_, Link>
@@ -1078,27 +1139,41 @@ where
         &self.connection
     }
 
-    /// Send a prompt to the agent. You can then read messages sent in response.
+    /// Send a text prompt to the agent.
+    ///
+    /// Read the agent's output with [`read_update`](Self::read_update) or
+    /// [`read_to_string`](Self::read_to_string). The `session/prompt`
+    /// response, or the error the agent answered with, arrives on the same
+    /// stream as [`SessionMessage::PromptResponse`].
     pub fn send_prompt(&mut self, prompt: impl ToString) -> Result<(), crate::Error> {
+        self.send_prompt_blocks(vec![prompt.to_string().into()])
+    }
+
+    /// Send a prompt made of arbitrary content blocks to the agent.
+    ///
+    /// Content other than text and resource links needs the matching
+    /// `promptCapabilities` entry from the agent's initialize response. Like
+    /// [`send_prompt`](Self::send_prompt), the
+    /// response arrives on the update stream as
+    /// [`SessionMessage::PromptResponse`].
+    pub fn send_prompt_blocks(&mut self, prompt: Vec<ContentBlock>) -> Result<(), crate::Error> {
         let update_tx = self.update_tx.clone();
         self.connection
             .raw_connection()
             .send_ordered_request_to::<Raw, _, _>(
                 Agent,
-                PromptRequest::new(self.session_id.clone(), vec![prompt.to_string().into()]),
+                PromptRequest::new(self.session_id.clone(), prompt),
             )
             .on_receiving_result(async move |result| {
-                let PromptResponse { stop_reason, .. } = result?;
-
-                update_tx
-                    .unbounded_send(SessionMessage::StopReason(stop_reason))
-                    .map_err(crate::util::internal_error)?;
-
+                // A closed channel means the session was dropped or handed to
+                // `proxy_remaining_messages`, so nobody reads the response.
+                drop(update_tx.unbounded_send(SessionMessage::PromptResponse(result)));
                 Ok(())
             })
     }
 
-    /// Read an update from the agent in response to the prompt.
+    /// Read the next item on the session's update stream: a message the agent
+    /// sent for this session, or the response to a prompt.
     pub async fn read_update(&mut self) -> Result<SessionMessage, crate::Error> {
         use futures::StreamExt;
         let message =
@@ -1109,15 +1184,21 @@ where
         Ok(message)
     }
 
-    /// Read all updates until the end of the turn and create a string.
-    /// Ignores non-text updates.
+    /// Read updates until the next prompt response and return the text of the
+    /// agent's message chunks.
+    ///
+    /// Ignores non-text updates. Requests from the agent, such as
+    /// `session/request_permission`, are dropped, so the SDK answers them
+    /// with an Internal Error (`-32603`). Use
+    /// [`read_update`](Self::read_update) to answer them. If the agent answers
+    /// the prompt with an error, this returns that error.
     pub async fn read_to_string(&mut self) -> Result<String, crate::Error> {
         let mut output = String::new();
         loop {
             let update = self.read_update().await?;
             tracing::trace!("read_to_string update");
             match update {
-                SessionMessage::SessionMessage(dispatch) => MatchDispatch::new(dispatch)
+                SessionMessage::Message(dispatch) => MatchDispatch::new(dispatch.into_raw())
                     .if_notification(async |notif: SessionNotification| match notif.update {
                         SessionUpdate::AgentMessageChunk(ContentChunk {
                             content: ContentBlock::Text(text),
@@ -1130,7 +1211,10 @@ where
                     })
                     .await
                     .otherwise_ignore()?,
-                SessionMessage::StopReason(_stop_reason) => break,
+                SessionMessage::PromptResponse(response) => {
+                    response?;
+                    break;
+                }
             }
         }
         Ok(output)
@@ -1199,12 +1283,12 @@ where
         // consumed yet. We must forward them to maintain message ordering.
         while let Ok(message) = update_rx.try_recv() {
             match message {
-                SessionMessage::SessionMessage(dispatch) => {
+                SessionMessage::Message(dispatch) => {
                     // Forward the message to the client
                     connection.send_proxied_message_to(Client, dispatch)?;
                 }
-                SessionMessage::StopReason(_) => {
-                    // StopReason is internal bookkeeping, not forwarded
+                SessionMessage::PromptResponse(_) => {
+                    // Responses to the proxy's own prompts are not forwarded
                 }
             }
         }
@@ -1264,7 +1348,7 @@ where
                     );
                     if session_id == self.session_id {
                         self.update_tx
-                            .unbounded_send(SessionMessage::SessionMessage(message))
+                            .unbounded_send(SessionMessage::Message(message.into_protocol()?))
                             .map_err(crate::util::internal_error)?;
                         return Ok(Handled::Yes);
                     }
