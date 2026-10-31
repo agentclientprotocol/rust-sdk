@@ -34,19 +34,17 @@ fn initialize_response(protocol_version: ProtocolVersion) -> v2::InitializeRespo
 }
 
 struct V1SessionGuardRunner {
-    cwd: PathBuf,
     completed: oneshot::Sender<()>,
 }
 
 impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
     async fn run_with_connection_to(self, connection: ConnectionTo<Agent>) -> Result<(), Error> {
+        // A v2 connection does not convert to the v1 connection type, so the
+        // v1 session helpers cannot run over it.
         let error = connection
+            .clone()
             .into_protocol::<agent_client_protocol::V1>()
-            .build_session(self.cwd)
-            .block_task()
-            .start_session()
-            .await
-            .expect_err("the v1 helper must reject the raw protocol v2 connection");
+            .expect_err("a protocol v2 connection must not convert to v1");
         assert_eq!(error.code, ErrorCode::INVALID_REQUEST);
 
         let data = error
@@ -54,7 +52,14 @@ impl RunWithConnectionTo<Agent> for V1SessionGuardRunner {
             .as_ref()
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        assert!(data.contains("`v2::ConnectionTo`"), "{error:?}");
+        assert!(data.contains("protocol version 2"), "{error:?}");
+
+        assert_eq!(connection.protocol_version(), Some(ProtocolVersion::V2));
+        connection
+            .clone()
+            .into_protocol::<agent_client_protocol::V2>()?;
+        let raw: ConnectionTo<Agent> = connection.into_protocol::<agent_client_protocol::Raw>()?;
+        drop(raw);
 
         self.completed.send(()).map_err(|()| {
             Error::internal_error().data("v1 session guard test receiver was dropped")
@@ -1211,12 +1216,11 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn low_level_v2_runner_rejects_the_v1_session_helper() {
+async fn low_level_v2_runner_cannot_use_the_v1_connection_type() {
     let (completed_tx, completed_rx) = oneshot::channel();
     let client = Client
         .v2()
         .with_runner(V1SessionGuardRunner {
-            cwd: cwd().expect("current directory should be available"),
             completed: completed_tx,
         })
         .connect_with(Agent.v2(), async move |_connection| {

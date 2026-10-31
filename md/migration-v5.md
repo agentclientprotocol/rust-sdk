@@ -66,7 +66,7 @@ It no longer has the v1 session helpers. Convert explicitly between the two;
 use agent_client_protocol::{ConnectionTo, V1, v1};
 
 // raw -> v1, for example in a custom runner that opens a v1 session
-let v1_cx: v1::ConnectionTo<Agent> = raw_cx.into_protocol::<V1>();
+let v1_cx: v1::ConnectionTo<Agent> = raw_cx.into_protocol::<V1>()?;
 v1_cx.build_session_cwd()?.block_task().start_session().await?;
 
 // v1 -> raw, for example to drive a `RunWithConnectionTo` runner
@@ -88,6 +88,33 @@ fn send(cx: &ConnectionTo<Agent>) -> SentRequest<PromptResponse> { ... }
 
 Where code compared a v1 request's `id()` with IDs from the raw layer, use
 `raw_id()`.
+
+### Converting, spawning and cancelling on connections
+
+- `ConnectionTo::into_protocol::<P>()` returns
+  `Result<P::Connection<_>, Error>`. It fails with `-32600` when the
+  connection's builder guards another version, for example
+  `into_protocol::<V2>()` on a connection from `Client.v1()`, which used to
+  succeed and then send v2 payloads over the v1 wire. Connections from
+  unguarded builders such as `Builder::new` convert to every version. Add `?`
+  to existing calls. The new `ConnectionTo::protocol_version()` returns the
+  guarded version, or `None` for an unguarded connection.
+- `ConnectionTo::spawn_connection` returns the connection type the child
+  builder's callbacks receive, like `v1::ConnectionTo::spawn_connection` and
+  `v2::ConnectionTo::spawn_connection` already did. It replaces
+  `ConnectionTo::spawn_connection_with_context`, which is removed. Spawning
+  `Client.v1()` now returns a `v1::ConnectionTo<_>`; call `.into_raw()` where
+  the raw connection is wanted. A raw builder still returns the raw
+  `ConnectionTo`. Turbofish calls name both parameters:
+  `spawn_connection::<UntypedRole, _>(...)`.
+- `v1::ConnectionTo::send_cancel_request(_to)` takes
+  `impl Into<schema::v1::RequestId>` and `v2::ConnectionTo::send_cancel_request(_to)`
+  takes `impl Into<schema::v2::RequestId>`, the type their requests' `id()`
+  returns. The v2 methods can no longer send `{"requestId": null}`, which v2
+  forbids. Only the raw `ConnectionTo` methods take any `RawJsonRpcId`.
+- `Builder::with_v2_protocol_guard` (`unstable_protocol_v2`) is removed. A
+  builder that needs the v2 guard is `Client.v2()` or `Agent.v2()`; code that
+  needs raw handles in its callbacks converts them with `into_raw()`.
 
 ### Every session setup method returns `SessionSetup`
 
@@ -710,8 +737,7 @@ async |message: Dispatch<PromptRequest, SessionNotification>, cx| { ... }
 
 `Client.v1()`, `Agent.v1()` and `Proxy.v1()` return `v1::Builder<_>`
 (`Builder<_, _, _, _, V1>`).
-`Builder::new`, other roles' builders, and `with_v2_protocol_guard()`
-(which returns a `Raw` builder) use `Raw`. The v1 session helpers that take
+`Builder::new` and other roles' builders use `Raw`. The v1 session helpers that take
 a responder, such as `v1::SessionBuilder::on_proxy_session_start`, take a
 `v1::Responder<_>`.
 
@@ -797,6 +823,12 @@ and `V2`. `Protocol::Connection<Counterpart>` is the connection type builder
 callbacks receive (`ConnectionTo` for `Raw`, `v1::ConnectionTo` for `V1`,
 `v2::ConnectionTo` for `V2`), so code generic over a builder's context changes
 `Context: ConnectionContext` to `P: Protocol`.
+
+Generic code can turn a `P::Connection<Counterpart>` back into the
+version-neutral `ConnectionTo` with `.into()`: `v1::ConnectionTo` and
+`v2::ConnectionTo` implement `From` for it, and `Protocol::Connection`
+requires `Into<ConnectionTo<Counterpart>>`. Their own methods, such as the v1
+session helpers, are only available on the concrete types.
 
 ## Schema enums and SDK helpers
 

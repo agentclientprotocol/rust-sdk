@@ -976,92 +976,6 @@ where
     }
 }
 
-#[cfg(feature = "unstable_protocol_v2")]
-impl<
-    Handler: HandleDispatchFrom<Agent>,
-    Runner: RunWithConnectionTo<Agent>,
-    Close: HandleConnectionClose<Agent>,
-> Builder<Client, Handler, Runner, Close, Raw>
-{
-    /// Apply protocol-v2 wire validation while keeping version-neutral
-    /// callbacks.
-    ///
-    /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
-    /// and [`Raw`] request handles in its callbacks. The guarded child must still send and receive the `initialize` round trip. A router that
-    /// consumes initialization itself must use an unguarded
-    /// [`Builder::new`] for the selected child. Most
-    /// code should use [`Client::v2`](crate::Client::v2), which also exposes
-    /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
-    ///
-    /// ```compile_fail
-    /// # use agent_client_protocol::Client;
-    /// let _ = Client.v2().with_v2_protocol_guard();
-    /// ```
-    pub fn with_v2_protocol_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_client();
-        self
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl<
-    Handler: HandleDispatchFrom<Agent>,
-    Runner: RunWithConnectionTo<Agent>,
-    Close: HandleConnectionClose<Agent>,
-> Builder<Client, Handler, Runner, Close, V1>
-{
-    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
-    ///
-    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
-    pub fn with_v2_protocol_guard(self) -> Builder<Client, Handler, Runner, Close, Raw> {
-        self.into_protocol::<Raw>().with_v2_protocol_guard()
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl<
-    Handler: HandleDispatchFrom<Client>,
-    Runner: RunWithConnectionTo<Client>,
-    Close: HandleConnectionClose<Client>,
-> Builder<Agent, Handler, Runner, Close, Raw>
-{
-    /// Apply protocol-v2 wire validation while keeping version-neutral
-    /// callbacks.
-    ///
-    /// This is intended for protocol-routing infrastructure that has already
-    /// selected v2 but still needs protocol-neutral [`ConnectionTo`] values
-    /// and [`Raw`] request handles in its callbacks. The guarded child must still receive and answer the `initialize` request. A router that
-    /// consumes initialization itself must use an unguarded
-    /// [`Builder::new`] for the selected child. Most
-    /// code should use [`Agent::v2`](crate::Agent::v2), which also exposes
-    /// the version-typed [`v2::ConnectionTo`](crate::v2::ConnectionTo) API.
-    ///
-    /// ```compile_fail
-    /// # use agent_client_protocol::Agent;
-    /// let _ = Agent.v2().with_v2_protocol_guard();
-    /// ```
-    pub fn with_v2_protocol_guard(mut self) -> Self {
-        self.protocol_mode = ProtocolMode::v2_agent();
-        self
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
-impl<
-    Handler: HandleDispatchFrom<Client>,
-    Runner: RunWithConnectionTo<Client>,
-    Close: HandleConnectionClose<Client>,
-> Builder<Agent, Handler, Runner, Close, V1>
-{
-    /// Apply protocol-v2 wire validation and return a [`Raw`] builder.
-    ///
-    /// See [`Builder::with_v2_protocol_guard`] on [`Raw`] builders.
-    pub fn with_v2_protocol_guard(self) -> Builder<Agent, Handler, Runner, Close, Raw> {
-        self.into_protocol::<Raw>().with_v2_protocol_guard()
-    }
-}
-
 impl<
     Host: Role,
     Handler: HandleDispatchFrom<Host::Counterpart>,
@@ -3219,13 +3133,6 @@ pub struct ConnectionTo<Counterpart: Role> {
     dynamic_handler_tx: mpsc::UnboundedSender<DynamicHandlerMessage<Counterpart>>,
     transport_completion: SharedTransportCompletion,
     pending_replies: PendingRepliesRegistrar,
-    #[cfg_attr(
-        not(feature = "unstable_protocol_v2"),
-        allow(
-            dead_code,
-            reason = "retained so ConnectionTo has one constructor shape"
-        )
-    )]
     protocol_mode: ProtocolMode,
     incoming_closed: IncomingClosed,
     protected_operations: Arc<Mutex<ProtectedOperations>>,
@@ -3639,11 +3546,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.incoming_closed.state.shutdown_rx.clone().await;
     }
 
-    #[cfg(feature = "unstable_protocol_v2")]
-    pub(crate) fn acp_protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
-        self.protocol_mode.api_protocol_version()
-    }
-
     /// Whether this connection uses the ACP protocol v2 API.
     ///
     /// Shared code paths select v2 behavior with this runtime check rather than
@@ -3654,7 +3556,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub(crate) fn is_acp_v2(&self) -> bool {
         #[cfg(feature = "unstable_protocol_v2")]
         {
-            self.acp_protocol_version() == Some(crate::schema::ProtocolVersion::V2)
+            self.protocol_version() == Some(crate::schema::ProtocolVersion::V2)
         }
         #[cfg(not(feature = "unstable_protocol_v2"))]
         {
@@ -3825,8 +3727,8 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Task::new(location, task).spawn(&self.task_tx)
     }
 
-    /// Spawn a JSON-RPC connection in the background and return a raw
-    /// [`ConnectionTo`] for it.
+    /// Spawn a JSON-RPC connection in the background and return the
+    /// connection context its builder selects.
     ///
     /// This is useful for creating multiple connections that communicate with each other,
     /// such as implementing proxy patterns or connecting to multiple backend services.
@@ -3838,13 +3740,11 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///
     /// # Returns
     ///
-    /// The child builder may use any [`Protocol`]. For example, this method
-    /// can spawn a `v2::Builder`, whose callbacks receive `v2::ConnectionTo`,
-    /// while preserving this method's existing raw return type and single
-    /// explicit role parameter.
-    ///
-    /// When a raw parent also needs the builder-selected child handle, use the
-    /// protocol-v2 `spawn_connection_with_context` method.
+    /// The connection type that `builder`'s callbacks receive: a raw
+    /// [`ConnectionTo`] for a [`Raw`] builder such as [`Builder::new`], a
+    /// [`v1::ConnectionTo`](crate::v1::ConnectionTo) for
+    /// [`Client.v1()`](crate::Client::v1), and a `v2::ConnectionTo` for
+    /// `Client.v2()`. Convert a typed connection back with `into_raw`.
     ///
     /// # Example: Proxying to a backend connection
     ///
@@ -3860,26 +3760,56 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     ///     }, agent_client_protocol::on_receive_request!());
     ///
     /// // Spawn it and get a context to send requests to it
-    /// let backend_connection = cx.spawn_connection::<UntypedRole>(backend, MockTransport)?;
+    /// let backend_connection = cx.spawn_connection(backend, MockTransport)?;
     ///
     /// // Now you can forward requests to the backend
     /// let response = backend_connection.send_request(MyRequest {}).block_task().await?;
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// # Example: Spawning a v1 client
+    ///
+    /// ```no_run
+    /// # use agent_client_protocol::{
+    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole, v1,
+    /// # };
+    /// # fn example(
+    /// #     connection: ConnectionTo<UntypedRole>,
+    /// #     transport: impl ConnectTo<Client> + 'static,
+    /// # ) -> Result<(), Error> {
+    /// let child: v1::ConnectionTo<Agent> = connection.spawn_connection(Client.v1(), transport)?;
+    /// # drop(child);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[track_caller]
-    pub fn spawn_connection<R: Role>(
+    pub fn spawn_connection<R: Role, P: Protocol>(
         &self,
         builder: Builder<
             R,
             impl HandleDispatchFrom<R::Counterpart> + 'static,
             impl RunWithConnectionTo<R::Counterpart> + 'static,
             impl HandleConnectionClose<R::Counterpart> + 'static,
-            impl Protocol,
+            P,
         >,
         transport: impl ConnectTo<R> + 'static,
-    ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
-        self.spawn_connection_raw(builder, transport)
+    ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
+        let (connection, future) =
+            builder.into_connection_and_future(transport, false, |_| std::future::pending());
+        Task::new(std::panic::Location::caller(), future).spawn(&self.task_tx)?;
+        Ok(protocol::connection_from_raw::<P, _>(connection))
+    }
+
+    /// The ACP protocol version of this connection's wire guard, or `None`
+    /// when its builder applies no guard, as with [`Builder::new`].
+    ///
+    /// `Client.v1()`, `Agent.v1()` and `Proxy.v1()` connections report
+    /// [`ProtocolVersion::V1`](crate::schema::ProtocolVersion::V1), and the
+    /// `v2()` entry points report `ProtocolVersion::V2`.
+    #[must_use]
+    pub fn protocol_version(&self) -> Option<crate::schema::ProtocolVersion> {
+        self.protocol_mode.api_protocol_version()
     }
 
     /// The same connection, typed for protocol `P`.
@@ -3891,72 +3821,32 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Rust API changes: the connection's wire guard is the one its builder
     /// selected. The versioned connections convert back with `into_raw`.
     ///
+    /// # Errors
+    ///
+    /// Returns an Invalid Request error (`-32600`) when the builder's guard
+    /// selected a different version than `P`, for example
+    /// `into_protocol::<V2>()` on a connection from `Client.v1()`. A
+    /// connection whose builder applies no guard (see
+    /// [`protocol_version`](Self::protocol_version)) converts to every
+    /// protocol, and `into_protocol::<Raw>()` never fails.
+    ///
     /// ```
-    /// # use agent_client_protocol::{Agent, ConnectionTo, V1, v1};
-    /// fn sessions(connection: ConnectionTo<Agent>) -> v1::ConnectionTo<Agent> {
+    /// # use agent_client_protocol::{Agent, ConnectionTo, Error, V1, v1};
+    /// fn sessions(connection: ConnectionTo<Agent>) -> Result<v1::ConnectionTo<Agent>, Error> {
     ///     connection.into_protocol::<V1>()
     /// }
     /// ```
-    #[must_use]
-    pub fn into_protocol<P: Protocol>(self) -> P::Connection<Counterpart> {
-        protocol::connection_from_raw::<P, _>(self)
-    }
-
-    /// Spawn a JSON-RPC connection and return the connection context selected
-    /// by its builder.
-    ///
-    /// This is the low-level counterpart to
-    /// [`v1::ConnectionTo::spawn_connection`](crate::v1::ConnectionTo::spawn_connection) for code that intentionally works
-    /// with a raw [`ConnectionTo`], such as custom [`HandleDispatchFrom`] or
-    /// [`RunWithConnectionTo`] implementations. Prefer [`Self::spawn_connection`]
-    /// when a raw child handle is sufficient.
-    ///
-    /// ```no_run
-    /// # use agent_client_protocol::{
-    /// #     Agent, Client, ConnectTo, ConnectionTo, Error, UntypedRole, v1,
-    /// # };
-    /// # fn example(
-    /// #     connection: ConnectionTo<UntypedRole>,
-    /// #     transport: impl ConnectTo<Client> + 'static,
-    /// # ) -> Result<(), Error> {
-    /// let child: v1::ConnectionTo<Agent> =
-    ///     connection.spawn_connection_with_context(Client.v1(), transport)?;
-    /// # drop(child);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[track_caller]
-    pub fn spawn_connection_with_context<R: Role, P: Protocol>(
-        &self,
-        builder: Builder<
-            R,
-            impl HandleDispatchFrom<R::Counterpart> + 'static,
-            impl RunWithConnectionTo<R::Counterpart> + 'static,
-            impl HandleConnectionClose<R::Counterpart> + 'static,
-            P,
-        >,
-        transport: impl ConnectTo<R> + 'static,
-    ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
-        let connection = self.spawn_connection_raw(builder, transport)?;
-        Ok(protocol::connection_from_raw::<P, _>(connection))
-    }
-
-    #[track_caller]
-    fn spawn_connection_raw<R: Role, P: Protocol>(
-        &self,
-        builder: Builder<
-            R,
-            impl HandleDispatchFrom<R::Counterpart> + 'static,
-            impl RunWithConnectionTo<R::Counterpart> + 'static,
-            impl HandleConnectionClose<R::Counterpart> + 'static,
-            P,
-        >,
-        transport: impl ConnectTo<R> + 'static,
-    ) -> Result<ConnectionTo<R::Counterpart>, crate::Error> {
-        let (connection, future) =
-            builder.into_connection_and_future(transport, false, |_| std::future::pending());
-        Task::new(std::panic::Location::caller(), future).spawn(&self.task_tx)?;
-        Ok(connection)
+    pub fn into_protocol<P: Protocol>(self) -> Result<P::Connection<Counterpart>, crate::Error> {
+        if let (Some(guard), Some(requested)) =
+            (self.protocol_version(), protocol::protocol_version::<P>())
+            && guard != requested
+        {
+            return Err(crate::Error::invalid_request().data(format!(
+                "cannot use a connection guarded for ACP protocol version {guard} \
+                 as a protocol version {requested} connection",
+            )));
+        }
+        Ok(protocol::connection_from_raw::<P, _>(self))
     }
 
     /// Send a request/notification and forward the response appropriately.
@@ -8107,8 +7997,8 @@ mod tests {
         let (transport, _peer) = Channel::duplex();
         let (callback_tx, callback_rx) = oneshot::channel();
 
-        let child: ConnectionTo<Agent> = parent
-            .spawn_connection::<Client>(
+        let child: crate::v2::ConnectionTo<Agent> = parent
+            .spawn_connection(
                 Client.v2().with_spawned(
                     async move |_connection: crate::v2::ConnectionTo<Agent>| {
                         callback_tx.send(()).map_err(|()| {
@@ -8140,13 +8030,14 @@ mod tests {
 
     #[cfg(feature = "unstable_protocol_v2")]
     #[test]
-    fn raw_connection_can_return_v2_context_for_spawned_builder() {
+    fn raw_connection_returns_raw_context_for_raw_builder() {
         let (parent, mut task_rx) = connection_with_task_receiver();
         let (transport, _peer) = Channel::duplex();
 
-        let child: crate::v2::ConnectionTo<Agent> = parent
-            .spawn_connection_with_context(Client.v2(), transport)
-            .expect("v2 child connection should be spawned");
+        let child: ConnectionTo<Agent> = parent
+            .spawn_connection(Builder::new(Client), transport)
+            .expect("raw child connection should be spawned");
+        assert_eq!(child.protocol_version(), None);
 
         let child_task = futures::FutureExt::now_or_never(futures::StreamExt::next(&mut task_rx))
             .expect("child connection task should already be queued")

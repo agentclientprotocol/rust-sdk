@@ -95,7 +95,7 @@ where
     R: Role,
     P: agent_client_protocol::Protocol,
 {
-    parent.spawn_connection_with_context(builder, transport)
+    parent.spawn_connection(builder, transport)
 }
 
 fn v2_implementation() -> v2::Implementation {
@@ -2895,6 +2895,29 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
 
             let request = cx.send_request(v2::NewSessionRequest::new(cwd()?));
             request.cancel()?;
+            let error = request
+                .block_task()
+                .await
+                .expect_err("request should be cancelled");
+            assert_eq!(i32::from(error.code), -32800);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v2_client_can_cancel_request_by_its_v2_id() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
+            cx.send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+
+            let request = cx.send_request(v2::NewSessionRequest::new(cwd()?));
+            // The typed connection takes the v2 ID that `id()` returns.
+            let id: v2::RequestId = request.id().clone();
+            cx.send_cancel_request(id)?;
             let error = request
                 .block_task()
                 .await

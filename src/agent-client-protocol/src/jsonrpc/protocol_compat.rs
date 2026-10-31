@@ -503,7 +503,6 @@ mod imp {
             }
         }
 
-        #[cfg(feature = "unstable_protocol_v2")]
         pub(crate) fn api_protocol_version(self) -> Option<ProtocolVersion> {
             match self {
                 Self::Disabled => None,
