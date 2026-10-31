@@ -74,11 +74,14 @@ mod snoop;
 /// Trace event types for sequence diagram viewer
 pub mod trace;
 
-pub use self::conductor::*;
+pub use self::conductor::{
+    AgentOnly, ConductorHostRole, ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent,
+    InstantiatedChain, InstantiatedProxies, ProxiesAndAgent, SelectedInitializeRequest,
+};
 
 use clap::{Parser, Subcommand};
 
-use agent_client_protocol::{AcpAgent, Stdio};
+use agent_client_protocol::{AcpAgent, BoxFuture, Stdio};
 use agent_client_protocol::{Conductor, DynConnectTo};
 use tracing::Instrument;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -96,16 +99,10 @@ impl InstantiateProxies for CommandLineComponents {
     fn instantiate_proxies(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<
-            (SelectedInitializeRequest, Vec<DynConnectTo<Conductor>>),
-            agent_client_protocol::Error,
-        >,
-    > {
+    ) -> BoxFuture<'static, Result<InstantiatedProxies, agent_client_protocol::Error>> {
         Box::pin(async move {
             let proxies = self.0.into_iter().map(DynConnectTo::new).collect();
-            Ok((req, proxies))
+            Ok(InstantiatedProxies::new(req, proxies))
         })
     }
 }
@@ -114,10 +111,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
     fn instantiate_proxies_and_agent(
         self: Box<Self>,
         req: SelectedInitializeRequest,
-    ) -> futures::future::BoxFuture<
-        'static,
-        Result<ProxiesAndAgentComponents, agent_client_protocol::Error>,
-    > {
+    ) -> BoxFuture<'static, Result<InstantiatedChain, agent_client_protocol::Error>> {
         Box::pin(async move {
             let mut iter = self.0.into_iter().peekable();
             let mut proxies: Vec<DynConnectTo<Conductor>> = Vec::new();
@@ -129,7 +123,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
                 } else {
                     // Last element is the agent
                     let agent = DynConnectTo::new(component);
-                    return Ok((req, proxies, agent));
+                    return Ok(InstantiatedChain::new(req, proxies, agent));
                 }
             }
 
@@ -151,8 +145,13 @@ impl trace::WriteEvent for TraceHandleWriter {
     }
 }
 
+/// Command-line arguments of the `agent-client-protocol-conductor` binary.
+///
+/// New flags may be added in later releases, so create one by parsing
+/// arguments with [`clap::Parser`].
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
+#[non_exhaustive]
 pub struct ConductorArgs {
     /// Enable debug logging of all stdin/stdout/stderr from components
     #[arg(long)]
@@ -181,9 +180,12 @@ pub struct ConductorArgs {
     pub command: ConductorCommand,
 }
 
+/// The conductor's subcommand: the role it plays toward its client.
 #[derive(Subcommand, Debug)]
+#[non_exhaustive]
 pub enum ConductorCommand {
     /// Run as agent orchestrator managing a proxy chain
+    #[non_exhaustive]
     Agent {
         /// Name of the agent
         #[arg(short, long, default_value = "conductor")]
@@ -194,6 +196,7 @@ pub enum ConductorCommand {
     },
 
     /// Run as a proxy orchestrating a proxy chain
+    #[non_exhaustive]
     Proxy {
         /// Name of the proxy
         #[arg(short, long, default_value = "conductor")]

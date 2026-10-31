@@ -402,6 +402,73 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     },
                 },
             ),
+            Request(
+                RequestEvent {
+                    ts: 0.0,
+                    protocol: Acp,
+                    from: "Proxy(1)",
+                    to: "Agent",
+                    id: String("id:2"),
+                    method: "initialize",
+                    session: None,
+                    params: Object {
+                        "protocolVersion": Number(1),
+                        "clientCapabilities": Object {
+                            "fs": Object {
+                                "readTextFile": Bool(false),
+                                "writeTextFile": Bool(false),
+                            },
+                            "terminal": Bool(false),
+                            "auth": Object {
+                                "terminal": Bool(false),
+                            },
+                        },
+                    },
+                },
+            ),
+            Response(
+                ResponseEvent {
+                    ts: 0.0,
+                    from: "Agent",
+                    to: "Proxy(1)",
+                    id: String("id:2"),
+                    is_error: false,
+                    error_domain: None,
+                    payload: Object {
+                        "protocolVersion": Number(1),
+                        "agentCapabilities": Object {
+                            "loadSession": Bool(true),
+                            "promptCapabilities": Object {
+                                "image": Bool(true),
+                                "audio": Bool(true),
+                                "embeddedContext": Bool(true),
+                            },
+                            "mcpCapabilities": Object {
+                                "http": Bool(true),
+                                "sse": Bool(false),
+                                "acp": Bool(false),
+                            },
+                            "sessionCapabilities": Object {
+                                "list": Object {},
+                                "delete": Object {},
+                                "additionalDirectories": Object {},
+                                "resume": Object {},
+                                "close": Object {},
+                            },
+                            "auth": Object {
+                                "logout": Object {},
+                            },
+                        },
+                        "authMethods": Array [
+                            Object {
+                                "id": String("testy-agent-auth"),
+                                "name": String("Testy agent auth"),
+                                "description": String("Deterministic no-op authentication for ACP client testing"),
+                            },
+                        ],
+                    },
+                },
+            ),
             Response(
                 ResponseEvent {
                     ts: 0.0,
@@ -494,7 +561,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Client",
                     to: "Proxy(0)",
-                    id: String("id:2"),
+                    id: String("id:3"),
                     method: "session/new",
                     session: None,
                     params: Object {
@@ -509,7 +576,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:3"),
+                    id: String("id:4"),
                     method: "session/new",
                     session: None,
                     params: Object {
@@ -524,12 +591,90 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     },
                 },
             ),
+            Request(
+                RequestEvent {
+                    ts: 0.0,
+                    protocol: Acp,
+                    from: "Proxy(1)",
+                    to: "Agent",
+                    id: String("id:5"),
+                    method: "session/new",
+                    session: None,
+                    params: Object {
+                        "cwd": String("/"),
+                        "mcpServers": Array [
+                            Object {
+                                "type": String("http"),
+                                "name": String("test"),
+                                "url": String("http:endpoint:0"),
+                                "headers": Array [
+                                    Object {
+                                        "name": String("Authorization"),
+                                        "value": String("[REDACTED]"),
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            ),
+            Response(
+                ResponseEvent {
+                    ts: 0.0,
+                    from: "Agent",
+                    to: "Proxy(1)",
+                    id: String("id:5"),
+                    is_error: false,
+                    error_domain: None,
+                    payload: Object {
+                        "sessionId": String("session:0"),
+                        "modes": Object {
+                            "currentModeId": String("chat"),
+                            "availableModes": Array [
+                                Object {
+                                    "id": String("chat"),
+                                    "name": String("Chat"),
+                                    "description": String("Default deterministic chat mode"),
+                                },
+                                Object {
+                                    "id": String("plan"),
+                                    "name": String("Plan"),
+                                    "description": String("Planning-focused test mode"),
+                                },
+                            ],
+                        },
+                        "configOptions": Array [
+                            Object {
+                                "id": String("verbosity"),
+                                "name": String("Verbosity"),
+                                "description": String("Controls how much text Testy includes in summaries"),
+                                "type": String("select"),
+                                "currentValue": String("normal"),
+                                "options": Array [
+                                    Object {
+                                        "value": String("brief"),
+                                        "name": String("Brief"),
+                                    },
+                                    Object {
+                                        "value": String("normal"),
+                                        "name": String("Normal"),
+                                    },
+                                    Object {
+                                        "value": String("verbose"),
+                                        "name": String("Verbose"),
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            ),
             Response(
                 ResponseEvent {
                     ts: 0.0,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:3"),
+                    id: String("id:4"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
@@ -580,7 +725,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Client",
-                    id: String("id:2"),
+                    id: String("id:3"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
@@ -632,7 +777,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Client",
                     to: "Proxy(0)",
-                    id: String("id:4"),
+                    id: String("id:6"),
                     method: "session/prompt",
                     session: None,
                     params: Object {
@@ -652,7 +797,27 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Acp,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:5"),
+                    id: String("id:7"),
+                    method: "session/prompt",
+                    session: None,
+                    params: Object {
+                        "sessionId": String("session:0"),
+                        "prompt": Array [
+                            Object {
+                                "type": String("text"),
+                                "text": String("{\"command\":\"call_tool\",\"server\":\"test\",\"tool\":\"echo\",\"params\":{\"message\":\"Hello from trace test!\"}}"),
+                            },
+                        ],
+                    },
+                },
+            ),
+            Request(
+                RequestEvent {
+                    ts: 0.0,
+                    protocol: Acp,
+                    from: "Proxy(1)",
+                    to: "Agent",
+                    id: String("id:8"),
                     method: "session/prompt",
                     session: None,
                     params: Object {
@@ -672,7 +837,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Mcp,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:6"),
+                    id: String("id:9"),
                     method: "server/discover",
                     session: None,
                     params: Object {
@@ -692,7 +857,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:6"),
+                    id: String("id:9"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
@@ -721,7 +886,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     protocol: Mcp,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:7"),
+                    id: String("id:10"),
                     method: "tools/call",
                     session: None,
                     params: Object {
@@ -746,7 +911,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Proxy(1)",
-                    id: String("id:7"),
+                    id: String("id:10"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
@@ -768,7 +933,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                 NotificationEvent {
                     ts: 0.0,
                     protocol: Acp,
-                    from: "Proxy(2)",
+                    from: "Agent",
                     to: "Proxy(1)",
                     method: "session/update",
                     session: None,
@@ -788,9 +953,22 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
             Response(
                 ResponseEvent {
                     ts: 0.0,
+                    from: "Agent",
+                    to: "Proxy(1)",
+                    id: String("id:8"),
+                    is_error: false,
+                    error_domain: None,
+                    payload: Object {
+                        "stopReason": String("end_turn"),
+                    },
+                },
+            ),
+            Response(
+                ResponseEvent {
+                    ts: 0.0,
                     from: "Proxy(1)",
                     to: "Proxy(0)",
-                    id: String("id:5"),
+                    id: String("id:7"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
@@ -824,7 +1002,7 @@ async fn test_trace_mcp_tool_call() -> Result<(), agent_client_protocol::Error> 
                     ts: 0.0,
                     from: "Proxy(0)",
                     to: "Client",
-                    id: String("id:4"),
+                    id: String("id:6"),
                     is_error: false,
                     error_domain: None,
                     payload: Object {
