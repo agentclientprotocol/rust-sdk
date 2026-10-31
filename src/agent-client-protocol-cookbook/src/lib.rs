@@ -362,30 +362,44 @@ pub mod connecting_as_client {
     //! # Handling Permission Requests
     //!
     //! Agents may send [`RequestPermissionRequest`] to ask for user approval
-    //! before taking actions. Handle these with [`on_receive_request`]:
+    //! before taking actions. Handle these with [`on_receive_request`]. Answer
+    //! `cancelled` only after cancelling the turn with `session/cancel`:
     //!
-    //! ```ignore
-    //! Client.v1()
-    //!     .on_receive_request(async |req: RequestPermissionRequest, responder, _connection| {
-    //!         // Auto-approve (YOLO mode) by option `kind`, never by position
-    //!         // or name: the agent decides which options exist and in what order.
-    //!         let allow = req.options.iter().find(|option| {
-    //!             matches!(
-    //!                 option.kind,
-    //!                 PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-    //!             )
-    //!         });
-    //!         responder.respond(RequestPermissionResponse::new(
-    //!             match allow {
+    //! ```
+    //! use agent_client_protocol::schema::v1::{
+    //!     CancelNotification, PermissionOptionKind, RequestPermissionOutcome,
+    //!     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    //! };
+    //! use agent_client_protocol::{Client, ConnectTo};
+    //!
+    //! async fn run(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
+    //!     Client.v1()
+    //!         .on_receive_request(async |req: RequestPermissionRequest, responder, connection| {
+    //!             // Auto-approve (YOLO mode) by option `kind`, never by position
+    //!             // or name: the agent decides which options exist and in what order.
+    //!             let allow = req.options.iter().find(|option| {
+    //!                 matches!(
+    //!                     option.kind,
+    //!                     PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
+    //!                 )
+    //!             });
+    //!             let outcome = match allow {
     //!                 Some(option) => RequestPermissionOutcome::Selected(
     //!                     SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                 ),
-    //!                 None => RequestPermissionOutcome::Cancelled,
-    //!             }
-    //!         ))
-    //!     }, agent_client_protocol::on_receive_request!())
-    //!     .connect_with(transport, async |connection| { /* ... */ })
-    //!     .await
+    //!                 // `cancelled` is only valid after cancelling the turn.
+    //!                 None => {
+    //!                     connection.send_notification(CancelNotification::new(
+    //!                         req.session_id.clone(),
+    //!                     ))?;
+    //!                     RequestPermissionOutcome::Cancelled
+    //!                 }
+    //!             };
+    //!             responder.respond(RequestPermissionResponse::new(outcome))
+    //!         }, agent_client_protocol::on_receive_request!())
+    //!         .connect_with(transport, async |_connection| Ok(()))
+    //!         .await
+    //! }
     //! ```
     //!
     //! # Note on `block_task`
@@ -622,6 +636,11 @@ pub mod custom_message_handlers {
     //!     }
     //! }
     //! ```
+    //!
+    //! `Dispatch` is the raw, version-neutral message, so a handler decides
+    //! which protocol version's types to parse it as. This one parses v1
+    //! `InitializeRequest`s, so install it only on a connection that speaks
+    //! ACP v1. A v2 handler would parse `schema::v2` types instead.
     //!
     //! # When to use `MatchDispatch` vs `MatchDispatchFrom`
     //!
