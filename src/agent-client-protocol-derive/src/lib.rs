@@ -93,7 +93,7 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
 
             fn parse_message(
                 #method_arg: &str,
-                #params_arg: &impl #krate::__private::serde::Serialize,
+                #params_arg: &#krate::__private::serde_json::Value,
             ) -> ::core::result::Result<Self, #krate::Error> {
                 if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());
@@ -163,7 +163,7 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
 
             fn parse_message(
                 #method_arg: &str,
-                #params_arg: &impl #krate::__private::serde::Serialize,
+                #params_arg: &#krate::__private::serde_json::Value,
             ) -> ::core::result::Result<Self, #krate::Error> {
                 if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());

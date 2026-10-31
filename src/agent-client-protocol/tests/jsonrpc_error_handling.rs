@@ -198,7 +198,7 @@ impl JsonRpcMessage for SimpleRequest {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -251,7 +251,7 @@ impl JsonRpcMessage for SimpleNotification {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -516,7 +516,7 @@ impl JsonRpcMessage for ErrorRequest {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -612,7 +612,7 @@ impl JsonRpcMessage for EmptyRequest {
 
     fn parse_message(
         method: &str,
-        _params: &impl serde::Serialize,
+        _params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());

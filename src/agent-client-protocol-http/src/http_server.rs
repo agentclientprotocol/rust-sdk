@@ -472,6 +472,7 @@ mod tests {
                 let Channel {
                     rx: mut incoming,
                     tx: _,
+                    ..
                 } = agent;
                 while let Some(frame) = incoming.next().await {
                     let TransportFrame::Single(message) = frame else {
@@ -522,6 +523,7 @@ mod tests {
                 let Channel {
                     rx: mut incoming,
                     tx: _outgoing,
+                    ..
                 } = agent;
                 drop(incoming.next().await);
                 std::future::pending::<agent_client_protocol::Result<()>>().await

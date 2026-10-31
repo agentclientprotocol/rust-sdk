@@ -144,7 +144,7 @@ impl JsonRpcMessage for BlockingRequest {
         UntypedMessage::new(self.method(), serde_json::json!({}))
     }
 
-    fn parse_message(_method: &str, _params: &impl serde::Serialize) -> Result<Self, Error> {
+    fn parse_message(_method: &str, _params: &serde_json::Value) -> Result<Self, Error> {
         Err(Error::method_not_found().data("test-only outgoing request"))
     }
 }
@@ -629,7 +629,7 @@ async fn channel_peer_receives_final_response_after_write_half_closes() {
         .connect_to(transport);
 
     let peer = async move {
-        let Channel { mut rx, tx } = peer;
+        let Channel { mut rx, tx, .. } = peer;
         tx.unbounded_send(TransportFrame::Single(
             RawJsonRpcMessage::request(
                 "myRequest".into(),
@@ -683,7 +683,7 @@ async fn transport_channel_keeps_read_half_open_after_write_half_closes() {
     let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
     let (channel, transport_future) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
     let transport_future = transport_future.expect("byte streams own a transport driver");
-    let Channel { mut rx, tx } = channel;
+    let Channel { mut rx, tx, .. } = channel;
 
     tx.unbounded_send(TransportFrame::Single(
         RawJsonRpcMessage::request(

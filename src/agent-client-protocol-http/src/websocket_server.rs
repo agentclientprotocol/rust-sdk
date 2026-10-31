@@ -264,6 +264,7 @@ mod tests {
                 let Channel {
                     rx: mut incoming,
                     tx: outgoing,
+                    ..
                 } = agent;
                 while let Some(frame) = incoming.next().await {
                     match frame {

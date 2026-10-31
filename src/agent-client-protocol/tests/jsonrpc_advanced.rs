@@ -77,7 +77,7 @@ impl JsonRpcMessage for PingRequest {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -150,7 +150,7 @@ impl JsonRpcMessage for SlowRequest {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -203,7 +203,7 @@ impl JsonRpcMessage for AfterResponseNotification {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());

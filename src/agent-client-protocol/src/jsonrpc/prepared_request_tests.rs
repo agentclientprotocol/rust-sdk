@@ -59,6 +59,40 @@ fn blocking_publishes_before_polling_and_drop_cancels() {
 }
 
 #[test]
+fn protocol_conversions_keep_the_request() {
+    let mut fixture = Fixture::new();
+    let prepared = fixture
+        .connection
+        .prepare_request(request())
+        .into_protocol::<V1>()
+        .unwrap();
+    let id = prepared.raw_id().clone();
+    assert_eq!(RawJsonRpcId::from(prepared.id().clone()), id);
+    // Conversion does not publish.
+    assert!(fixture.message_rx.next().now_or_never().is_none());
+
+    let prepared: PreparedRequest<serde_json::Value> = prepared.into_raw();
+    assert_eq!(prepared.id(), &id);
+    drop(prepared);
+
+    let sent = fixture
+        .connection
+        .send_request(request())
+        .into_protocol::<V1>()
+        .unwrap();
+    let id = sent.raw_id().clone();
+    let sent: SentRequest<serde_json::Value> = sent.into_raw();
+    assert_eq!(sent.id(), &id);
+    let response = sent.block_task();
+    fixture.next_message();
+    assert!(fixture.route(id, Ok(json!({"value": 42}))).is_none());
+    assert_eq!(
+        futures::executor::block_on(response).unwrap(),
+        json!({"value": 42})
+    );
+}
+
+#[test]
 fn blocking_maps_the_response_without_holding_dispatch() {
     let mut fixture = Fixture::new();
     let prepared = fixture
@@ -644,7 +678,7 @@ impl JsonRpcMessage for FailingRequest {
     fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
         Err(crate::Error::invalid_params())
     }
-    fn parse_message(_method: &str, _params: &impl Serialize) -> Result<Self, crate::Error> {
+    fn parse_message(_method: &str, _params: &serde_json::Value) -> Result<Self, crate::Error> {
         Err(crate::Error::invalid_params())
     }
 }

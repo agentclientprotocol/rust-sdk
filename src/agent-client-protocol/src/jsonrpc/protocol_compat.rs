@@ -335,7 +335,7 @@ impl crate::JsonRpcMessage for InitializeNegotiation {
         self.0.to_untyped_message()
     }
 
-    fn parse_message(method: &str, params: &impl serde::Serialize) -> Result<Self, crate::Error> {
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error> {
         crate::schema::v2::InitializeRequest::parse_message(method, params).map(Self)
     }
 }

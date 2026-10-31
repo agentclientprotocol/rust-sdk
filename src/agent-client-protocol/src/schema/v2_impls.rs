@@ -20,7 +20,7 @@ macro_rules! impl_v2_jsonrpc_request {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 if method != $method {
                     return Err(crate::Error::method_not_found());
@@ -62,7 +62,7 @@ macro_rules! impl_v2_jsonrpc_notification {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 if method != $method {
                     return Err(crate::Error::method_not_found());
@@ -98,7 +98,7 @@ macro_rules! impl_v2_jsonrpc_request_enum {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 match method {
                     $( $(#[$meta])* $method => crate::util::json_cast_params(params).map(Self::$variant), )*
@@ -149,7 +149,7 @@ macro_rules! impl_v2_jsonrpc_notification_enum {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 match method {
                     $( $(#[$meta])* $method => crate::util::json_cast_params(params).map(Self::$variant), )*

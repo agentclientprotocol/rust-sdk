@@ -193,7 +193,7 @@ async fn run_over_lines<R: Role>(
 
 #[tokio::test(flavor = "current_thread")]
 async fn client_connector_cancels_opaque_driver_after_final_frame() -> Result<(), Error> {
-    let (channel, Channel { mut rx, tx }) = Channel::duplex();
+    let (channel, Channel { mut rx, tx, .. }) = Channel::duplex();
     let input_guard = tx.clone();
     let dropped = Arc::new(AtomicBool::new(false));
     let drop_signal = DropSignal(dropped.clone());
@@ -273,7 +273,7 @@ async fn rejected_initialize_flushes_lines_without_input_eof() -> Result<(), Err
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Result<(), Error> {
     for fail_flush in [false, true] {
-        let (channel, Channel { mut rx, tx }) = Channel::duplex();
+        let (channel, Channel { mut rx, tx, .. }) = Channel::duplex();
         let input_guard = tx;
         input_guard
             .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(

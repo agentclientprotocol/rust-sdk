@@ -90,7 +90,7 @@ impl<M: JsonRpcMessage> JsonRpcMessage for SuccessorMessage<M> {
         )
     }
 
-    fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error> {
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error> {
         if method != METHOD_SUCCESSOR_MESSAGE {
             return Err(crate::Error::method_not_found());
         }

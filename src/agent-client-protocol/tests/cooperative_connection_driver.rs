@@ -47,7 +47,7 @@ impl JsonRpcMessage for ProbeNotification {
         UntypedMessage::new(self.method(), self)
     }
 
-    fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, Error> {
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, Error> {
         if !Self::matches_method(method) {
             return Err(Error::method_not_found());
         }
@@ -233,6 +233,7 @@ fn harness(mode: ProbeMode, fail_flush: bool) -> Harness {
     let Channel {
         rx: mut output,
         tx: input,
+        ..
     } = physical;
     let (sdk_output, peer_output) = tokio::io::duplex(1);
     let (peer_input, sdk_input) = tokio::io::duplex(4096);

@@ -777,8 +777,9 @@ fn send(session: &ActiveSession<Agent>) -> SentRequest<v2::PromptResponse> { ...
 
 ### Getting a typed handle from the raw layer
 
-`Responder`, `ResponseRouter` and `Dispatch` with the `Raw` marker convert
-to a typed marker with `into_protocol`. Only the ID's type changes. It fails
+`Responder`, `ResponseRouter`, `SentRequest`, `PreparedRequest` and
+`Dispatch` with the `Raw` marker convert to a typed marker with
+`into_protocol`. Only the ID's type changes. It fails
 only for a `null` ID on `V2`, with the Invalid Request error (`-32600`) a v2
 connection sends for such a request; a request received on a v2 connection
 never has one. Any handle converts back with the infallible `into_raw`:
@@ -833,6 +834,28 @@ version-neutral `ConnectionTo` with `.into()`: `v1::ConnectionTo` and
 `v2::ConnectionTo` implement `From` for it, and `Protocol::Connection`
 requires `Into<ConnectionTo<Counterpart>>`. Their own methods, such as the v1
 session helpers, are only available on the concrete types.
+
+## `Channel` and `JsonRpcMessage::parse_message`
+
+- `Channel` is `#[non_exhaustive]`. Build one with `Channel::new(rx, tx)`
+  (or `Channel::duplex()`) and take it apart with `into_parts()` or a pattern
+  with `..`:
+
+  ```rust,ignore
+  // Before
+  let channel = Channel { rx, tx };
+  let Channel { rx, tx } = channel;
+
+  // After
+  let channel = Channel::new(rx, tx);
+  let Channel { rx, tx, .. } = channel;
+  ```
+
+- `JsonRpcMessage::parse_message` takes `params: &serde_json::Value` instead
+  of `&impl Serialize`. Update hand-written implementations; derived ones
+  change with the derive macros. Callers holding raw
+  `Option<RawJsonRpcParams>` pass
+  `&params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)`.
 
 ## Schema enums and SDK helpers
 

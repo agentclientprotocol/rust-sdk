@@ -75,7 +75,8 @@ async fn request(
     method: &str,
     params: Value,
 ) -> Result<Result<Value, Error>, Error> {
-    let (Channel { mut rx, tx }, future) = ConnectTo::<Conductor>::into_channel_and_future(router);
+    let (Channel { mut rx, tx, .. }, future) =
+        ConnectTo::<Conductor>::into_channel_and_future(router);
     let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
     let request_id = RawJsonRpcId::Number(1);
 
@@ -201,7 +202,8 @@ async fn accepts_proxy_initialize_again_after_a_rejection() -> Result<(), Error>
     let router = Proxy
         .protocol_router()
         .with_v2(v2_proxy(Arc::clone(&v2_hits)));
-    let (Channel { mut rx, tx }, future) = ConnectTo::<Conductor>::into_channel_and_future(router);
+    let (Channel { mut rx, tx, .. }, future) =
+        ConnectTo::<Conductor>::into_channel_and_future(router);
     let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
     let send = |message: RawJsonRpcMessage| {
         tx.unbounded_send(TransportFrame::Single(message))

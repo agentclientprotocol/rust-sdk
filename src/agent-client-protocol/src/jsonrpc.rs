@@ -661,7 +661,7 @@ where
 /// #     fn matches_method(_method: &str) -> bool { false }
 /// #     fn method(&self) -> &str { "myRequests" }
 /// #     fn to_untyped_message(&self) -> Result<UntypedMessage, agent_client_protocol::Error> { todo!() }
-/// #     fn parse_message(_method: &str, _params: &impl serde::Serialize) -> Result<Self, agent_client_protocol::Error> { Err(agent_client_protocol::Error::method_not_found()) }
+/// #     fn parse_message(_method: &str, _params: &serde_json::Value) -> Result<Self, agent_client_protocol::Error> { Err(agent_client_protocol::Error::method_not_found()) }
 /// # }
 /// impl JsonRpcRequest for MyRequests { type Response = serde_json::Value; }
 ///
@@ -5142,11 +5142,12 @@ pub trait JsonRpcMessage: 'static + Debug + Sized + Send + Clone {
     /// Convert this message into an untyped message.
     fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error>;
 
-    /// Parse this type from a method name and parameters.
+    /// Parse this type from a method name and the message's JSON `params`.
     ///
     /// Returns an error if the method doesn't match or deserialization fails.
     /// Callers should use `matches_method` first to check if this type handles the method.
-    fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error>;
+    /// A message without `params` is parsed from [`serde_json::Value::Null`].
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error>;
 }
 
 /// Defines the "payload" of a successful response to a JSON-RPC request.
@@ -5668,7 +5669,7 @@ impl JsonRpcMessage for UntypedMessage {
         Ok(self.clone())
     }
 
-    fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error> {
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error> {
         UntypedMessage::new(method, params)
     }
 }
@@ -5903,6 +5904,32 @@ impl<T: Debug, P: Protocol> Debug for PreparedRequest<T, P> {
             .debug_struct("PreparedRequest")
             .field("request", &self.sent)
             .finish_non_exhaustive()
+    }
+}
+
+impl<T, P: Protocol> PreparedRequest<T, P> {
+    /// The same prepared request with a version-neutral [`Raw`] request ID,
+    /// for code that is not tied to one protocol version. This never fails
+    /// and does not publish the request.
+    pub fn into_raw(self) -> PreparedRequest<T, Raw> {
+        PreparedRequest {
+            sent: self.sent.into_raw(),
+            publication: self.publication,
+        }
+    }
+}
+
+impl<T> PreparedRequest<T, Raw> {
+    /// Convert this version-neutral prepared request to protocol `Q`'s
+    /// handle without publishing it.
+    ///
+    /// Only the request ID's type changes. The SDK never assigns `null` to
+    /// requests it sends, so this succeeds for every marker.
+    pub fn into_protocol<Q: Protocol>(self) -> Result<PreparedRequest<T, Q>, crate::Error> {
+        Ok(PreparedRequest {
+            sent: self.sent.into_protocol()?,
+            publication: self.publication,
+        })
     }
 }
 
@@ -6470,6 +6497,41 @@ impl<T, P: Protocol> SentRequest<T, P> {
     pub fn forward_cancellation_from(mut self, source: RequestCancellation) -> Self {
         self.cancellation_sources.push(source);
         self
+    }
+}
+
+impl<T, P: Protocol> SentRequest<T, P> {
+    /// The same request handle with a version-neutral [`Raw`] request ID, for
+    /// code that is not tied to one protocol version. This never fails.
+    pub fn into_raw(self) -> SentRequest<T, Raw> {
+        self.retag_id(HandleId::into_raw)
+    }
+
+    fn retag_id<Q: Protocol>(
+        self,
+        retag: impl FnOnce(HandleId<P>) -> HandleId<Q>,
+    ) -> SentRequest<T, Q> {
+        SentRequest {
+            id: retag(self.id),
+            method: self.method,
+            task_tx: self.task_tx,
+            response_rx: self.response_rx,
+            to_result: self.to_result,
+            cancellation: self.cancellation,
+            response_ordering: self.response_ordering,
+            cancellation_sources: self.cancellation_sources,
+        }
+    }
+}
+
+impl<T> SentRequest<T, Raw> {
+    /// Convert this version-neutral request handle to protocol `Q`'s handle.
+    ///
+    /// Only the request ID's type changes. The SDK never assigns `null` to
+    /// requests it sends, so this succeeds for every marker.
+    pub fn into_protocol<Q: Protocol>(self) -> Result<SentRequest<T, Q>, crate::Error> {
+        let id = self.id.clone().into_protocol()?;
+        Ok(self.retag_id(|_| id))
     }
 }
 
@@ -7243,6 +7305,12 @@ where
 /// explicit frame; failures while driving a physical transport are returned by that
 /// transport's future.
 ///
+/// The unbounded [`futures::channel::mpsc`] pair is the intended contract:
+/// frames are never dropped and sends never wait, so the transport or
+/// component on each side applies its own backpressure. Build a channel from
+/// an existing pair with [`Channel::new`] and take it apart with
+/// [`Channel::into_parts`] or by destructuring with `..`.
+///
 /// # Example
 ///
 /// ```no_run
@@ -7259,6 +7327,7 @@ where
 /// # }
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Channel {
     /// Receives frames from the counterpart.
     pub rx: mpsc::UnboundedReceiver<TransportFrame>,
@@ -7267,6 +7336,27 @@ pub struct Channel {
 }
 
 impl Channel {
+    /// Create a channel endpoint that receives frames on `rx` and sends them
+    /// on `tx`.
+    #[must_use]
+    pub fn new(
+        rx: mpsc::UnboundedReceiver<TransportFrame>,
+        tx: mpsc::UnboundedSender<TransportFrame>,
+    ) -> Self {
+        Self { rx, tx }
+    }
+
+    /// Split this endpoint into its receiving and sending halves, `(rx, tx)`.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        mpsc::UnboundedReceiver<TransportFrame>,
+        mpsc::UnboundedSender<TransportFrame>,
+    ) {
+        (self.rx, self.tx)
+    }
+
     /// Create a pair of connected channel endpoints.
     ///
     /// Frames sent through either endpoint are received by the other endpoint.

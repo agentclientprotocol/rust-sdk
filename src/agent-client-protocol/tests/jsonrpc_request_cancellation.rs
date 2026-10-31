@@ -104,7 +104,7 @@ impl JsonRpcMessage for SimpleRequest {
 
     fn parse_message(
         method: &str,
-        params: &impl Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());

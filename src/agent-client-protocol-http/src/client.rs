@@ -361,6 +361,7 @@ async fn run_with_finish(
     let Channel {
         rx: outgoing,
         tx: incoming,
+        ..
     } = channel;
     let mut outgoing = finishable_outgoing(outgoing, finish);
     let (sse_event_tx, mut sse_event_rx) = mpsc::unbounded::<SseMessage>();
@@ -1530,6 +1531,7 @@ where
     let Channel {
         rx: outgoing,
         tx: incoming,
+        ..
     } = channel;
     let mut outgoing = finishable_outgoing(outgoing, finish);
     let writer = async move {
@@ -3700,6 +3702,7 @@ mod tests {
         let Channel {
             tx: outgoing,
             rx: incoming,
+            ..
         } = caller;
         drop(incoming);
 
@@ -3746,6 +3749,7 @@ mod tests {
         let Channel {
             tx: outgoing,
             rx: incoming,
+            ..
         } = caller;
         drop(incoming);
         outgoing
