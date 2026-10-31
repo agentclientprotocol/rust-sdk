@@ -728,6 +728,25 @@ callbacks receive (`ConnectionTo` for `Raw`, `v1::ConnectionTo` for `V1`,
 `v2::ConnectionTo` for `V2`), so code generic over a builder's context changes
 `Context: ConnectionContext` to `P: Protocol`.
 
+## Schema enums and SDK helpers
+
+### v1 extension methods keep their `_` prefix
+
+Parsing a v1 dispatch enum (`schema::v1::ClientRequest`, `AgentRequest`,
+`ClientNotification` or `AgentNotification`) from an extension method used to
+strip the leading `_`: a parsed `_vendor/x` reported `method()` as `vendor/x`
+and was sent on as `vendor/x`, which the peer answered with Method not found.
+The `ExtMethodRequest` and `ExtNotification` variants now keep the method
+exactly as it was on the wire, as v2 already did. Code that matched on
+`ext.method` without the prefix matches the full name instead:
+
+```rust,ignore
+// Before
+v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "vendor/x" => ...
+// After
+v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "_vendor/x" => ...
+```
+
 ## Proxy method names
 
 The proxy protocol now uses the method names defined by the
