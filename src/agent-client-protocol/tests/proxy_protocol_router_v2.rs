@@ -173,6 +173,77 @@ async fn v2_only_router_rejects_v1_like_a_v2_agent() -> Result<(), Error> {
     Ok(())
 }
 
+/// Wait for the response to `id` on `rx`, skipping other frames.
+async fn response_to(
+    rx: &mut futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
+    id: &RawJsonRpcId,
+) -> Result<Result<Value, Error>, Error> {
+    loop {
+        let frame = rx.next().await.ok_or_else(|| {
+            Error::internal_error().data("proxy router closed before the response")
+        })?;
+        let TransportFrame::Single(RawJsonRpcMessage::Response(response)) = frame else {
+            continue;
+        };
+        match response {
+            RawJsonRpcResponse::Result { id: got, result } if got == *id => return Ok(Ok(result)),
+            RawJsonRpcResponse::Error { id: got, error } if got == *id => {
+                return Ok(Err(error.into_acp_error()));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepts_proxy_initialize_again_after_a_rejection() -> Result<(), Error> {
+    let v2_hits = Arc::new(AtomicUsize::new(0));
+    let router = Proxy
+        .protocol_router()
+        .with_v2(v2_proxy(Arc::clone(&v2_hits)));
+    let (Channel { mut rx, tx }, future) = ConnectTo::<Conductor>::into_channel_and_future(router);
+    let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
+    let send = |message: RawJsonRpcMessage| {
+        tx.unbounded_send(TransportFrame::Single(message))
+            .map_err(Error::into_internal_error)
+    };
+
+    // A notification before initialization is ignored, and a rejected
+    // `proxy/initialize` leaves the connection open for another attempt,
+    // exactly as with `Agent::protocol_router`.
+    send(RawJsonRpcMessage::notification(
+        "_com.example/early".into(),
+        serde_json::json!({}),
+    )?)?;
+    let rejected_id = RawJsonRpcId::Number(1);
+    send(RawJsonRpcMessage::request(
+        "proxy/initialize".into(),
+        serde_json::to_value(v1_proxy_initialize(ProtocolVersion::V1))
+            .map_err(Error::into_internal_error)?,
+        rejected_id.clone(),
+    )?)?;
+    let error = response_to(&mut rx, &rejected_id)
+        .await?
+        .expect_err("a v2-only router must reject v1");
+    assert_eq!(i32::from(error.code), -32022);
+
+    let accepted_id = RawJsonRpcId::Number(2);
+    send(RawJsonRpcMessage::request(
+        "proxy/initialize".into(),
+        serde_json::to_value(v2_proxy_initialize(ProtocolVersion::V2))
+            .map_err(Error::into_internal_error)?,
+        accepted_id.clone(),
+    )?)?;
+    let response = response_to(&mut rx, &accepted_id).await??;
+    assert_eq!(response["protocolVersion"], 2);
+    assert_eq!(v2_hits.load(Ordering::SeqCst), 1);
+
+    drop(tx);
+    drop(rx);
+    task.await.map_err(Error::into_internal_error)??;
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn requires_proxy_initialize_as_the_first_call() -> Result<(), Error> {
     let error = request(
