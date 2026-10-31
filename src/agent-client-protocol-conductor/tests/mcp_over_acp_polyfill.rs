@@ -464,6 +464,40 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
     Ok(())
 }
 
+/// A repeated `initialize` is forwarded through the polyfill as another
+/// `proxy/initialize` instead of closing its connection.
+#[tokio::test]
+async fn repeated_initialize_keeps_the_polyfill_connection_open()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let agent = RecordingAgent {
+        capabilities: agent_capabilities(McpCapabilities::new().http(true)),
+        observed: observed.clone(),
+    };
+
+    run_with_polyfill(agent, Arc::new(AtomicUsize::new(0)), async |connection| {
+        for _ in 0..2 {
+            let initialize =
+                recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
+            assert!(initialize.agent_capabilities.mcp_capabilities.acp);
+        }
+        recv(connection.send_request(
+            NewSessionRequest::new(PathBuf::from("/tmp")).mcp_servers(vec![native_server()]),
+        ))
+        .await?;
+        Ok(())
+    })
+    .await?;
+
+    let setup = observed.setup.lock().unwrap();
+    assert_eq!(setup.len(), 1);
+    assert!(matches!(
+        setup[0].mcp_servers.as_slice(),
+        [McpServer::Http(_)]
+    ));
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_downstream_keeps_capability_and_declaration_unchanged()
 -> Result<(), agent_client_protocol::Error> {

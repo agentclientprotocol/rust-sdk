@@ -100,10 +100,11 @@ polyfill:
    into the corresponding HTTP JSON-RPC response.
 5. Cancels only that operation if its HTTP response stream is dropped.
 
-Enable the polyfill crate's `unstable_session_fork` feature when adapting fork
-requests. Stable v1 setup includes `session/new`, `session/load`, and
-`session/resume`; draft v2 includes `session/new` and `session/resume`. Both
-versions include `session/fork` when `unstable_session_fork` is enabled.
+The polyfill adapts the declarations of every session setup request: v1
+`session/new`, `session/load`, `session/resume`, and `session/fork`, and draft
+v2 `session/new`, `session/resume`, and `session/fork`. With the polyfill
+crate's `unstable_session_fork` feature it also validates `session/fork`
+requests against the schema's fork type. Without it, the agent validates them.
 
 Declarations using another transport are left unchanged, including extension
 transports represented by v2's `McpServer::Other`.

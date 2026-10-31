@@ -16,8 +16,11 @@ agent-client-protocol-polyfill = "3"
 
 The polyfill supports stable ACP v1 by default and explicitly enables the
 core's `unstable_mcp_over_acp` feature. For a draft-v2 chain, enable
-`unstable_protocol_v2` on both the polyfill and conductor. The independent
-`unstable_session_fork` feature forwards the schema's fork support.
+`unstable_protocol_v2` on both the polyfill and conductor: the conductor's
+feature does not enable the polyfill's, and a polyfill built without it
+negotiates the chain down to v1. The polyfill adapts `session/fork` in every
+build. The independent `unstable_session_fork` feature also validates fork
+requests against the schema's fork type.
 
 - [API reference](https://docs.rs/agent-client-protocol-polyfill)
 - [Placement, lifecycle, and compatibility guide](https://agentclientprotocol.github.io/rust-sdk/mcp-bridge.html)
