@@ -1,8 +1,6 @@
 //! Core JSON-RPC server support.
 
-use agent_client_protocol_schema::v1::{
-    JsonRpcMessage as VersionedJsonRpcMessage, Notification as RpcNotification, SessionId,
-};
+use agent_client_protocol_schema::v1::{JsonRpcMessage as VersionedJsonRpcMessage, SessionId};
 
 // Types re-exported from crate root
 use serde::{Deserialize, Serialize};
@@ -86,12 +84,21 @@ use crate::{Agent, ConnectTo, RoleId};
 /// Raw messages are the same for every ACP protocol version: IDs are
 /// [`RawJsonRpcId`]s, and method params and response errors are not
 /// interpreted at the transport boundary.
-#[derive(Debug, Clone)]
+///
+/// Serializing adds the `"jsonrpc": "2.0"` member, and deserializing requires
+/// it. Requests and notifications keep only `id`, `method` and `params`:
+/// other members of the envelope are dropped. Error responses keep unknown
+/// members of the error object in [`RawJsonRpcError::extra`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::exhaustive_enums,
+    reason = "JSON-RPC defines exactly these message kinds"
+)]
 pub enum RawJsonRpcMessage {
     /// A JSON-RPC request with an id and expected response.
     Request(RawJsonRpcRequest),
     /// A JSON-RPC notification without a response.
-    Notification(RpcNotification<RawJsonRpcParams>),
+    Notification(RawJsonRpcNotification),
     /// A JSON-RPC response to a prior request.
     Response(RawJsonRpcResponse),
 }
@@ -140,7 +147,11 @@ impl TransportFrame {
 }
 
 /// A JSON-RPC request with uninterpreted params.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// This is the request without the `jsonrpc` member, which
+/// [`RawJsonRpcMessage`] adds and checks. Other members of the request object
+/// are not kept: a relay that parses and re-serializes a request drops them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(
     clippy::exhaustive_structs,
     reason = "JSON-RPC defines exactly these request members"
@@ -155,10 +166,51 @@ pub struct RawJsonRpcRequest {
     pub params: Option<RawJsonRpcParams>,
 }
 
+/// A JSON-RPC notification with uninterpreted params.
+///
+/// This is the notification without the `jsonrpc` member, which
+/// [`RawJsonRpcMessage`] adds and checks. Other members of the notification
+/// object are not kept: a relay that parses and re-serializes a notification
+/// drops them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(
+    clippy::exhaustive_structs,
+    reason = "JSON-RPC defines exactly these notification members"
+)]
+pub struct RawJsonRpcNotification {
+    /// The notification method.
+    pub method: Arc<str>,
+    /// The params, if any. `None` omits the member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<RawJsonRpcParams>,
+}
+
+impl From<RawJsonRpcRequest> for RawJsonRpcMessage {
+    fn from(request: RawJsonRpcRequest) -> Self {
+        Self::Request(request)
+    }
+}
+
+impl From<RawJsonRpcNotification> for RawJsonRpcMessage {
+    fn from(notification: RawJsonRpcNotification) -> Self {
+        Self::Notification(notification)
+    }
+}
+
+impl From<RawJsonRpcResponse> for RawJsonRpcMessage {
+    fn from(response: RawJsonRpcResponse) -> Self {
+        Self::Response(response)
+    }
+}
+
 /// Raw JSON-RPC request or notification parameters.
 ///
 /// JSON-RPC params, when present, must be either an array or an object.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::exhaustive_enums,
+    reason = "JSON-RPC params are either an array or an object"
+)]
 pub enum RawJsonRpcParams {
     /// Positional JSON-RPC params.
     Array(Vec<serde_json::Value>),
@@ -234,7 +286,7 @@ impl RawJsonRpcMessage {
 
     /// Build a raw JSON-RPC notification message.
     pub fn notification(method: String, params: serde_json::Value) -> Result<Self, crate::Error> {
-        Ok(Self::Notification(RpcNotification {
+        Ok(Self::Notification(RawJsonRpcNotification {
             method: Arc::from(method),
             params: RawJsonRpcParams::from_value(params)?,
         }))
@@ -310,7 +362,7 @@ impl<'de> Deserialize<'de> for RawJsonRpcMessage {
                 Ok(Self::Request(request))
             } else {
                 let notification = serde_json::from_value::<
-                    VersionedJsonRpcMessage<RpcNotification<RawJsonRpcParams>>,
+                    VersionedJsonRpcMessage<RawJsonRpcNotification>,
                 >(value)
                 .map_err(serde::de::Error::custom)?
                 .into_inner();
@@ -7504,6 +7556,41 @@ mod tests {
     use crate::Client;
     #[cfg(feature = "unstable_protocol_v2")]
     use crate::Proxy;
+
+    #[test]
+    fn raw_notification_round_trips_and_drops_unknown_envelope_members() {
+        let message: RawJsonRpcMessage = serde_json::from_value(serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "_vendor/ping",
+            "params": { "n": 1 },
+            "extra": true,
+        }))
+        .unwrap();
+        let mut params = serde_json::Map::new();
+        params.insert("n".into(), 1.into());
+        assert_eq!(
+            message,
+            RawJsonRpcMessage::Notification(RawJsonRpcNotification {
+                method: "_vendor/ping".into(),
+                params: Some(RawJsonRpcParams::Object(params)),
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&message).unwrap(),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "_vendor/ping",
+                "params": { "n": 1 },
+            })
+        );
+
+        let without_params =
+            RawJsonRpcMessage::notification("ping".into(), serde_json::Value::Null).unwrap();
+        assert_eq!(
+            serde_json::to_value(&without_params).unwrap(),
+            serde_json::json!({ "jsonrpc": "2.0", "method": "ping" })
+        );
+    }
 
     #[test]
     fn protected_cleanup_keeps_scoped_runners_polled_on_every_shutdown_path() {

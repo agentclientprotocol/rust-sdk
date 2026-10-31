@@ -533,6 +533,7 @@ and `"1"` stay distinct, and integers keep the full 64-bit signed range.
 | Before | After |
 | --- | --- |
 | `RawJsonRpcMessage::Request(schema::v1::Request<RawJsonRpcParams>)` | `RawJsonRpcMessage::Request(RawJsonRpcRequest)`, with the same `id`, `method` and `params` fields |
+| `RawJsonRpcMessage::Notification(schema::v1::Notification<RawJsonRpcParams>)` | `RawJsonRpcMessage::Notification(RawJsonRpcNotification)`, with the same `method` and `params` fields |
 | `RawJsonRpcResponse`, an alias of `schema::v1::Response<Value, Box<RawJsonRpcError>>` | `RawJsonRpcResponse`, the SDK's own enum with the same `Result { id, result }` and `Error { id, error }` variants and `new` |
 | `RawJsonRpcMessage::response_id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
 

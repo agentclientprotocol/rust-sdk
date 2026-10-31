@@ -11,7 +11,7 @@ use super::RawJsonRpcId;
 /// Raw transports and relays preserve unknown fields and distinguish omitted
 /// `data` from explicit JSON null. Convert to [`crate::Error`] only when
 /// dispatching an ACP response; other protocols have their own error domains.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct RawJsonRpcError {
     /// The peer's numeric error code, not an ACP [`crate::ErrorCode`].
@@ -30,7 +30,7 @@ pub struct RawJsonRpcError {
 ///
 /// Errors are boxed so their extensible representation does not enlarge every
 /// request, notification, and queued frame.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(
     clippy::exhaustive_enums,
