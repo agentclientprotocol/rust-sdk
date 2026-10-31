@@ -188,8 +188,6 @@ pub mod v1;
 #[cfg_attr(docsrs, doc(cfg(feature = "unstable_protocol_v2")))]
 pub mod v2;
 
-#[cfg(feature = "unstable_protocol_v2")]
-pub use jsonrpc::V2;
 pub use jsonrpc::{
     Builder, ByteStreams, CONNECTION_TERMINATED_REASON, Channel, ConnectionTermination,
     ConnectionTo, Dispatch, DynamicHandlerGuard, HandleConnectionClose, HandleDispatchFrom,
@@ -200,6 +198,8 @@ pub use jsonrpc::{
     UntypedMessage, V1, is_connection_terminated, is_incoming_transport_closed,
     run::{ChainRun, NullRun, RunWithConnectionTo},
 };
+#[cfg(feature = "unstable_protocol_v2")]
+pub use jsonrpc::{InitializationVersionMismatch, SelectedInitializeResponse, V2};
 pub use jsonrpc::{RequestCancellation, RequestCancellationHandle, is_cancel_request_notification};
 
 #[cfg(feature = "unstable_protocol_v2")]

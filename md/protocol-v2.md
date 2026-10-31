@@ -438,7 +438,9 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `send_initialize` to learn how the agent negotiated: it resolves with
   `v2::InitializeOutcome::Initialized` for a v2 selection, or
   `v2::InitializeOutcome::LowerVersion` with the agent's validated response for
-  the selected version (`v2::SelectedInitializeResponse::V1`). After a lower
+  the selected version, an `InitializationVersionMismatch` whose `response` is a
+`SelectedInitializeResponse::V1`. Both types are at the crate root because
+every version's negotiation reports a lower selection with them. After a lower
   selection the connection stays uninitialized, and the caller can explicitly
   fall back to a v1 client implementation if that is acceptable. Errors
   returned by the agent, including `-32022`, malformed responses, and transport

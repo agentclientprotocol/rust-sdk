@@ -154,6 +154,9 @@ pub(crate) fn normalize_v1_initialize_request(
 
 /// The outcome of a v2 client's [`send_initialize`](crate::v2::ConnectionTo::send_initialize).
 ///
+/// A lower selection is reported with the crate-root
+/// [`InitializationVersionMismatch`](crate::InitializationVersionMismatch).
+///
 /// A v1-only agent may legitimately answer a v2 initialization attempt with a
 /// v1 response. That is a successful reply, not an error, so it is reported as
 /// [`InitializeOutcome::LowerVersion`]. Errors from the agent, malformed
@@ -175,18 +178,21 @@ pub enum InitializeOutcome {
 /// A successful `initialize` response that selected a lower protocol version
 /// than the local API requires.
 ///
-/// Reported by [`InitializeOutcome::LowerVersion`]. This is not the `-32022`
-/// (`Unsupported protocol version`) error an agent returns when it supports no
-/// version at or below the requested one.
+/// Reported by [`v2::InitializeOutcome::LowerVersion`](crate::v2::InitializeOutcome::LowerVersion).
+/// This is not the `-32022` (`Unsupported protocol version`) error an agent
+/// returns when it supports no version at or below the requested one.
+///
+/// It lives at the crate root because it is not tied to one protocol
+/// version: every version's `send_initialize` reports a lower selection with
+/// it.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct InitializationVersionMismatch {
     /// The protocol version the local connection requested.
     pub requested: crate::schema::ProtocolVersion,
-    /// The lower protocol version the peer selected.
-    pub selected: crate::schema::ProtocolVersion,
-    /// The peer's validated initialization response for the selected version.
+    /// The peer's validated initialization response for the version it
+    /// selected. [`selected`](Self::selected) returns that version.
     pub response: SelectedInitializeResponse,
 }
 
@@ -203,9 +209,15 @@ impl InitializationVersionMismatch {
     ) -> Self {
         Self {
             requested,
-            selected: response.protocol_version(),
             response,
         }
+    }
+
+    /// The lower protocol version the peer selected: the version of
+    /// [`response`](Self::response).
+    #[must_use]
+    pub fn selected(&self) -> crate::schema::ProtocolVersion {
+        self.response.protocol_version()
     }
 }
 
@@ -215,15 +227,19 @@ impl std::fmt::Display for InitializationVersionMismatch {
         write!(
             f,
             "requested ACP protocol version {} but peer selected {}",
-            self.requested, self.selected,
+            self.requested,
+            self.selected(),
         )
     }
 }
 
 /// A peer's initialization response, typed by the protocol version it selected.
 ///
-/// New variants are added as later protocol versions make more versions
-/// selectable below the one a client requests.
+/// It lives at the crate root because it is not tied to one protocol
+/// version. A version is only ever selected below a higher requested one, so
+/// each variant is available with the feature of the next higher version:
+/// `V1` with `unstable_protocol_v2`. New variants are added as later protocol
+/// versions make more versions selectable below the one a client requests.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1624,7 +1640,7 @@ mod imp {
                 unreachable!();
             };
             assert_eq!(mismatch.requested, ProtocolVersion::V2);
-            assert_eq!(mismatch.selected, ProtocolVersion::V1);
+            assert_eq!(mismatch.selected(), ProtocolVersion::V1);
 
             for value in [
                 serde_json::json!({}),

@@ -50,7 +50,8 @@ impl ConnectionTo<Agent> {
     /// ```no_run
     /// # use agent_client_protocol::schema::{ProtocolVersion, v2};
     /// # use agent_client_protocol::{Client, ConnectTo};
-    /// use agent_client_protocol::v2::{InitializeOutcome, SelectedInitializeResponse};
+    /// use agent_client_protocol::SelectedInitializeResponse;
+    /// use agent_client_protocol::v2::InitializeOutcome;
     /// # async fn example(agent: impl ConnectTo<Client>) -> agent_client_protocol::Result<()> {
     /// let outcome = Client
     ///     .v2()

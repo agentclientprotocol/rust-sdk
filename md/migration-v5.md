@@ -26,7 +26,10 @@ derives, `UntypedMessage`, `Error`, `ErrorCode`, `Result`, `Protocol` with
 `SentRequest`, `PreparedRequest`, `Dispatch` and `Builder`, defaulting to
 `Raw`), the version-neutral `ConnectionTo`, and the routers that serve both
 versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
-`ClientProtocolConnector`).
+`ClientProtocolConnector`). With `unstable_protocol_v2` it also has
+`InitializationVersionMismatch` and `SelectedInitializeResponse`, which
+`v2::InitializeOutcome::LowerVersion` uses to report a lower version the
+peer selected.
 
 | Name | `agent_client_protocol::v1` | `agent_client_protocol::v2` |
 | --- | --- | --- |
@@ -42,7 +45,7 @@ versions (`AgentProtocolRouter`, `ProxyProtocolRouter`,
 | `ActiveSession` | the session handle with its update stream | the command-only session handle |
 | `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
 | `LoadSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
-| `InitializeOutcome`, `InitializationVersionMismatch`, `SelectedInitializeResponse` | - | the result of `send_initialize` |
+| `InitializeOutcome` | - | the result of `send_initialize` |
 | `schema` | `schema::v1` | `schema::v2` |
 
 ### `v1::ConnectionTo` is its own type
@@ -240,8 +243,9 @@ their path.
 | `OpenedV2Session` | `v2::SessionSetup` |
 | `V2Session` | `v2::ActiveSession` |
 | `InitializeOutcome` | `v2::InitializeOutcome` |
-| `InitializationVersionMismatch` | `v2::InitializationVersionMismatch` |
-| `SelectedInitializeResponse` | `v2::SelectedInitializeResponse` |
+| `InitializationVersionMismatch` | unchanged, at the crate root |
+| `InitializationVersionMismatch::selected` (field) | `InitializationVersionMismatch::selected()`, the version of `response` |
+| `SelectedInitializeResponse` | unchanged, at the crate root |
 | `SessionBuilder` | `v1::SessionBuilder` |
 | `ActiveSession` | `v1::ActiveSession` |
 | `RestoredSession` | `v1::SessionSetup` |

@@ -10,8 +10,9 @@ use std::{
     },
 };
 
+use agent_client_protocol::SelectedInitializeResponse;
 use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
-use agent_client_protocol::v2::{InitializeOutcome, SelectedInitializeResponse};
+use agent_client_protocol::v2::InitializeOutcome;
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
     ConnectTo, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose, HandleDispatchFrom,
@@ -2951,7 +2952,7 @@ async fn send_initialize_reports_v1_selection_as_outcome() -> Result<(), Error> 
         panic!("expected a lower-version outcome: {outcome:?}");
     };
     assert_eq!(mismatch.requested, ProtocolVersion::V2);
-    assert_eq!(mismatch.selected, ProtocolVersion::V1);
+    assert_eq!(mismatch.selected(), ProtocolVersion::V1);
     assert!(matches!(
         mismatch.response,
         SelectedInitializeResponse::V1(v1::InitializeResponse { protocol_version, .. })

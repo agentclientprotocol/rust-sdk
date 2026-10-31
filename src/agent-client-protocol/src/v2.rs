@@ -50,10 +50,8 @@ use crate::{NullClose, NullHandler, UntypedMessage, V2, jsonrpc::run::NullRun};
 /// SDK's `v2` module.
 pub use crate::schema::v2 as schema;
 
+pub use crate::jsonrpc::InitializeOutcome;
 pub use crate::jsonrpc::v2_connection::ConnectionTo;
-pub use crate::jsonrpc::{
-    InitializationVersionMismatch, InitializeOutcome, SelectedInitializeResponse,
-};
 #[cfg(feature = "unstable_session_fork")]
 pub use crate::session::v2::ForkSessionBuilder;
 pub use crate::session::v2::{ActiveSession, ResumeSessionBuilder, SessionBuilder, SessionSetup};
