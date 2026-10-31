@@ -470,9 +470,7 @@ mod tests {
             let forwarded = self.forwarded.clone();
             let future = ConnectionDriver::new(async move {
                 let Channel {
-                    rx: mut incoming,
-                    tx: _,
-                    ..
+                    rx: mut incoming, ..
                 } = agent;
                 while let Some(frame) = incoming.next().await {
                     let TransportFrame::Single(message) = frame else {

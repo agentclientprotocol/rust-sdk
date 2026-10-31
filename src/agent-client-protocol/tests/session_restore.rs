@@ -31,8 +31,8 @@ const DISPATCH_BARRIER_METHOD: &str = "_test/session-restore-dispatch-barrier";
 struct DispatchBarrierNotification {}
 
 /// The JSON value `parse_message` takes for a raw message's `params`.
-fn params_value(params: &Option<agent_client_protocol::RawJsonRpcParams>) -> serde_json::Value {
-    params.clone().map_or(
+fn params_value(params: Option<&agent_client_protocol::RawJsonRpcParams>) -> serde_json::Value {
+    params.cloned().map_or(
         serde_json::Value::Null,
         agent_client_protocol::RawJsonRpcParams::into_value,
     )
@@ -146,8 +146,10 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
         else {
             panic!("expected session/load")
         };
-        let parsed =
-            LoadSessionRequest::parse_message(&request.method, &params_value(&request.params))?;
+        let parsed = LoadSessionRequest::parse_message(
+            &request.method,
+            &params_value(request.params.as_ref()),
+        )?;
         assert_eq!(parsed.session_id, peer_session_id);
         assert_eq!(parsed.cwd, PathBuf::from("/restore/load"));
 
@@ -209,8 +211,10 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
         else {
             panic!("expected session/resume")
         };
-        let parsed =
-            ResumeSessionRequest::parse_message(&request.method, &params_value(&request.params))?;
+        let parsed = ResumeSessionRequest::parse_message(
+            &request.method,
+            &params_value(request.params.as_ref()),
+        )?;
         assert_eq!(parsed.session_id, session_id);
 
         for message in [
@@ -261,7 +265,10 @@ async fn resume_session_from_preserves_the_existing_request() {
             panic!("expected session/resume")
         };
         assert_eq!(
-            ResumeSessionRequest::parse_message(&request.method, &params_value(&request.params))?,
+            ResumeSessionRequest::parse_message(
+                &request.method,
+                &params_value(request.params.as_ref())
+            )?,
             peer_request
         );
         peer.tx
@@ -496,7 +503,7 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
         };
         let cancellation = CancelRequestNotification::parse_message(
             &notification.method,
-            &params_value(&notification.params),
+            &params_value(notification.params.as_ref()),
         )?;
         assert_eq!(cancellation.request_id, restore_request_id.into());
 
