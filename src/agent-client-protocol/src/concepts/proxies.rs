@@ -119,8 +119,8 @@
 //!
 //! The v1 builder injects the declaration into new, load, resume, and
 //! feature-gated fork requests. The v2 builder injects it into new, resume,
-//! and feature-gated fork requests while preserving unrelated setup fields.
-//! Both reuse one connection-scoped server ID.
+//! and feature-gated fork requests. Both preserve unrelated setup fields and
+//! reuse one connection-scoped server ID.
 //!
 //! ## Per-Session MCP Server
 //!
