@@ -238,16 +238,17 @@ impl PolyfillHandler {
                     // protocol version. Invalid requests are answered with an
                     // error instead of closing the connection.
                     let protocol = match PolyfillProtocol::from_initialize_request(&request) {
-                        Ok(protocol) if self.protocol.is_none_or(|p| p == protocol) => protocol,
-                        Ok(protocol) => {
-                            responder.respond_with_error(
-                                agent_client_protocol::Error::invalid_request().data(format!(
-                                    "MCP-over-ACP polyfill was initialized with {:?}, not {protocol:?}",
-                                    self.protocol,
-                                )),
-                            )?;
-                            return Ok(Handled::Yes);
-                        }
+                        Ok(protocol) => match self.protocol {
+                            Some(initialized) if initialized != protocol => {
+                                responder.respond_with_error(
+                                    agent_client_protocol::Error::invalid_request().data(format!(
+                                        "MCP-over-ACP polyfill was initialized with {initialized}, not {protocol}",
+                                    )),
+                                )?;
+                                return Ok(Handled::Yes);
+                            }
+                            _ => protocol,
+                        },
                         Err(error) => {
                             responder.respond_with_error(error)?;
                             return Ok(Handled::Yes);

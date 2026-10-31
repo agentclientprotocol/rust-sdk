@@ -18,11 +18,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 name = "agent-client-protocol-conductor"
 path = "src/main.rs"
 
+# Skipped unless the polyfill's own v2 feature is enabled too, as
+# `cargo test --workspace --all-features` does.
+[[test]]
+name = "mcp_over_acp_polyfill_v2"
+required-features = ["unstable_protocol_v2", "agent-client-protocol-polyfill/unstable_protocol_v2"]
+
 [features]
 default = []
 # The polyfill is a separate crate: enable its own `unstable_protocol_v2`
-# feature to use it in a v2 chain. The polyfill v2 tests in this crate rely
-# on `cargo test --workspace --all-features` enabling it.
+# feature to use it in a v2 chain.
 unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [dependencies]

@@ -24,6 +24,16 @@ pub(super) enum NativeMcpOutcome {
     Error(Value),
 }
 
+impl std::fmt::Display for PolyfillProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::V1 => "v1",
+            #[cfg(feature = "unstable_protocol_v2")]
+            Self::V2 => "v2",
+        })
+    }
+}
+
 impl PolyfillProtocol {
     /// Validate against the negotiated ACP version before projecting onto HTTP.
     pub(super) fn message_response(self, value: Value) -> Result<NativeMcpOutcome, Error> {

@@ -1,9 +1,7 @@
-#![cfg(feature = "unstable_protocol_v2")]
-
 //! End-to-end v2 coverage for the request-scoped MCP HTTP adapter.
 //!
-//! Also needs the polyfill crate's `unstable_protocol_v2` feature, which
-//! `cargo test --workspace --all-features` enables.
+//! Also needs the polyfill crate's `unstable_protocol_v2` feature. The test's
+//! `required-features` in `Cargo.toml` skip it otherwise.
 
 use std::{
     path::PathBuf,
