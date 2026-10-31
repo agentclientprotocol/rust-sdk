@@ -81,8 +81,11 @@ The command-line component provider, `AgentOnly`, `ProxiesAndAgent`, and static
 proxy vectors use their components for every version, so each supplied
 component must support the selected version. Use `Agent.protocol_router()` or
 `Proxy.protocol_router()` when a static component has separate
-implementations. A custom instantiator rejects a version it does not support
-(for example with `SelectedInitializeRequest::into_v1`); the error answers the
+implementations. A custom instantiator that supports only a lower version
+negotiates down by returning the request for that version (for example with
+`SelectedInitializeRequest::into_v1`), and the client receives an `initialize`
+response for it. An instantiator returns `InstantiatedChain` (agent mode) or
+`InstantiatedProxies` (proxy mode). An instantiator error answers the
 `initialize` request and leaves the connection in a failed state that rejects
 later traffic. A first message that is not a valid initialization is answered
 with an error and leaves the conductor uninitialized, so the client can retry.
@@ -187,9 +190,11 @@ orchestration from silently changing session MCP declarations. See [MCP
 Bridge](./mcp-bridge.md).
 
 The polyfill supports v1 by default. For a draft-v2 chain, enable
-`unstable_protocol_v2` on both the conductor and polyfill crates; without the
-polyfill feature, it rejects v2 initialization instead of interpreting v2
-traffic as v1.
+`unstable_protocol_v2` on both the conductor and the polyfill crate; the
+conductor's feature does not enable the polyfill's. A polyfill built without
+the feature negotiates its `proxy/initialize` down to v1 like any v1-only
+proxy, so the whole chain, and the `initialize` response the client
+receives, use v1.
 
 ## Tracing
 
