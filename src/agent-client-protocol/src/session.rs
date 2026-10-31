@@ -572,7 +572,7 @@ where
     /// Publish `session/resume`, wait on the current task, and return an
     /// [`ActiveSession`] together with the exact [`ResumeSessionResponse`].
     ///
-    /// Requires [`block_task`](LoadSessionBuilder::block_task). Dropping
+    /// Requires [`block_task`](ResumeSessionBuilder::block_task). Dropping
     /// this future while it is pending cancels the request and removes the
     /// provisional session route.
     pub async fn start_session(

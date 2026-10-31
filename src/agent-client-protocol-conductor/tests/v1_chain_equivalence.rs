@@ -11,12 +11,15 @@ use std::{
 };
 
 use agent_client_protocol::V1;
+use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, DynConnectTo, Error, Lines, Proxy, Responder, UntypedMessage,
+    Agent, Client, Conductor, ConnectTo, DynConnectTo, Error, Lines, Proxy, Responder,
+    UntypedMessage,
     schema::{ProtocolVersion, v1},
 };
 use agent_client_protocol_conductor::{ConductorImpl, SelectedInitializeRequest};
+use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};
 
@@ -78,6 +81,21 @@ struct ChainRun {
 
 /// Initialize a v1 chain with `initialize`, then create a session.
 async fn run_v1_chain(initialize: &Value) -> ChainRun {
+    run_v1_chain_with(
+        initialize,
+        json!({ "cwd": "/v1-equivalence", "mcpServers": [], "_unknownRequestField": true }),
+        || DynConnectTo::new(Proxy.v1()),
+    )
+    .await
+}
+
+/// Initialize a chain of `proxy` and a v1 agent with `initialize`, then send
+/// `session/new` with `session_params`.
+async fn run_v1_chain_with(
+    initialize: &Value,
+    session_params: Value,
+    proxy: fn() -> DynConnectTo<Conductor>,
+) -> ChainRun {
     let received = Received::default();
     let instantiated_version = Arc::new(Mutex::new(None));
     let conductor = ConductorImpl::new_agent("v1-equivalence", {
@@ -86,7 +104,7 @@ async fn run_v1_chain(initialize: &Value) -> ChainRun {
         move |request: SelectedInitializeRequest| async move {
             *instantiated_version.lock().expect("version lock") = Some(request.protocol_version());
             let request = request.into_v1()?;
-            let proxies = vec![DynConnectTo::new(Proxy.v1())];
+            let proxies = vec![proxy()];
             let agent = DynConnectTo::new(recording_v1_agent(received));
             Ok((request.into(), proxies, agent))
         }
@@ -122,7 +140,7 @@ async fn run_v1_chain(initialize: &Value) -> ChainRun {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "session/new",
-        "params": { "cwd": "/v1-equivalence", "mcpServers": [], "_unknownRequestField": true },
+        "params": session_params,
     }));
     let session_response = recv().await;
 
@@ -238,4 +256,42 @@ async fn v1_chain_negotiates_newer_requests_to_v1() {
     assert_eq!(received["clientInfo"]["name"], "newer-client");
     assert!(received.get("_unknownRequestField").is_none(), "{received}");
     assert_session_forwarded_unchanged(&run);
+}
+
+/// A v1 proxy built with `with_mcp_server` appends its declaration to the raw
+/// `session/new` params. Fields the v1 schema types do not model reach the
+/// agent unchanged.
+#[tokio::test(flavor = "current_thread")]
+async fn v1_mcp_proxy_keeps_unmodeled_session_fields() {
+    let run = run_v1_chain_with(
+        &initialize_params(1),
+        json!({
+            "cwd": "/v1-equivalence",
+            "mcpServers": [],
+            "systemPrompt": "keep me",
+            "_unknownRequestField": true,
+        }),
+        || {
+            DynConnectTo::new(
+                Proxy
+                    .v1()
+                    .with_mcp_server(McpServer::builder("raw-fields").build()),
+            )
+        },
+    )
+    .await;
+
+    assert_eq!(run.responses[1]["id"], 2, "{}", run.responses[1]);
+    assert_eq!(
+        run.responses[1]["result"]["sessionId"], "v1-session",
+        "{}",
+        run.responses[1]
+    );
+    let (method, params) = &run.received[1];
+    assert_eq!(method, "session/new");
+    assert_eq!(params["systemPrompt"], "keep me", "{params}");
+    assert_eq!(params["_unknownRequestField"], true, "{params}");
+    let servers = params["mcpServers"].as_array().expect("mcpServers array");
+    assert_eq!(servers.len(), 1, "{params}");
+    assert_eq!(servers[0]["name"], "raw-fields", "{params}");
 }
