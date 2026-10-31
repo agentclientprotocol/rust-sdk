@@ -51,7 +51,7 @@ use crate::jsonrpc::protocol::HandleId;
 #[cfg(feature = "unstable_protocol_v2")]
 pub use crate::jsonrpc::protocol::V2;
 
-#[cfg(any(feature = "unstable_protocol_v2", feature = "unstable_mcp_over_acp"))]
+#[cfg(feature = "unstable_mcp_over_acp")]
 use crate::Client;
 pub use crate::jsonrpc::protocol::{Protocol, Raw, V1};
 #[cfg(feature = "unstable_protocol_v2")]
