@@ -402,3 +402,58 @@ async fn modify_message_and_stop() -> Result<(), agent_client_protocol::Error> {
         })
         .await
 }
+
+#[tokio::test]
+async fn otherwise_ignore_answers_unmatched_requests_with_method_not_found()
+-> Result<(), agent_client_protocol::Error> {
+    struct IgnoreHandler;
+
+    impl HandleDispatchFrom<UntypedRole> for IgnoreHandler {
+        async fn handle_dispatch_from(
+            &mut self,
+            message: Dispatch,
+            _connection: ConnectionTo<UntypedRole>,
+        ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
+            MatchDispatch::new(message)
+                .if_notification(async |_: RetryNotification| Ok(()))
+                .await
+                .otherwise_ignore()?;
+            Ok(Handled::Yes)
+        }
+
+        fn describe_chain(&self) -> impl std::fmt::Debug {
+            "IgnoreHandler"
+        }
+    }
+
+    struct TestComponent;
+
+    impl ConnectTo<UntypedRole> for TestComponent {
+        async fn connect_to(
+            self,
+            client: impl ConnectTo<UntypedRole>,
+        ) -> Result<(), agent_client_protocol::Error> {
+            UntypedRole
+                .builder()
+                .with_handler(IgnoreHandler)
+                .connect_to(client)
+                .await
+        }
+    }
+
+    UntypedRole
+        .builder()
+        .connect_with(TestComponent, async |cx| {
+            let error = cx
+                .send_request(EchoRequestResponse { text: vec![] })
+                .block_task()
+                .await
+                .expect_err("an unmatched request must get an error");
+            assert_eq!(
+                error.code,
+                agent_client_protocol::Error::method_not_found().code
+            );
+            Ok(())
+        })
+        .await
+}
