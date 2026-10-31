@@ -78,12 +78,15 @@ pub use service::{
     McpOperationCancellation, McpOutcome, McpRequest, McpRequestContext, McpService,
 };
 
-/// The declared MCP provider is no longer available.
+/// `-33000`: an MCP-over-ACP binding resource limit was exceeded.
 #[cfg(feature = "unstable_mcp_over_acp")]
-pub const MCP_SERVER_UNAVAILABLE: i32 = -33001;
-/// The MCP backend failed independently of an MCP application error.
+pub const MCP_RESOURCE_LIMIT_EXCEEDED: crate::ErrorCode = crate::ErrorCode::new(-33000);
+/// `-33001`: the declared MCP server registration is unavailable.
 #[cfg(feature = "unstable_mcp_over_acp")]
-pub const MCP_BACKEND_FAILURE: i32 = -33002;
+pub const MCP_SERVER_UNAVAILABLE: crate::ErrorCode = crate::ErrorCode::new(-33001);
+/// `-33002`: the MCP backend or transport failed without a valid MCP outcome.
+#[cfg(feature = "unstable_mcp_over_acp")]
+pub const MCP_BACKEND_FAILURE: crate::ErrorCode = crate::ErrorCode::new(-33002);
 #[cfg(feature = "schemars")]
 #[cfg_attr(docsrs, doc(cfg(feature = "schemars")))]
 pub use tool::McpTool;

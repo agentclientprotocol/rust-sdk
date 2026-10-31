@@ -76,7 +76,7 @@ async fn unresolved_server_is_a_binding_failure_not_a_peer_mcp_error() {
                 .await
                 .expect_err("an unresolved server must fail the outer ACP operation");
             assert_eq!(
-                i32::from(response.code),
+                response.code,
                 agent_client_protocol::mcp_server::MCP_SERVER_UNAVAILABLE
             );
             Ok::<(), Error>(())

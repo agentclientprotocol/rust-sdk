@@ -747,6 +747,14 @@ v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "vendor/x" => ...
 v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "_vendor/x" => ...
 ```
 
+### MCP-over-ACP error codes are `ErrorCode`s
+
+`mcp_server::MCP_SERVER_UNAVAILABLE` (`-33001`) and
+`mcp_server::MCP_BACKEND_FAILURE` (`-33002`) are now `ErrorCode` constants
+instead of `i32`, and `mcp_server::MCP_RESOURCE_LIMIT_EXCEEDED` (`-33000`) is
+new. `Error::new(MCP_BACKEND_FAILURE, ..)` and comparisons with `error.code`
+work unchanged; compare with an `i32` through `.value()`.
+
 ## Proxy method names
 
 The proxy protocol now uses the method names defined by the
