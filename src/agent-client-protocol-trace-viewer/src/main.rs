@@ -42,10 +42,9 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("Trace file not found: {}", args.trace_file.display());
     }
 
-    let config = agent_client_protocol_trace_viewer::TraceViewerConfig {
-        port: args.port.unwrap_or(0),
-        open_browser: !args.no_open,
-    };
+    let config = agent_client_protocol_trace_viewer::TraceViewerConfig::default()
+        .port(args.port.unwrap_or(0))
+        .open_browser(!args.no_open);
 
     agent_client_protocol_trace_viewer::serve_file(args.trace_file, config).await
 }
