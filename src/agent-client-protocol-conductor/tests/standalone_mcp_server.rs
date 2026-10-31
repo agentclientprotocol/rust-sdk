@@ -89,13 +89,13 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // List tools
             let tools_result = client
                 .list_tools(None)
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // Verify we got both tools
             assert_eq!(tools_result.tools.len(), 2);
@@ -109,7 +109,7 @@ async fn test_standalone_server_list_tools() -> Result<(), agent_client_protocol
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             Ok(())
         },
     )
@@ -131,7 +131,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // Call the echo tool
             let result = client
@@ -144,7 +144,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
                     ),
                 )
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // Verify the result
             let text = result
@@ -159,7 +159,7 @@ async fn test_standalone_server_call_echo_tool() -> Result<(), agent_client_prot
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             Ok(())
         },
     )
@@ -181,7 +181,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // Call the add tool
             let result = client
@@ -194,7 +194,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
                     ),
                 )
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // The add tool returns structured output (AddOutput)
             // Check that we get the expected result
@@ -212,7 +212,7 @@ async fn test_standalone_server_call_add_tool() -> Result<(), agent_client_proto
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             Ok(())
         },
     )
@@ -234,7 +234,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // Call a non-existent tool
             let result = client
@@ -247,7 +247,7 @@ async fn test_standalone_server_tool_not_found() -> Result<(), agent_client_prot
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             Ok(())
         },
     )
@@ -289,13 +289,13 @@ async fn test_standalone_server_with_disabled_tools() -> Result<(), agent_client
             let client = MinimalClientHandler
                 .serve((server_read, server_write))
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
 
             // List tools - should only show "add"
             let tools_result = client
                 .list_tools(None)
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             assert_eq!(tools_result.tools.len(), 1);
             assert_eq!(tools_result.tools[0].name.as_ref(), "add");
 
@@ -316,7 +316,7 @@ async fn test_standalone_server_with_disabled_tools() -> Result<(), agent_client
             client
                 .cancel()
                 .await
-                .map_err(agent_client_protocol::util::internal_error)?;
+                .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))?;
             Ok(())
         },
     )

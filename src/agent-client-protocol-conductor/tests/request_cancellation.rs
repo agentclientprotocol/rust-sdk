@@ -512,11 +512,10 @@ async fn prompt_cancellation_cascades_through_real_proxy_chain() -> Result<(), E
                     if i32::from(permission_error.code) == -32800 {
                         responder.respond_with_result(Err(Error::request_cancelled()))
                     } else {
-                        responder.respond_with_result(Err(
-                            agent_client_protocol::util::internal_error(format!(
-                                "unexpected permission error: {permission_error:?}"
-                            )),
-                        ))
+                        responder
+                            .respond_with_result(Err(agent_client_protocol::Error::internal_error(
+                            )
+                            .data(format!("unexpected permission error: {permission_error:?}"))))
                     }
                 })?;
                 Ok(())

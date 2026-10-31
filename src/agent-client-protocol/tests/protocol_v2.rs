@@ -446,9 +446,8 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
         if let Some(task) = agent_task {
             task.abort();
         }
-        Err(agent_client_protocol::util::internal_error(
-            "v2 agent did not respond to initialize",
-        ))
+        Err(agent_client_protocol::Error::internal_error()
+            .data("v2 agent did not respond to initialize"))
     }
 }
 
@@ -536,9 +535,8 @@ async fn assert_malformed_initialize_rejected(params: Map<String, Value>) -> Res
     }
 
     agent_task.abort();
-    Err(agent_client_protocol::util::internal_error(
-        "agent did not respond to malformed initialize",
-    ))
+    Err(agent_client_protocol::Error::internal_error()
+        .data("agent did not respond to malformed initialize"))
 }
 
 async fn assert_v2_client_rejects_v1_selection(agent: impl ConnectTo<Client>) -> Result<(), Error> {
@@ -2374,9 +2372,8 @@ async fn protocol_router_v2_only_rejects_v1_client() -> Result<(), Error> {
     }
 
     agent_task.abort();
-    Err(agent_client_protocol::util::internal_error(
-        "protocol router did not reject v1 initialize",
-    ))
+    Err(agent_client_protocol::Error::internal_error()
+        .data("protocol router did not reject v1 initialize"))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2437,7 +2434,7 @@ async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Err
 
     agent_task
         .await
-        .map_err(agent_client_protocol::util::internal_error)??;
+        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
     Ok(())
 }
 
@@ -2495,7 +2492,7 @@ async fn protocol_router_rejection_flushes_with_trailing_malformed_input() -> Re
 
     agent_task
         .await
-        .map_err(agent_client_protocol::util::internal_error)??;
+        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
     Ok(())
 }
 
@@ -2549,7 +2546,7 @@ async fn protocol_router_ignores_retained_standalone_response_before_initialize(
         .map_err(Error::into_internal_error)?;
     agent_task
         .await
-        .map_err(agent_client_protocol::util::internal_error)??;
+        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
     Ok(())
 }
 
@@ -2596,7 +2593,7 @@ async fn protocol_router_preserves_same_version_initialize_frames() -> Result<()
             .map_err(Error::into_internal_error)?;
         router_task
             .await
-            .map_err(agent_client_protocol::util::internal_error)??;
+            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
     }
 
     Ok(())
@@ -2786,9 +2783,8 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
     }
 
     agent_task.abort();
-    Err(agent_client_protocol::util::internal_error(
-        "protocol router did not respond to initialize",
-    ))
+    Err(agent_client_protocol::Error::internal_error()
+        .data("protocol router did not respond to initialize"))
 }
 
 #[tokio::test(flavor = "current_thread")]

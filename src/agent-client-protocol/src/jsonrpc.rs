@@ -6957,7 +6957,7 @@ impl<T, P: Protocol> SentRequest<T, P> {
     ///                 // Respond to original request
     ///                 responder.respond(ValidateResponse { is_valid: true, error: None })
     ///             } else {
-    ///                 responder.respond_with_error(agent_client_protocol::util::internal_error("validation failed"))
+    ///                 responder.respond_with_error(agent_client_protocol::Error::internal_error().data("validation failed"))
     ///             }
     ///         })?;
     ///

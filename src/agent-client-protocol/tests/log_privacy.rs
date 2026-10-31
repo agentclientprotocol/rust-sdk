@@ -6,8 +6,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    ConnectionTo, Error, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse,
-    Responder, UntypedMessage, role::UntypedRole, util::TypeNotification,
+    ConnectionTo, Error, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, Responder,
+    UntypedMessage, role::UntypedRole,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -77,46 +77,6 @@ struct Request {
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonRpcResponse)]
 struct Response {}
-
-#[test]
-fn type_notification_warnings_do_not_echo_private_params_or_parse_reasons() {
-    let capture = LogCapture::new();
-    tracing::subscriber::with_default(capture.subscriber(), || {
-        futures::executor::block_on(async {
-            for params in [
-                json!({ "extra": PRIVATE_MARKER }),
-                json!({ "required": PRIVATE_MARKER, "kind": "Known" }),
-                json!({ "required": 1, "kind": PRIVATE_MARKER }),
-            ] {
-                // The full error remains available to callers; neither its JSON
-                // nor a Serde reason quoting an invalid value is safe for WARN.
-                let error =
-                    Notice::parse_message("_test/private_notification", &params).unwrap_err();
-                assert!(format!("{error:?}").contains(PRIVATE_MARKER));
-
-                TypeNotification::new(
-                    UntypedMessage::new("_test/private_notification", params).unwrap(),
-                )
-                .handle_if(async |_: Notice| {
-                    panic!("malformed notification must not reach its handler");
-                })
-                .await
-                .otherwise(async |_| {
-                    panic!("malformed matching notification must not reach fallback");
-                })
-                .await
-                .unwrap();
-            }
-        });
-    });
-
-    let logs = capture.text();
-    assert_eq!(logs.matches("Invalid notification params;").count(), 3);
-    assert!(logs.contains("_test/private_notification"));
-    assert!(logs.contains("-32602"));
-    assert!(logs.contains("Invalid params"));
-    assert!(!logs.contains(PRIVATE_MARKER), "{logs}");
-}
 
 fn private_handler_error() -> Error {
     // Both fields are application-controlled, even for a standard error code.

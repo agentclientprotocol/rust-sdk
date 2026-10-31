@@ -15,10 +15,11 @@
 //!   processing messages that don't need peer transforms.
 //!
 //! [`HandleDispatchFrom`]: crate::HandleDispatchFrom
+//! [`UntypedMessage`]: crate::UntypedMessage
 
 use crate::{
     ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, Responder, ResponseRouter, UntypedMessage,
+    JsonRpcResponse, Responder, ResponseRouter,
     role::{HasPeer, Role, handle_incoming_dispatch},
 };
 
@@ -61,7 +62,7 @@ fn preserve_retry(
 ///     .otherwise(|message| async move {
 ///         match message {
 ///             Dispatch::Request(_, responder) => {
-///                 responder.respond_with_error(agent_client_protocol::util::internal_error("unknown method"))
+///                 responder.respond_with_error(agent_client_protocol::Error::method_not_found())
 ///             }
 ///             Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(()),
 ///         }
@@ -451,7 +452,7 @@ impl MatchDispatch {
 ///     .otherwise(|message| async move {
 ///         // Fallback for unrecognized messages
 ///         match message {
-///             Dispatch::Request(_, responder) => responder.respond_with_error(agent_client_protocol::util::internal_error("unknown method")),
+///             Dispatch::Request(_, responder) => responder.respond_with_error(agent_client_protocol::Error::method_not_found()),
 ///             Dispatch::Notification(_) | Dispatch::Response(_, _) => Ok(()),
 ///         }
 ///     })
@@ -812,192 +813,5 @@ impl<Counterpart: Role> MatchDispatchFrom<Counterpart> {
                 }),
             },
         }
-    }
-}
-
-/// Builder for pattern-matching on untyped JSON-RPC notifications.
-///
-/// Similar to [`MatchDispatch`] but specifically for notifications (fire-and-forget messages with no response).
-///
-/// # Pattern
-///
-/// The typical pattern is:
-/// 1. Create a `TypeNotification` from an untyped message
-/// 2. Chain `.handle_if()` calls for each type you want to try
-/// 3. End with `.otherwise()` for messages that don't match any type
-///
-/// # Example
-///
-/// ```
-/// # use agent_client_protocol::UntypedMessage;
-/// # use agent_client_protocol::schema::v1::SessionNotification;
-/// # use agent_client_protocol::util::TypeNotification;
-/// # async fn example(message: UntypedMessage) -> Result<(), agent_client_protocol::Error> {
-/// TypeNotification::new(message)
-///     .handle_if(|notif: SessionNotification| async move {
-///         // Handle session notifications
-///         println!("Session update: {:?}", notif);
-///         Ok(())
-///     })
-///     .await
-///     .otherwise(|untyped: UntypedMessage| async move {
-///         // Fallback for unrecognized notifications
-///         println!("Unknown notification: {}", untyped.method);
-///         Ok(())
-///     })
-///     .await
-/// # }
-/// ```
-///
-/// Since notifications don't expect responses, handlers only receive the parsed
-/// notification (not a request context).
-#[must_use]
-#[derive(Debug)]
-pub struct TypeNotification {
-    state: Option<TypeNotificationState>,
-}
-
-#[derive(Debug)]
-enum TypeNotificationState {
-    Unhandled(String, serde_json::Value),
-    Handled(Result<(), crate::Error>),
-}
-
-impl TypeNotification {
-    /// Create a new pattern matcher for the given untyped notification message.
-    pub fn new(request: UntypedMessage) -> Self {
-        let UntypedMessage { method, params } = request;
-        Self {
-            state: Some(TypeNotificationState::Unhandled(method, params)),
-        }
-    }
-
-    /// Try to handle the message as type `N`.
-    ///
-    /// If the message can be parsed as `N`, the handler `op` is called with the parsed
-    /// notification. If parsing fails, the malformed matching notification is consumed
-    /// and logged without invoking the handler or sending a response. If the message was
-    /// already handled by a previous `handle_if`, this call has no effect.
-    ///
-    /// Returns `self` to allow chaining multiple `handle_if` calls.
-    pub async fn handle_if<N: JsonRpcNotification>(
-        mut self,
-        op: impl AsyncFnOnce(N) -> Result<(), crate::Error>,
-    ) -> Self {
-        self.state = Some(match self.state.take().expect("valid state") {
-            TypeNotificationState::Unhandled(method, params) => {
-                if N::matches_method(&method) {
-                    match N::parse_message(&method, &params) {
-                        Ok(request) => TypeNotificationState::Handled(op(request).await),
-                        Err(error) => {
-                            tracing::warn!(
-                                error = ?crate::util::redacted_error(error.code),
-                                method,
-                                "Invalid notification params; ignoring notification without replying"
-                            );
-                            TypeNotificationState::Handled(Ok(()))
-                        }
-                    }
-                } else {
-                    TypeNotificationState::Unhandled(method, params)
-                }
-            }
-
-            TypeNotificationState::Handled(err) => TypeNotificationState::Handled(err),
-        });
-        self
-    }
-
-    /// Handle messages that didn't match any previous `handle_if` call.
-    ///
-    /// This is the fallback handler that receives the original untyped message if none
-    /// of the typed handlers matched. You must call this method to complete the pattern
-    /// matching chain and get the final result.
-    pub async fn otherwise(
-        mut self,
-        op: impl AsyncFnOnce(UntypedMessage) -> Result<(), crate::Error>,
-    ) -> Result<(), crate::Error> {
-        match self.state.take().expect("valid state") {
-            TypeNotificationState::Unhandled(method, params) => {
-                match UntypedMessage::new(&method, params) {
-                    Ok(m) => op(m).await,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = ?crate::util::redacted_error(error.code),
-                            method,
-                            "Invalid untyped notification; ignoring notification without replying"
-                        );
-                        Ok(())
-                    }
-                }
-            }
-            TypeNotificationState::Handled(r) => r,
-        }
-    }
-}
-
-#[cfg(test)]
-mod type_notification_tests {
-    use std::{cell::Cell, rc::Rc};
-
-    use serde::{Deserialize, Serialize};
-
-    use super::{TypeNotification, UntypedMessage};
-
-    #[derive(Clone, Debug, Serialize, Deserialize)]
-    struct TestNotification {
-        required: String,
-    }
-
-    impl crate::JsonRpcMessage for TestNotification {
-        fn matches_method(method: &str) -> bool {
-            method == "test/notification"
-        }
-
-        fn method(&self) -> &'static str {
-            "test/notification"
-        }
-
-        fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
-            UntypedMessage::new(self.method(), self)
-        }
-
-        fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error> {
-            if !Self::matches_method(method) {
-                return Err(crate::Error::method_not_found());
-            }
-            crate::util::json_cast_params(params)
-        }
-    }
-
-    impl crate::JsonRpcNotification for TestNotification {}
-
-    #[test]
-    fn invalid_matching_notification_is_consumed_without_fallback() {
-        futures::executor::block_on(async {
-            let handler_called = Rc::new(Cell::new(false));
-            let fallback_called = Rc::new(Cell::new(false));
-            let handler_called_in_callback = Rc::clone(&handler_called);
-            let fallback_called_in_callback = Rc::clone(&fallback_called);
-            let message =
-                UntypedMessage::new("test/notification", serde_json::json!({ "wrong": "field" }))
-                    .expect("test notification should serialize");
-
-            TypeNotification::new(message)
-                .handle_if(move |_: TestNotification| async move {
-                    handler_called_in_callback.set(true);
-                    Ok(())
-                })
-                .await
-                .otherwise(move |_| async move {
-                    fallback_called_in_callback.set(true);
-                    Ok(())
-                })
-                .await
-                .expect("invalid notification should be ignored");
-
-            assert!(!handler_called.get());
-            assert!(!fallback_called.get());
-        });
     }
 }

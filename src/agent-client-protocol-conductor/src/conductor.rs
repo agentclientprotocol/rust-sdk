@@ -461,9 +461,9 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
             conductor_tx: conductor_tx.clone(),
             initialization: InitializationState::Pending(self.instantiator),
             proxies: Vec::default(),
-            successor: Arc::new(agent_client_protocol::util::internal_error(
-                "successor not initialized",
-            )),
+            successor: Arc::new(
+                agent_client_protocol::Error::internal_error().data("successor not initialized"),
+            ),
             trace_handle,
             host: self.host.clone(),
         };
@@ -496,7 +496,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 message,
             })
             .await
-            .map_err(agent_client_protocol::util::internal_error)
+            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
     }
 
     async fn incoming_message_from_agent(
@@ -509,7 +509,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 message,
             })
             .await
-            .map_err(agent_client_protocol::util::internal_error)
+            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
     }
 }
 
@@ -1035,7 +1035,10 @@ where
                                     message: dispatch.map(|r, cx| (r.message, cx), |n| n.message),
                                 })
                                 .await
-                                .map_err(agent_client_protocol::util::internal_error)
+                                .map_err(|e| {
+                                    agent_client_protocol::Error::internal_error()
+                                        .data(e.to_string())
+                                })
                         })
                         .await
                         .otherwise(async |dispatch| {
@@ -1059,10 +1062,9 @@ where
                                 ),
                                 message: dispatch,
                             };
-                            conductor_tx
-                                .send(message)
-                                .await
-                                .map_err(agent_client_protocol::util::internal_error)
+                            conductor_tx.send(message).await.map_err(|e| {
+                                agent_client_protocol::Error::internal_error().data(e.to_string())
+                            })
                         })
                         .await
                 },
@@ -1549,7 +1551,10 @@ impl ConductorHostRole for Agent {
                                     message: dispatch,
                                 })
                                 .await
-                                .map_err(agent_client_protocol::util::internal_error)
+                                .map_err(|e| {
+                                    agent_client_protocol::Error::internal_error()
+                                        .data(e.to_string())
+                                })
                         }
                     },
                     agent_client_protocol::on_receive_dispatch!(),

@@ -201,9 +201,8 @@ async fn test_multiple_handlers_different_methods() {
                         .await
                         .map_err(
                             |e| -> agent_client_protocol::Error {
-                                agent_client_protocol::util::internal_error(format!(
-                                    "Foo request failed: {e:?}"
-                                ))
+                                agent_client_protocol::Error::internal_error()
+                                    .data(format!("Foo request failed: {e:?}"))
                             },
                         )?;
                         assert_eq!(foo_response.result, "foo: test1");
@@ -215,9 +214,8 @@ async fn test_multiple_handlers_different_methods() {
                         .await
                         .map_err(
                             |e| -> agent_client_protocol::Error {
-                                agent_client_protocol::util::internal_error(format!(
-                                    "Bar request failed: {e:?}"
-                                ))
+                                agent_client_protocol::Error::internal_error()
+                                    .data(format!("Bar request failed: {e:?}"))
                             },
                         )?;
                         assert_eq!(bar_response.result, "bar: test2");
@@ -337,9 +335,8 @@ async fn test_handler_priority_ordering() {
                         }))
                         .await
                         .map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Track request failed: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Track request failed: {e:?}"))
                         })?;
 
                         // First handler should have handled it
@@ -501,9 +498,8 @@ async fn test_fallthrough_behavior() {
                         }))
                         .await
                         .map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Method2 request failed: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Method2 request failed: {e:?}"))
                         })?;
 
                         assert_eq!(response.result, "method2: fallthrough");
@@ -674,9 +670,8 @@ async fn test_handler_claims_notification() {
                             event: "test_event".to_string(),
                         })
                         .map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Failed to send notification: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Failed to send notification: {e:?}"))
                         })?;
 
                         // Give server time to process

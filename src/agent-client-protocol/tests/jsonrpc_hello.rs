@@ -146,9 +146,8 @@ async fn test_hello_world() {
                         };
 
                         let response = recv(cx.send_request(request)).await.map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Request failed: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Request failed: {e:?}"))
                         })?;
 
                         assert_eq!(response.echo, "pong: hello world");
@@ -242,18 +241,16 @@ async fn test_notification() {
                             message: "test log 1".to_string(),
                         })
                         .map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Failed to send notification: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Failed to send notification: {e:?}"))
                         })?;
 
                         cx.send_notification(LogNotification {
                             message: "test log 2".to_string(),
                         })
                         .map_err(|e| {
-                            agent_client_protocol::util::internal_error(format!(
-                                "Failed to send notification: {e:?}"
-                            ))
+                            agent_client_protocol::Error::internal_error()
+                                .data(format!("Failed to send notification: {e:?}"))
                         })?;
 
                         // Give the server time to process notifications
@@ -319,9 +316,8 @@ async fn test_multiple_sequential_requests() {
                             };
 
                             let response = recv(cx.send_request(request)).await.map_err(|e| {
-                                agent_client_protocol::util::internal_error(format!(
-                                    "Request {i} failed: {e:?}"
-                                ))
+                                agent_client_protocol::Error::internal_error()
+                                    .data(format!("Request {i} failed: {e:?}"))
                             })?;
 
                             assert_eq!(response.echo, format!("pong: message {i}"));
@@ -390,9 +386,8 @@ async fn test_concurrent_requests() {
                         // Now await all responses
                         for (i, response_future) in responses {
                             let response = recv(response_future).await.map_err(|e| {
-                                agent_client_protocol::util::internal_error(format!(
-                                    "Request {i} failed: {e:?}"
-                                ))
+                                agent_client_protocol::Error::internal_error()
+                                    .data(format!("Request {i} failed: {e:?}"))
                             })?;
 
                             assert_eq!(response.echo, format!("pong: concurrent message {i}"));

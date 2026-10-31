@@ -479,7 +479,7 @@ impl TraceHandle {
                 incoming,
                 message: message.clone(),
             })
-            .map_err(agent_client_protocol::util::internal_error)
+            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
     }
 
     /// Create a tracing bridge that wraps a proxy component.

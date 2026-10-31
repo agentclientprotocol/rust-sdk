@@ -747,6 +747,47 @@ v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "vendor/x" => ...
 v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "_vendor/x" => ...
 ```
 
+### Removed `util` helpers
+
+`util::internal_error(message)` and `util::parse_error(message)` duplicated the
+`Error` constructors and are removed. Build the error directly:
+
+```rust,ignore
+// Before
+Err(util::internal_error(format!("lost {id}")))
+result.map_err(util::internal_error)?;
+
+// After
+Err(Error::internal_error().data(format!("lost {id}")))
+result.map_err(Error::into_internal_error)?; // any `std::error::Error`
+```
+
+`util::TypeNotification` is removed. It duplicated
+`MatchDispatch::if_notification` for notifications. Wrap the message in
+`Dispatch::Notification` and use `MatchDispatch`, which returns a parse error
+for malformed params instead of logging and dropping them:
+
+```rust,ignore
+// Before
+TypeNotification::new(message)
+    .handle_if(async |notif: SessionNotification| { ... })
+    .await
+    .otherwise(async |untyped| { ... })
+    .await
+
+// After
+MatchDispatch::new(Dispatch::Notification(message))
+    .if_notification(async |notif: SessionNotification| { ... })
+    .await
+    .otherwise(async |dispatch| { ... })
+    .await
+```
+
+`agent-client-protocol` now depends on the `agent-client-protocol-derive`
+version released with it exactly (`=`), because the derive output calls
+hidden SDK internals. Depend on the derives through `agent_client_protocol`
+rather than adding the derive crate separately.
+
 ### MCP-over-ACP error codes are `ErrorCode`s
 
 `mcp_server::MCP_SERVER_UNAVAILABLE` (`-33001`) and
