@@ -817,6 +817,15 @@ request for a version above the selected one is still rejected.
   chain.
 - `McpOverAcpPolyfill` is `#[non_exhaustive]`. Create it with
   `McpOverAcpPolyfill::http()`.
+- The polyfill rewrites `McpServer::Acp` entries in `session/fork` in every
+  build. It used to forward them unchanged unless `unstable_session_fork` was
+  enabled.
+- The polyfill forwards a repeated `proxy/initialize` on the connection's
+  protocol version instead of closing its connection. An invalid
+  `protocolVersion` is answered with `-32602` instead of `-32603`, and a
+  request for a different version than the first one with `-32600`.
+- Conductor traces record the messages between the last proxy and the agent.
+  Trace snapshots and tools that read traces see these extra events.
 - `agent_client_protocol_trace_viewer::TraceViewerConfig` is
   `#[non_exhaustive]`. Start from `TraceViewerConfig::default()` and use the
   `port` and `open_browser` setters. `TraceSource` is no longer public.

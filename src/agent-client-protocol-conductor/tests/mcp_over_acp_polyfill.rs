@@ -498,6 +498,60 @@ async fn repeated_initialize_keeps_the_polyfill_connection_open()
     Ok(())
 }
 
+/// A malformed repeated `initialize` is answered, and the polyfill's
+/// connection stays open for later requests.
+#[tokio::test]
+async fn malformed_repeated_initialize_keeps_the_polyfill_connection_open()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let agent = RecordingAgent {
+        capabilities: agent_capabilities(McpCapabilities::new().http(true)),
+        observed: observed.clone(),
+    };
+
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport =
+        agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+
+    // The polyfill is the only proxy, so the conductor forwards the repeated
+    // `initialize` to it unchanged as `proxy/initialize`.
+    Client
+        .v1()
+        .name("polyfill-test-client")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent(
+                "polyfill-test-conductor".to_string(),
+                ProxiesAndAgent::new(agent).proxy(McpOverAcpPolyfill::http()),
+            )
+            .run(agent_client_protocol::ByteStreams::new(
+                conductor_out.compat_write(),
+                conductor_in.compat(),
+            ))
+            .await
+        })
+        .connect_with(transport, async |connection| {
+            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
+            // The polyfill's v1 connection negotiates `proxy/initialize`
+            // before its handler sees it, so a malformed version is answered
+            // with v1 rather than closing the connection.
+            let response = recv(connection.send_request(
+                agent_client_protocol::UntypedMessage::new(
+                    "initialize",
+                    serde_json::json!({ "protocolVersion": true }),
+                )?,
+            ))
+            .await?;
+            assert_eq!(response["protocolVersion"], 1, "{response}");
+            recv(connection.send_request(NewSessionRequest::new(PathBuf::from("/tmp")))).await?;
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(observed.setup.lock().unwrap().len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_downstream_keeps_capability_and_declaration_unchanged()
 -> Result<(), agent_client_protocol::Error> {
