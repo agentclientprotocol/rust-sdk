@@ -20,12 +20,22 @@ impl_jsonrpc_request_enum!(ClientRequest {
     #[cfg(feature = "unstable_llm_providers")]
     DisableProviderRequest => "providers/disable",
     LogoutRequest => "logout",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusRequest => "auth/status",
     NewSessionRequest => "session/new",
     LoadSessionRequest => "session/load",
     ListSessionsRequest => "session/list",
     DeleteSessionRequest => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionRequest => "session/fork",
+    #[cfg(feature = "unstable_session_archive")]
+    ArchiveSessionRequest => "session/archive",
+    #[cfg(feature = "unstable_session_archive")]
+    UnarchiveSessionRequest => "session/unarchive",
+    #[cfg(feature = "unstable_session_status")]
+    SessionStatusRequest => "session/status",
+    #[cfg(feature = "unstable_session_set_title")]
+    SetSessionTitleRequest => "session/set_title",
     ResumeSessionRequest => "session/resume",
     CloseSessionRequest => "session/close",
     SetSessionModeRequest => "session/set_mode",
@@ -44,12 +54,22 @@ impl_jsonrpc_response_enum!(AgentResponse {
     #[cfg(feature = "unstable_llm_providers")]
     DisableProviderResponse => "providers/disable",
     LogoutResponse => "logout",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusResponse => "auth/status",
     NewSessionResponse => "session/new",
     LoadSessionResponse => "session/load",
     ListSessionsResponse => "session/list",
     DeleteSessionResponse => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionResponse => "session/fork",
+    #[cfg(feature = "unstable_session_archive")]
+    ArchiveSessionResponse => "session/archive",
+    #[cfg(feature = "unstable_session_archive")]
+    UnarchiveSessionResponse => "session/unarchive",
+    #[cfg(feature = "unstable_session_status")]
+    SessionStatusResponse => "session/status",
+    #[cfg(feature = "unstable_session_set_title")]
+    SetSessionTitleResponse => "session/set_title",
     ResumeSessionResponse => "session/resume",
     CloseSessionResponse => "session/close",
     SetSessionModeResponse => "session/set_mode",
@@ -102,5 +122,7 @@ impl_jsonrpc_response_enum!(ClientResponse {
 impl_jsonrpc_notification_enum!(AgentNotification {
     SessionNotification => "session/update",
     CompleteElicitationNotification => "elicitation/complete",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusUpdateNotification => "auth/status_update",
     [ext] ExtNotification,
 });
