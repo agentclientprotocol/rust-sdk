@@ -10,16 +10,25 @@ description = "Conductor for orchestrating Agent Client Protocol proxy chains"
 keywords = ["acp", "agent", "conductor", "ai"]
 categories = ["development-tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [[bin]]
 name = "agent-client-protocol-conductor"
 path = "src/main.rs"
 
+# Skipped unless the polyfill's own v2 feature is enabled too, as
+# `cargo test --workspace --all-features` does.
+[[test]]
+name = "mcp_over_acp_polyfill_v2"
+required-features = ["unstable_protocol_v2", "agent-client-protocol-polyfill/unstable_protocol_v2"]
+
 [features]
 default = []
-unstable_protocol_v2 = [
-    "agent-client-protocol/unstable_protocol_v2",
-    "agent-client-protocol-polyfill/unstable_protocol_v2",
-]
+# The polyfill is a separate crate: enable its own `unstable_protocol_v2`
+# feature to use it in a v2 chain.
+unstable_protocol_v2 = ["agent-client-protocol/unstable_protocol_v2"]
 
 [dependencies]
 agent-client-protocol = { workspace = true, features = ["process", "stdio", "unstable_mcp_over_acp"] }

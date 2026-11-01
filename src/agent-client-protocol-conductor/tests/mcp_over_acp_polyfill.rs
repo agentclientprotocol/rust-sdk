@@ -464,6 +464,94 @@ async fn http_downstream_receives_stable_transformed_declarations_for_all_setup_
     Ok(())
 }
 
+/// A repeated `initialize` is forwarded through the polyfill as another
+/// `proxy/initialize` instead of closing its connection.
+#[tokio::test]
+async fn repeated_initialize_keeps_the_polyfill_connection_open()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let agent = RecordingAgent {
+        capabilities: agent_capabilities(McpCapabilities::new().http(true)),
+        observed: observed.clone(),
+    };
+
+    run_with_polyfill(agent, Arc::new(AtomicUsize::new(0)), async |connection| {
+        for _ in 0..2 {
+            let initialize =
+                recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
+            assert!(initialize.agent_capabilities.mcp_capabilities.acp);
+        }
+        recv(connection.send_request(
+            NewSessionRequest::new(PathBuf::from("/tmp")).mcp_servers(vec![native_server()]),
+        ))
+        .await?;
+        Ok(())
+    })
+    .await?;
+
+    let setup = observed.setup.lock().unwrap();
+    assert_eq!(setup.len(), 1);
+    assert!(matches!(
+        setup[0].mcp_servers.as_slice(),
+        [McpServer::Http(_)]
+    ));
+    Ok(())
+}
+
+/// A malformed repeated `initialize` is answered, and the polyfill's
+/// connection stays open for later requests.
+#[tokio::test]
+async fn malformed_repeated_initialize_keeps_the_polyfill_connection_open()
+-> Result<(), agent_client_protocol::Error> {
+    let observed = Arc::new(ObservedRequests::default());
+    let agent = RecordingAgent {
+        capabilities: agent_capabilities(McpCapabilities::new().http(true)),
+        observed: observed.clone(),
+    };
+
+    let (editor_out, conductor_in) = duplex(4096);
+    let (conductor_out, editor_in) = duplex(4096);
+    let transport =
+        agent_client_protocol::ByteStreams::new(editor_out.compat_write(), editor_in.compat());
+
+    // The polyfill is the only proxy, so the conductor forwards the repeated
+    // `initialize` to it unchanged as `proxy/initialize`.
+    Client
+        .v1()
+        .name("polyfill-test-client")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent(
+                "polyfill-test-conductor".to_string(),
+                ProxiesAndAgent::new(agent).proxy(McpOverAcpPolyfill::http()),
+            )
+            .run(agent_client_protocol::ByteStreams::new(
+                conductor_out.compat_write(),
+                conductor_in.compat(),
+            ))
+            .await
+        })
+        .connect_with(transport, async |connection| {
+            recv(connection.send_request(InitializeRequest::new(ProtocolVersion::V1))).await?;
+            // The polyfill's v1 connection negotiates `proxy/initialize`
+            // before its handler sees it, so a malformed version is answered
+            // with v1 rather than closing the connection.
+            let response = recv(connection.send_request(
+                agent_client_protocol::UntypedMessage::new(
+                    "initialize",
+                    serde_json::json!({ "protocolVersion": true }),
+                )?,
+            ))
+            .await?;
+            assert_eq!(response["protocolVersion"], 1, "{response}");
+            recv(connection.send_request(NewSessionRequest::new(PathBuf::from("/tmp")))).await?;
+            Ok(())
+        })
+        .await?;
+
+    assert_eq!(observed.setup.lock().unwrap().len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn native_downstream_keeps_capability_and_declaration_unchanged()
 -> Result<(), agent_client_protocol::Error> {

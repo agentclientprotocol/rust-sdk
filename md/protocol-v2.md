@@ -368,13 +368,16 @@ schema, but each supplied component must support that version. Use
 `Agent.protocol_router()` or `Proxy.protocol_router()` when a static component
 has separate implementations.
 Custom `InstantiateProxiesAndAgent` and `InstantiateProxies` implementations
-receive a `SelectedInitializeRequest` whose variant is the selected version,
-and reject the versions they do not support (for example with
-`SelectedInitializeRequest::into_v1`). Returning the initialize request
-unchanged preserves its complete raw parameters for an exact-version request,
-including unknown extensions. Returning a modified typed request makes that
-serialized request authoritative. The conductor pins `protocolVersion` to its
-selected version even if an instantiator attempts to change it.
+receive a `SelectedInitializeRequest` whose variant is the selected version.
+An instantiator that supports only a lower version negotiates down by
+returning the request for that version (for example with
+`SelectedInitializeRequest::into_v1`, which keeps what parses under v1).
+Returning the initialize request unchanged preserves its complete raw
+parameters for an exact-version request, including unknown extensions.
+Returning a modified typed request makes that serialized request
+authoritative. The conductor sets `protocolVersion` to the version of the
+returned variant even if an instantiator attempts to change the field, and
+rejects a variant above the selected version.
 
 ### MCP compatibility polyfill
 
@@ -383,7 +386,7 @@ The concrete
 participate in a v2 conductor chain when its `unstable_protocol_v2` feature is
 enabled. It selects v1 or v2 from `proxy/initialize`, uses that version's MCP
 capability and wire types, and adapts native `McpServer::Acp` declarations in
-v2 `session/new`, `session/resume`, and feature-gated `session/fork` requests.
+v2 `session/new`, `session/resume`, and `session/fork` requests.
 Other declarations and unrelated request fields remain unchanged. See
 [MCP-over-ACP Compatibility Bridge](./mcp-bridge.md) for placement and feature
 configuration.

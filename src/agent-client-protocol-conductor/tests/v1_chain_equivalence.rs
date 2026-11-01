@@ -18,7 +18,9 @@ use agent_client_protocol::{
     UntypedMessage,
     schema::{ProtocolVersion, v1},
 };
-use agent_client_protocol_conductor::{ConductorImpl, SelectedInitializeRequest};
+use agent_client_protocol_conductor::{
+    ConductorImpl, InstantiatedChain, SelectedInitializeRequest,
+};
 use agent_client_protocol_rmcp::rmcp_3::McpServerExt as _;
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};
@@ -106,7 +108,7 @@ async fn run_v1_chain_with(
             let request = request.into_v1()?;
             let proxies = vec![proxy()];
             let agent = DynConnectTo::new(recording_v1_agent(received));
-            Ok((request.into(), proxies, agent))
+            Ok(InstantiatedChain::new(request, proxies, agent))
         }
     });
 
