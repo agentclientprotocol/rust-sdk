@@ -312,7 +312,7 @@ impl MatchDispatch {
                         // Method matches, parse the response
                         let typed_router: ResponseRouter<Req::Response> = router.cast();
                         let typed_result = match result {
-                            Ok(value) => Req::Response::from_value(typed_router.method(), value),
+                            Ok(value) => Req::Response::from_json(typed_router.method(), value),
                             Err(err) => Err(err),
                         };
 

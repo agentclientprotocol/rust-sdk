@@ -30,6 +30,14 @@ const DISPATCH_BARRIER_METHOD: &str = "_test/session-restore-dispatch-barrier";
 #[notification(method = "_test/session-restore-dispatch-barrier")]
 struct DispatchBarrierNotification {}
 
+/// The JSON value `parse_message` takes for a raw message's `params`.
+fn params_value(params: Option<&agent_client_protocol::RawJsonRpcParams>) -> serde_json::Value {
+    params.cloned().map_or(
+        serde_json::Value::Null,
+        agent_client_protocol::RawJsonRpcParams::into_value,
+    )
+}
+
 fn modes_state() -> SessionModeState {
     SessionModeState::new(
         SessionModeId::new("default"),
@@ -138,7 +146,10 @@ async fn load_session_preserves_pre_response_replay_and_exact_response() {
         else {
             panic!("expected session/load")
         };
-        let parsed = LoadSessionRequest::parse_message(&request.method, &request.params)?;
+        let parsed = LoadSessionRequest::parse_message(
+            &request.method,
+            &params_value(request.params.as_ref()),
+        )?;
         assert_eq!(parsed.session_id, peer_session_id);
         assert_eq!(parsed.cwd, PathBuf::from("/restore/load"));
 
@@ -200,7 +211,10 @@ async fn resume_session_returns_exact_response_and_an_active_session() {
         else {
             panic!("expected session/resume")
         };
-        let parsed = ResumeSessionRequest::parse_message(&request.method, &request.params)?;
+        let parsed = ResumeSessionRequest::parse_message(
+            &request.method,
+            &params_value(request.params.as_ref()),
+        )?;
         assert_eq!(parsed.session_id, session_id);
 
         for message in [
@@ -251,7 +265,10 @@ async fn resume_session_from_preserves_the_existing_request() {
             panic!("expected session/resume")
         };
         assert_eq!(
-            ResumeSessionRequest::parse_message(&request.method, &request.params)?,
+            ResumeSessionRequest::parse_message(
+                &request.method,
+                &params_value(request.params.as_ref())
+            )?,
             peer_request
         );
         peer.tx
@@ -484,8 +501,10 @@ async fn cancelling_restore_cancels_request_and_removes_routing() {
         else {
             panic!("dropping the restore future should send $/cancel_request")
         };
-        let cancellation =
-            CancelRequestNotification::parse_message(&notification.method, &notification.params)?;
+        let cancellation = CancelRequestNotification::parse_message(
+            &notification.method,
+            &params_value(notification.params.as_ref()),
+        )?;
         assert_eq!(cancellation.request_id, restore_request_id.into());
 
         for message in [

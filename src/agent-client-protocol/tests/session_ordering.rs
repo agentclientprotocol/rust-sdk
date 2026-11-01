@@ -25,6 +25,15 @@ use agent_client_protocol::{
 
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The JSON value `parse_message` takes for a raw message's `params`.
+#[cfg(feature = "unstable_protocol_v2")]
+fn params_value(params: Option<&agent_client_protocol::RawJsonRpcParams>) -> serde_json::Value {
+    params.cloned().map_or(
+        serde_json::Value::Null,
+        agent_client_protocol::RawJsonRpcParams::into_value,
+    )
+}
+
 #[cfg(feature = "unstable_protocol_v2")]
 async fn initialize_raw_v2_proxy(
     peer: &mut Channel,
@@ -50,7 +59,7 @@ async fn initialize_raw_v2_proxy(
         panic!("expected the proxy initialize response");
     };
     assert_eq!(id, initialize_id);
-    let response = v2::InitializeResponse::from_value("proxy/initialize", result)?;
+    let response = v2::InitializeResponse::from_json("proxy/initialize", result)?;
     assert_eq!(response.protocol_version, ProtocolVersion::V2);
     Ok(())
 }
@@ -636,7 +645,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
         };
         let successor = SuccessorMessage::<v2::NewSessionRequest>::parse_message(
             forwarded.method.as_ref(),
-            &forwarded.params,
+            &params_value(forwarded.params.as_ref()),
         )?;
         assert_eq!(
             successor.message.cwd,
@@ -671,14 +680,14 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
                     agent_client_protocol::RawJsonRpcResponse::Result { id, result },
                 ) => {
                     assert_eq!(id, upstream_id);
-                    let response = v2::NewSessionResponse::from_value("session/new", result)?;
+                    let response = v2::NewSessionResponse::from_json("session/new", result)?;
                     assert_eq!(response.session_id, session_id);
                     saw_response = true;
                 }
                 RawJsonRpcMessage::Notification(notification) => {
                     let update = v2::UpdateSessionNotification::parse_message(
                         notification.method.as_ref(),
-                        &notification.params,
+                        &params_value(notification.params.as_ref()),
                     )?;
                     assert_eq!(update.session_id, session_id);
                     assert!(matches!(
@@ -785,7 +794,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
         };
         let successor = SuccessorMessage::<v2::ForkSessionRequest>::parse_message(
             forwarded.method.as_ref(),
-            &forwarded.params,
+            &params_value(forwarded.params.as_ref()),
         )?;
         assert_eq!(successor.message.session_id, expected_source_session_id);
         assert_eq!(
@@ -821,7 +830,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
                     agent_client_protocol::RawJsonRpcResponse::Result { id, result },
                 ) => {
                     assert_eq!(id, upstream_id);
-                    let response = v2::ForkSessionResponse::from_value("session/fork", result)?;
+                    let response = v2::ForkSessionResponse::from_json("session/fork", result)?;
                     assert_eq!(response.session_id, forked_session_id);
                     assert_eq!(response.config_options.len(), 1);
                     saw_response = true;
@@ -829,7 +838,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
                 RawJsonRpcMessage::Notification(notification) => {
                     let update = v2::UpdateSessionNotification::parse_message(
                         notification.method.as_ref(),
-                        &notification.params,
+                        &params_value(notification.params.as_ref()),
                     )?;
                     assert_eq!(update.session_id, forked_session_id);
                     assert!(matches!(
@@ -936,7 +945,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
         };
         let successor = SuccessorMessage::<v2::ResumeSessionRequest>::parse_message(
             forwarded.method.as_ref(),
-            &forwarded.params,
+            &params_value(forwarded.params.as_ref()),
         )?;
         assert_eq!(successor.message.session_id, session_id);
 
@@ -964,7 +973,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
         };
         let replay = v2::UpdateSessionNotification::parse_message(
             notification.method.as_ref(),
-            &notification.params,
+            &params_value(notification.params.as_ref()),
         )?;
         assert_eq!(replay.session_id, session_id);
         assert!(matches!(
@@ -979,7 +988,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
             panic!("expected the resume response after replay");
         };
         assert_eq!(id, upstream_id);
-        let response = v2::ResumeSessionResponse::from_value("session/resume", result)?;
+        let response = v2::ResumeSessionResponse::from_json("session/resume", result)?;
         assert_eq!(response, upstream_response);
 
         peer_done_tx

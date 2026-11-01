@@ -75,7 +75,8 @@ async fn request(
     method: &str,
     params: Value,
 ) -> Result<Result<Value, Error>, Error> {
-    let (Channel { mut rx, tx }, future) = ConnectTo::<Conductor>::into_channel_and_future(router);
+    let (Channel { mut rx, tx, .. }, future) =
+        ConnectTo::<Conductor>::into_channel_and_future(router);
     let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
     let request_id = RawJsonRpcId::Number(1);
 
@@ -170,6 +171,78 @@ async fn v2_only_router_rejects_v1_like_a_v2_agent() -> Result<(), Error> {
         Some(serde_json::json!({ "requested": 1, "supported": [2] }))
     );
     assert_eq!(v2_hits.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+/// Wait for the response to `id` on `rx`, skipping other frames.
+async fn response_to(
+    rx: &mut futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
+    id: &RawJsonRpcId,
+) -> Result<Result<Value, Error>, Error> {
+    loop {
+        let frame = rx.next().await.ok_or_else(|| {
+            Error::internal_error().data("proxy router closed before the response")
+        })?;
+        let TransportFrame::Single(RawJsonRpcMessage::Response(response)) = frame else {
+            continue;
+        };
+        match response {
+            RawJsonRpcResponse::Result { id: got, result } if got == *id => return Ok(Ok(result)),
+            RawJsonRpcResponse::Error { id: got, error } if got == *id => {
+                return Ok(Err(error.into_acp_error()));
+            }
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn accepts_proxy_initialize_again_after_a_rejection() -> Result<(), Error> {
+    let v2_hits = Arc::new(AtomicUsize::new(0));
+    let router = Proxy
+        .protocol_router()
+        .with_v2(v2_proxy(Arc::clone(&v2_hits)));
+    let (Channel { mut rx, tx, .. }, future) =
+        ConnectTo::<Conductor>::into_channel_and_future(router);
+    let task = tokio::spawn(future.expect("proxy router owns a connection driver"));
+    let send = |message: RawJsonRpcMessage| {
+        tx.unbounded_send(TransportFrame::Single(message))
+            .map_err(Error::into_internal_error)
+    };
+
+    // A notification before initialization is ignored, and a rejected
+    // `proxy/initialize` leaves the connection open for another attempt,
+    // exactly as with `Agent::protocol_router`.
+    send(RawJsonRpcMessage::notification(
+        "_com.example/early".into(),
+        serde_json::json!({}),
+    )?)?;
+    let rejected_id = RawJsonRpcId::Number(1);
+    send(RawJsonRpcMessage::request(
+        "proxy/initialize".into(),
+        serde_json::to_value(v1_proxy_initialize(ProtocolVersion::V1))
+            .map_err(Error::into_internal_error)?,
+        rejected_id.clone(),
+    )?)?;
+    let error = response_to(&mut rx, &rejected_id)
+        .await?
+        .expect_err("a v2-only router must reject v1");
+    assert_eq!(i32::from(error.code), -32022);
+
+    let accepted_id = RawJsonRpcId::Number(2);
+    send(RawJsonRpcMessage::request(
+        "proxy/initialize".into(),
+        serde_json::to_value(v2_proxy_initialize(ProtocolVersion::V2))
+            .map_err(Error::into_internal_error)?,
+        accepted_id.clone(),
+    )?)?;
+    let response = response_to(&mut rx, &accepted_id).await??;
+    assert_eq!(response["protocolVersion"], 2);
+    assert_eq!(v2_hits.load(Ordering::SeqCst), 1);
+
+    drop(tx);
+    drop(rx);
+    task.await.map_err(Error::into_internal_error)??;
     Ok(())
 }
 
@@ -321,5 +394,74 @@ async fn preserves_the_complete_initial_transport_frame() -> Result<(), Error> {
         router_task.await.map_err(Error::into_internal_error)??;
     }
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn answers_malformed_frames_before_proxy_initialize_and_keeps_reading() -> Result<(), Error> {
+    use tokio::io::{AsyncWriteExt as _, BufReader};
+
+    let (mut conductor_writer, router_reader) = tokio::io::duplex(4096);
+    let (router_writer, conductor_reader) = tokio::io::duplex(4096);
+    let conductor_transport =
+        ByteStreams::new(router_writer.compat_write(), router_reader.compat());
+
+    let (router_to_v1_writer, v1_reader) = tokio::io::duplex(4096);
+    let (mut v1_writer, v1_to_router_reader) = tokio::io::duplex(4096);
+    let v1_transport = ByteStreams::new(
+        router_to_v1_writer.compat_write(),
+        v1_to_router_reader.compat(),
+    );
+    let v2_hits = Arc::new(AtomicUsize::new(0));
+    let router = Proxy
+        .protocol_router()
+        .with_v1(v1_transport)
+        .with_v2(v2_proxy(Arc::clone(&v2_hits)));
+    let router_task = tokio::spawn(router.connect_to(conductor_transport));
+    let mut conductor_reader = BufReader::new(conductor_reader);
+    let mut v1_reader = BufReader::new(v1_reader);
+
+    // Invalid JSON gets its own parse error with a null id.
+    conductor_writer
+        .write_all(b"{not json\n")
+        .await
+        .map_err(Error::into_internal_error)?;
+    let response = read_wire_json(&mut conductor_reader).await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert_eq!(response["error"]["code"], -32700, "{response}");
+
+    // A batch gets one invalid request error with a null id.
+    let batch = serde_json::json!([{
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "proxy/initialize",
+        "params": initialize_params_with_extensions(ProtocolVersion::V1)?,
+    }]);
+    write_wire_json(&mut conductor_writer, &batch).await?;
+    let response = read_wire_json(&mut conductor_reader).await?;
+    assert_eq!(response["id"], Value::Null, "{response}");
+    assert_eq!(response["error"]["code"], -32600, "{response}");
+
+    // The router keeps reading, and the selected implementation receives the
+    // first valid `proxy/initialize` unchanged.
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "proxy/initialize",
+        "params": initialize_params_with_extensions(ProtocolVersion::V1)?,
+    });
+    write_wire_json(&mut conductor_writer, &initialize).await?;
+    assert_eq!(read_wire_json(&mut v1_reader).await?, initialize);
+    assert_eq!(v2_hits.load(Ordering::SeqCst), 0);
+
+    conductor_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    v1_writer
+        .shutdown()
+        .await
+        .map_err(Error::into_internal_error)?;
+    router_task.await.map_err(Error::into_internal_error)??;
     Ok(())
 }

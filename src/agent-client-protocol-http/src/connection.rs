@@ -427,6 +427,7 @@ impl ConnectionRegistry {
         let Channel {
             rx: mut agent_rx,
             tx: mut agent_tx,
+            ..
         } = channel;
         let inbound = async move {
             while let Some(msg) = inbound_rx.recv().await {

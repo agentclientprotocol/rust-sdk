@@ -38,7 +38,7 @@ impl PolyfillProtocol {
     /// Validate against the negotiated ACP version before projecting onto HTTP.
     pub(super) fn message_response(self, value: Value) -> Result<NativeMcpOutcome, Error> {
         match self {
-            Self::V1 => match v1::MessageMcpResponse::from_value("mcp/message", value)? {
+            Self::V1 => match v1::MessageMcpResponse::from_json("mcp/message", value)? {
                 v1::MessageMcpResponse::Result { result, .. } => {
                     Ok(NativeMcpOutcome::Result(result))
                 }
@@ -48,7 +48,7 @@ impl PolyfillProtocol {
                 _ => Err(Error::invalid_request().data("unsupported MCP outcome")),
             },
             #[cfg(feature = "unstable_protocol_v2")]
-            Self::V2 => match v2::MessageMcpResponse::from_value("mcp/message", value)? {
+            Self::V2 => match v2::MessageMcpResponse::from_json("mcp/message", value)? {
                 v2::MessageMcpResponse::Result { result, .. } => {
                     Ok(NativeMcpOutcome::Result(result))
                 }
@@ -110,7 +110,7 @@ impl PolyfillProtocol {
     ) -> Result<DownstreamMcpMode, Error> {
         let mode = match self {
             Self::V1 => {
-                let parsed = agent_client_protocol::schema::v1::InitializeResponse::from_value(
+                let parsed = agent_client_protocol::schema::v1::InitializeResponse::from_json(
                     "initialize",
                     response.clone(),
                 )?;
@@ -121,7 +121,7 @@ impl PolyfillProtocol {
             }
             #[cfg(feature = "unstable_protocol_v2")]
             Self::V2 => {
-                let parsed = v2::InitializeResponse::from_value("initialize", response.clone())?;
+                let parsed = v2::InitializeResponse::from_json("initialize", response.clone())?;
                 let mcp = parsed
                     .capabilities
                     .session

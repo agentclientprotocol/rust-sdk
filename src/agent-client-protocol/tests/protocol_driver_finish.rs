@@ -6,7 +6,7 @@ use std::{
     future, io,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
@@ -16,10 +16,7 @@ use agent_client_protocol::{
     Lines, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, TransportFrame,
     schema::{ProtocolVersion, v1},
 };
-use futures::{
-    FutureExt as _, SinkExt as _, StreamExt as _,
-    channel::{mpsc, oneshot},
-};
+use futures::{FutureExt as _, SinkExt as _, StreamExt as _, channel::mpsc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -193,7 +190,7 @@ async fn run_over_lines<R: Role>(
 
 #[tokio::test(flavor = "current_thread")]
 async fn client_connector_cancels_opaque_driver_after_final_frame() -> Result<(), Error> {
-    let (channel, Channel { mut rx, tx }) = Channel::duplex();
+    let (channel, Channel { mut rx, tx, .. }) = Channel::duplex();
     let input_guard = tx.clone();
     let dropped = Arc::new(AtomicBool::new(false));
     let drop_signal = DropSignal(dropped.clone());
@@ -252,102 +249,48 @@ async fn client_connector_cancels_opaque_driver_after_final_frame() -> Result<()
     Ok(())
 }
 
-// The agent router keeps a connection open after a rejected initialize so the
-// client can retry, and a router with v1 configured hands anything that does
-// not select v2 to the v1 implementation. A v2-only proxy router still
-// finishes after rejecting the conductor's `proxy/initialize`, so it
-// exercises the rejection drain.
+// Both routers keep the connection open after a rejected initialize so the
+// peer can retry. The rejection must still reach the wire while remote input
+// stays open, and the router finishes once input reaches EOF.
 #[tokio::test(flavor = "current_thread")]
 async fn rejected_initialize_flushes_lines_without_input_eof() -> Result<(), Error> {
-    let frames = run_over_lines(
-        Proxy.protocol_router().with_v2(Proxy.v2()),
-        "proxy/initialize",
-        json!({}),
-    )
-    .await?;
-    assert_eq!(frames.len(), 1, "{frames:?}");
-    assert_rejection(&frames[0]);
-    Ok(())
-}
+    let (input_guard, incoming) = mpsc::unbounded::<io::Result<String>>();
+    let (outgoing, mut output) = mpsc::unbounded::<String>();
+    let lines = Lines::new(outgoing.sink_map_err(io::Error::other), incoming);
+    input_guard
+        .unbounded_send(Ok(json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "proxy/initialize",
+            "params": {},
+        })
+        .to_string()))
+        .map_err(Error::into_internal_error)?;
 
-#[tokio::test(flavor = "current_thread")]
-async fn rejected_initialize_requests_custom_finish_once_after_handoff() -> Result<(), Error> {
-    for fail_flush in [false, true] {
-        let (channel, Channel { mut rx, tx }) = Channel::duplex();
-        let input_guard = tx;
-        input_guard
-            .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::request(
-                "proxy/initialize".into(),
-                json!({}),
-                agent_client_protocol::RawJsonRpcId::Number(7),
-            )?))
-            .map_err(Error::into_internal_error)?;
-
-        let (finish_tx, finish_rx) = oneshot::channel();
-        let (flush_started_tx, flush_started_rx) = oneshot::channel();
-        let (flush_release_tx, flush_release_rx) = oneshot::channel();
-        let finish_calls = Arc::new(AtomicUsize::new(0));
-        let callback_calls = finish_calls.clone();
-        let drained = Arc::new(AtomicBool::new(false));
-        let driver_drained = drained.clone();
-        let flush_error = Error::internal_error().data("rejection flush failed");
-        let driver_error = flush_error.clone();
-        let adapter = NormalizedAdapter {
-            channel,
-            driver: ConnectionDriver::with_finish(
-                async move {
-                    // Consume no output until finish. Sealing then draining
-                    // proves the rejection was handed off before the hook.
-                    finish_rx
-                        .await
-                        .expect("explicit cooperative finish request");
-                    rx.close();
-                    let mut frames = Vec::new();
-                    while let Some(frame) = rx.next().await {
-                        frames.push(frame_value(frame)?);
-                    }
-                    assert_eq!(frames.len(), 1, "{frames:?}");
-                    assert_rejection(&frames[0]);
-                    flush_started_tx.send(()).unwrap();
-                    flush_release_rx.await.unwrap();
-                    driver_drained.store(true, Ordering::SeqCst);
-                    if fail_flush {
-                        Err(driver_error)
-                    } else {
-                        Ok(())
-                    }
-                },
-                move || {
-                    callback_calls.fetch_add(1, Ordering::SeqCst);
-                    finish_tx.send(()).expect("owned driver is still alive");
-                },
-            ),
-        };
-        let mut router = Box::pin(
-            Proxy
-                .protocol_router()
-                .with_v2(Proxy.v2())
-                .connect_to(adapter),
-        );
-
-        assert!(router.as_mut().now_or_never().is_none());
-        assert_eq!(finish_calls.load(Ordering::SeqCst), 1);
-        assert!(matches!(flush_started_rx.now_or_never(), Some(Ok(()))));
-        assert!(!drained.load(Ordering::SeqCst), "flush is still gated");
-
-        flush_release_tx.send(()).unwrap();
-        let result = tokio::time::timeout(DEADLINE, router)
-            .await
-            .expect("rejection drain must not require remote input EOF");
-        if fail_flush {
-            assert_eq!(result, Err(flush_error));
-        } else {
-            result?;
+    let mut router = Box::pin(
+        Proxy
+            .protocol_router()
+            .with_v2(Proxy.v2())
+            .connect_to(lines),
+    );
+    let line = tokio::time::timeout(DEADLINE, async {
+        futures::select! {
+            line = output.next() => line,
+            result = router.as_mut().fuse() => {
+                panic!("router finished before input EOF: {result:?}")
+            }
         }
-        assert_eq!(finish_calls.load(Ordering::SeqCst), 1);
-        assert!(drained.load(Ordering::SeqCst), "owned drain was awaited");
-        drop(input_guard);
-    }
+    })
+    .await
+    .expect("rejection must be flushed without input EOF")
+    .expect("router writes the rejection");
+    assert_rejection(&serde_json::from_str(&line).map_err(Error::into_internal_error)?);
+
+    drop(input_guard);
+    tokio::time::timeout(DEADLINE, router)
+        .await
+        .expect("router finishes after input EOF")?;
+    assert!(output.next().await.is_none(), "no further frames");
     Ok(())
 }
 

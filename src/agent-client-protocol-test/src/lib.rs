@@ -132,7 +132,10 @@ macro_rules! impl_jr_message {
             fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
                 UntypedMessage::new($method, self)
             }
-            fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, crate::Error> {
+            fn parse_message(
+                method: &str,
+                params: &serde_json::Value,
+            ) -> Result<Self, crate::Error> {
                 if !Self::matches_method(method) {
                     return Err(crate::Error::method_not_found());
                 }
@@ -183,7 +186,7 @@ macro_rules! impl_jr_response_payload {
             fn into_json(self, _method: &str) -> Result<serde_json::Value, crate::Error> {
                 Ok(serde_json::to_value(self)?)
             }
-            fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+            fn from_json(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
                 Ok(serde_json::from_value(value)?)
             }
         }

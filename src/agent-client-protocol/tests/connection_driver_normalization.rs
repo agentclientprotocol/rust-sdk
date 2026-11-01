@@ -43,7 +43,7 @@ impl JsonRpcMessage for ProbeNotification {
         UntypedMessage::new(self.method(), self)
     }
 
-    fn parse_message(method: &str, params: &impl Serialize) -> Result<Self, Error> {
+    fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, Error> {
         if !Self::matches_method(method) {
             return Err(Error::method_not_found());
         }
@@ -350,7 +350,7 @@ async fn finite_builder_stops_buffered_input_delivery_without_closing_raw_receiv
 #[tokio::test]
 async fn underway_close_keeps_callback_phase_task_progress_before_sealing_output() {
     let (channel, peer) = Channel::duplex();
-    let Channel { mut rx, tx } = peer;
+    let Channel { mut rx, tx, .. } = peer;
     drop(tx);
     let (entered_tx, entered_rx) = futures::channel::oneshot::channel();
     let (release_tx, release_rx) = futures::channel::oneshot::channel();
@@ -409,7 +409,7 @@ async fn underway_close_keeps_callback_phase_task_progress_before_sealing_output
 #[tokio::test]
 async fn success_does_not_resume_message_delivery_or_start_queued_tasks_for_drain() {
     let (channel, peer) = Channel::duplex();
-    let Channel { mut rx, tx } = peer;
+    let Channel { mut rx, tx, .. } = peer;
     for message in (0..2).map(|sequence| {
         let TransportFrame::Single(message) = frame(sequence) else {
             unreachable!()
@@ -499,6 +499,7 @@ async fn reactive_completion_probe(owned: bool) {
     let Channel {
         rx: remote_receive_guard,
         tx: escaped_producer,
+        ..
     } = peer;
     for sequence in 0..3 {
         escaped_producer.unbounded_send(frame(sequence)).unwrap();
@@ -598,7 +599,7 @@ async fn normalized_split_duplex_half_close_allows_final_reverse_response() {
     let transport = ByteStreams::new(sdk_outgoing.compat_write(), sdk_incoming.compat());
     let (channel, driver) = ConnectTo::<UntypedRole>::into_channel_and_future(transport);
     let mut driver = Box::pin(driver.expect("ByteStreams must own transport work"));
-    let Channel { mut rx, tx } = channel;
+    let Channel { mut rx, tx, .. } = channel;
     tx.unbounded_send(TransportFrame::Single(
         RawJsonRpcMessage::request(
             "normalization-request".into(),

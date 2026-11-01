@@ -46,7 +46,7 @@ fn delete_session_response_round_trips_json() {
         .unwrap();
     assert_eq!(value, json!({}));
 
-    let parsed = DeleteSessionResponse::from_value("session/delete", value).unwrap();
+    let parsed = DeleteSessionResponse::from_json("session/delete", value).unwrap();
     assert_eq!(parsed, DeleteSessionResponse::new());
 
     assert_request_response_pair::<DeleteSessionRequest>();

@@ -88,13 +88,33 @@ pub trait Protocol: sealed::Sealed + Copy + Debug + Default + Send + Sync + 'sta
         + 'static;
 
     /// The connection type that builder callbacks receive for `Counterpart`.
-    type Connection<Counterpart: Role>: Clone + Send + Sync + 'static;
+    ///
+    /// Every connection type converts back to the version-neutral
+    /// [`ConnectionTo`] with `Into`, so code generic over `P` can reach the
+    /// raw connection:
+    ///
+    /// ```
+    /// use agent_client_protocol::{Agent, ConnectionTo, Protocol};
+    ///
+    /// fn raw<P: Protocol>(connection: P::Connection<Agent>) -> ConnectionTo<Agent> {
+    ///     connection.into()
+    /// }
+    /// ```
+    type Connection<Counterpart: Role>: Clone
+        + Send
+        + Sync
+        + Into<ConnectionTo<Counterpart>>
+        + 'static;
 }
 
 pub(crate) mod sealed {
     use super::{ConnectionTo, Protocol, RawJsonRpcId, Role};
 
     pub trait Sealed {
+        /// The ACP protocol version this marker types, or `None` for
+        /// [`Raw`](super::Raw).
+        fn protocol_version() -> Option<crate::schema::ProtocolVersion>;
+
         /// Wraps the version-neutral connection in this version's connection
         /// type.
         fn connection_from_raw<Counterpart: Role>(
@@ -118,6 +138,11 @@ pub(crate) mod sealed {
     }
 }
 
+/// The ACP protocol version `P` types, or `None` for [`Raw`].
+pub(crate) fn protocol_version<P: Protocol>() -> Option<crate::schema::ProtocolVersion> {
+    <P as sealed::Sealed>::protocol_version()
+}
+
 pub(crate) fn connection_from_raw<P: Protocol, Counterpart: Role>(
     connection: ConnectionTo<Counterpart>,
 ) -> P::Connection<Counterpart> {
@@ -133,6 +158,10 @@ pub(crate) fn connection_from_raw<P: Protocol, Counterpart: Role>(
 pub struct Raw;
 
 impl sealed::Sealed for Raw {
+    fn protocol_version() -> Option<crate::schema::ProtocolVersion> {
+        None
+    }
+
     fn connection_from_raw<Counterpart: Role>(
         connection: ConnectionTo<Counterpart>,
     ) -> ConnectionTo<Counterpart> {
@@ -160,6 +189,10 @@ impl Protocol for Raw {
 pub struct V1;
 
 impl sealed::Sealed for V1 {
+    fn protocol_version() -> Option<crate::schema::ProtocolVersion> {
+        Some(crate::schema::ProtocolVersion::V1)
+    }
+
     fn connection_from_raw<Counterpart: Role>(
         connection: ConnectionTo<Counterpart>,
     ) -> super::v1_connection::ConnectionTo<Counterpart> {
@@ -191,6 +224,10 @@ pub struct V2;
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl sealed::Sealed for V2 {
+    fn protocol_version() -> Option<crate::schema::ProtocolVersion> {
+        Some(crate::schema::ProtocolVersion::V2)
+    }
+
     fn connection_from_raw<Counterpart: Role>(
         connection: ConnectionTo<Counterpart>,
     ) -> super::v2_connection::ConnectionTo<Counterpart> {

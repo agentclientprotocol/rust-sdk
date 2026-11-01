@@ -33,7 +33,7 @@ impl JsonRpcMessage for EchoRequestResponse {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !<Self as JsonRpcMessage>::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());
@@ -47,7 +47,7 @@ impl JsonRpcResponse for EchoRequestResponse {
         agent_client_protocol::util::json_cast(self)
     }
 
-    fn from_value(
+    fn from_json(
         _method: &str,
         value: serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
@@ -79,7 +79,7 @@ impl JsonRpcMessage for RetryNotification {
 
     fn parse_message(
         method: &str,
-        params: &impl serde::Serialize,
+        params: &serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {
         if !Self::matches_method(method) {
             return Err(agent_client_protocol::Error::method_not_found());

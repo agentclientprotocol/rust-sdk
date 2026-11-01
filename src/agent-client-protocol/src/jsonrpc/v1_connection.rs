@@ -4,7 +4,7 @@ use super::ConnectionTo as RawConnectionTo;
 use super::{
     Builder, ConnectTo, ConnectionTermination, Dispatch, DynamicHandlerGuard,
     HandleConnectionClose, HandleDispatchFrom, JsonRpcNotification, JsonRpcRequest,
-    PreparedRequest, Protocol, RawJsonRpcId, SentRequest, V1, run::RunWithConnectionTo,
+    PreparedRequest, Protocol, SentRequest, V1, run::RunWithConnectionTo,
 };
 use crate::role::{HasPeer, Role};
 
@@ -27,6 +27,15 @@ use crate::role::{HasPeer, Role};
 #[derive(Clone, Debug)]
 pub struct ConnectionTo<Counterpart: Role> {
     pub(crate) inner: RawConnectionTo<Counterpart>,
+}
+
+impl<Counterpart: Role> From<ConnectionTo<Counterpart>> for RawConnectionTo<Counterpart> {
+    /// The same as [`ConnectionTo::into_raw`]. Generic code over
+    /// [`Protocol`] uses it to turn a `P::Connection<Counterpart>` back into
+    /// the version-neutral connection.
+    fn from(connection: ConnectionTo<Counterpart>) -> Self {
+        connection.into_raw()
+    }
 }
 
 impl<Counterpart: Role> ConnectionTo<Counterpart> {
@@ -115,7 +124,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         >,
         transport: impl ConnectTo<R> + 'static,
     ) -> Result<P::Connection<R::Counterpart>, crate::Error> {
-        self.inner.spawn_connection_with_context(builder, transport)
+        self.inner.spawn_connection(builder, transport)
     }
 
     /// Send a request or notification and forward its response appropriately.
@@ -224,26 +233,34 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     }
 
     /// Send a `$/cancel_request` notification to the default counterpart peer.
+    ///
+    /// Prefer [`SentRequest::cancel`](crate::SentRequest::cancel) when you
+    /// have the request handle. `request_id` is a v1 request ID, such as the
+    /// [`id`](crate::SentRequest::id) of a request sent through this
+    /// connection. The raw [`ConnectionTo::send_cancel_request`](crate::ConnectionTo::send_cancel_request)
+    /// takes any [`RawJsonRpcId`](crate::RawJsonRpcId).
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<RawJsonRpcId>,
+        request_id: impl Into<crate::schema::v1::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
     {
-        self.inner.send_cancel_request(request_id)
+        self.inner.send_cancel_request(request_id.into())
     }
 
     /// Send a `$/cancel_request` notification to a specific peer.
+    ///
+    /// See [`send_cancel_request`](Self::send_cancel_request).
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<RawJsonRpcId>,
+        request_id: impl Into<crate::schema::v1::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.inner.send_cancel_request_to(peer, request_id)
+        self.inner.send_cancel_request_to(peer, request_id.into())
     }
 
     /// Register a low-level dynamic message handler.

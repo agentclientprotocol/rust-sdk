@@ -20,7 +20,7 @@ macro_rules! impl_v2_jsonrpc_request {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 if method != $method {
                     return Err(crate::Error::method_not_found());
@@ -38,7 +38,7 @@ macro_rules! impl_v2_jsonrpc_request {
                 serde_json::to_value(self).map_err(crate::Error::into_internal_error)
             }
 
-            fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+            fn from_json(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
                 crate::util::json_cast(value)
             }
         }
@@ -62,7 +62,7 @@ macro_rules! impl_v2_jsonrpc_notification {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 if method != $method {
                     return Err(crate::Error::method_not_found());
@@ -98,7 +98,7 @@ macro_rules! impl_v2_jsonrpc_request_enum {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 match method {
                     $( $(#[$meta])* $method => crate::util::json_cast_params(params).map(Self::$variant), )*
@@ -149,7 +149,7 @@ macro_rules! impl_v2_jsonrpc_notification_enum {
 
             fn parse_message(
                 method: &str,
-                params: &impl serde::Serialize,
+                params: &serde_json::Value,
             ) -> Result<Self, crate::Error> {
                 match method {
                     $( $(#[$meta])* $method => crate::util::json_cast_params(params).map(Self::$variant), )*
@@ -188,7 +188,7 @@ macro_rules! impl_v2_jsonrpc_response_enum {
                 serde_json::to_value(self).map_err(crate::Error::into_internal_error)
             }
 
-            fn from_value(
+            fn from_json(
                 method: &str,
                 value: serde_json::Value,
             ) -> Result<Self, crate::Error> {

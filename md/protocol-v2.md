@@ -115,21 +115,16 @@ the same low-level `HandleDispatchFrom` interface and therefore also receive
 `ConnectionTo<_>`. Raw code converts explicitly: `connection.into_protocol::<V1>()`
 returns a `v1::ConnectionTo` (and `into_protocol::<V2>()` a `v2::ConnectionTo`),
 and either versioned connection's `into_raw()` returns the version-neutral one.
+`into_protocol` fails with `-32603` when the connection's builder guards a
+different version, so a connection from `Client.v1()` never becomes a
+`v2::ConnectionTo`. `ConnectionTo::protocol_version()` reports the guarded
+version, or `None` for an unguarded `Builder::new` connection.
 
-Nested connections preserve the stable `ConnectionTo` API while still typing
-the child implementation's callbacks. On a raw `ConnectionTo<_>`,
-`spawn_connection(Client.v2(), transport)` returns a raw `ConnectionTo<_>`, and
-callbacks installed on that v2 child builder still receive
-`v2::ConnectionTo<_>`. Existing `spawn_connection::<Role>` calls therefore remain
-source-compatible.
-
-When a raw parent also needs a typed handle to the child,
-`ConnectionTo::spawn_connection_with_context` returns the context selected by
-the child builder. `v1::ConnectionTo::spawn_connection` and
-`v2::ConnectionTo::spawn_connection` likewise follow the child builder
-naturally, so spawning `Client.v2()` through an already-typed v2 connection
-returns another `v2::ConnectionTo<_>`, and spawning `Client.v1()` through any
-typed connection returns a `v1::ConnectionTo<_>`.
+`spawn_connection` returns the connection type the child builder's callbacks
+receive, on the raw `ConnectionTo` and on both versioned connections:
+spawning `Client.v2()` returns a `v2::ConnectionTo<_>`, spawning
+`Client.v1()` a `v1::ConnectionTo<_>`, and spawning a raw `Builder::new`
+builder a raw `ConnectionTo<_>`.
 
 A complete client installs update and interactive-request handlers before
 connecting. After `session/prompt` is accepted, it must keep the connection
@@ -446,7 +441,9 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `send_initialize` to learn how the agent negotiated: it resolves with
   `v2::InitializeOutcome::Initialized` for a v2 selection, or
   `v2::InitializeOutcome::LowerVersion` with the agent's validated response for
-  the selected version (`v2::SelectedInitializeResponse::V1`). After a lower
+  the selected version, an `InitializationVersionMismatch` whose `response` is a
+  `SelectedInitializeResponse::V1`. Both types are at the crate root because
+  they are not tied to one protocol version. After a lower
   selection the connection stays uninitialized, and the caller can explicitly
   fall back to a v1 client implementation if that is acceptable. Errors
   returned by the agent, including `-32022`, malformed responses, and transport

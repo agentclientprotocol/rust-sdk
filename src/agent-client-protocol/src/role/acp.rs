@@ -423,46 +423,11 @@ impl ConnectTo<Client> for AgentProtocolRouter {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
-        let mut client = RunningProtocolPeer::new(client);
-        // A failed initialize leaves the connection uninitialized, and the
-        // client may send `initialize` again. Answer each rejected frame and
-        // keep reading until an initialize selects a configured version.
-        let (first_frame, client, selected) = loop {
-            let Some((mut frame, next_client)) = client.next_frame().await? else {
-                return Ok(());
-            };
-            client = next_client;
-            let message = match initialize_message_mut(&mut frame) {
-                Ok(Some(message)) => message,
-                Ok(None) => continue,
-                // A malformed frame, such as invalid JSON or a batch, gets the
-                // frame's own error with `id: null`, exactly as a v1
-                // connection answers it. It selects no version, so the client
-                // can still initialize either one.
-                Err(error) => {
-                    send_initialize_error(&client.tx, &frame, error)?;
-                    continue;
-                }
-            };
-            let selected = match select_initialize_protocol(message, "initialize", supported) {
-                Ok(selected) => selected,
-                // A v1 implementation answers any other initialize that does
-                // not select v2 itself, exactly as it would without the router.
-                Err(_)
-                    if supported.v1 && !requests_protocol_v2(message, "initialize", supported) =>
-                {
-                    SelectedProtocol::V1
-                }
-                Err(error) => {
-                    send_initialize_error(&client.tx, &frame, error)?;
-                    continue;
-                }
-            };
-            if !selected.is_configured(supported) {
-                send_initialize_error(&client.tx, &frame, selected.unsupported_error(supported))?;
-                continue;
-            }
-            break (frame, client, selected);
+        let client = RunningProtocolPeer::new(client);
+        let Some((first_frame, client, selected)) =
+            select_protocol_peer(client, "initialize", supported).await?
+        else {
+            return Ok(());
         };
         let agent = selected
             .take_agent(self)
@@ -471,6 +436,59 @@ impl ConnectTo<Client> for AgentProtocolRouter {
         let agent = RunningProtocolPeer::new(agent);
         agent.send_frame(first_frame)?;
         pipe_protocol_peers_until_done(client, agent).await
+    }
+}
+
+/// Read frames from `peer` until an `initialize_method` request selects a
+/// configured protocol version, and return that request's frame, the peer and
+/// the selection. Returns `None` if the peer closes first.
+///
+/// A failed initialize leaves the connection uninitialized, and the peer may
+/// send `initialize_method` again. Each rejected frame is answered and the
+/// loop keeps reading, so [`AgentProtocolRouter`] and [`ProxyProtocolRouter`]
+/// treat rejections the same way.
+#[cfg(feature = "unstable_protocol_v2")]
+async fn select_protocol_peer(
+    mut peer: RunningProtocolPeer,
+    initialize_method: &str,
+    supported: SupportedProtocols,
+) -> Result<Option<(TransportFrame, RunningProtocolPeer, SelectedProtocol)>, crate::Error> {
+    loop {
+        let Some((mut frame, next_peer)) = peer.next_frame().await? else {
+            return Ok(None);
+        };
+        peer = next_peer;
+        let message = match initialize_message_mut(&mut frame) {
+            Ok(Some(message)) => message,
+            Ok(None) => continue,
+            // A malformed frame, such as invalid JSON or a batch, gets the
+            // frame's own error with `id: null`, exactly as a v1 connection
+            // answers it. It selects no version, so the peer can still
+            // initialize either one.
+            Err(error) => {
+                send_initialize_error(&peer.tx, &frame, error)?;
+                continue;
+            }
+        };
+        let selected = match select_initialize_protocol(message, initialize_method, supported) {
+            Ok(selected) => selected,
+            // A v1 implementation answers any other message that does not
+            // select v2 itself, exactly as it would without the router.
+            Err(_)
+                if supported.v1 && !requests_protocol_v2(message, initialize_method, supported) =>
+            {
+                SelectedProtocol::V1
+            }
+            Err(error) => {
+                send_initialize_error(&peer.tx, &frame, error)?;
+                continue;
+            }
+        };
+        if !selected.is_configured(supported) {
+            send_initialize_error(&peer.tx, &frame, selected.unsupported_error(supported))?;
+            continue;
+        }
+        return Ok(Some((frame, peer, selected)));
     }
 }
 
@@ -1019,44 +1037,6 @@ fn send_initialize_error(
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
-async fn reject_initialize(
-    client: RunningProtocolPeer,
-    frame: &TransportFrame,
-    error: crate::Error,
-) -> Result<(), crate::Error> {
-    let RunningProtocolPeer { mut rx, tx, driver } = client;
-    send_initialize_error(&tx, frame, error)?;
-    drop(tx);
-
-    let Some(mut driver) = driver.into_driver() else {
-        // The rejection has already been handed to the raw channel. There is
-        // no owned transport work or physical drain to await.
-        return Ok(());
-    };
-    if !driver.request_finish() {
-        // An opaque driver has no finite physical-finish contract. Preserve a
-        // ready error before cancelling it rather than wait for remote EOF.
-        return crate::util::run_until(driver, future::ready(Ok(()))).await;
-    }
-
-    let drain_incoming = async move {
-        // Later input has no protocol meaning once initialization is rejected.
-        // Keep draining it only so the transport can flush the queued rejection.
-        // Treating a malformed trailing frame as fatal would cancel that flush.
-        while rx.next().await.is_some() {}
-        Ok::<_, crate::Error>(())
-    };
-
-    match future::select(driver, Box::pin(drain_incoming)).await {
-        future::Either::Left((result, _)) => result,
-        future::Either::Right((result, driver)) => {
-            result?;
-            driver.await
-        }
-    }
-}
-
-#[cfg(feature = "unstable_protocol_v2")]
 struct RunningProtocolPeer {
     rx: futures::channel::mpsc::UnboundedReceiver<TransportFrame>,
     tx: futures::channel::mpsc::UnboundedSender<TransportFrame>,
@@ -1548,9 +1528,11 @@ impl Proxy {
     /// a newer request. With a v1 implementation configured, everything else
     /// is handed to the v1 implementation, which negotiates it as it would
     /// without the router. A v2-only router rejects a request below v2 with
-    /// `-32022`. A request for exactly the selected version is handed over in
-    /// the complete, unchanged initial transport frame. The router does not
-    /// convert later messages.
+    /// `-32022`. Like the agent router, it answers each rejected request or
+    /// malformed frame with an error and keeps reading, so the conductor can
+    /// send `proxy/initialize` again. A request for exactly the selected
+    /// version is handed over in the complete, unchanged initial transport
+    /// frame. The router does not convert later messages.
     ///
     /// Requires the `unstable_protocol_v2` crate feature while protocol v2
     /// stabilizes.
@@ -1604,46 +1586,15 @@ impl ConnectTo<Conductor> for ProxyProtocolRouter {
             v1: self.v1.is_some(),
             v2: self.v2.is_some(),
         };
-        let mut conductor = RunningProtocolPeer::new(conductor);
-        let (first_frame, conductor, selected) = loop {
-            let Some((mut frame, next_conductor)) = conductor.next_frame().await? else {
-                return Ok(());
-            };
-            let message = match initialize_message_mut(&mut frame) {
-                Ok(Some(message)) => message,
-                Ok(None) => {
-                    conductor = next_conductor;
-                    continue;
-                }
-                // A v1 implementation answers anything that does not select
-                // v2 itself, exactly as it would without the router.
-                Err(_) if supported.v1 => break (frame, next_conductor, SelectedProtocol::V1),
-                Err(error) => return reject_initialize(next_conductor, &frame, error).await,
-            };
-            let selected =
-                match select_initialize_protocol(message, METHOD_INITIALIZE_PROXY, supported) {
-                    Ok(selected) => selected,
-                    // A v1 implementation answers any other `proxy/initialize`
-                    // that does not select v2 itself, exactly as it would without
-                    // the router.
-                    Err(_)
-                        if supported.v1
-                            && !requests_protocol_v2(
-                                message,
-                                METHOD_INITIALIZE_PROXY,
-                                supported,
-                            ) =>
-                    {
-                        SelectedProtocol::V1
-                    }
-                    Err(error) => return reject_initialize(next_conductor, &frame, error).await,
-                };
-            break (frame, next_conductor, selected);
+        let conductor = RunningProtocolPeer::new(conductor);
+        let Some((first_frame, conductor, selected)) =
+            select_protocol_peer(conductor, METHOD_INITIALIZE_PROXY, supported).await?
+        else {
+            return Ok(());
         };
-        let Some(proxy) = selected.take_proxy(self) else {
-            let error = selected.unsupported_error(supported);
-            return reject_initialize(conductor, &first_frame, error).await;
-        };
+        let proxy = selected
+            .take_proxy(self)
+            .expect("the router only selects a configured implementation");
 
         let proxy = RunningProtocolPeer::new(proxy);
         proxy.send_frame(first_frame)?;

@@ -10,8 +10,9 @@ use std::{
     },
 };
 
+use agent_client_protocol::SelectedInitializeResponse;
 use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
-use agent_client_protocol::v2::{InitializeOutcome, SelectedInitializeResponse};
+use agent_client_protocol::v2::InitializeOutcome;
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
     ConnectTo, ConnectionTo, DynamicHandlerGuard, Error, HandleConnectionClose, HandleDispatchFrom,
@@ -95,7 +96,7 @@ where
     R: Role,
     P: agent_client_protocol::Protocol,
 {
-    parent.spawn_connection_with_context(builder, transport)
+    parent.spawn_connection(builder, transport)
 }
 
 fn v2_implementation() -> v2::Implementation {
@@ -435,7 +436,7 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
             else {
                 continue;
             };
-            let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+            let initialize = v2::InitializeResponse::from_json("initialize", result)?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
             if let Some(task) = agent_task {
                 task.abort();
@@ -730,8 +731,8 @@ where
     assert_eq!(request.to_untyped_message()?.method(), method);
     assert!(request_variant(request));
 
-    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
-    assert!(response_variant(v2::AgentResponse::from_value(
+    <Req::Response as JsonRpcResponse>::from_json(method, response.clone())?;
+    assert!(response_variant(v2::AgentResponse::from_json(
         method, response
     )?));
     Ok(())
@@ -757,8 +758,8 @@ where
     assert_eq!(request.to_untyped_message()?.method(), method);
     assert!(request_variant(request));
 
-    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
-    assert!(response_variant(v2::ClientResponse::from_value(
+    <Req::Response as JsonRpcResponse>::from_json(method, response.clone())?;
+    assert!(response_variant(v2::ClientResponse::from_json(
         method, response
     )?));
     Ok(())
@@ -1046,7 +1047,7 @@ fn mcp_over_acp_v1_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 
     macro_rules! assert_response_mapping {
         ($ty:ty, $method:literal, $value:expr, $pattern:pat) => {{
-            let response = <$ty as JsonRpcResponse>::from_value($method, $value)?;
+            let response = <$ty as JsonRpcResponse>::from_json($method, $value)?;
             assert!(matches!(response, $pattern));
         }};
     }
@@ -1107,7 +1108,7 @@ fn mcp_carriers_preserve_inner_outcomes_in_both_protocol_versions() -> Result<()
                 let carrier = $schema::MessageMcpResponse::success(result.clone()).meta(meta.clone());
                 let value = json_value(carrier)?;
                 assert_eq!(value, serde_json::json!({"result": result, "_meta": meta}));
-                let response = $schema::ClientResponse::from_value("mcp/message", value.clone())?;
+                let response = $schema::ClientResponse::from_json("mcp/message", value.clone())?;
                 let $schema::ClientResponse::MessageMcpResponse(carrier) = response else {
                     panic!("expected MCP response");
                 };
@@ -1131,7 +1132,7 @@ fn mcp_carriers_preserve_inner_outcomes_in_both_protocol_versions() -> Result<()
             let value = json_value(carrier)?;
             assert_eq!(value, serde_json::json!({"error": inner_error, "_meta": meta}));
             // This is a successful *outer* ACP response, not an ACP Error.
-            let response = $schema::ClientResponse::from_value("mcp/message", value)?;
+            let response = $schema::ClientResponse::from_json("mcp/message", value)?;
             let $schema::ClientResponse::MessageMcpResponse(carrier) = response else {
                 panic!("expected MCP response");
             };
@@ -2776,7 +2777,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         let RawJsonRpcMessage::Response(RawJsonRpcResponse::Result { result, .. }) = message else {
             continue;
         };
-        let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+        let initialize = v2::InitializeResponse::from_json("initialize", result)?;
         assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
         agent_task.abort();
         return Ok(());
@@ -2906,6 +2907,29 @@ async fn v2_client_can_cancel_request_to_v2_agent() -> Result<(), Error> {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn v2_client_can_cancel_request_by_its_v2_id() -> Result<(), Error> {
+    Client
+        .v2()
+        .connect_with(v2_agent_with_cancellable_new_session(), async |cx| {
+            cx.send_request(v2_initialize_request(ProtocolVersion::V2))
+                .block_task()
+                .await?;
+
+            let request = cx.send_request(v2::NewSessionRequest::new(cwd()?));
+            // The typed connection takes the v2 ID that `id()` returns.
+            let id: v2::RequestId = request.id().clone();
+            cx.send_cancel_request(id)?;
+            let error = request
+                .block_task()
+                .await
+                .expect_err("request should be cancelled");
+            assert_eq!(i32::from(error.code), -32800);
+            Ok(())
+        })
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn send_initialize_reports_v1_selection_as_outcome() -> Result<(), Error> {
     // The outcome leaves `connect_with`, where a caller decides to start v1.
     let outcome = Client
@@ -2928,7 +2952,7 @@ async fn send_initialize_reports_v1_selection_as_outcome() -> Result<(), Error> 
         panic!("expected a lower-version outcome: {outcome:?}");
     };
     assert_eq!(mismatch.requested, ProtocolVersion::V2);
-    assert_eq!(mismatch.selected, ProtocolVersion::V1);
+    assert_eq!(mismatch.selected(), ProtocolVersion::V1);
     assert!(matches!(
         mismatch.response,
         SelectedInitializeResponse::V1(v1::InitializeResponse { protocol_version, .. })

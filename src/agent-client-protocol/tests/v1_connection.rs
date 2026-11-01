@@ -49,7 +49,17 @@ async fn v1_and_raw_connections_convert_explicitly() -> Result<(), Error> {
             let _: &RawJsonRpcId = raw_sent.id();
             raw_sent.block_task().await?;
 
-            let v1_cx: agent_client_protocol::v1::ConnectionTo<Agent> = raw.into_protocol::<V1>();
+            assert_eq!(raw.protocol_version(), Some(ProtocolVersion::V1));
+            #[cfg(feature = "unstable_protocol_v2")]
+            {
+                let error = raw
+                    .clone()
+                    .into_protocol::<agent_client_protocol::V2>()
+                    .expect_err("a v1 connection must not convert to v2");
+                assert_eq!(error.code, agent_client_protocol::ErrorCode::INTERNAL_ERROR);
+            }
+            let v1_cx: agent_client_protocol::v1::ConnectionTo<Agent> =
+                raw.into_protocol::<V1>()?;
             let response = v1_cx
                 .send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
                 .block_task()

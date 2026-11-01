@@ -470,8 +470,7 @@ mod tests {
             let forwarded = self.forwarded.clone();
             let future = ConnectionDriver::new(async move {
                 let Channel {
-                    rx: mut incoming,
-                    tx: _,
+                    rx: mut incoming, ..
                 } = agent;
                 while let Some(frame) = incoming.next().await {
                     let TransportFrame::Single(message) = frame else {
@@ -522,6 +521,7 @@ mod tests {
                 let Channel {
                     rx: mut incoming,
                     tx: _outgoing,
+                    ..
                 } = agent;
                 drop(incoming.next().await);
                 std::future::pending::<agent_client_protocol::Result<()>>().await

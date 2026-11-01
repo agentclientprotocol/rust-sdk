@@ -156,7 +156,7 @@ fn test_jr_response_payload_from_value() {
     let json = serde_json::json!({
         "greeting": "Hi there!"
     });
-    let response = HelloResponse::from_value("_test/hello", json).unwrap();
+    let response = HelloResponse::from_json("_test/hello", json).unwrap();
     assert_eq!(response.greeting, "Hi there!");
 }
 
