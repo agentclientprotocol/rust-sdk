@@ -159,6 +159,9 @@ where
     ///
     /// With `unstable_protocol_v2`, a `Client.v2()` callback receives a
     /// `v2::ConnectionTo` with its own v2 `build_session` helper.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart, NullRun> {
         SessionBuilder::new(self, NewSessionRequest::new(cwd.as_ref()))
     }
@@ -195,6 +198,9 @@ where
     ///
     /// Call this only when the initialization response advertises
     /// `agentCapabilities.loadSession`.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     pub fn load_session(
         &self,
         session_id: impl Into<SessionId>,
@@ -221,6 +227,9 @@ where
     /// [`load_session`](Self::load_session), but continues without replaying
     /// conversation history. Call this only when the initialization response
     /// advertises `agentCapabilities.sessionCapabilities.resume`.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     pub fn resume_session(
         &self,
         session_id: impl Into<SessionId>,
@@ -666,6 +675,12 @@ where
     BlockState: SessionBlockState,
 {
     /// Attach an MCP server to this new session.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `agentCapabilities.mcpCapabilities.acp`, or a compatibility
+    /// proxy such as `McpOverAcpPolyfill` must sit in front of it; otherwise a
+    /// conforming agent rejects the setup request with `-32602`. This method
+    /// does not check the agent's capabilities.
     #[cfg(feature = "unstable_mcp_over_acp")]
     pub fn with_mcp_server<McpRun>(
         mut self,
@@ -1176,11 +1191,11 @@ where
     /// Read updates until the next prompt response and return the text of the
     /// agent's message chunks.
     ///
-    /// Ignores non-text updates. Requests from the agent, such as
-    /// `session/request_permission`, are dropped, so the SDK answers them
-    /// with an Internal Error (`-32603`). Use
-    /// [`read_update`](Self::read_update) to answer them. If the agent answers
-    /// the prompt with an error, this returns that error.
+    /// Ignores non-text updates. Requests from the agent that reach the
+    /// session, such as `session/request_permission`, are answered with a
+    /// method not found error (`-32601`). Use
+    /// [`read_update`](Self::read_update) instead to answer them yourself. If
+    /// the agent answers the prompt with an error, this returns that error.
     pub async fn read_to_string(&mut self) -> Result<String, crate::Error> {
         let mut output = String::new();
         loop {

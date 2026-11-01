@@ -14,6 +14,11 @@
 //! [`SessionMessage`] and the [`Blocking`] / [`NonBlocking`] states exist only
 //! here.
 //!
+//! Message types are not tied to a protocol version in the type system: a v1
+//! connection accepts any [`JsonRpcRequest`](crate::JsonRpcRequest), so
+//! sending a protocol v2 message through it compiles. Send the types from
+//! [`schema`].
+//!
 //! The request handles here are the crate-root handles with the [`V1`]
 //! protocol marker: `id()` returns a [`schema::v1::RequestId`].
 //!

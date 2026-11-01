@@ -76,9 +76,15 @@ impl Client {
 
     /// Create a client builder that requires an ACP protocol v2 agent.
     ///
-    /// If the agent negotiates v1 during initialization, the initialize
-    /// request resolves with an error so callers can choose an explicit v1
-    /// fallback path.
+    /// Initialize the connection with
+    /// [`v2::ConnectionTo::send_initialize`](crate::v2::ConnectionTo::send_initialize).
+    /// If the agent selects v1, it resolves to
+    /// [`InitializeOutcome::LowerVersion`](crate::v2::InitializeOutcome::LowerVersion)
+    /// rather than an error, and the connection stays uninitialized: fall back
+    /// to a v1 client implementation if that is acceptable. A plain
+    /// `send_request` of a v2 `InitializeRequest` resolves with an error
+    /// instead. To let the SDK do the fallback, use
+    /// [`Client::protocol_connector`].
     ///
     /// Requires the `unstable_protocol_v2` crate feature.
     #[cfg(feature = "unstable_protocol_v2")]
@@ -111,6 +117,10 @@ impl Client {
 /// supported protocol version independently. Implementations and the agent
 /// connection are provided as factories because fallback from v2 to v1 may
 /// require a fresh connection initialized by the v1 implementation.
+///
+/// The `with_v1` and `with_v2` slots take any `ConnectTo<Agent>` factory; nothing checks that an
+/// implementation speaks the slot's version. Put a `.v1()` implementation in
+/// `with_v1` and a `.v2()` implementation in `with_v2`.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
 pub struct ClientProtocolConnector {
@@ -392,6 +402,10 @@ impl Agent {
 /// Use [`Agent::protocol_router`] to start the builder, then add each supported
 /// protocol version independently. The selected implementation owns the
 /// connection after the initial `initialize` negotiation.
+///
+/// The `with_v1` and `with_v2` slots take any `ConnectTo<Client>`; nothing checks that an
+/// implementation speaks the slot's version. Put a `.v1()` implementation in
+/// `with_v1` and a `.v2()` implementation in `with_v2`.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
 pub struct AgentProtocolRouter {
@@ -1555,6 +1569,10 @@ impl Proxy {
 /// draft-v2 proxy implementations independently. Like [`AgentProtocolRouter`],
 /// it selects the highest configured version at or below the one
 /// `proxy/initialize` requests.
+///
+/// The `with_v1` and `with_v2` slots take any `ConnectTo<Conductor>`; nothing checks that an
+/// implementation speaks the slot's version. Put a `.v1()` implementation in
+/// `with_v1` and a `.v2()` implementation in `with_v2`.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Default)]
 pub struct ProxyProtocolRouter {

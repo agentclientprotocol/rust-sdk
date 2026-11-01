@@ -10,15 +10,14 @@
 //! [`ActiveSession`] here only sends commands, and the session's updates and
 //! the agent's requests arrive through typed handlers on the connection,
 //! while `v1::ActiveSession` reads them from its own stream. [`InitializeOutcome`]
-//! and, with `unstable_session_fork`, `ForkSessionBuilder` exist only here;
+//! and, with `unstable_session_fork`, `ForkSessionBuilder` exist only here.
 //! v1's `LoadSessionBuilder`, `SessionMessage` and blocking states have no v2
 //! counterpart.
 //!
-//! # Stability
-//!
-//! Everything in this module is unstable and may change in a minor release.
-//! Stabilizing protocol v2 only removes the `unstable_protocol_v2` gate. See
-//! [Stability](crate#stability) in the crate docs.
+//! Message types are not tied to a protocol version in the type system: a v2
+//! connection accepts any [`JsonRpcRequest`](crate::JsonRpcRequest), so
+//! sending a protocol v1 message through it compiles. Send the types from
+//! [`schema`].
 //!
 //! The request handles here are the crate-root handles with the [`V2`]
 //! protocol marker: `id()` returns a [`schema::v2::RequestId`].
@@ -49,6 +48,12 @@
 //!     .await
 //! # }
 //! ```
+//!
+//! # Stability
+//!
+//! Everything in this module is unstable and may change in a minor release.
+//! Stabilizing protocol v2 only removes the `unstable_protocol_v2` gate. See
+//! [Stability](crate#stability) in the crate docs.
 //!
 //! [`schema::v2::RequestId`]: crate::schema::v2::RequestId
 

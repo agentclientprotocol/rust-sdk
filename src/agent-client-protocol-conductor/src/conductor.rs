@@ -63,6 +63,11 @@
 //! Components are instantiated lazily when the first `initialize` request is received
 //! from the editor. This enables dynamic proxy chain construction based on client capabilities.
 //!
+//! Only the first `initialize` runs the instantiator. A conductor in agent
+//! mode forwards a repeated `initialize` into the chain it already built,
+//! renamed to `proxy/initialize` for the first proxy as before, without
+//! running the instantiator again. The components answer it.
+//!
 //! ### Fixed Chains
 //!
 //! Use [`ProxiesAndAgent`] to assemble a conductor that presents as an agent:
@@ -1295,6 +1300,8 @@ impl InstantiatedChain {
 ///
 /// Used by conductors created with [`ConductorImpl::new_proxy`], where all
 /// components are proxies and the conductor's own successor is the agent.
+///
+/// The conductor calls it once, for the first `proxy/initialize`.
 pub trait InstantiateProxies: Send {
     /// Instantiate proxy components based on the `initialize` request.
     ///
@@ -1345,6 +1352,11 @@ where
 ///
 /// Used by conductors created with [`ConductorImpl::new_agent`], where zero
 /// or more proxies are followed by an agent component.
+///
+/// The conductor calls it once, for the first `initialize`. It forwards a
+/// repeated `initialize` into the chain it already built (renamed to
+/// `proxy/initialize` for the first proxy) without calling the instantiator
+/// again.
 pub trait InstantiateProxiesAndAgent: Send {
     /// Instantiate proxy and agent components based on the `initialize` request.
     ///

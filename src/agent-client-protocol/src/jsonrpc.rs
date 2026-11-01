@@ -2020,6 +2020,12 @@ impl<
     ///
     /// Only applicable to proxies. Use the same method on `v2::Builder` to
     /// attach the server to protocol v2 setup requests.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `agentCapabilities.mcpCapabilities.acp`, or a compatibility
+    /// proxy such as `McpOverAcpPolyfill` must sit between this proxy and the
+    /// agent; otherwise a conforming agent rejects the setup request with
+    /// `-32602`. This method does not check the agent's capabilities.
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,

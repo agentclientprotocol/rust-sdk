@@ -7,9 +7,9 @@
 >
 > In particular, the SDK-local `_mcp/*` methods and `McpServer::Http` values
 > using an `acp:` URL were retired. Current opt-in implementations use
-> `McpServer::Acp` with `mcp/connect`, `mcp/message`, and `mcp/disconnect`; the
-> compatibility polyfill translates those native declarations only for
-> HTTP-capable agents. Do not copy the historical MCP examples below.
+> `McpServer::Acp` with request-scoped `mcp/message` requests. `mcp/connect`
+> and `mcp/disconnect` were removed as well. The compatibility polyfill
+> translates those native declarations only for HTTP-capable agents. Do not copy the historical MCP examples below.
 >
 > Likewise, the `proxy/successor/{send,receive}/*` methods below were replaced
 > by a single `proxy/successor` method, and proxies are initialized with
