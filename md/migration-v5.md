@@ -1298,6 +1298,11 @@ request for a version above the selected one is still rejected.
 - A conductor in proxy mode forwards a repeated `proxy/initialize` through its
   chain, as a conductor in agent mode forwards a repeated `initialize`. It used
   to answer it with `-32600` ("only sent by the conductor").
+- The conductor no longer forwards `proxy/successor` from its client (in agent
+  mode) or from its agent, or one wrapped in a second `proxy/successor`. It
+  answers such a request with `-32600` and drops such a notification. It used
+  to forward them, so the client or the agent could send a message that a
+  proxy received as coming from its successor.
 - Conductor traces record the messages between the last proxy and the agent.
   Trace snapshots and tools that read traces see these extra events.
 - `agent_client_protocol_trace_viewer::TraceViewerConfig` is

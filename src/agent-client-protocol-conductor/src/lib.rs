@@ -33,6 +33,9 @@
 //! **Component Communication:**
 //! - Editor talks to conductor via stdio
 //! - Conductor uses the `proxy/successor` envelope to route messages
+//! - Conductor answers a `proxy/successor` request from the editor or the
+//!   final agent with `-32600` and drops such a notification: only proxies
+//!   and their conductor exchange the envelope
 //! - Each proxy can intercept, transform, or forward messages
 //! - Final agent receives standard ACP messages
 //!

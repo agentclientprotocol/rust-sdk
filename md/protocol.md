@@ -122,6 +122,12 @@ has none. Optional metadata for the envelope itself may be included as `_meta`
 next to `method` and `params`; the inner message keeps its own `_meta` inside
 its `params`.
 
+Only a proxy and its conductor send `proxy/successor`. The conductor answers a
+`proxy/successor` request from the agent, or from the client of a conductor in
+agent mode, with `-32600` and drops such a notification, without forwarding
+either. The same applies to a `proxy/successor` wrapped in another
+`proxy/successor`.
+
 The schema types for the envelope are `ProxySuccessorRequest`,
 `ProxySuccessorNotification` and `ProxySuccessorResponse` in `v1::schema` and
 `v2::schema`, with the `ProxyRequest`, `ProxyResponse` and `ProxyNotification`

@@ -55,6 +55,11 @@
 //! - **Component to successor**: Via the `proxy/successor` envelope
 //! - **Component responses**: Via futures channels back to requesters
 //!
+//! Only the conductor and its proxies exchange `proxy/successor`. A
+//! `proxy/successor` request from the editor (in agent mode) or the agent, or
+//! one wrapped in a second `proxy/successor`, is answered with `-32600`, and
+//! such a notification is dropped.
+//!
 //! The message flow ensures bidirectional communication while maintaining the
 //! abstraction that each component only knows about its immediate successor.
 //!
@@ -157,6 +162,9 @@ use tracing::{debug, info};
 
 /// `proxy/initialize`, from the schema crate.
 const PROXY_INITIALIZE: &str = v1::PROXY_METHOD_NAMES.proxy_initialize;
+
+/// `proxy/successor`, from the schema crate.
+const PROXY_SUCCESSOR: &str = v1::PROXY_METHOD_NAMES.proxy_successor;
 
 /// The `initialize` request that starts a conductor's chain, parsed for the
 /// protocol version the conductor selected.
@@ -713,6 +721,14 @@ where
                     message_method = ?message.method(),
                     "Conductor: AgentToClient received"
                 );
+                // The conductor wraps every message it delivers to a proxy
+                // from that proxy's successor, so a `proxy/successor` message
+                // here came from the agent or, in proxy mode, was wrapped
+                // twice by the conductor's own conductor.
+                let Some(message) = reject_misplaced_successor_message(message, "successor")?
+                else {
+                    return Ok(());
+                };
                 self.send_message_to_predecessor_of(client, source_component_index, message)
             }
         }
@@ -835,6 +851,20 @@ where
 
         // Ensure components are initialized before processing any message.
         let Some(message) = self.ensure_initialized(client.clone(), message).await? else {
+            return Ok(());
+        };
+
+        // The conductor unwraps the `proxy/successor` envelope of every
+        // message a proxy sends to its successor, so a `proxy/successor`
+        // message here came from the client of a conductor in agent mode or
+        // was wrapped twice by a proxy. Forwarding it would deliver it to the
+        // next proxy as a message from that proxy's successor.
+        let from = if target_component_index == 0 {
+            "client"
+        } else {
+            "proxy"
+        };
+        let Some(message) = reject_misplaced_successor_message(message, from)? else {
             return Ok(());
         };
 
@@ -1184,6 +1214,50 @@ fn forward_message_to_agent(
         }
         message => agent_connection.send_proxied_message_to(Agent, message),
     }
+}
+
+/// Answer or drop a `proxy/successor` request or notification that arrived
+/// where the conductor never forwards one, and return every other message.
+///
+/// `proxy/successor` is exchanged only between the conductor and the proxies
+/// it initialized, and between a conductor in proxy mode and its own
+/// conductor. The conductor unwraps the envelope of a message a proxy sends
+/// to its successor, and wraps a message from a proxy's successor itself. So
+/// after that unwrapping, a `proxy/successor` message came from the client of
+/// a conductor in agent mode, from the agent, or was wrapped twice. The
+/// conductor answers such a request with `-32600` and drops such a
+/// notification, so no component can forge a message that appears to come
+/// from another component's successor. `from` names the side the message came
+/// from, for the log.
+fn reject_misplaced_successor_message(
+    message: Dispatch,
+    from: &str,
+) -> Result<Option<Dispatch>, Error> {
+    match message {
+        Dispatch::Request(request, responder) if request.method() == PROXY_SUCCESSOR => {
+            tracing::warn!(
+                from,
+                "rejecting a `{PROXY_SUCCESSOR}` request the conductor does not forward"
+            );
+            responder.respond_with_error(misplaced_successor_message())?;
+            Ok(None)
+        }
+        Dispatch::Notification(notification) if notification.method() == PROXY_SUCCESSOR => {
+            tracing::warn!(
+                from,
+                "dropping a `{PROXY_SUCCESSOR}` notification the conductor does not forward"
+            );
+            Ok(None)
+        }
+        message => Ok(Some(message)),
+    }
+}
+
+/// The error for a `proxy/successor` request the conductor does not forward.
+fn misplaced_successor_message() -> Error {
+    Error::invalid_request().data(format!(
+        "`{PROXY_SUCCESSOR}` is only exchanged between the conductor and the proxies it initialized"
+    ))
 }
 
 /// The error for a `proxy/initialize` request that arrives from outside the

@@ -475,3 +475,172 @@ async fn proxy_mode_conductor_forwards_repeated_proxy_initialize() {
 
     task.abort();
 }
+
+/// Initialize a chain whose only proxy is the raw `proxy_end`, answering as
+/// the raw agent.
+async fn initialize_through_raw_proxy(
+    client: &mut Endpoint,
+    proxy_end: &mut Endpoint,
+    agent: &mut Endpoint,
+) {
+    let (params, result) = initialize_lines(1);
+    client.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{params}}}"#
+    ));
+    let (_, init) = proxy_end.recv_json().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":"p-init","method":"proxy/successor","params":{{"method":"initialize","params":{params}}}}}"#
+    ));
+    let (_, request) = agent.recv_json().await;
+    agent.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        request["id"]
+    ));
+    proxy_end.recv().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        init["id"]
+    ));
+    client.recv().await;
+}
+
+/// A conductor in agent mode does not forward `proxy/successor` from its
+/// client or from its agent. Only the conductor wraps messages from a proxy's
+/// successor, so forwarding one would let the client or the agent forge
+/// messages that appear to come from the other side. A request gets
+/// `-32600` and a notification is dropped. A proxy cannot do the same by
+/// wrapping `proxy/successor` twice.
+#[tokio::test(flavor = "current_thread")]
+async fn agent_mode_conductor_rejects_misplaced_proxy_successor() {
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let (mut client, mut agent, task) = start_chain(vec![DynConnectTo::new(proxy)]);
+    initialize_through_raw_proxy(&mut client, &mut proxy_end, &mut agent).await;
+    let mut transcript = Transcript::default();
+
+    // From the client.
+    client.send(r#"{"jsonrpc":"2.0","id":"c-forged","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    let line = client.recv().await;
+    transcript.record("conductor -> client", &line);
+    client.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    // The dropped notification never reaches the proxy: the next line it
+    // receives is the client's next message.
+    client.send(r#"{"jsonrpc":"2.0","method":"_vendor/after-client","params":{}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // From the agent.
+    agent.send(r#"{"jsonrpc":"2.0","id":"a-forged","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    let line = agent.recv().await;
+    transcript.record("conductor -> agent", &line);
+    agent.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    agent.send(r#"{"jsonrpc":"2.0","method":"_vendor/after-agent","params":{}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // From the proxy, wrapped twice.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-forged","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // The proxy's own `proxy/successor` traffic still reaches the agent.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-1","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}"#);
+    let (line, request) = agent.recv_json().await;
+    transcript.record("conductor -> agent", &line);
+    agent.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"done":true}}}}"#,
+        request["id"]
+    ));
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+    proxy_end.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"z":3}}}"#);
+    let line = agent.recv().await;
+    transcript.record("conductor -> agent", &line);
+
+    task.abort();
+    transcript.check(&expect![[r#"
+        conductor -> client: {"jsonrpc":"2.0","id":"c-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"_vendor/after-client","params":{}}
+        conductor -> agent: {"jsonrpc":"2.0","id":"a-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/after-agent","params":{}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> agent: {"jsonrpc":"2.0","id":"<generated>","method":"_vendor/request","params":{"y":2}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-1","result":{"done":true}}
+        conductor -> agent: {"jsonrpc":"2.0","method":"_vendor/note","params":{"z":3}}
+    "#]]);
+}
+
+/// A conductor in proxy mode receives `proxy/successor` from its own
+/// conductor for the messages of its successor and delivers them to its last
+/// proxy. It does not forward one that its conductor wrapped twice, which
+/// would reach the last proxy as a `proxy/successor` from the successor.
+#[tokio::test(flavor = "current_thread")]
+async fn proxy_mode_conductor_rejects_misplaced_proxy_successor() {
+    let (predecessor, mut outer) = raw_component::<Proxy>("outer conductor");
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let conductor = ConductorImpl::new_proxy("proxy-mode", vec![DynConnectTo::new(proxy)]);
+    let task = tokio::spawn(async move {
+        drop(conductor.connect_to(predecessor).await);
+    });
+    let mut transcript = Transcript::default();
+    let (params, result) = initialize_lines(1);
+
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"proxy/initialize","params":{params}}}"#
+    ));
+    let (_, init) = proxy_end.recv_json().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":"p-init","method":"proxy/successor","params":{{"method":"initialize","params":{params}}}}}"#
+    ));
+    let (_, request) = outer.recv_json().await;
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        request["id"]
+    ));
+    proxy_end.recv().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        init["id"]
+    ));
+    outer.recv().await;
+
+    // Wrapped twice by the outer conductor.
+    outer.send(r#"{"jsonrpc":"2.0","id":"o-forged","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+    let line = outer.recv().await;
+    transcript.record("conductor -> outer", &line);
+    outer.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+
+    // Messages from the successor still reach the proxy, wrapped once.
+    outer.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"x":1}}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+    outer.send(r#"{"jsonrpc":"2.0","id":"o-1","method":"proxy/successor","params":{"method":"_vendor/ask","params":{"q":1}}}"#);
+    let (line, wrapped) = proxy_end.recv_json().await;
+    transcript.record("conductor -> proxy", &line);
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"answer":42}}}}"#,
+        wrapped["id"]
+    ));
+    let line = outer.recv().await;
+    transcript.record("conductor -> outer", &line);
+
+    // The proxy's messages for its successor still reach the outer conductor.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-1","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}"#);
+    let (line, request) = outer.recv_json().await;
+    transcript.record("conductor -> outer", &line);
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"done":true}}}}"#,
+        request["id"]
+    ));
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    task.abort();
+    transcript.check(&expect![[r#"
+        conductor -> outer: {"jsonrpc":"2.0","id":"o-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"x":1}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"<generated>","method":"proxy/successor","params":{"method":"_vendor/ask","params":{"q":1}}}
+        conductor -> outer: {"jsonrpc":"2.0","id":"o-1","result":{"answer":42}}
+        conductor -> outer: {"jsonrpc":"2.0","id":"<generated>","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-1","result":{"done":true}}
+    "#]]);
+}
