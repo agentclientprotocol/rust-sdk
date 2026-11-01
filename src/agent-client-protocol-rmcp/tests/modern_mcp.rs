@@ -127,6 +127,104 @@ async fn built_server_handles_modern_calls_before_discovery() -> Result<(), Erro
     .expect("modern adapter test timed out")
 }
 
+#[test]
+fn enabling_or_disabling_an_unknown_tool_is_a_local_error() {
+    let builder = McpServer::<mcp::Client>::builder("tools").tool_fn(
+        "echo",
+        "Echo a message",
+        async |input: Echo, _cx| Ok(input),
+        agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+    );
+    let Err(error) = builder.disable_tool("ech") else {
+        panic!("a typo must be reported");
+    };
+    assert_eq!(error.name(), "ech");
+    assert_eq!(error.to_string(), "unknown MCP tool `ech`");
+}
+
+#[tokio::test]
+async fn built_server_reports_its_name_and_tool_errors_as_results() -> Result<(), Error> {
+    tokio::time::timeout(TIMEOUT, async {
+        let server = McpServer::<mcp::Client>::builder("named-tools")
+            .version("1.2.3")
+            .tool_fn(
+                "echo",
+                "Echo a message",
+                async |input: Echo, _cx| Ok(input),
+                agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+            )
+            .tool_fn(
+                "fail",
+                "Always fails",
+                async |_input: Echo, _cx| -> Result<Echo, Error> {
+                    Err(Error::internal_error().data("tool exploded"))
+                },
+                agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
+            )
+            .build();
+
+        mcp::Client
+            .builder()
+            .connect_with(server, async |connection| {
+                let discovery = request(
+                    &connection,
+                    "server/discover",
+                    params(json!({}), "discover"),
+                )
+                .await?;
+                assert_eq!(
+                    discovery["_meta"]["io.modelcontextprotocol/serverInfo"],
+                    json!({"name": "named-tools", "version": "1.2.3"})
+                );
+
+                let failed = request(
+                    &connection,
+                    "tools/call",
+                    params(
+                        json!({"name": "fail", "arguments": {"message": "x"}}),
+                        "fail",
+                    ),
+                )
+                .await?;
+                assert_eq!(failed["isError"], true);
+                assert!(
+                    failed["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("tool exploded"))
+                );
+
+                let bad_arguments = request(
+                    &connection,
+                    "tools/call",
+                    params(
+                        json!({"name": "echo", "arguments": {"wrong": 1}}),
+                        "bad-arguments",
+                    ),
+                )
+                .await?;
+                assert_eq!(bad_arguments["isError"], true);
+                assert!(
+                    bad_arguments["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("message"))
+                );
+
+                let unknown = request(
+                    &connection,
+                    "tools/call",
+                    params(json!({"name": "missing", "arguments": {}}), "unknown"),
+                )
+                .await
+                .expect_err("an unknown tool is a protocol error");
+                assert_eq!(serde_json::to_value(unknown)?["code"], -32602);
+                Ok(())
+            })
+            .await
+    })
+    .await
+    .expect("named server test timed out")
+}
+
 struct RetryServer;
 
 impl ServerHandler for RetryServer {

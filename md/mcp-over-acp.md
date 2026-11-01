@@ -99,7 +99,7 @@ roll back arbitrary detached application work.
 ```sh
 cargo run -p agent-client-protocol-rmcp \
   --example stateless_native_mcp \
-  --features rmcp_3,unstable_mcp_over_acp,unstable_protocol_v2
+  --features rmcp_3,unstable_mcp_over_acp
 ```
 
 See the [wire reference](./protocol.md#native-mcp-over-acp),

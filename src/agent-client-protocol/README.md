@@ -160,6 +160,11 @@ Crypto through `wasm-bindgen` as the UUID randomness backend. The target does
 not imply a JavaScript host, so this feature is not enabled by default. Other
 OS-less WebAssembly hosts must arrange a compatible UUID randomness backend.
 
+Handlers, transports, and connection futures must be `Send` on every target,
+including WebAssembly. JavaScript host values such as `wasm_bindgen::JsValue`
+are `!Send`, so keep them outside the connection and exchange `Send` data with
+it through `Channel` or `ByteStreams`.
+
 The native `AcpAgent` and `Stdio` implementations are not available on
 WebAssembly targets. See the [transport architecture](https://agentclientprotocol.github.io/rust-sdk/transport-architecture.html)
 for the runtime-neutral embedding options.

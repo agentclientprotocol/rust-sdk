@@ -151,6 +151,13 @@
 //! `AsyncWrite`. The embedding runtime must drive the resulting connection
 //! future.
 //!
+//! Handlers, transports, and connection futures must be `Send` on every
+//! target, including WebAssembly. JavaScript host values such as
+//! `wasm_bindgen::JsValue` are `!Send`, so keep them outside the connection and
+//! exchange `Send` data with it through `Channel` or `ByteStreams`. A later
+//! release may relax these bounds on WebAssembly. That change would not affect
+//! native code.
+//!
 //! ## Core Concepts
 //!
 //! The [`concepts`] module provides detailed explanations of how agent-client-protocol works,

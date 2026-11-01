@@ -16,31 +16,59 @@ use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
-#[cfg(feature = "unstable_mcp_over_acp")]
-use acp::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
 use agent_client_protocol as acp;
 use agent_client_protocol::{
     ByteStreams, ChainRun, ConnectTo, DynConnectTo, NullRun, RunWithConnectionTo,
     mcp_server::{
         McpConnectionTo, McpServer, McpServerConnect, McpTool, McpToolMetadata, McpToolRegistry,
+        UnknownToolError,
     },
     role::{self, Role},
 };
+
+acp::__if_mcp_over_acp! {
+    {
+        use acp::mcp_server::{McpOutcome, McpRequest, McpRequestContext, McpService};
+    } else {}
+}
+
+/// The `serverInfo.version` reported until [`McpServerBuilder::version`] is called.
+const DEFAULT_SERVER_VERSION: &str = "0.0.0";
 
 /// Builder for creating MCP servers with tools.
 ///
 /// Use [`McpServerExt::builder`](super::McpServerExt::builder) to create a new builder, then chain methods to
 /// configure the server and call [`build`](Self::build) to create the server.
 ///
+/// The server reports the builder's name and [`version`](Self::version) as its
+/// MCP `serverInfo`.
+///
+/// # Tool errors
+///
+/// - A call to a tool that is not registered or is disabled gets an invalid
+///   params JSON-RPC error (`-32602`).
+/// - Arguments that do not deserialize into the tool's input type, and errors
+///   returned by the tool itself, become a `tools/call` result with
+///   `isError: true` and the error text as its content, so the model can see
+///   and correct them.
+/// - A cancelled call gets an internal JSON-RPC error (`-32603`).
+///
 /// # Example
 ///
-/// ```rust,ignore
-/// use agent_client_protocol::mcp_server::McpServer;
+/// ```
+/// use agent_client_protocol::{mcp_server::McpServer, role::mcp};
 /// use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+/// use schemars::JsonSchema;
+/// use serde::Deserialize;
 ///
-/// let server = McpServer::builder("my-server".to_string())
+/// #[derive(Deserialize, JsonSchema)]
+/// struct GreetInput {
+///     name: String,
+/// }
+///
+/// let server = McpServer::<mcp::Client>::builder("my-server")
+///     .version("1.0.0")
 ///     .instructions("A helpful assistant")
-///     .tool(EchoTool)
 ///     .tool_fn(
 ///         "greet",
 ///         "Greet someone by name",
@@ -48,6 +76,7 @@ use agent_client_protocol::{
 ///         agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
 ///     )
 ///     .build();
+/// # drop(server);
 /// ```
 #[derive(Debug)]
 pub struct McpServerBuilder<Counterpart: Role, Runner>
@@ -56,6 +85,7 @@ where
 {
     phantom: PhantomData<Counterpart>,
     name: String,
+    version: String,
     data: McpToolRegistry<Counterpart>,
     runner: Runner,
 }
@@ -64,6 +94,7 @@ impl<Counterpart: Role> McpServerBuilder<Counterpart, NullRun> {
     pub(super) fn new(name: String) -> Self {
         Self {
             name,
+            version: DEFAULT_SERVER_VERSION.to_string(),
             phantom: PhantomData,
             data: McpToolRegistry::default(),
             runner: NullRun,
@@ -75,6 +106,15 @@ impl<Counterpart: Role, Runner> McpServerBuilder<Counterpart, Runner>
 where
     Runner: RunWithConnectionTo<Counterpart>,
 {
+    /// Set the version reported in the MCP `serverInfo`.
+    ///
+    /// Defaults to `0.0.0`.
+    #[must_use]
+    pub fn version(mut self, version: impl ToString) -> Self {
+        self.version = version.to_string();
+        self
+    }
+
     /// Set the server instructions that are provided to the client.
     #[must_use]
     pub fn instructions(mut self, instructions: impl ToString) -> Self {
@@ -107,16 +147,20 @@ where
 
     /// Disable a specific tool by name.
     ///
-    /// Returns an error if the tool is not registered.
-    pub fn disable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
+    /// # Errors
+    ///
+    /// Returns [`UnknownToolError`] if no tool with this name has been added.
+    pub fn disable_tool(mut self, name: &str) -> Result<Self, UnknownToolError> {
         self.data.disable_tool(name)?;
         Ok(self)
     }
 
     /// Enable a specific tool by name.
     ///
-    /// Returns an error if the tool is not registered.
-    pub fn enable_tool(mut self, name: &str) -> Result<Self, acp::Error> {
+    /// # Errors
+    ///
+    /// Returns [`UnknownToolError`] if no tool with this name has been added.
+    pub fn enable_tool(mut self, name: &str) -> Result<Self, UnknownToolError> {
         self.data.enable_tool(name)?;
         Ok(self)
     }
@@ -132,6 +176,7 @@ where
         McpServerBuilder {
             phantom: PhantomData,
             name: this.name,
+            version: this.version,
             data: this.data,
             runner: ChainRun::new(this.runner, tool_runner),
         }
@@ -151,13 +196,30 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// McpServer::builder("my-server")
+    /// ```
+    /// use agent_client_protocol::{mcp_server::McpServer, role::mcp};
+    /// use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+    /// use schemars::JsonSchema;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct CountInput {
+    ///     amount: u32,
+    /// }
+    ///
+    /// let mut total = 0;
+    /// let server = McpServer::<mcp::Client>::builder("my-server")
     ///     .tool_fn_mut(
-    ///         "greet",
-    ///         "Greet someone by name",
-    ///         async |input: GreetInput, _cx| Ok(format!("Hello, {}!", input.name)),
+    ///         "count",
+    ///         "Add to a running total",
+    ///         async move |input: CountInput, _cx| {
+    ///             total += input.amount;
+    ///             Ok(total)
+    ///         },
+    ///         agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!(),
     ///     )
+    ///     .build();
+    /// # drop(server);
     /// ```
     pub fn tool_fn_mut<P, Ret, F>(
         self,
@@ -194,13 +256,26 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// McpServer::builder("my-server")
+    /// ```
+    /// use agent_client_protocol::{mcp_server::McpServer, role::mcp};
+    /// use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
+    /// use schemars::JsonSchema;
+    /// use serde::Deserialize;
+    ///
+    /// #[derive(Deserialize, JsonSchema)]
+    /// struct GreetInput {
+    ///     name: String,
+    /// }
+    ///
+    /// let server = McpServer::<mcp::Client>::builder("my-server")
     ///     .tool_fn(
     ///         "greet",
     ///         "Greet someone by name",
     ///         async |input: GreetInput, _cx| Ok(format!("Hello, {}!", input.name)),
+    ///         agent_client_protocol_rmcp::rmcp_3::tool_fn!(),
     ///     )
+    ///     .build();
+    /// # drop(server);
     /// ```
     pub fn tool_fn<P, Ret, F>(
         self,
@@ -236,44 +311,60 @@ where
     pub fn build(self) -> McpServer<Counterpart, Runner> {
         let built = McpServerBuilt {
             name: self.name,
+            version: self.version,
             data: Arc::new(self.data),
         };
-        #[cfg(feature = "unstable_mcp_over_acp")]
-        {
-            let standalone = McpServerBuilt {
-                name: built.name.clone(),
-                data: built.data.clone(),
-            };
-            McpServer::new_service_with_standalone(built, standalone, self.runner)
-        }
-        #[cfg(not(feature = "unstable_mcp_over_acp"))]
-        {
-            McpServer::new(built, self.runner)
+        acp::__if_mcp_over_acp! {
+            {
+                let standalone = McpServerBuilt {
+                    name: built.name.clone(),
+                    version: built.version.clone(),
+                    data: built.data.clone(),
+                };
+                McpServer::new_service_with_standalone(built, standalone, self.runner)
+            } else {
+                McpServer::new(built, self.runner)
+            }
         }
     }
 }
 
 struct McpServerBuilt<Counterpart: Role> {
     name: String,
+    version: String,
     data: Arc<McpToolRegistry<Counterpart>>,
 }
 
-#[cfg(feature = "unstable_mcp_over_acp")]
-impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> {
-    fn execute(
+impl<Counterpart: Role> McpServerBuilt<Counterpart> {
+    fn connection(
         &self,
-        request: McpRequest,
-        context: McpRequestContext<Counterpart>,
-    ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
-        super::native::execute(
-            Arc::new(McpServerConnection {
-                data: self.data.clone(),
-                mcp_connection: context.connection().clone(),
-            }),
-            request,
-            context,
-        )
+        mcp_connection: McpConnectionTo<Counterpart>,
+    ) -> McpServerConnection<Counterpart> {
+        McpServerConnection {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            data: self.data.clone(),
+            mcp_connection,
+        }
     }
+}
+
+acp::__if_mcp_over_acp! {
+    {
+        impl<Counterpart: Role> McpService<Counterpart> for McpServerBuilt<Counterpart> {
+            fn execute(
+                &self,
+                request: McpRequest,
+                context: McpRequestContext<Counterpart>,
+            ) -> BoxFuture<'static, Result<McpOutcome, acp::Error>> {
+                super::native::execute(
+                    Arc::new(self.connection(context.connection().clone())),
+                    request,
+                    context,
+                )
+            }
+        }
+    } else {}
 }
 
 impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counterpart> {
@@ -285,15 +376,14 @@ impl<Counterpart: Role> McpServerConnect<Counterpart> for McpServerBuilt<Counter
         &self,
         mcp_connection: McpConnectionTo<Counterpart>,
     ) -> DynConnectTo<role::mcp::Client> {
-        DynConnectTo::new(McpServerConnection {
-            data: self.data.clone(),
-            mcp_connection,
-        })
+        DynConnectTo::new(self.connection(mcp_connection))
     }
 }
 
 /// A connected MCP server instance.
 pub(crate) struct McpServerConnection<Counterpart: Role> {
+    name: String,
+    version: String,
     data: Arc<McpToolRegistry<Counterpart>>,
     mcp_connection: McpConnectionTo<Counterpart>,
 }
@@ -367,7 +457,13 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
                         Ok(CallToolResult::success(vec![content]).into())
                     }
                 }
-                Err(error) => Err(to_rmcp_error(error)),
+                // Tool failures, including arguments that do not match the
+                // input schema, are tool results the model can act on, not
+                // protocol errors.
+                Err(error) => Ok(CallToolResult::error(vec![rmcp::model::ContentBlock::text(
+                    error.to_string(),
+                )])
+                .into()),
             },
 
             // If cancelled
@@ -407,7 +503,10 @@ impl<R: Role> ServerHandler for McpServerConnection<R> {
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(rmcp::model::Implementation::default())
+        .with_server_info(rmcp::model::Implementation::new(
+            self.name.clone(),
+            self.version.clone(),
+        ))
         .with_protocol_version(rmcp::model::ProtocolVersion::default());
 
         if let Some(instructions) = self.data.instructions() {
@@ -435,13 +534,4 @@ fn make_tool_model(metadata: &McpToolMetadata) -> Tool {
     }
 
     tool
-}
-
-/// Convert an [`agent_client_protocol::Error`] into an [`rmcp::ErrorData`].
-fn to_rmcp_error(error: acp::Error) -> rmcp::ErrorData {
-    rmcp::ErrorData {
-        code: rmcp::model::ErrorCode(error.code.into()),
-        message: error.message.into(),
-        data: error.data,
-    }
 }

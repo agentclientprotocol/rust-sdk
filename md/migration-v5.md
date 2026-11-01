@@ -777,6 +777,18 @@ fn respond<P: agent_client_protocol::Protocol>(responder: Responder<MyResponse, 
 `send_proxied_message` / `send_proxied_message_to` accept a `Dispatch` of any
 marker, so forwarding between connections needs no conversion.
 
+### `MatchDispatch::otherwise_ignore` answers unmatched requests
+
+`MatchDispatch::otherwise_ignore` now answers an unmatched request with a
+method not found error (`-32601`). Before, it dropped the responder, so the
+peer got the dropped-responder error instead. Unmatched notifications and
+responses are still ignored.
+
+`v1::ActiveSession::read_to_string` uses `otherwise_ignore`, so a request routed
+to the session that it does not handle, such as `session/request_permission`,
+now gets `-32601`. Handle such requests yourself if the peer needs a different
+answer.
+
 ### Renamed builder context types
 
 The hidden `ConnectionContext` trait and its `RawConnectionContext` and
@@ -934,8 +946,10 @@ agent-client-protocol-rmcp = { version = "5", features = ["rmcp_3", "unstable_mc
 rmcp = "3"
 ```
 
-The `unstable_protocol_v2` and `unstable_mcp_over_acp` passthrough features are
-unchanged and apply to every rmcp module.
+The `unstable_mcp_over_acp` passthrough feature is unchanged and applies to
+every rmcp module. The `unstable_protocol_v2` passthrough feature is removed
+because the crate has no v2-specific code. Enable `unstable_protocol_v2` on
+`agent-client-protocol` instead.
 
 Then add `rmcp_3::` to every import from the crate:
 
@@ -944,11 +958,10 @@ Then add `rmcp_3::` to every import from the crate:
 | `agent_client_protocol_rmcp::McpServerExt` | `agent_client_protocol_rmcp::rmcp_3::McpServerExt` |
 | `agent_client_protocol_rmcp::McpServerBuilder` | `agent_client_protocol_rmcp::rmcp_3::McpServerBuilder` |
 | `agent_client_protocol_rmcp::McpTool` | `agent_client_protocol_rmcp::rmcp_3::McpTool` |
-| `agent_client_protocol_rmcp::EnabledTools` | `agent_client_protocol_rmcp::rmcp_3::EnabledTools` |
 | `agent_client_protocol_rmcp::tool_fn!` | `agent_client_protocol_rmcp::rmcp_3::tool_fn!` |
 | `agent_client_protocol_rmcp::tool_fn_mut!` | `agent_client_protocol_rmcp::rmcp_3::tool_fn_mut!` |
 
-`McpTool`, `EnabledTools`, `tool_fn!` and `tool_fn_mut!` are re-exports of the
+`McpTool`, `tool_fn!` and `tool_fn_mut!` are re-exports of the
 core crate's items, which you can also import from
 `agent_client_protocol::mcp_server` and `agent_client_protocol` directly.
 
@@ -956,3 +969,67 @@ Future rmcp major versions arrive as new features and modules (such as
 `rmcp_4`) in minor releases, so you can enable both while moving your services
 to the new rmcp major version. Removing support for an rmcp major version is a
 breaking change and only happens in an ACP major release.
+
+### Other rmcp and `mcp_server` changes
+
+- `EnabledTools` is no longer public. No public API took or returned it. Use
+  `enable_tool`, `disable_tool`, `enable_all_tools`, and `disable_all_tools`.
+- `McpServerBuilder::enable_tool` / `disable_tool` and
+  `McpToolRegistry::enable_tool` / `disable_tool` return `UnknownToolError`
+  instead of a `-32600` `Error`. `?` still converts it into an `Error`.
+- `McpServerExt` is sealed. It was only meant to be implemented for
+  `McpServer`.
+- `McpConnectionContext::Acp` is `#[non_exhaustive]`. Match it as
+  `McpConnectionContext::Acp { server_id, .. }`.
+- Builder-built servers report the builder name and `McpServerBuilder::version`
+  (default `0.0.0`) as their MCP `serverInfo`, not `rmcp`.
+- An error from a builder tool, including arguments that do not match its input
+  schema, is a `tools/call` result with `isError: true` instead of a JSON-RPC
+  error. A call to an unknown or disabled tool still gets `-32602`.
+  `RegisteredMcpTool::call_tool` reports bad arguments as `-32602` instead of
+  `-32603`.
+- The native MCP-over-ACP path for `McpServer::from_rmcp` and builder servers
+  follows the core crate's `unstable_mcp_over_acp` feature. Before, enabling
+  the feature only on `agent-client-protocol` made each request bridge a new
+  rmcp service.
+
+## HTTP transport
+
+`agent-client-protocol-http` narrows its public types:
+
+- `HttpClientError` is `#[non_exhaustive]`, so matches need a wildcard arm.
+  `InvalidUrl` and `Reqwest` no longer implement `From`, and their `Display`
+  text no longer repeats the underlying error. Walk
+  `std::error::Error::source` to see it. `InvalidUrl` now holds an opaque
+  `InvalidUrlError` instead of `url::ParseError`; it displays the parser's
+  message.
+- `CorsOptions` is an opaque struct. The `Disabled`, `AllowOrigins`, and
+  `AllowAnyOrigin` variants are gone. Use `CorsOptions::disabled()`,
+  `CorsOptions::allow_origins(...)`, and `CorsOptions::allow_any_origin()`, and
+  compare policies with `==`.
+- `CorsOptions::allow_origins` returns `InvalidOriginError` instead of
+  `axum::http::header::InvalidHeaderValue`. It names the rejected origin
+  through `origin()`.
+
+The crate does not re-export `axum`, `reqwest`, or `url`. Only two of its
+signatures use third-party types: `AcpHttpServer::into_router` returns an
+`axum::Router`, and `HttpClientBuilder::configure_http` and
+`HttpClient::from_http_client` take reqwest types. Depend on matching
+versions of those crates to use them.
+
+## `AcpAgent`
+
+- `AcpAgent::spawn_process` is no longer public. It returned `async_process`
+  types and skipped the process-group teardown that `ConnectTo` installs.
+  Connect the `AcpAgent` itself instead.
+- `AcpAgent::claude_agent()` and `AcpAgent::codex()` are removed. They ran
+  `npx -y ...@latest`, which installs whatever version was published last.
+  Name the adapter version yourself:
+
+```rust
+use std::str::FromStr;
+use agent_client_protocol::AcpAgent;
+
+let agent = AcpAgent::from_str("npx -y @agentclientprotocol/claude-agent-acp@<version>")?;
+# Ok::<(), agent_client_protocol::Error>(())
+```

@@ -42,17 +42,19 @@ value and preserve the other options.
 
 ## CORS policies
 
-Existing variants and constructors remain available. **Breaking:** exhaustive
-matches on `CorsOptions` outside the HTTP crate must add a wildcard arm:
+In 3.x, `CorsOptions` was a `#[non_exhaustive]` enum, so exhaustive matches
+outside the HTTP crate needed a wildcard arm.
+
+**Breaking:** in v5, `CorsOptions` is an opaque struct and its variants are no
+longer public. Code that matched on the variants no longer compiles.
+Build policies with `CorsOptions::disabled()`, `CorsOptions::allow_origins(...)`,
+or `CorsOptions::allow_any_origin()`, and compare them with `==`:
 
 ```rust
 use agent_client_protocol_http::CorsOptions;
 
 fn is_disabled(policy: &CorsOptions) -> bool {
-    match policy {
-        CorsOptions::Disabled => true,
-        _ => false,
-    }
+    *policy == CorsOptions::disabled()
 }
 ```
 

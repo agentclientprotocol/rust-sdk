@@ -65,6 +65,8 @@ reqwest = { workspace = true, features = ["stream"], optional = true }
 url = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The `AcpHttpServer` example serves v1 and v2 through `AgentProtocolRouter`.
+agent-client-protocol = { workspace = true, features = ["unstable_protocol_v2"] }
 async-stream.workspace = true
 axum = { workspace = true, features = ["ws", "json"] }
 tokio = { workspace = true, features = ["macros", "net", "rt", "sync", "time"] }

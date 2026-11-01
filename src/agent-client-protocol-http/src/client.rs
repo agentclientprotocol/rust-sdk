@@ -26,19 +26,39 @@ use crate::protocol::{
     method_for_message, method_requires_session_header, session_id_from_message,
 };
 
+/// Errors from building an [`HttpClient`].
+///
+/// Returned by [`HttpClient::new`], [`HttpClient::with_endpoint`],
+/// [`HttpClient::from_http_client`], and [`HttpClientBuilder::build`]. Errors
+/// during a connection are reported as ACP errors by [`ConnectTo`] instead.
+///
+/// New variants may be added in minor releases, so matches need a wildcard arm.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum HttpClientError {
-    #[error("invalid URL: {0}")]
-    InvalidUrl(#[from] url::ParseError),
+    /// The endpoint is not a valid URL.
+    #[error("invalid URL")]
+    InvalidUrl(#[source] InvalidUrlError),
+    /// The endpoint uses a scheme other than `http`, `https`, `ws`, or `wss`.
     #[error("unsupported URL scheme: {0}; expected http, https, ws, or wss")]
     UnsupportedScheme(String),
+    /// A WebSocket endpoint was passed to [`HttpClient::from_http_client`].
     #[error(
         "WebSocket URLs require HttpClient::builder or builder_with_endpoint; a prebuilt reqwest client cannot enforce WebSocket connection policies"
     )]
     WebSocketRequiresBuilder,
-    #[error("failed to build HTTP client: {0}")]
-    Reqwest(#[from] reqwest::Error),
+    /// reqwest failed to build the underlying HTTP client.
+    #[error("failed to build HTTP client")]
+    Reqwest(#[source] reqwest::Error),
 }
+
+/// Why the endpoint passed to [`HttpClient`] is not a valid URL.
+///
+/// It displays the URL parser's message, such as "relative URL without a
+/// base".
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct InvalidUrlError(url::ParseError);
 
 /// An endpoint-bound ACP transport using HTTP/SSE or WebSocket.
 ///
@@ -233,7 +253,8 @@ impl HttpClientBuilder {
         } else {
             self.http
         }
-        .build()?;
+        .build()
+        .map_err(HttpClientError::Reqwest)?;
         Ok(HttpClient { endpoint, http })
     }
 }
@@ -253,7 +274,8 @@ fn parse_base_url(base_url: &str) -> Result<url::Url, HttpClientError> {
 }
 
 fn parse_endpoint(endpoint: &str) -> Result<url::Url, HttpClientError> {
-    let endpoint = url::Url::parse(endpoint)?;
+    let endpoint = url::Url::parse(endpoint)
+        .map_err(|source| HttpClientError::InvalidUrl(InvalidUrlError(source)))?;
     match endpoint.scheme() {
         "http" | "https" | "ws" | "wss" => Ok(endpoint),
         scheme => Err(HttpClientError::UnsupportedScheme(scheme.to_string())),
@@ -2017,6 +2039,24 @@ mod tests {
             .build()
             .unwrap_err();
         assert!(matches!(error, HttpClientError::Reqwest(_)));
+        assert_eq!(error.to_string(), "failed to build HTTP client");
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn invalid_url_error_reports_the_parse_error_as_its_source() {
+        let error = HttpClient::new("not a URL").unwrap_err();
+        assert!(matches!(error, HttpClientError::InvalidUrl(_)));
+        assert_eq!(error.to_string(), "invalid URL");
+        let source = std::error::Error::source(&error).expect("parse error source");
+        let source = source
+            .downcast_ref::<InvalidUrlError>()
+            .expect("the source is an InvalidUrlError");
+        assert_eq!(
+            source.to_string(),
+            url::ParseError::RelativeUrlWithoutBase.to_string()
+        );
+        assert!(std::error::Error::source(source).is_none());
     }
 
     #[test]

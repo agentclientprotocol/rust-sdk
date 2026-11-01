@@ -31,9 +31,10 @@ build or directly serve a server. Enable this crate's matching
 `agent-client-protocol-polyfill` when the final agent accepts HTTP but not
 ACP-transport MCP servers.
 
-`unstable_protocol_v2` and `unstable_mcp_over_acp` are independent passthrough
-features. They apply to every rmcp module. Enable both when attaching a native
-MCP server to draft ACP v2.
+`unstable_mcp_over_acp` is a passthrough for the core SDK feature and applies to
+every rmcp module. The native path follows the core feature however it is
+enabled. To attach a native MCP server to draft ACP v2, also enable
+`unstable_protocol_v2` on `agent-client-protocol` itself.
 
 Native attachments lazily initialize one shared rmcp application service.
 Standalone connections still invoke the factory separately. Each native
@@ -42,7 +43,7 @@ Run the direct ACP example with:
 
 ```sh
 cargo run -p agent-client-protocol-rmcp --example stateless_native_mcp \
-  --features rmcp_3,unstable_protocol_v2,unstable_mcp_over_acp
+  --features rmcp_3,unstable_mcp_over_acp
 ```
 
 ## Usage
