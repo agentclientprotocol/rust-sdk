@@ -10,11 +10,13 @@ description = "Cookbook of common patterns for building ACP components"
 keywords = ["acp", "agent", "proxy", "mcp", "cookbook"]
 categories = ["development-tools"]
 
+# The cookbook is documentation. Its rustdoc links into these crates, and
+# rustdoc only resolves links against regular dependencies.
 [dependencies]
-
-[dev-dependencies]
 agent-client-protocol = { workspace = true, features = ["process", "schemars", "unstable_mcp_over_acp", "unstable_protocol_v2"] }
 agent-client-protocol-rmcp = { workspace = true, features = ["rmcp_3", "unstable_mcp_over_acp"] }
+
+[dev-dependencies]
 futures.workspace = true
 rmcp = { workspace = true, features = ["macros"] }
 schemars.workspace = true
