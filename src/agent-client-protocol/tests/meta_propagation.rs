@@ -96,7 +96,7 @@ fn successor_message_ignores_non_spec_meta_key() -> Result<(), agent_client_prot
 }
 
 #[test]
-fn successor_message_rejects_non_object_meta() {
+fn successor_message_ignores_non_object_meta() {
     let mut params = SuccessorMessage::new(prompt_request(Meta::new()))
         .to_untyped_message()
         .expect("successor message should serialize")
@@ -106,9 +106,9 @@ fn successor_message_rejects_non_object_meta() {
         .expect("params should be an object")
         .insert("_meta".into(), Value::String("not an object".into()));
 
-    let error = SuccessorMessage::<PromptRequest>::parse_message("proxy/successor", &params)
-        .expect_err("a non-object `_meta` must be rejected");
-    assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
+    let parsed = SuccessorMessage::<PromptRequest>::parse_message("proxy/successor", &params)
+        .expect("a non-object `_meta` should be ignored");
+    assert_eq!(parsed.meta, None);
 }
 
 #[test]

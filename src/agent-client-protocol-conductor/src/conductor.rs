@@ -496,7 +496,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 message,
             })
             .await
-            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
+            .map_err(agent_client_protocol::Error::into_internal_error)
     }
 
     async fn incoming_message_from_agent(
@@ -509,7 +509,7 @@ impl<Host: ConductorHostRole> ConductorImpl<Host> {
                 message,
             })
             .await
-            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))
+            .map_err(agent_client_protocol::Error::into_internal_error)
     }
 }
 

@@ -2434,7 +2434,7 @@ async fn protocol_router_rejection_flushes_over_byte_streams() -> Result<(), Err
 
     agent_task
         .await
-        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
+        .map_err(agent_client_protocol::Error::into_internal_error)??;
     Ok(())
 }
 
@@ -2492,7 +2492,7 @@ async fn protocol_router_rejection_flushes_with_trailing_malformed_input() -> Re
 
     agent_task
         .await
-        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
+        .map_err(agent_client_protocol::Error::into_internal_error)??;
     Ok(())
 }
 
@@ -2546,7 +2546,7 @@ async fn protocol_router_ignores_retained_standalone_response_before_initialize(
         .map_err(Error::into_internal_error)?;
     agent_task
         .await
-        .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
+        .map_err(agent_client_protocol::Error::into_internal_error)??;
     Ok(())
 }
 
@@ -2593,7 +2593,7 @@ async fn protocol_router_preserves_same_version_initialize_frames() -> Result<()
             .map_err(Error::into_internal_error)?;
         router_task
             .await
-            .map_err(|e| agent_client_protocol::Error::internal_error().data(e.to_string()))??;
+            .map_err(agent_client_protocol::Error::into_internal_error)??;
     }
 
     Ok(())

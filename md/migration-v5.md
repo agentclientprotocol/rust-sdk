@@ -793,8 +793,10 @@ rather than adding the derive crate separately.
 `mcp_server::MCP_SERVER_UNAVAILABLE` (`-33001`) and
 `mcp_server::MCP_BACKEND_FAILURE` (`-33002`) are now `ErrorCode` constants
 instead of `i32`, and `mcp_server::MCP_RESOURCE_LIMIT_EXCEEDED` (`-33000`) is
-new. `Error::new(MCP_BACKEND_FAILURE, ..)` and comparisons with `error.code`
-work unchanged; compare with an `i32` through `.value()`.
+new. `Error::new(MCP_BACKEND_FAILURE, ..)` still compiles. Compare with
+`error.code == MCP_BACKEND_FAILURE` directly instead of through
+`i32::from(error.code)`, and use `.value()` where you need an `i32` (for
+example, against a JSON `code`).
 
 ## Proxy method names
 
@@ -847,8 +849,8 @@ let init = v1::InitializeProxyRequest::new(initialize); // or initialize.into()
 
 `SuccessorMessage::meta` is now `Option<serde_json::Map<String, Value>>`
 instead of `Option<Value>`, because ACP `_meta` is always an object. A
-`proxy/successor` request whose `_meta` is not an object is rejected with
-Invalid params (`-32602`), and the non-spec `meta` key is ignored instead of
+`proxy/successor` request whose `_meta` is not an object is accepted and
+its `_meta` is ignored, and the non-spec `meta` key is ignored instead of
 being read as `_meta`.
 
 ### `ConductorHostRole` is sealed

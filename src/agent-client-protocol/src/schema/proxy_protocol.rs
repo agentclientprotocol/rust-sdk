@@ -28,9 +28,29 @@ pub struct SuccessorMessage<M: JsonRpcMessage = UntypedMessage> {
     pub message: M,
 
     /// Metadata for the envelope itself, sent as `_meta`. The inner message
-    /// keeps its own `_meta`.
-    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    /// keeps its own `_meta`. A received `_meta` that is not an object is
+    /// ignored.
+    #[serde(
+        rename = "_meta",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_meta_or_none"
+    )]
     pub meta: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+/// Read `_meta` as an object, treating any other value as absent, the same way
+/// the schema crate's `DefaultOnError` handles `_meta`.
+fn deserialize_meta_or_none<'de, D>(
+    deserializer: D,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<serde_json::Value>::deserialize(deserializer)? {
+        Some(serde_json::Value::Object(map)) => Ok(Some(map)),
+        _ => Ok(None),
+    }
 }
 
 impl<M: JsonRpcMessage> SuccessorMessage<M> {
