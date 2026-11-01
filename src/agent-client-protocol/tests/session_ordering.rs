@@ -591,7 +591,7 @@ async fn v2_proxy_session_start_installs_routing_before_later_message() {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
                     v2::Implementation::new("queued-proxy", env!("CARGO_PKG_VERSION")),
-                ))
+                ).into())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -737,7 +737,7 @@ async fn v2_proxy_fork_installs_response_id_routing_before_later_message() {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
                     v2::Implementation::new("queued-fork-proxy", env!("CARGO_PKG_VERSION")),
-                ))
+                ).into())
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -887,7 +887,7 @@ async fn v2_proxy_resume_forwards_replay_before_its_response() {
                 responder.respond(v2::InitializeResponse::new(
                     request.initialize.protocol_version,
                     v2::Implementation::new("queued-resume-proxy", env!("CARGO_PKG_VERSION")),
-                ))
+                ).into())
             },
             agent_client_protocol::on_receive_request!(),
         )

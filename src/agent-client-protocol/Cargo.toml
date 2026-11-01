@@ -80,7 +80,10 @@ unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
 wasm_js = ["uuid/js"]
 
 [dependencies]
-agent-client-protocol-schema.workspace = true
+# Proxy and conductor support is part of the SDK's stable surface, so the
+# schema's proxy-chain types (`proxy/initialize`, `proxy/successor`) are always
+# enabled rather than forwarded as an opt-in feature.
+agent-client-protocol-schema = { workspace = true, features = ["unstable_proxy_chains"] }
 agent-client-protocol-derive.workspace = true
 futures.workspace = true
 futures-concurrency.workspace = true

@@ -2789,7 +2789,10 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() {
+/// The proxy chains RFD requires the result of a forwarded request to come back
+/// unchanged, so a `session/new` result without a `sessionId` is forwarded as
+/// is. The proxy only skips routing that session's updates.
+async fn raw_proxy_session_new_returns_results_unchanged() {
     let valid_response = serde_json::json!({
         "sessionId": "raw-session",
         "_futureResponseField": {
@@ -2823,14 +2826,15 @@ async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() 
                     "_case": "malformed",
                 }),
             )?;
-            let error = cx
-                .send_request(malformed)
-                .block_task()
-                .await
-                .expect_err("missing sessionId must be rejected");
-            assert!(
-                error.to_string().contains("sessionId"),
-                "unexpected malformed session response error: {error:?}"
+            let response = cx.send_request(malformed).block_task().await?;
+            assert_eq!(
+                response,
+                serde_json::json!({
+                    "_futureResponseField": {
+                        "preserved": false,
+                    },
+                }),
+                "a result without sessionId is returned unchanged"
             );
 
             let valid = UntypedMessage::new(
@@ -2847,7 +2851,7 @@ async fn raw_proxy_session_new_validates_success_and_preserves_valid_response() 
 
     tokio::time::timeout(tokio::time::Duration::from_secs(10), connection)
         .await
-        .expect("raw session/new validation timed out")
+        .expect("raw session/new forwarding timed out")
         .expect("raw session/new proxy connection failed");
 }
 

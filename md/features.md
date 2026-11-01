@@ -138,6 +138,18 @@ do not negotiate peer support: only send `systemPrompt` when the agent
 advertises it, and only use `override` when `mode.override` is advertised.
 See [Client-provided system prompts](./protocol.md#client-provided-system-prompts).
 
+Schema 1.15 adds `unstable_auth_status` (`auth/status` and the
+`auth/status_update` notification), `unstable_session_archive`
+(`session/archive` and `session/unarchive`), `unstable_session_status`
+(`session/status`) and `unstable_session_set_title` (`session/set_title`). Each
+is also included in `unstable`, and the v1 and v2 dispatch enums parse the
+methods into their typed variants when the feature is enabled. Draft v2 also
+gains `tool_call/cancel` and `terminal/cancel` with `unstable_protocol_v2`.
+
+The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
+always enables it, because the `Proxy` and `Conductor` roles and the conductor
+crate use its `proxy/initialize` and `proxy/successor` types.
+
 ## WebAssembly and the rmcp integration
 
 The core library compiles for `wasm32-wasip1` and `wasm32-wasip2` with default

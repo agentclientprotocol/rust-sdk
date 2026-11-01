@@ -36,9 +36,18 @@ each transport and maps the logical chain onto those connections:
 The final agent receives ordinary ACP and does not need to implement the proxy
 extension. See the [Proxy Extension Protocol Reference](./protocol.md) for the
 wire method shapes. The conductor uses `proxy/initialize` and `proxy/successor`
-from the ACP proxy chains RFD; earlier releases used `_proxy/initialize` and
+from the ACP proxy chains RFD, with the message types and method names from
+`agent-client-protocol-schema` (its `unstable_proxy_chains` feature, which the
+SDK always enables). Earlier releases used `_proxy/initialize` and
 `_proxy/successor`, so upgrade conductors and proxies together (see
 [Migrating to v5](./migration-v5.md#proxy-method-names)).
+
+The conductor and the default proxy forwarding return the result or error of
+every wrapped request unchanged, as the RFD requires: they forward responses
+without re-wrapping them, rewriting error codes, or re-encoding results through
+typed schema structs. See
+[Results and errors](./protocol.md#results-and-errors) for the limits of that
+guarantee.
 
 ## Lazy Initialization
 

@@ -232,9 +232,9 @@ async fn standalone_v1_proxy_negotiates_like_a_v1_agent() -> Result<(), Error> {
                         Some("newer-client")
                     );
                 }
-                responder.respond(v1::InitializeResponse::new(
-                    request.initialize.protocol_version,
-                ))
+                responder.respond(
+                    v1::InitializeResponse::new(request.initialize.protocol_version).into(),
+                )
             },
             agent_client_protocol::on_receive_request!(),
         );

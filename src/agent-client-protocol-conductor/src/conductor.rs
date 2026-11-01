@@ -138,7 +138,7 @@ use std::sync::Arc;
 
 #[cfg(feature = "unstable_protocol_v2")]
 use agent_client_protocol::schema::v2;
-use agent_client_protocol::schema::{METHOD_INITIALIZE_PROXY, ProtocolVersion, v1};
+use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::{
     Agent, BoxFuture, Client, Conductor, ConnectTo, Dispatch, DynConnectTo, Error, JsonRpcMessage,
     Proxy, Responder, Role, RunWithConnectionTo, UntypedMessage, role::HasPeer,
@@ -154,6 +154,9 @@ use futures::{
     channel::mpsc::{self},
 };
 use tracing::{debug, info};
+
+/// `proxy/initialize`, from the schema crate.
+const PROXY_INITIALIZE: &str = v1::PROXY_METHOD_NAMES.proxy_initialize;
 
 /// The `initialize` request that starts a conductor's chain, parsed for the
 /// protocol version the conductor selected.
@@ -1117,9 +1120,7 @@ where
 
         let proxy = &self.proxies[target_component_index];
         match message {
-            Dispatch::Request(request, responder)
-                if request.method() == METHOD_INITIALIZE_PROXY =>
-            {
+            Dispatch::Request(request, responder) if request.method() == PROXY_INITIALIZE => {
                 responder.respond_with_error(initialize_proxy_from_outside())
             }
             Dispatch::Request(mut request, responder)
@@ -1130,7 +1131,7 @@ where
                 // `proxy/initialize`, keeping the params untouched. The proxy
                 // then initializes itself and forwards an `initialize` request
                 // to its successor.
-                request.method = METHOD_INITIALIZE_PROXY.to_string();
+                request.method = PROXY_INITIALIZE.to_string();
                 // The request is rewritten, so `forward_response_to` cannot be
                 // used here; wire up cancellation forwarding explicitly to
                 // keep `initialize` cancellable like every other forwarded
@@ -1163,7 +1164,7 @@ fn forward_message_to_agent(
     agent_connection: &ConnectionTo<Agent>,
 ) -> Result<(), Error> {
     match message {
-        Dispatch::Request(request, responder) if request.method() == METHOD_INITIALIZE_PROXY => {
+        Dispatch::Request(request, responder) if request.method() == PROXY_INITIALIZE => {
             responder.respond_with_error(initialize_proxy_from_outside())
         }
         message => agent_connection.send_proxied_message_to(Agent, message),
@@ -1174,7 +1175,7 @@ fn forward_message_to_agent(
 /// conductor: only the conductor initializes its proxies.
 fn initialize_proxy_from_outside() -> Error {
     Error::invalid_request().data(format!(
-        "`{METHOD_INITIALIZE_PROXY}` requests are only sent by the conductor"
+        "`{PROXY_INITIALIZE}` requests are only sent by the conductor"
     ))
 }
 
@@ -1687,7 +1688,7 @@ impl HostRole for Proxy {
     type Instantiator = Box<dyn InstantiateProxies>;
 
     fn initialize_method(&self, _: Token) -> &'static str {
-        METHOD_INITIALIZE_PROXY
+        PROXY_INITIALIZE
     }
 
     /// Like any proxy, negotiate `proxy/initialize` as an agent negotiates
@@ -1758,7 +1759,7 @@ impl HostRole for Proxy {
                 let message = match message {
                     Dispatch::Request(request, responder) if request.method() == "initialize" => {
                         return responder.respond_with_error(Error::invalid_request().data(
-                            format!("proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"),
+                            format!("proxies must be initialized with `{PROXY_INITIALIZE}`"),
                         ));
                     }
                     message => message,

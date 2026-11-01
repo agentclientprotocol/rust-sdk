@@ -41,9 +41,8 @@ fn v1_proxy(v1_hits: Arc<AtomicUsize>) -> impl ConnectTo<Conductor> {
         Client,
         async move |request: v1::InitializeProxyRequest, responder, _cx| {
             v1_hits.fetch_add(1, Ordering::SeqCst);
-            responder.respond(v1::InitializeResponse::new(
-                request.initialize.protocol_version,
-            ))
+            responder
+                .respond(v1::InitializeResponse::new(request.initialize.protocol_version).into())
         },
         agent_client_protocol::on_receive_request!(),
     )
@@ -54,10 +53,13 @@ fn v2_proxy(v2_hits: Arc<AtomicUsize>) -> impl ConnectTo<Conductor> {
         Client,
         async move |request: v2::InitializeProxyRequest, responder, _cx| {
             v2_hits.fetch_add(1, Ordering::SeqCst);
-            responder.respond(v2::InitializeResponse::new(
-                request.initialize.protocol_version,
-                v2::Implementation::new("router-test-proxy", "1.0.0"),
-            ))
+            responder.respond(
+                v2::InitializeResponse::new(
+                    request.initialize.protocol_version,
+                    v2::Implementation::new("router-test-proxy", "1.0.0"),
+                )
+                .into(),
+            )
         },
         agent_client_protocol::on_receive_request!(),
     )

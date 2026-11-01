@@ -184,6 +184,7 @@ impl ConnectTo<Conductor> for RecordingPassthroughProxy {
                     assert_eq!(request.initialize, expected_request);
 
                     cx.send_request_to(Agent, request.initialize)
+                        .map(|response| Ok(response.into()))
                         .forward_response_to(responder)
                 },
                 agent_client_protocol::on_receive_request!(),

@@ -232,7 +232,9 @@ impl PolyfillHandler {
     ) -> Result<Handled<Dispatch>, agent_client_protocol::Error> {
         match message {
             Dispatch::Request(mut request, responder) => {
-                if request.method() == agent_client_protocol::schema::METHOD_INITIALIZE_PROXY {
+                if request.method()
+                    == agent_client_protocol::schema::v1::PROXY_METHOD_NAMES.proxy_initialize
+                {
                     // A repeated `proxy/initialize` is forwarded like the
                     // first one, as long as it stays on the connection's
                     // protocol version. Invalid requests are answered with an

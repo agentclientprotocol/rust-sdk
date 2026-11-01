@@ -1,9 +1,13 @@
 # SDK Protocol Reference
 
-This chapter documents shared schema features, the proxy extension implemented
-by the Rust SDK's conductor, and the opt-in native MCP-over-ACP transport.
-The proxy methods are provisional SDK extensions. MCP-over-ACP is also
-unstable and is available only with the `unstable_mcp_over_acp` feature.
+This chapter documents shared schema features, the proxy chain methods
+implemented by the Rust SDK's conductor, and the opt-in native MCP-over-ACP
+transport. The proxy methods come from the
+[ACP proxy chains RFD](https://agentclientprotocol.com/rfds/proxy-chains) and
+are unstable in the schema, behind its `unstable_proxy_chains` feature. The SDK
+always enables that feature, so proxy and conductor support needs no feature
+flag. MCP-over-ACP is also unstable and is available only with the
+`unstable_mcp_over_acp` feature.
 
 ## Client-provided system prompts
 
@@ -82,15 +86,18 @@ component that it is running as a proxy and may forward messages with
 `proxy/successor`.
 
 The response is the matching version's normal `InitializeResponse` result. The
-SDK has one request type per version: `schema::v1::InitializeProxyRequest` and,
-with `unstable_protocol_v2`, `schema::v2::InitializeProxyRequest`, each with
-that version's request and response types. The final agent receives the ordinary `initialize`
-method and does not need to understand the proxy extension.
+SDK uses the schema crate's types, one per version:
+`schema::v1::InitializeProxyRequest` and, with `unstable_protocol_v2`,
+`schema::v2::InitializeProxyRequest`. Each is answered with that version's
+`InitializeProxyResponse`, a transparent wrapper around its
+`InitializeResponse`. Convert a forwarded `initialize` response with `.into()`.
+The final agent receives the ordinary `initialize` method and does not need to
+understand the proxy extension.
 
 ## Successor Forwarding
 
-`proxy/successor` wraps one inner ACP method and its parameters. The inner
-message is flattened into the outer parameters:
+`proxy/successor` wraps one inner ACP method and its parameters. The outer
+parameters hold the inner message's `method` and `params`:
 
 ```json
 {
@@ -108,10 +115,33 @@ message is flattened into the outer parameters:
 ```
 
 The conductor unwraps the message and sends the inner request to the next
-component. The outer response carries the inner request's result or error. To
-forward an inner notification, omit the outer `id`; no response is produced.
-Optional extension metadata may be included as `_meta` alongside the flattened
-inner message.
+component. The outer response carries the inner request's result or error
+unchanged. To forward an inner notification, omit the outer `id`; no response
+is produced. The inner `params` may be omitted or `null` when the inner message
+has none. Optional metadata for the envelope itself may be included as `_meta`
+next to `method` and `params`; the inner message keeps its own `_meta` inside
+its `params`.
+
+The schema types for the envelope are `ProxySuccessorRequest`,
+`ProxySuccessorNotification` and `ProxySuccessorResponse` in `schema::v1` and
+`schema::v2`, with the `ProxyRequest`, `ProxyResponse` and `ProxyNotification`
+unions and the method names in `PROXY_METHOD_NAMES`. They hold the inner
+message as raw JSON. `schema::SuccessorMessage<M>` is the SDK's typed view of
+the same envelope: it holds the inner message as an SDK message type, works for
+every protocol version, and for a wrapped request uses the inner request's
+response type. The SDK's proxy routing wraps and unwraps messages with it.
+
+### Results and errors
+
+The result or error of a wrapped request reaches the original requester
+unchanged, in both directions: error codes, messages and `data` (including an
+explicit `null`) are not rewritten, and results are not re-encoded through
+typed schema structs by the conductor or by the default proxy forwarding.
+Two limits remain. Every hop parses messages into `serde_json::Value`, so a
+number is re-encoded in serde_json's form (`1E2` becomes `100.0`) and an
+integer outside the 64-bit range loses precision. Typed ACP dispatch also drops
+members of an error object other than `code`, `message` and `data`, which
+JSON-RPC does not define.
 
 ## Native MCP-over-ACP
 
