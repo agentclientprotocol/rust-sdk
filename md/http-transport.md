@@ -81,8 +81,9 @@ agent-client-protocol-http = { version = "5", features = ["client"] }
 ```
 
 The `client` feature exposes `HttpClient`. Its `configure_http` and
-`from_http_client` hooks take reqwest types, so add a matching `reqwest`
-dependency to customize the HTTP client. The `server` feature exposes
+`from_http_client` hooks take reqwest types, and `HttpClientError::Reqwest`
+holds a `reqwest::Error`, so add a matching `reqwest` dependency to customize
+the HTTP client or inspect that error. The `server` feature exposes
 `AcpHttpServer`, `ServerOptions`, and `CorsOptions`.
 `AcpHttpServer::into_router` returns an `axum::Router` to mount in your axum
 application, so your axum dependency must match this crate's.
