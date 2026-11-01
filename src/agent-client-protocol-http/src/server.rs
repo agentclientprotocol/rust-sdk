@@ -28,7 +28,7 @@ use crate::connection::ConnectionRegistry;
 ///     .with_health_endpoint(false);
 /// assert_eq!(options.path, "/agent");
 /// assert!(!options.health_endpoint);
-/// # Ok::<(), axum::http::header::InvalidHeaderValue>(())
+/// # Ok::<(), agent_client_protocol_http::InvalidOriginError>(())
 /// ```
 ///
 /// Struct literals, including struct update syntax, are not supported outside
@@ -90,6 +90,36 @@ impl Default for ServerOptions {
     }
 }
 
+/// An origin passed to [`CorsOptions::allow_origins`] is not a valid HTTP
+/// header value.
+///
+/// [`std::error::Error::source`] returns the underlying header error.
+#[derive(Debug)]
+pub struct InvalidOriginError {
+    origin: String,
+    source: InvalidHeaderValue,
+}
+
+impl InvalidOriginError {
+    /// The rejected origin.
+    #[must_use]
+    pub fn origin(&self) -> &str {
+        &self.origin
+    }
+}
+
+impl std::fmt::Display for InvalidOriginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "invalid CORS origin {:?}", self.origin)
+    }
+}
+
+impl std::error::Error for InvalidOriginError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
 /// Browser origin policy for HTTP CORS and WebSocket upgrades.
 ///
 /// This is not authentication: requests without an `Origin` header are accepted
@@ -139,16 +169,22 @@ impl CorsOptions {
     ///
     /// # Errors
     ///
-    /// Returns [`InvalidHeaderValue`] if an origin is not a valid HTTP header
+    /// Returns [`InvalidOriginError`] if an origin is not a valid HTTP header
     /// value.
-    pub fn allow_origins<I, S>(origins: I) -> Result<Self, InvalidHeaderValue>
+    pub fn allow_origins<I, S>(origins: I) -> Result<Self, InvalidOriginError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
         let origins = origins
             .into_iter()
-            .map(|origin| HeaderValue::from_str(origin.as_ref()))
+            .map(|origin| {
+                let origin = origin.as_ref();
+                HeaderValue::from_str(origin).map_err(|source| InvalidOriginError {
+                    origin: origin.to_owned(),
+                    source,
+                })
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             policy: CorsPolicy::AllowOrigins(origins),
@@ -358,6 +394,15 @@ async fn handle_get(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn invalid_origin_reports_the_origin_and_header_error() {
+        let error = CorsOptions::allow_origins(["https://ok.example", "bad\norigin"])
+            .expect_err("a newline is not a valid header value");
+        assert_eq!(error.origin(), "bad\norigin");
+        assert_eq!(error.to_string(), "invalid CORS origin \"bad\\norigin\"");
+        assert!(std::error::Error::source(&error).is_some());
+    }
     use super::*;
     use axum::body::Body;
     use tower::{Layer as _, ServiceExt as _, service_fn};

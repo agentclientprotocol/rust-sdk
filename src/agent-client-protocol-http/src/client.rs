@@ -38,7 +38,7 @@ use crate::protocol::{
 pub enum HttpClientError {
     /// The endpoint is not a valid URL.
     #[error("invalid URL")]
-    InvalidUrl(#[source] url::ParseError),
+    InvalidUrl(#[source] InvalidUrlError),
     /// The endpoint uses a scheme other than `http`, `https`, `ws`, or `wss`.
     #[error("unsupported URL scheme: {0}; expected http, https, ws, or wss")]
     UnsupportedScheme(String),
@@ -51,6 +51,14 @@ pub enum HttpClientError {
     #[error("failed to build HTTP client")]
     Reqwest(#[source] reqwest::Error),
 }
+
+/// Why the endpoint passed to [`HttpClient`] is not a valid URL.
+///
+/// It displays the URL parser's message, such as "relative URL without a
+/// base".
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct InvalidUrlError(url::ParseError);
 
 /// An endpoint-bound ACP transport using HTTP/SSE or WebSocket.
 ///
@@ -266,7 +274,8 @@ fn parse_base_url(base_url: &str) -> Result<url::Url, HttpClientError> {
 }
 
 fn parse_endpoint(endpoint: &str) -> Result<url::Url, HttpClientError> {
-    let endpoint = url::Url::parse(endpoint).map_err(HttpClientError::InvalidUrl)?;
+    let endpoint = url::Url::parse(endpoint)
+        .map_err(|source| HttpClientError::InvalidUrl(InvalidUrlError(source)))?;
     match endpoint.scheme() {
         "http" | "https" | "ws" | "wss" => Ok(endpoint),
         scheme => Err(HttpClientError::UnsupportedScheme(scheme.to_string())),
@@ -2040,7 +2049,14 @@ mod tests {
         assert!(matches!(error, HttpClientError::InvalidUrl(_)));
         assert_eq!(error.to_string(), "invalid URL");
         let source = std::error::Error::source(&error).expect("parse error source");
-        assert!(source.downcast_ref::<url::ParseError>().is_some());
+        let source = source
+            .downcast_ref::<InvalidUrlError>()
+            .expect("the source is an InvalidUrlError");
+        assert_eq!(
+            source.to_string(),
+            url::ParseError::RelativeUrlWithoutBase.to_string()
+        );
+        assert!(std::error::Error::source(source).is_none());
     }
 
     #[test]

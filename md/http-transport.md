@@ -80,10 +80,12 @@ agent-client-protocol-http = { version = "3", features = ["client"] }
 # agent-client-protocol-http = { version = "3", features = ["client", "server"] }
 ```
 
-The `client` feature exposes `HttpClient` and re-exports `reqwest` and `url`.
-The `server` feature exposes `AcpHttpServer`, `ServerOptions`, and
-`CorsOptions`, and re-exports `axum`. Use the re-exports to name the types in
-this crate's signatures without depending on matching versions yourself.
+The `client` feature exposes `HttpClient`. Its `configure_http` and
+`from_http_client` hooks take reqwest types, so add a matching `reqwest`
+dependency to customize the HTTP client. The `server` feature exposes
+`AcpHttpServer`, `ServerOptions`, and `CorsOptions`.
+`AcpHttpServer::into_router` returns an `axum::Router` to mount in your axum
+application, so your axum dependency must match this crate's.
 
 ## Request Cancellation
 
