@@ -729,7 +729,7 @@ mod tests {
             assert!(!task.is_finished());
             let _sent = release_tx.send(());
             let TransportFrame::Single(response) = peer.rx.next().await.unwrap() else { panic!("single frame") };
-            assert_eq!(serde_json::to_value(response).unwrap()["error"]["code"], MCP_SERVER_UNAVAILABLE);
+            assert_eq!(serde_json::to_value(response).unwrap()["error"]["code"], MCP_SERVER_UNAVAILABLE.value());
             let _sent = stop_tx.send(());
             task.await.unwrap().unwrap();
         }).await.expect("provider removal cleanup timed out");
@@ -814,7 +814,7 @@ mod tests {
             json!({"supportedVersions":[MCP_VERSION, 42]}),
         ] {
             let error = project_discovery_versions(McpOutcome::Result(malformed)).unwrap_err();
-            assert_eq!(i32::from(error.code), MCP_BACKEND_FAILURE);
+            assert_eq!(error.code, MCP_BACKEND_FAILURE);
         }
         let error = McpError::new(-32000, "opaque backend error").data(Value::Null);
         let preserved = project_discovery_versions(McpOutcome::Error(error.clone())).unwrap();

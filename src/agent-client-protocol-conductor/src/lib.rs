@@ -133,9 +133,7 @@ impl InstantiateProxiesAndAgent for CommandLineComponents {
                 }
             }
 
-            Err(agent_client_protocol::util::internal_error(
-                "no agent component in list",
-            ))
+            Err(agent_client_protocol::Error::internal_error().data("no agent component in list"))
         })
     }
 }

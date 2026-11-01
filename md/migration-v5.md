@@ -591,6 +591,7 @@ and `"1"` stay distinct, and integers keep the full 64-bit signed range.
 | Before | After |
 | --- | --- |
 | `RawJsonRpcMessage::Request(schema::v1::Request<RawJsonRpcParams>)` | `RawJsonRpcMessage::Request(RawJsonRpcRequest)`, with the same `id`, `method` and `params` fields |
+| `RawJsonRpcMessage::Notification(schema::v1::Notification<RawJsonRpcParams>)` | `RawJsonRpcMessage::Notification(RawJsonRpcNotification)`, with the same `method` and `params` fields |
 | `RawJsonRpcResponse`, an alias of `schema::v1::Response<Value, Box<RawJsonRpcError>>` | `RawJsonRpcResponse`, the SDK's own enum with the same `Result { id, result }` and `Error { id, error }` variants and `new` |
 | `RawJsonRpcMessage::response_id()` returned `Option<&v1::RequestId>` | returns `Option<&RawJsonRpcId>` |
 
@@ -785,6 +786,76 @@ callbacks receive (`ConnectionTo` for `Raw`, `v1::ConnectionTo` for `V1`,
 `v2::ConnectionTo` for `V2`), so code generic over a builder's context changes
 `Context: ConnectionContext` to `P: Protocol`.
 
+## Schema enums and SDK helpers
+
+### v1 extension methods keep their `_` prefix
+
+Parsing a v1 dispatch enum (`schema::v1::ClientRequest`, `AgentRequest`,
+`ClientNotification` or `AgentNotification`) from an extension method used to
+strip the leading `_`: a parsed `_vendor/x` reported `method()` as `vendor/x`
+and was sent on as `vendor/x`, which the peer answered with Method not found.
+The `ExtMethodRequest` and `ExtNotification` variants now keep the method
+exactly as it was on the wire, as v2 already did. Code that matched on
+`ext.method` without the prefix matches the full name instead:
+
+```rust,ignore
+// Before
+v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "vendor/x" => ...
+// After
+v1::ClientRequest::ExtMethodRequest(ext) if &*ext.method == "_vendor/x" => ...
+```
+
+### Removed `util` helpers
+
+`util::internal_error(message)` and `util::parse_error(message)` duplicated the
+`Error` constructors and are removed. Build the error directly:
+
+```rust,ignore
+// Before
+Err(util::internal_error(format!("lost {id}")))
+result.map_err(util::internal_error)?;
+
+// After
+Err(Error::internal_error().data(format!("lost {id}")))
+result.map_err(Error::into_internal_error)?; // any `std::error::Error`
+```
+
+`util::TypeNotification` is removed. It duplicated
+`MatchDispatch::if_notification` for notifications. Wrap the message in
+`Dispatch::Notification` and use `MatchDispatch`, which returns a parse error
+for malformed params instead of logging and dropping them:
+
+```rust,ignore
+// Before
+TypeNotification::new(message)
+    .handle_if(async |notif: SessionNotification| { ... })
+    .await
+    .otherwise(async |untyped| { ... })
+    .await
+
+// After
+MatchDispatch::new(Dispatch::Notification(message))
+    .if_notification(async |notif: SessionNotification| { ... })
+    .await
+    .otherwise(async |dispatch| { ... })
+    .await
+```
+
+`agent-client-protocol` now depends on the `agent-client-protocol-derive`
+version released with it exactly (`=`), because the derive output calls
+hidden SDK internals. Depend on the derives through `agent_client_protocol`
+rather than adding the derive crate separately.
+
+### MCP-over-ACP error codes are `ErrorCode`s
+
+`mcp_server::MCP_SERVER_UNAVAILABLE` (`-33001`) and
+`mcp_server::MCP_BACKEND_FAILURE` (`-33002`) are now `ErrorCode` constants
+instead of `i32`, and `mcp_server::MCP_RESOURCE_LIMIT_EXCEEDED` (`-33000`) is
+new. `Error::new(MCP_BACKEND_FAILURE, ..)` still compiles. Compare with
+`error.code == MCP_BACKEND_FAILURE` directly instead of through
+`i32::from(error.code)`, and use `.value()` where you need an `i32` (for
+example, against a JSON `code`).
+
 ## Proxy method names
 
 The proxy protocol now uses the method names defined by the
@@ -798,8 +869,9 @@ extensions.
 | `_proxy/successor` | `proxy/successor` |
 
 The message shapes are unchanged. `proxy/successor` still flattens the inner
-ACP message into its params and sends optional metadata as `_meta` (`meta` is
-also accepted on receive).
+ACP message into its params and sends optional metadata as `_meta`. The
+non-spec `meta` key is no longer read on receive; see
+[`SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive](#successormessage-and-initializeproxyrequest-are-non-exhaustive).
 
 ### Upgrade conductors and proxies together
 
@@ -814,6 +886,30 @@ Code that uses the SDK types (`schema::v1::InitializeProxyRequest`, formerly
 `SuccessorMessage`, `METHOD_INITIALIZE_PROXY`, `METHOD_SUCCESSOR_MESSAGE`, or
 the `Proxy` and `Conductor` roles) needs no changes for the rename. Update any hard-coded method
 strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
+
+### `SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive
+
+`schema::SuccessorMessage`, `schema::v1::InitializeProxyRequest` and
+`schema::v2::InitializeProxyRequest` are `#[non_exhaustive]`, so the proxy
+protocol can add fields in a minor release. Their fields stay public for
+reading, but outside the SDK you build them with constructors:
+
+```rust,ignore
+// Before
+let message = SuccessorMessage { message: request, meta: None };
+let init = v1::InitializeProxyRequest { initialize };
+
+// After
+let message = SuccessorMessage::new(request);
+let message = SuccessorMessage::new(request).meta(meta);
+let init = v1::InitializeProxyRequest::new(initialize); // or initialize.into()
+```
+
+`SuccessorMessage::meta` is now `Option<serde_json::Map<String, Value>>`
+instead of `Option<Value>`, because ACP `_meta` is always an object. A
+`proxy/successor` request whose `_meta` is not an object is accepted and
+its `_meta` is ignored, and the non-spec `meta` key is ignored instead of
+being read as `_meta`.
 
 ### `ConductorHostRole` is sealed
 

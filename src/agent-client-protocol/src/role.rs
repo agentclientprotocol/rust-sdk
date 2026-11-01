@@ -9,7 +9,7 @@ use std::{any::TypeId, fmt::Debug, future::Future, hash::Hash};
 use serde::{Deserialize, Serialize};
 
 use crate::schema::{METHOD_SUCCESSOR_MESSAGE, SuccessorMessage};
-use crate::util::json_cast;
+use crate::util::json_cast_params;
 use crate::{Builder, ConnectionTo, Dispatch, Handled, JsonRpcMessage, UntypedMessage};
 
 /// Roles for the ACP protocol.
@@ -93,11 +93,7 @@ impl RemoteStyle {
     ) -> Result<UntypedMessage, crate::Error> {
         match self {
             RemoteStyle::Counterpart | RemoteStyle::Predecessor => msg.to_untyped_message(),
-            RemoteStyle::Successor => SuccessorMessage {
-                message: msg,
-                meta: None,
-            }
-            .to_untyped_message(),
+            RemoteStyle::Successor => SuccessorMessage::new(msg).to_untyped_message(),
         }
     }
 }
@@ -222,7 +218,7 @@ where
                     "Response variant cannot be unwrapped as SuccessorMessage",
                 )
             })?;
-            let SuccessorMessage { message, meta } = json_cast(untyped_message.params())?;
+            let SuccessorMessage { message, meta } = json_cast_params(untyped_message.params())?;
             let successor_dispatch = dispatch.try_map_message(|_| Ok(message))?;
             tracing::trace!(
                 unwrapped_method = %successor_dispatch.method(),
@@ -245,7 +241,9 @@ where
                     );
                     Ok(Handled::No {
                         message: successor_dispatch.try_map_message(|message| {
-                            SuccessorMessage { message, meta }.to_untyped_message()
+                            SuccessorMessage::new(message)
+                                .meta(meta)
+                                .to_untyped_message()
                         })?,
                         retry,
                     })

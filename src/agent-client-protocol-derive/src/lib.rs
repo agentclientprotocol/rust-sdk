@@ -98,7 +98,7 @@ pub fn derive_json_rpc_request(input: TokenStream) -> TokenStream {
                 if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast_params(#params_arg)
+                #krate::__private::json_cast_params(#params_arg)
             }
         }
 
@@ -168,7 +168,7 @@ pub fn derive_json_rpc_notification(input: TokenStream) -> TokenStream {
                 if #method_arg != #method {
                     return ::core::result::Result::Err(#krate::Error::method_not_found());
                 }
-                #krate::util::json_cast_params(#params_arg)
+                #krate::__private::json_cast_params(#params_arg)
             }
         }
 
@@ -216,7 +216,7 @@ pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
             }
 
             fn from_value(#method_arg: &str, #value_arg: #krate::__private::serde_json::Value) -> ::core::result::Result<Self, #krate::Error> {
-                #krate::util::json_cast(#value_arg)
+                #krate::__private::json_cast(#value_arg)
             }
         }
     };

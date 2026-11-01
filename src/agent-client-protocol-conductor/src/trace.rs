@@ -11,11 +11,11 @@ use std::time::Instant;
 
 use agent_client_protocol::schema::SuccessorMessage;
 use agent_client_protocol::schema::v1::{
-    MessageMcpNotification, MessageMcpRequest, MessageMcpResponse, Notification as RpcNotification,
+    MessageMcpNotification, MessageMcpRequest, MessageMcpResponse,
 };
 use agent_client_protocol::{
-    DynConnectTo, JsonRpcMessage, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcParams,
-    RawJsonRpcRequest, RawJsonRpcResponse as RpcResponse, Role, UntypedMessage,
+    DynConnectTo, JsonRpcMessage, RawJsonRpcId, RawJsonRpcMessage, RawJsonRpcNotification,
+    RawJsonRpcParams, RawJsonRpcRequest, RawJsonRpcResponse as RpcResponse, Role, UntypedMessage,
 };
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -479,7 +479,7 @@ impl TraceHandle {
                 incoming,
                 message: message.clone(),
             })
-            .map_err(agent_client_protocol::util::internal_error)
+            .map_err(agent_client_protocol::Error::into_internal_error)
     }
 
     /// Create a tracing bridge that wraps a proxy component.
@@ -732,7 +732,7 @@ impl MessageInfo {
         Self::from_untyped_request(Successor(false), Some(req.id), Protocol::Acp, untyped)
     }
 
-    fn from_notification(notification: RpcNotification<RawJsonRpcParams>) -> Self {
+    fn from_notification(notification: RawJsonRpcNotification) -> Self {
         let untyped = UntypedMessage::parse_message(
             &notification.method,
             &params_from_transport(notification.params),

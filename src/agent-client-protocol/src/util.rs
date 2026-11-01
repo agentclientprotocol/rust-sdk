@@ -6,7 +6,7 @@ use futures::{
 };
 
 mod typed;
-pub use typed::{MatchDispatch, MatchDispatchFrom, TypeNotification};
+pub use typed::{MatchDispatch, MatchDispatchFrom};
 
 /// Format only code-derived metadata at ordinary log levels.
 ///
@@ -108,6 +108,12 @@ pub(crate) fn redacted_json_line(line: &str) -> impl std::fmt::Display + '_ {
 
 /// Cast from `N` to `M` by serializing/deserialization to/from JSON.
 ///
+/// Failures are Parse errors (`-32700`). Don't use this for the params of an
+/// incoming request or notification: a peer that sends malformed params must
+/// get Invalid params (`-32602`), which [`json_cast_params`] returns. Use
+/// `json_cast` for values the SDK or your own code produced, such as response
+/// results.
+///
 /// Returned diagnostics can contain the input JSON and payload-bearing parse
 /// reasons. Treat them as sensitive, as with [`json_cast_params`].
 pub fn json_cast<N, M>(params: N) -> Result<M, crate::Error>
@@ -161,14 +167,9 @@ where
     Ok(m)
 }
 
-/// Creates an internal error with the given message
-pub fn internal_error(message: impl ToString) -> crate::Error {
+/// An internal error (`-32603`) whose data is `message`.
+pub(crate) fn internal_error(message: impl ToString) -> crate::Error {
     crate::Error::internal_error().data(message.to_string())
-}
-
-/// Creates a parse error with the given message
-pub fn parse_error(message: impl ToString) -> crate::Error {
-    crate::Error::parse_error().data(message.to_string())
 }
 
 /// Rewrite the params of an `initialize` request for the protocol version

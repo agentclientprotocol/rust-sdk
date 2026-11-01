@@ -115,11 +115,10 @@ macro_rules! impl_jsonrpc_request_enum {
             }
 
             fn method(&self) -> &str {
-                match self {
-                    $( $(#[$meta])* Self::$variant(_) => $method, )*
-                    Self::$ext_variant(ext) => &ext.method,
-                    _ => "_unknown",
-                }
+                // The schema enum's inherent `method()` (path syntax prefers
+                // inherent items) covers every variant, including ones this
+                // macro does not list.
+                <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
@@ -133,11 +132,11 @@ macro_rules! impl_jsonrpc_request_enum {
                 match method {
                     $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
                     _ => {
-                        if let Some(custom_method) = method.strip_prefix('_') {
+                        if method.starts_with('_') {
                             $crate::util::json_cast_params(params).map(
                                 |ext_req: $crate::schema::v1::ExtRequest| {
                                     Self::$ext_variant($crate::schema::v1::ExtRequest::new(
-                                        custom_method.to_string(),
+                                        method.to_string(),
                                         ext_req.params,
                                     ))
                                 },
@@ -178,11 +177,10 @@ macro_rules! impl_jsonrpc_notification_enum {
             }
 
             fn method(&self) -> &str {
-                match self {
-                    $( $(#[$meta])* Self::$variant(_) => $method, )*
-                    Self::$ext_variant(ext) => &ext.method,
-                    _ => "_unknown",
-                }
+                // The schema enum's inherent `method()` (path syntax prefers
+                // inherent items) covers every variant, including ones this
+                // macro does not list.
+                <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
@@ -196,11 +194,11 @@ macro_rules! impl_jsonrpc_notification_enum {
                 match method {
                     $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
                     _ => {
-                        if let Some(custom_method) = method.strip_prefix('_') {
+                        if method.starts_with('_') {
                             $crate::util::json_cast_params(params).map(
                                 |ext_notif: $crate::schema::v1::ExtNotification| {
                                     Self::$ext_variant($crate::schema::v1::ExtNotification::new(
-                                        custom_method.to_string(),
+                                        method.to_string(),
                                         ext_notif.params,
                                     ))
                                 },
@@ -333,6 +331,7 @@ pub mod v1 {
         response = InitializeResponse,
         crate = crate
     )]
+    #[non_exhaustive]
     pub struct InitializeProxyRequest {
         /// The underlying protocol-v1 initialize request data.
         #[serde(flatten)]
@@ -370,6 +369,7 @@ pub mod v2 {
         response = InitializeResponse,
         crate = crate
     )]
+    #[non_exhaustive]
     pub struct InitializeProxyRequest {
         /// The underlying protocol-v2 initialize request data.
         #[serde(flatten)]

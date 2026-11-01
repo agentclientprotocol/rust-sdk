@@ -66,7 +66,7 @@ impl ConnectionTo<Agent> {
     ///                 Ok(None)
     ///             }
     ///             InitializeOutcome::LowerVersion(mismatch) => Ok(Some(mismatch)),
-    ///             _ => Err(agent_client_protocol::util::internal_error("unexpected outcome")),
+    ///             _ => Err(agent_client_protocol::Error::internal_error().data("unexpected outcome")),
     ///         }
     ///     })
     ///     .await?;

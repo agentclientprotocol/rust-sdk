@@ -86,11 +86,10 @@ macro_rules! impl_v2_jsonrpc_request_enum {
             }
 
             fn method(&self) -> &str {
-                match self {
-                    $( $(#[$meta])* Self::$variant(_) => $method, )*
-                    Self::$ext_variant(ext) => &ext.method,
-                    _ => "_unknown",
-                }
+                // The schema enum's inherent `method()` (path syntax prefers
+                // inherent items) covers every variant, including ones this
+                // macro does not list.
+                <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
@@ -138,11 +137,10 @@ macro_rules! impl_v2_jsonrpc_notification_enum {
             }
 
             fn method(&self) -> &str {
-                match self {
-                    $( $(#[$meta])* Self::$variant(_) => $method, )*
-                    Self::$ext_variant(ext) => &ext.method,
-                    _ => "_unknown",
-                }
+                // The schema enum's inherent `method()` (path syntax prefers
+                // inherent items) covers every variant, including ones this
+                // macro does not list.
+                <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<UntypedMessage, crate::Error> {
