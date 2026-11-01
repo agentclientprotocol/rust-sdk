@@ -117,8 +117,9 @@ pub mod one_shot_prompt {
     //! 2. **[`send_request`]** + **[`block_task`]** sends the initialize request
     //!    and waits for the response
     //! 3. **[`build_session_cwd`]** creates a session builder using the current working directory
-    //! 4. **[`start_session`]** sends the `NewSessionRequest` and returns an
-    //!    [`ActiveSession`] handle
+    //! 4. **[`start_session`]** sends the `NewSessionRequest` and returns a
+    //!    [`v1::SessionSetup`], whose `session` field is the [`ActiveSession`]
+    //!    handle
     //! 5. **[`send_prompt`]** queues the prompt to send to the agent
     //! 6. **[`read_to_string`]** reads all text chunks until the agent finishes
     //!
@@ -134,6 +135,7 @@ pub mod one_shot_prompt {
     //! [`build_session_cwd`]: agent_client_protocol::v1::ConnectionTo::build_session_cwd
     //! [`start_session`]: agent_client_protocol::v1::SessionBuilder::start_session
     //! [`ActiveSession`]: agent_client_protocol::v1::ActiveSession
+    //! [`v1::SessionSetup`]: agent_client_protocol::v1::SessionSetup
     //! [`send_prompt`]: agent_client_protocol::v1::ActiveSession::send_prompt
     //! [`read_to_string`]: agent_client_protocol::v1::ActiveSession::read_to_string
     //! [`connecting_as_client`]: super::connecting_as_client

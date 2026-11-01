@@ -174,6 +174,9 @@ where
     Counterpart: HasPeer<Agent>,
 {
     /// Build a draft protocol v2 `session/new` request.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     pub fn build_session(&self, cwd: impl AsRef<Path>) -> SessionBuilder<Counterpart> {
         SessionBuilder::new(self, v2::NewSessionRequest::new(cwd.as_ref()))
     }
@@ -201,6 +204,9 @@ where
     /// This helper is available with the `unstable_session_fork` feature. Call
     /// [`ForkSessionBuilder::start_session`] to publish the request and
     /// obtain a command handle for the newly created fork.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     #[cfg(feature = "unstable_session_fork")]
     pub fn fork_session(
         &self,
@@ -228,6 +234,9 @@ where
     /// Use [`Self::resume_session_from`] to request history replay or set
     /// other optional resume parameters. Call
     /// [`ResumeSessionBuilder::start_session`] to publish the request.
+    ///
+    /// `cwd` must be an absolute path: ACP requires one, and the SDK sends it
+    /// without checking.
     pub fn resume_session(
         &self,
         session_id: impl Into<v2::SessionId>,

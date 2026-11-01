@@ -28,10 +28,14 @@
 //!   `agent_client_protocol::v2` and its messages in `v2::schema` (also
 //!   reachable as `schema::v2`).
 //!
-//! The `v1` and `v2` modules export the same names (`ConnectionTo`,
-//! `Builder`, `Responder`, `Dispatch`, `SessionBuilder`, `ActiveSession`,
-//! `schema`, ...),
-//! so code moves between versions by changing the module it imports from.
+//! The `v1` and `v2` modules use the same names for the connection, the builder,
+//! the request handles and `schema` (`ConnectionTo`, `Builder`, `Responder`,
+//! `Dispatch`, `SentRequest`, ...). Their session APIs differ:
+//! `v1::ActiveSession` reads the session's updates from its own stream, while
+//! `v2::ActiveSession` only sends commands and the updates arrive through
+//! typed handlers on the connection. Some names exist in only one module, such
+//! as `v1::LoadSessionBuilder` and `v1::SessionMessage`, or
+//! `v2::InitializeOutcome`.
 //! The crate root holds what every version shares: transports, roles, the
 //! JSON-RPC traits, [`Error`], the generic request handles (which default to
 //! the version-neutral [`Raw`] marker) and, with `unstable_protocol_v2`, the
@@ -118,7 +122,7 @@
 //! For example, a native client launching an agent opts into `process`:
 //!
 //! ```toml
-//! agent-client-protocol = { version = "3", features = ["process"] }
+//! agent-client-protocol = { version = "5", features = ["process"] }
 //! ```
 //!
 //! Enable `stdio` for an agent using `Stdio`, or `schemars` for typed MCP tool
@@ -127,8 +131,27 @@
 //!
 //! The `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its
 //! tool builders. Unstable protocol features remain independent opt-ins.
-//! When upgrading from 2.x, explicitly enable every feature your application
-//! uses; `default-features = false` is no longer needed for a lean dependency.
+//! No features have been enabled by default since 3.0. When upgrading from
+//! 2.x, explicitly enable every feature your application uses;
+//! `default-features = false` is no longer needed for a lean dependency.
+//!
+//! ## Stability
+//!
+//! - The stable API, everything that is not behind an `unstable_*` feature,
+//!   follows semver: it changes incompatibly only in a major release.
+//! - Everything behind an `unstable_*` feature may change in a minor release.
+//!   This includes all of `agent_client_protocol::v2` and the other items that
+//!   `unstable_protocol_v2` enables. Stabilizing protocol v2 only removes the
+//!   `unstable_protocol_v2` gate.
+//! - This crate depends on one exact version of `agent-client-protocol-schema`
+//!   (an `=` requirement), and a minor release may move that pin to a newer
+//!   schema release. Use the schema types through [`schema`], [`v1::schema`]
+//!   and `v2::schema` instead of depending on `agent-client-protocol-schema`
+//!   directly. A direct dependency must allow the exact version this crate
+//!   pins, or Cargo cannot resolve the dependency graph.
+//! - All SDK crates share one version number, so moving a public dependency of
+//!   any of them to a new major version, such as `axum` or `reqwest` in
+//!   `agent-client-protocol-http`, is a major release of all of them.
 //!
 //! ## WebAssembly
 //!
@@ -179,7 +202,6 @@ mod jsonrpc;
 pub mod mcp_server;
 /// Role types for ACP connections
 pub mod role;
-/// ACP protocol schema types - all message types, requests, responses, and supporting types
 pub mod schema;
 /// Utility functions and types
 pub mod util;

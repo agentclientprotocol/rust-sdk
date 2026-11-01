@@ -112,7 +112,16 @@ jobs:
       - name: Check docs.rs build
         env:
           RUSTDOCFLAGS: --cfg docsrs -D warnings
-        run: cargo +nightly doc -p agent-client-protocol -p agent-client-protocol-rmcp --all-features --no-deps --locked
+        run: >-
+          cargo +nightly doc --all-features --no-deps --locked
+          -p agent-client-protocol
+          -p agent-client-protocol-cookbook
+          -p agent-client-protocol-conductor
+          -p agent-client-protocol-derive
+          -p agent-client-protocol-http
+          -p agent-client-protocol-polyfill
+          -p agent-client-protocol-rmcp
+          -p agent-client-protocol-trace-viewer
 
       - name: Check WASI documentation
         env:

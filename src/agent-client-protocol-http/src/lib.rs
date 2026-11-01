@@ -15,8 +15,9 @@
 //!   chosen by the URL scheme. It implements
 //!   [`ConnectTo<Client>`](agent_client_protocol::ConnectTo), so it takes the
 //!   place of an agent component. [`HttpClientBuilder::configure_http`] and
-//!   [`HttpClient::from_http_client`] take reqwest types, so add a matching
-//!   `reqwest` dependency to customize the HTTP client.
+//!   [`HttpClient::from_http_client`] take reqwest types, and
+//!   [`HttpClientError::Reqwest`] holds a `reqwest::Error`, so add a matching
+//!   `reqwest` dependency to customize the HTTP client or inspect that error.
 //! - `server`: [`AcpHttpServer`] turns an agent factory into an
 //!   `axum::Router` to mount in your axum application. [`ServerOptions`] and
 //!   [`CorsOptions`] configure the endpoint path, the `/health` route, and

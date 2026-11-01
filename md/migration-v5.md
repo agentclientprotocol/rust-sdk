@@ -3,6 +3,33 @@
 This page covers the breaking changes in `agent-client-protocol` 5.0 and the
 crates released with it.
 
+There is no 4.x of `agent-client-protocol`. All SDK crates now share one
+version number. `agent-client-protocol-rmcp`, which was at 4.x, joined that
+version group in this release, so the shared version had to start above 4.x.
+Upgrade from 3.6 directly to 5.0.
+
+## Stability
+
+- The stable v1 API, everything that is not behind an `unstable_*` feature,
+  follows semver: it changes incompatibly only in a major release.
+- Everything behind an `unstable_*` feature may change in a 5.x minor release.
+  This includes all of `agent_client_protocol::v2` and the other items that
+  `unstable_protocol_v2` enables. Stabilizing protocol v2 only removes the
+  `unstable_protocol_v2` gate.
+- All SDK crates share one version number. Moving a public dependency to a
+  new major version, such as `axum` or `reqwest` in
+  `agent-client-protocol-http`, forces a major release of all of them. rmcp is
+  handled differently: support for a new rmcp major version arrives as a new
+  feature in a minor release, and only dropping support for one forces a major
+  release.
+- `agent-client-protocol` depends on one exact version of
+  `agent-client-protocol-schema` (an `=` requirement), and a minor SDK release
+  may move that pin to a newer schema release. Use the schema types through
+  `agent_client_protocol::schema`, `v1::schema` and `v2::schema` instead of
+  depending on `agent-client-protocol-schema` directly. A direct dependency
+  must allow the exact version the SDK pins, or Cargo cannot resolve the
+  dependency graph.
+
 ## `v1` and `v2` modules and versioned entry points
 
 Every connection now names its protocol version, in the entry point and in
@@ -97,11 +124,10 @@ Where code compared a v1 request's `id()` with IDs from the raw layer, use
 - `ConnectionTo::into_protocol::<P>()` returns
   `Result<P::Connection<_>, Error>`. It fails with an Internal error
   (`-32603`) when the connection's builder guards another version, for
-  example `into_protocol::<V2>()` on a connection from `Client.v1()`, which
-  used to succeed and then send v2 payloads over the v1 wire. Connections from
-  unguarded builders such as `Builder::new` convert to every version. Add `?`
-  to existing calls. The new `ConnectionTo::protocol_version()` returns the
-  guarded version, or `None` for an unguarded connection.
+  example `into_protocol::<V2>()` on a connection from `Client.v1()`.
+  Connections from unguarded builders such as `Builder::new` convert to every
+  version. `ConnectionTo::protocol_version()` returns the guarded version, or
+  `None` for an unguarded connection.
 - `ConnectionTo::spawn_connection` returns the connection type the child
   builder's callbacks receive, like `v1::ConnectionTo::spawn_connection` and
   `v2::ConnectionTo::spawn_connection` already did. It replaces
@@ -124,9 +150,8 @@ Where code compared a v1 request's `id()` with IDs from the raw layer, use
 
 ### Every session setup method returns `SessionSetup`
 
-`v1::SessionSetup` and `v2::SessionSetup` replace `v1::OpenedSession`
-(formerly `RestoredSession`) and `v2::OpenedSession` (formerly
-`OpenedV2Session`). A `SessionSetup` is the session plus the complete
+`v1::SessionSetup` and `v2::SessionSetup` replace `RestoredSession` and
+`OpenedV2Session`. A `SessionSetup` is the session plus the complete
 response of the request that set it up, as public fields. It is
 `#[non_exhaustive]`, so destructure it with `..`:
 
@@ -159,9 +184,9 @@ let session_id = builder.block_task().start_session_proxy(responder).await?;
 let session_id = builder.block_task().start_session_proxy(responder).await?.session_id;
 ```
 
-The accessors are removed in favor of the fields: `session()`,
-`session_mut()`, `response()`, `into_parts()` and `into_session()`. The v1
-`ActiveSession` no longer stores the `session/new` response:
+The `RestoredSession` and `OpenedV2Session` accessors are removed in favor of
+the fields: `session()`, `session_mut()`, `response()`, `into_parts()` and
+`into_session()`. The v1 `ActiveSession` no longer stores the `session/new` response:
 `ActiveSession::response()`, `modes()`, `config_options()` and `meta()` are
 removed; read them from `SessionSetup::response`.
 
@@ -258,14 +283,11 @@ their path.
 | `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
 | `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
-| `OpenedSession` (`v1` and `v2`) | `v1::SessionSetup`, `v2::SessionSetup` (public `session` and `response` fields) |
-| `OpenedSession::session()`, `session_mut()`, `response()`, `into_parts()`, `into_session()` | the `session` and `response` fields |
-| `v1::ActiveSession::response()`, `modes()`, `config_options()`, `meta()` | removed; use `SessionSetup::response` |
+| `RestoredSession::session()`, `session_mut()`, `response()`, `into_parts()`, `into_session()` (and the `OpenedV2Session` equivalents) | the `session` and `response` fields |
+| `ActiveSession::response()`, `modes()`, `config_options()`, `meta()` | removed; use `v1::SessionSetup::response` |
 | v1 `SessionBuilder::start_session() -> ActiveSession` | returns `v1::SessionSetup<'static, _, NewSessionResponse>` |
-| `Responder<T, V1>` (and the other handles) | unchanged, or `v1::Responder<T>` |
 | `ConnectionTo` in v1 callbacks and session helpers | `v1::ConnectionTo` |
 | `SentRequest<T>`, `PreparedRequest<T>` from a v1 connection | `v1::SentRequest<T>`, `v1::PreparedRequest<T>` |
-| `Responder<T, V2>` (and the other handles) | unchanged, or `v2::Responder<T>` |
 
 `Builder::new`, `Builder::new_with`, `UntypedRole.builder()`,
 `Conductor.builder()` and the MCP roles' `builder()` are version-neutral and
@@ -750,17 +772,16 @@ a responder, such as `v1::SessionBuilder::on_proxy_session_start`, take a
 
 ### v2 code
 
-The `v2_id()` accessors are removed. `id()` on handles from the v2 builders and
-`v2::ConnectionTo` returns the v2 ID directly:
+`id()` on handles from the v2 builders and `v2::ConnectionTo` returns a
+`&schema::v2::RequestId` instead of a `&schema::v1::RequestId`:
 
 ```rust,ignore
 // Before
-let id: Option<v2::RequestId> = responder.v2_id();
-let id: &v2::RequestId = sent.v2_id();
+let id: &v1::RequestId = responder.id();
 
 // After
 let id: &v2::RequestId = responder.id();
-let id: &v2::RequestId = sent.id();
+let raw: &RawJsonRpcId = responder.raw_id();
 ```
 
 Closures registered on a v2 builder whose parameters are not annotated need
@@ -815,7 +836,7 @@ marker, so forwarding between connections needs no conversion.
 
 `MatchDispatch::otherwise_ignore` now answers an unmatched request with a
 method not found error (`-32601`). Before, it dropped the responder, so the
-peer got the dropped-responder error instead. Unmatched notifications and
+peer got no answer. Unmatched notifications and
 responses are still ignored.
 
 `v1::ActiveSession::read_to_string` uses `otherwise_ignore`, so a request routed
@@ -863,6 +884,69 @@ session helpers, are only available on the concrete types.
   `into_json`. Rename it in hand-written implementations and calls such as
   `PromptResponse::from_value(method, value)`; derived implementations change
   with the derive macros.
+
+## Core changes
+
+### JSON-RPC batches are rejected
+
+`TransportBatch`, `TransportBatchEntry` and `TransportFrame::Batch` are
+removed. The SDK no longer processes JSON-RPC batches. A batch (a JSON array
+on the wire, including an empty one) gets one Invalid Request error
+(`-32600`) with `"id": null`, and none of its entries run. Send each message
+on its own. Code that built or matched `TransportFrame::Batch` removes that
+case.
+
+`TransportFrame` is `#[non_exhaustive]`, so matches on it need a wildcard arm:
+
+```rust,ignore
+match frame {
+    TransportFrame::Single(message) => { /* .. */ }
+    TransportFrame::Malformed { raw, error } => { /* .. */ }
+    _ => {}
+}
+```
+
+### `MetaCapability` and `MetaCapabilityExt` are removed
+
+The `MetaCapability` and `MetaCapabilityExt` traits, which read and wrote
+capability flags under `_meta.symposium` in `initialize` requests and
+responses, are removed. Read and write the `_meta` map of the
+`InitializeRequest` or `InitializeResponse` directly if you still need those
+flags.
+
+### A dropped `Responder` answers the request
+
+When a `Responder` is dropped without a response, the SDK now answers the
+request itself:
+
+- `-32800` (`Error::request_cancelled`) if the peer cancelled the request with
+  `$/cancel_request`;
+- otherwise `-32603` (`Error::internal_error`), with data naming the method.
+
+Before, the peer got no answer and waited. This change compiles without any
+warning. Check handlers that drop a responder on purpose, for example to
+answer later through another path: move the responder to the code that
+answers instead of dropping it. Handing it to something that answers through
+it, such as `SentRequest::forward_response_to`, or moving it into another task
+does not trigger the automatic answer. No automatic answer is sent while the
+connection shuts down.
+
+### v1 forwarding keeps unknown fields
+
+v1 proxies and conductor chains no longer parse and re-serialize the messages
+they forward. Fields the SDK does not know, for example in `session/new`
+requests and responses or in `initialize`, now reach the next component
+instead of being dropped. Proxies that relied on forwarding to strip such
+fields must remove them themselves.
+
+### `ProxyProtocolRouter` keeps reading after a rejected first message
+
+`ProxyProtocolRouter` (`unstable_protocol_v2`) used to close the connection
+when it rejected the first `proxy/initialize`, for example for an unsupported
+version, or when the first frame was malformed. It now answers the rejected
+request or malformed frame with an error and keeps reading, like
+`AgentProtocolRouter`, so the conductor can send `proxy/initialize` again. The
+router finishes when its input closes.
 
 ## Schema enums and SDK helpers
 
@@ -1004,6 +1088,64 @@ only the conductor crate can create, so code outside it cannot call them.
 is private. Create conductors with `ConductorImpl::new_agent` or
 `ConductorImpl::new_proxy`.
 
+## Conductor changes
+
+### Instantiators receive a `SelectedInitializeRequest`
+
+`InstantiateProxies::instantiate_proxies`,
+`InstantiateProxiesAndAgent::instantiate_proxies_and_agent` and instantiator
+closures receive a `SelectedInitializeRequest` instead of a
+`schema::v1::InitializeRequest`, and return one inside `InstantiatedProxies`
+or `InstantiatedChain`. It is the client's `initialize` request, parsed for
+the protocol version the conductor selected: `SelectedInitializeRequest::V1`
+or, with `unstable_protocol_v2`, `SelectedInitializeRequest::V2`. This
+affects every custom instantiator, including v1-only ones.
+
+A v1-only instantiator converts the request with `into_v1()?`:
+
+```rust,ignore
+use agent_client_protocol_conductor::{
+    ConductorImpl, InstantiatedChain, SelectedInitializeRequest,
+};
+
+// Before
+ConductorImpl::new_agent("my-conductor", |init_req: InitializeRequest| async move {
+    Ok((init_req, proxies, agent))
+})
+
+// After
+ConductorImpl::new_agent("my-conductor", |init_req: SelectedInitializeRequest| async move {
+    let init_req = init_req.into_v1()?;
+    Ok(InstantiatedChain::new(init_req, proxies, agent))
+})
+```
+
+`SelectedInitializeRequest` is `#[non_exhaustive]`, so an instantiator that
+handles each version matches the variants and adds a wildcard arm:
+
+```rust,ignore
+match init_req {
+    SelectedInitializeRequest::V1(request) => { /* .. */ }
+    SelectedInitializeRequest::V2(request) => { /* .. */ }
+    _ => return Err(Error::invalid_request()),
+}
+```
+
+### The v2 instantiator methods are removed
+
+`InstantiateProxies::instantiate_v2_proxies` and
+`InstantiateProxiesAndAgent::instantiate_v2_proxies_and_agent`
+(`unstable_protocol_v2`) are removed. The single method receives a v2 request
+as `SelectedInitializeRequest::V2`. Move the body of a v2 method into the
+`V2` arm of a match.
+
+### `ConductorHostRole::initialize` and `InitializationOutcome` are removed
+
+`ConductorHostRole::initialize`, `ConductorHostRole::initialize_with_outcome`
+and `InitializationOutcome` (`unstable_protocol_v2`) are removed. The
+conductor initializes the chain itself and only calls the instantiator. See
+[`ConductorHostRole` is sealed](#conductorhostrole-is-sealed).
+
 ### Conductor internals are no longer exported
 
 The conductor crate exports its API explicitly instead of through a glob.
@@ -1014,14 +1156,12 @@ conductor's internal routing.
 ### Instantiators return `InstantiatedChain` and `InstantiatedProxies`
 
 `InstantiateProxiesAndAgent` and `InstantiateProxies`, including instantiator
-closures, return `#[non_exhaustive]` structs instead of tuples. The
-`ProxiesAndAgentComponents` type alias is removed.
+closures, return `#[non_exhaustive]` structs instead of tuples.
 
 | Before | After |
 | --- | --- |
 | `Ok((request, proxies, agent))` | `Ok(InstantiatedChain::new(request, proxies, agent))` |
 | `Ok((request, proxies))` | `Ok(InstantiatedProxies::new(request, proxies))` |
-| `ProxiesAndAgentComponents` | `InstantiatedChain` |
 
 `new` takes `impl Into<SelectedInitializeRequest>`, so a `v1::InitializeRequest`
 needs no `.into()`.
@@ -1143,10 +1283,11 @@ breaking change and only happens in an ACP major release.
   `axum::http::header::InvalidHeaderValue`. It names the rejected origin
   through `origin()`.
 
-The crate does not re-export `axum`, `reqwest`, or `url`. Only two of its
-signatures use third-party types: `AcpHttpServer::into_router` returns an
-`axum::Router`, and `HttpClientBuilder::configure_http` and
-`HttpClient::from_http_client` take reqwest types. Depend on matching
+The crate does not re-export `axum`, `reqwest`, or `url`. Its public API uses
+third-party types in four places: `AcpHttpServer::into_router` returns an
+`axum::Router`, `HttpClientBuilder::configure_http` and
+`HttpClient::from_http_client` take reqwest types, and
+`HttpClientError::Reqwest` holds a `reqwest::Error`. Depend on matching
 versions of those crates to use them.
 
 ## `AcpAgent`

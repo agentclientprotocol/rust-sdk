@@ -34,6 +34,7 @@
 
 # Reference
 
+- [Versioning and Protocol Versions](./versioning.md)
 - [Migrating to v5](./migration-v5.md)
 - [Migrating to Core v3](./migration-v3.md)
 - [Migrating the Config API](./migration-config-api.md)

@@ -1,11 +1,10 @@
 # Migrating to Core v3
 
-The upcoming combined breaking release pairs `agent-client-protocol` 3.x with
+The 3.0 release paired `agent-client-protocol` 3.x with
 `agent-client-protocol-rmcp` 4.x and `rmcp` 3.x. Applications using the
 integration must upgrade both public dependencies together; see the
 [rmcp integration migration](./migration-rmcp-v4.md) for service and tool API
-changes. These are planned release versions, not the workspace's current
-package versions. The minimum supported Rust version remains 1.88.
+changes. The minimum supported Rust version remains 1.88.
 
 For the other transport changes in core 3.x, follow:
 

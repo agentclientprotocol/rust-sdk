@@ -2020,6 +2020,12 @@ impl<
     ///
     /// Only applicable to proxies. Use the same method on `v2::Builder` to
     /// attach the server to protocol v2 setup requests.
+    ///
+    /// The declaration is an `acp` transport (`McpServer::Acp`). The agent must
+    /// advertise `agentCapabilities.mcpCapabilities.acp`, or a compatibility
+    /// proxy such as `McpOverAcpPolyfill` must sit between this proxy and the
+    /// agent; otherwise a conforming agent rejects the setup request with
+    /// `-32602`. This method does not check the agent's capabilities.
     pub fn with_mcp_server(
         self,
         mcp_server: McpServer<Host::Counterpart, impl RunWithConnectionTo<Host::Counterpart>>,
@@ -3544,24 +3550,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     #[cfg(any(feature = "unstable_mcp_over_acp", test))]
     pub(crate) async fn shutdown_requested(&self) {
         self.incoming_closed.state.shutdown_rx.clone().await;
-    }
-
-    /// Whether this connection uses the ACP protocol v2 API.
-    ///
-    /// Shared code paths select v2 behavior with this runtime check rather than
-    /// with the `unstable_protocol_v2` feature, so enabling the feature never
-    /// changes how a v1 (or guard-less) connection behaves. Always `false`
-    /// without the feature, because no v2 connection can exist.
-    #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(clippy::unused_self))]
-    pub(crate) fn is_acp_v2(&self) -> bool {
-        #[cfg(feature = "unstable_protocol_v2")]
-        {
-            self.protocol_version() == Some(crate::schema::ProtocolVersion::V2)
-        }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        {
-            false
-        }
     }
 
     /// Return the counterpart role this connection is talking to.

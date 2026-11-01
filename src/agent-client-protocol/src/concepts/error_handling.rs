@@ -120,7 +120,8 @@
 //!   [`schema::v1::Error::session_not_found(id)`][crate::schema::v1::Error::session_not_found]
 //!   or `schema::v2::Error::session_not_found(id)`
 //! - `-32022` for an agent that supports no protocol version at or below the
-//!   requested one: `schema::v2::Error::unsupported_protocol_version()`
+//!   requested one:
+//!   `schema::v2::Error::unsupported_protocol_version(requested, supported)`
 //!   (protocol v2 only)
 //!
 //! ```

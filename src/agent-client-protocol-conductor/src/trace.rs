@@ -59,7 +59,9 @@ pub struct RequestEvent {
     /// Protocol: ACP or MCP.
     pub protocol: MessageProtocol,
 
-    /// Source component (e.g., "client", "proxy:0", "proxy:1", "agent").
+    /// Source component: `"Client"`, `"Proxy(N)"` for the proxy at index `N`,
+    /// or `"Agent"` (the conductor's successor: the agent, or the outer
+    /// conductor when this conductor runs as a proxy).
     pub from: String,
 
     /// Destination component.
@@ -492,10 +494,9 @@ impl TraceHandle {
     /// - **Right→Left (outgoing)**: Trace responses, and if `trace_outgoing_requests` is true,
     ///   also trace requests/notifications (needed for edge bridges at conductor boundaries)
     ///
-    /// - `cx`: Connection context for spawning the bridge task
-    /// - `left_name`: Logical name of the component on the "left" side (e.g., "client", "proxy:0")
-    /// - `right_name`: Logical name of the component on the "right" side (e.g., "proxy:0", "agent")
-    /// - `component`: The component to wrap
+    /// - `proxy_index`: The component on the "left" side (`Client` or `Proxy(N)`)
+    /// - `successor_index`: The component on the "right" side (`Proxy(N)` or `Agent`)
+    /// - `proxy`: The component to wrap
     pub fn bridge_component<R: Role>(
         &self,
         proxy_index: ComponentIndex,
@@ -1082,7 +1083,7 @@ mod tests {
 
         let info = MessageInfo::from_notification(notification);
 
-        // Schema 1.10.1 requires named inner parameters. Do not pretend this
+        // The schema requires named inner parameters. Do not pretend this
         // malformed envelope was a successfully decoded MCP notification.
         assert_eq!(info.protocol, MessageProtocol::Acp);
         assert_eq!(info.method, "mcp/message");

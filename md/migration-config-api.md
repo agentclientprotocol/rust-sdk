@@ -1,6 +1,6 @@
 # Migrating the Config API
 
-The upcoming 3.x release makes `agent-client-protocol-http::ServerOptions`,
+The 3.0 release made `agent-client-protocol-http::ServerOptions`,
 `agent-client-protocol-http::CorsOptions`, and
 `agent-client-protocol::AcpAgentConfig` non-exhaustive so future configuration
 fields or policies can be added without another breaking release.

@@ -2,7 +2,7 @@
 
 The native binding exposes **MCP 2026-07-28** over an existing ACP connection.
 Enable `unstable_mcp_over_acp`; draft ACP v2 also requires
-`unstable_protocol_v2`. The SDK uses the released schema 1.10.1.
+`unstable_protocol_v2`.
 
 ## Services and operations
 

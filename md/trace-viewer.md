@@ -93,6 +93,7 @@ interface ResponseEvent {
   to: string;
   id: unknown;
   is_error: boolean;
+  error_domain?: "acp" | "mcp";
   payload: unknown;
 }
 
@@ -113,8 +114,12 @@ integers, or `null`; consumers must not assume they are numbers. The
 optional `session` field is omitted when the tracer has no session context; it
 is not serialized as `null`.
 
-Components currently use the conductor's debug names, such as `Client`,
-`Proxy(0)`, and `Agent`.
+`error_domain` is present on error responses and says whether the error came
+from the ACP binding or the inner MCP peer. Older traces omit it.
+
+`from` and `to` are `Client`, `Proxy(N)` for the proxy at index `N` (starting
+at 0), or `Agent` for the conductor's successor: the agent, or the outer
+conductor when the conductor runs as a proxy.
 
 ## Idealized Message Flow
 

@@ -19,10 +19,10 @@ enabling features like tool use, permission requests, and streaming responses.
 
 The most common use case is connecting to an existing ACP agent as a client.
 This quick start uses stable protocol v1 and the opt-in `process` feature.
-For the upcoming 3.x release, use:
+Add it to `Cargo.toml`:
 
 ```toml
-agent-client-protocol = { version = "3", features = ["process"] }
+agent-client-protocol = { version = "5", features = ["process"] }
 ```
 
 ```rust,no_run
@@ -49,11 +49,12 @@ Every connection names its protocol version. `Client.v1()`, `Agent.v1()`, and
 `Proxy.v1()` start stable v1 connections; their types (`ConnectionTo`,
 `Builder`, `Responder`, `SessionBuilder`, `ActiveSession`, ...) are in
 `agent_client_protocol::v1`. Draft protocol v2 is opt-in through
-`unstable_protocol_v2`, and `agent_client_protocol::v2` exports the same names
-for it. `Client.v2()`, `Agent.v2()`, and `Proxy.v2()` callbacks receive a
-version-typed `v2::ConnectionTo` with
-high-level, command-only session helpers because prompt acceptance and inbound
-traffic are independent. Session updates and interactive requests use typed
+`unstable_protocol_v2`, and `agent_client_protocol::v2` uses the same names for
+its connection, builder and request handles. The session APIs differ:
+`v1::ActiveSession` reads updates from its own stream, while `Client.v2()`,
+`Agent.v2()`, and `Proxy.v2()` callbacks receive a version-typed
+`v2::ConnectionTo` with high-level, command-only session helpers because
+prompt acceptance and inbound traffic are independent. Session updates and interactive requests use typed
 connection handlers. See [Protocol V2](https://agentclientprotocol.github.io/rust-sdk/protocol-v2.html#high-level-v2-sessions).
 Use `Proxy.protocol_router()` to expose separate strict v1 and v2 proxy
 implementations as one component; custom raw routing infrastructure can use
@@ -95,7 +96,7 @@ connection.prepare_request(request).on_receiving_result(async move |result| {
 Preparation installs callback ordering before publication, avoiding a race with
 fast responses. `block_task()` and `detach()` instead select unordered
 consumption and send during the method call; dropping an unconsumed prepared
-request sends nothing. Both raw and v2 connections also offer
+request sends nothing. Raw, v1 and v2 connections also offer
 `prepare_request_to(peer, request)`.
 
 See [Sending Requests](https://agentclientprotocol.github.io/rust-sdk/sending-requests.html)
@@ -121,9 +122,28 @@ the `mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require
 
 `agent-client-protocol-rmcp` explicitly enables `schemars` for its tool builders.
 See [Cargo Features](https://agentclientprotocol.github.io/rust-sdk/features.html)
-for configuration and migration examples. When upgrading from 2.x, enable the
-features your application uses explicitly; a lean dependency no longer needs
+for configuration and migration examples. No features have been enabled by
+default since 3.0. When upgrading from 2.x, enable the features your
+application uses explicitly; a lean dependency no longer needs
 `default-features = false`.
+
+## Stability
+
+- The stable API, everything that is not behind an `unstable_*` feature,
+  follows semver: it changes incompatibly only in a major release.
+- Everything behind an `unstable_*` feature may change in a minor release.
+  This includes all of `agent_client_protocol::v2` and the other items that
+  `unstable_protocol_v2` enables. Stabilizing protocol v2 only removes the
+  `unstable_protocol_v2` gate.
+- This crate depends on one exact version of `agent-client-protocol-schema`
+  (an `=` requirement), and a minor release may move that pin to a newer
+  schema release. Use the schema types through `agent_client_protocol::schema`,
+  `v1::schema` and `v2::schema` instead of depending on
+  `agent-client-protocol-schema` directly. A direct dependency must allow the
+  exact version this crate pins, or Cargo cannot resolve the dependency graph.
+- All SDK crates share one version number, so moving a public dependency of
+  any of them to a new major version, such as `axum` or `reqwest` in
+  `agent-client-protocol-http`, is a major release of all of them.
 
 ## MCP Server Attachment
 
