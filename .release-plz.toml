@@ -1,3 +1,12 @@
+# Every published crate below is in the `acp` version group, so they always
+# share one version number. Consequence: a major release of a public
+# dependency of any crate in the group forces a major release of the whole
+# group. That applies to `axum` and `reqwest`, whose types appear in
+# agent-client-protocol-http's API, and to dropping support for an `rmcp` major
+# version (adding one is a new feature; see agent-client-protocol-rmcp below).
+# The SDK also pins agent-client-protocol-schema exactly (`=`), so a schema
+# release with breaking changes in stable types forces a major release too.
+
 [workspace]
 git_release_type = "auto"
 git_release_latest = false

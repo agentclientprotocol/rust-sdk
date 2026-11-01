@@ -5,9 +5,14 @@
 //! protocol v1 message types are in [`v1::schema`](schema), the same module as
 //! [`agent_client_protocol::schema::v1`](crate::schema::v1).
 //!
-//! With the `unstable_protocol_v2` feature, `agent_client_protocol::v2` exports the same
-//! names for protocol v2, so code moves between versions by changing the
-//! module it imports from.
+//! With the `unstable_protocol_v2` feature, `agent_client_protocol::v2` uses
+//! the same names for protocol v2's connection, builder, request handles and
+//! `schema`. The session APIs differ: [`ActiveSession`] here reads the
+//! session's updates from its own stream ([`read_update`] and
+//! [`read_to_string`]), while `v2::ActiveSession` only sends commands and the
+//! updates arrive through typed handlers on the connection. [`LoadSessionBuilder`],
+//! [`SessionMessage`] and the [`Blocking`] / [`NonBlocking`] states exist only
+//! here.
 //!
 //! The request handles here are the crate-root handles with the [`V1`]
 //! protocol marker: `id()` returns a [`schema::v1::RequestId`].
@@ -31,6 +36,8 @@
 //! ```
 //!
 //! [`schema::v1::RequestId`]: crate::schema::v1::RequestId
+//! [`read_update`]: ActiveSession::read_update
+//! [`read_to_string`]: ActiveSession::read_to_string
 
 use crate::{NullClose, NullHandler, UntypedMessage, V1, jsonrpc::run::NullRun};
 

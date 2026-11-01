@@ -16,8 +16,12 @@ Upgrade from 3.6 directly to 5.0.
   This includes all of `agent_client_protocol::v2` and the other items that
   `unstable_protocol_v2` enables. Stabilizing protocol v2 only removes the
   `unstable_protocol_v2` gate.
-- A major release of a public dependency (`axum`, `reqwest` or `rmcp`) forces a
-  major release of every crate in the shared version group.
+- All SDK crates share one version number. Moving a public dependency to a
+  new major version, such as `axum` or `reqwest` in
+  `agent-client-protocol-http`, forces a major release of all of them. rmcp is
+  handled differently: support for a new rmcp major version arrives as a new
+  feature in a minor release, and only dropping support for one forces a major
+  release.
 - `agent-client-protocol` depends on one exact version of
   `agent-client-protocol-schema` (an `=` requirement), and a minor SDK release
   may move that pin to a newer schema release. Use the schema types through

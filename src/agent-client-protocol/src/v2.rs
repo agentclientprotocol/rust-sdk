@@ -5,8 +5,20 @@
 //! protocol v2 message types are in [`v2::schema`](schema), the same module as
 //! [`agent_client_protocol::schema::v2`](crate::schema::v2).
 //!
-//! This module exports the same names as [`crate::v1`] for protocol v2, so
-//! code moves between versions by changing the module it imports from.
+//! This module uses the same names as [`crate::v1`] for protocol v2's
+//! connection, builder, request handles and `schema`. The session APIs differ:
+//! [`ActiveSession`] here only sends commands, and the session's updates and
+//! the agent's requests arrive through typed handlers on the connection,
+//! while `v1::ActiveSession` reads them from its own stream. [`InitializeOutcome`]
+//! and, with `unstable_session_fork`, `ForkSessionBuilder` exist only here;
+//! v1's `LoadSessionBuilder`, `SessionMessage` and blocking states have no v2
+//! counterpart.
+//!
+//! # Stability
+//!
+//! Everything in this module is unstable and may change in a minor release.
+//! Stabilizing protocol v2 only removes the `unstable_protocol_v2` gate. See
+//! [Stability](crate#stability) in the crate docs.
 //!
 //! The request handles here are the crate-root handles with the [`V2`]
 //! protocol marker: `id()` returns a [`schema::v2::RequestId`].
