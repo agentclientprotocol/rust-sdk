@@ -446,8 +446,6 @@ where
     F: FnOnce(SessionSetup<'static, Counterpart, Request::Response>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<(), crate::Error>> + Send,
 {
-    ensure_v1_session_protocol(&builder.connection)?;
-
     let RestoreSessionBuilder {
         connection,
         request,
@@ -482,8 +480,6 @@ where
     Counterpart: HasPeer<Agent>,
     Request: RestoreRequest,
 {
-    ensure_v1_session_protocol(&builder.connection)?;
-
     let RestoreSessionBuilder {
         connection,
         request,
@@ -742,8 +738,6 @@ where
         F: FnOnce(SessionSetup<'static, Counterpart, NewSessionResponse>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
-        ensure_v1_session_protocol(&self.connection)?;
-
         let Self {
             connection,
             request,
@@ -842,8 +836,6 @@ where
         Counterpart: HasPeer<Client>,
         R: 'static,
     {
-        ensure_v1_session_protocol(&self.connection)?;
-
         let Self {
             connection,
             request,
@@ -951,7 +943,6 @@ where
         run_session_scope(
             run.run_with_connection_to(runner_connection),
             async move {
-                ensure_v1_session_protocol(&connection)?;
                 let response = connection
                     .send_request_to(Agent, request)
                     .block_task()
@@ -987,8 +978,6 @@ where
     where
         R: 'static,
     {
-        ensure_v1_session_protocol(&self.connection)?;
-
         let Self {
             connection,
             request,
@@ -1367,17 +1356,4 @@ where
     fn describe_chain(&self) -> impl std::fmt::Debug {
         format!("ActiveSessionHandler({})", self.session_id)
     }
-}
-
-fn ensure_v1_session_protocol<Counterpart: Role>(
-    connection: &ConnectionTo<Counterpart>,
-) -> Result<(), crate::Error> {
-    if !connection.raw_connection().is_acp_v2() {
-        return Ok(());
-    }
-
-    Err(crate::Error::invalid_request().data(
-        "stable session builders use ACP protocol v1 types, but this is a protocol v2 connection; \
-         use the `v2::ConnectionTo` supplied to `Client.v2()` callbacks",
-    ))
 }
