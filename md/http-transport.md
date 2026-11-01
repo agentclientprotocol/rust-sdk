@@ -73,11 +73,11 @@ stream for that returned session before expecting updates or responses for it.
 The crate does not enable either transport side by default. Opt into only the side(s) you need.
 
 ```toml
-agent-client-protocol-http = { version = "3", features = ["client"] }
+agent-client-protocol-http = { version = "5", features = ["client"] }
 # For a server instead:
-# agent-client-protocol-http = { version = "3", features = ["server"] }
+# agent-client-protocol-http = { version = "5", features = ["server"] }
 # To enable both sides:
-# agent-client-protocol-http = { version = "3", features = ["client", "server"] }
+# agent-client-protocol-http = { version = "5", features = ["client", "server"] }
 ```
 
 The `client` feature exposes `HttpClient`. Its `configure_http` and
@@ -92,7 +92,7 @@ application, so your axum dependency must match this crate's.
 Request cancellation is available through the core SDK:
 
 ```toml
-agent-client-protocol-http = { version = "3", features = ["client", "server"] }
+agent-client-protocol-http = { version = "5", features = ["client", "server"] }
 ```
 
 `$/cancel_request` is connection-scoped. The HTTP transport does not apply

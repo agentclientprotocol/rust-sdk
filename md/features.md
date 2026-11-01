@@ -1,13 +1,13 @@
 # Cargo Features
 
-Starting with the upcoming **3.x** release, the core `agent-client-protocol`
-crate enables **no features by default**. Protocol serialization, connections,
-sessions, custom MCP servers, and the `Channel`, `Lines`, and `ByteStreams`
+Since the 3.0 release, the core `agent-client-protocol` crate enables **no
+features by default**. Protocol serialization, connections, sessions, custom
+MCP servers, and the `Channel`, `Lines`, and `ByteStreams`
 adapters remain available without native I/O or JSON Schema generation.
 
 ```toml
 [dependencies]
-agent-client-protocol = "3"
+agent-client-protocol = "5"
 ```
 
 You do not need `default-features = false` for a lean core dependency.
@@ -27,14 +27,14 @@ For a client that launches an external agent:
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "3", features = ["process"] }
+agent-client-protocol = { version = "5", features = ["process"] }
 ```
 
 For an agent that uses `Stdio::new()`:
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "3", features = ["stdio"] }
+agent-client-protocol = { version = "5", features = ["stdio"] }
 ```
 
 The conductor explicitly enables both native features. Other libraries using
@@ -47,7 +47,7 @@ Opt into `schemars` to generate JSON Schemas for protocol types and typed tools:
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "3", features = ["schemars"] }
+agent-client-protocol = { version = "5", features = ["schemars"] }
 ```
 
 This enables the SDK's direct dependency and the matching
@@ -110,7 +110,7 @@ For example, to use draft v2 and MCP-over-ACP without JSON Schema generation:
 
 ```toml
 [dependencies]
-agent-client-protocol = { version = "3", features = ["unstable_protocol_v2", "unstable_mcp_over_acp"] }
+agent-client-protocol = { version = "5", features = ["unstable_protocol_v2", "unstable_mcp_over_acp"] }
 ```
 
 The `unstable` aggregate does not select draft v2; enable `unstable_protocol_v2`
@@ -167,10 +167,10 @@ A dependency that previously relied on native transports and typed tools:
 agent-client-protocol = "2.2"
 
 # After: select only the capabilities your application actually uses.
-agent-client-protocol = { version = "3", features = ["process", "stdio", "schemars"] }
+agent-client-protocol = { version = "5", features = ["process", "stdio", "schemars"] }
 ```
 
-A protocol-only application can instead use `agent-client-protocol = "3"`.
+A protocol-only application can instead use `agent-client-protocol = "5"`.
 Applications that already disabled defaults must still enable `process` or
 `stdio` if they use those adapters: native I/O used to be unconditional on
 native targets, independently of defaults.

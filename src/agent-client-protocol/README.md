@@ -19,10 +19,10 @@ enabling features like tool use, permission requests, and streaming responses.
 
 The most common use case is connecting to an existing ACP agent as a client.
 This quick start uses stable protocol v1 and the opt-in `process` feature.
-For the upcoming 3.x release, use:
+Add it to `Cargo.toml`:
 
 ```toml
-agent-client-protocol = { version = "3", features = ["process"] }
+agent-client-protocol = { version = "5", features = ["process"] }
 ```
 
 ```rust,no_run
@@ -121,8 +121,9 @@ the `mcp_server::tool_fn` / `mcp_server::tool_fn_mut` functions require
 
 `agent-client-protocol-rmcp` explicitly enables `schemars` for its tool builders.
 See [Cargo Features](https://agentclientprotocol.github.io/rust-sdk/features.html)
-for configuration and migration examples. When upgrading from 2.x, enable the
-features your application uses explicitly; a lean dependency no longer needs
+for configuration and migration examples. No features have been enabled by
+default since 3.0. When upgrading from 2.x, enable the features your
+application uses explicitly; a lean dependency no longer needs
 `default-features = false`.
 
 ## MCP Server Attachment

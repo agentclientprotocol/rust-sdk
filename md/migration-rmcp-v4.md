@@ -1,15 +1,15 @@
 # Migrating the rmcp Integration to v4
 
-The next major release of `agent-client-protocol-rmcp` upgrades its public
-`rmcp` dependency from 2.x to 3.4. This is a breaking change for integrations
-that pass rmcp services or types across the crate boundary. It ships together
-with the core `agent-client-protocol` 3.x release, which also changes public
+The 4.0 release of `agent-client-protocol-rmcp` upgraded its public `rmcp`
+dependency from 2.x to 3.4. This is a breaking change for integrations that
+pass rmcp services or types across the crate boundary. It shipped together
+with the core `agent-client-protocol` 3.x release, which also changed public
 APIs. Migrate both public dependencies together; the minimum supported Rust
 version remains 1.88.
 
 | Integration crate | Core ACP SDK | MCP SDK |
 | --- | --- | --- |
-| `agent-client-protocol-rmcp` 4.x (unreleased) | 3.x | `rmcp` 3.x |
+| `agent-client-protocol-rmcp` 4.x | 3.x | `rmcp` 3.x |
 | `agent-client-protocol-rmcp` 3.x | 2.x | `rmcp` 2.x |
 
 Upgrade the application's core ACP and rmcp dependencies together with the

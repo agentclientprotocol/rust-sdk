@@ -118,7 +118,7 @@
 //! For example, a native client launching an agent opts into `process`:
 //!
 //! ```toml
-//! agent-client-protocol = { version = "3", features = ["process"] }
+//! agent-client-protocol = { version = "5", features = ["process"] }
 //! ```
 //!
 //! Enable `stdio` for an agent using `Stdio`, or `schemars` for typed MCP tool
@@ -127,8 +127,9 @@
 //!
 //! The `agent-client-protocol-rmcp` crate explicitly enables `schemars` for its
 //! tool builders. Unstable protocol features remain independent opt-ins.
-//! When upgrading from 2.x, explicitly enable every feature your application
-//! uses; `default-features = false` is no longer needed for a lean dependency.
+//! No features have been enabled by default since 3.0. When upgrading from
+//! 2.x, explicitly enable every feature your application uses;
+//! `default-features = false` is no longer needed for a lean dependency.
 //!
 //! ## WebAssembly
 //!

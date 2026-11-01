@@ -11,7 +11,7 @@ revisions or add MCP support to an agent with neither transport.
 
 ```toml
 [dependencies]
-agent-client-protocol-polyfill = "3"
+agent-client-protocol-polyfill = "5"
 ```
 
 The polyfill supports stable ACP v1 by default and explicitly enables the

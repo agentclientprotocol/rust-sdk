@@ -8,7 +8,7 @@ normally do not need a direct dependency on this crate.
 
 ```toml
 [dependencies]
-agent-client-protocol = "3"
+agent-client-protocol = "5"
 serde = { version = "1", features = ["derive"] }
 ```
 

@@ -113,7 +113,7 @@ a major release of this crate; it shares its version with the other ACP crates.
 
 | agent-client-protocol-rmcp | agent-client-protocol | rmcp                     |
 | -------------------------- | --------------------- | ------------------------ |
-| 5.x (unreleased)           | 5.x                   | 3.x (`rmcp_3` feature)   |
+| 5.x                        | 5.x                   | 3.x (`rmcp_3` feature)   |
 | 4.x                        | 3.x                   | 3.x                      |
 | 3.x                        | 2.x                   | 2.x                      |
 | 2.x                        | 1.x                   | 2.x                      |
