@@ -838,7 +838,7 @@ version-neutral `ConnectionTo` with `.into()`: `v1::ConnectionTo` and
 requires `Into<ConnectionTo<Counterpart>>`. Their own methods, such as the v1
 session helpers, are only available on the concrete types.
 
-## `Channel` and `JsonRpcMessage::parse_message`
+## `Channel`, `JsonRpcMessage::parse_message` and `JsonRpcResponse::from_json`
 
 - `Channel` is `#[non_exhaustive]`. Build one with `Channel::new(rx, tx)`
   (or `Channel::duplex()`) and take it apart with `into_parts()` or a pattern
@@ -859,6 +859,10 @@ session helpers, are only available on the concrete types.
   change with the derive macros. Callers holding raw
   `Option<RawJsonRpcParams>` pass
   `&params.map_or(serde_json::Value::Null, RawJsonRpcParams::into_value)`.
+- `JsonRpcResponse::from_value` is renamed to `from_json`, to pair with
+  `into_json`. Rename it in hand-written implementations and calls such as
+  `PromptResponse::from_value(method, value)`; derived implementations change
+  with the derive macros.
 
 ## Schema enums and SDK helpers
 

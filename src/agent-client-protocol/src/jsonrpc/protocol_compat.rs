@@ -260,12 +260,12 @@ impl SelectedInitializeResponse {
 
     /// Parse `value` as the initialization response for `version`, or return
     /// `None` if the SDK has no response type for that version.
-    fn from_value(
+    fn from_json(
         version: crate::schema::ProtocolVersion,
         value: serde_json::Value,
     ) -> Option<Result<Self, crate::Error>> {
         (version == crate::schema::ProtocolVersion::V1).then(|| {
-            <crate::schema::v1::InitializeResponse as crate::JsonRpcResponse>::from_value(
+            <crate::schema::v1::InitializeResponse as crate::JsonRpcResponse>::from_json(
                 "initialize",
                 value,
             )
@@ -285,7 +285,7 @@ impl crate::JsonRpcResponse for InitializeOutcome {
         }
     }
 
-    fn from_value(method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+    fn from_json(method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
         let selected: crate::schema::ProtocolVersion = value
             .get("protocolVersion")
             .cloned()
@@ -299,10 +299,10 @@ impl crate::JsonRpcResponse for InitializeOutcome {
             })?;
         let requested = crate::schema::ProtocolVersion::V2;
         if selected == requested {
-            return crate::schema::v2::InitializeResponse::from_value(method, value)
+            return crate::schema::v2::InitializeResponse::from_json(method, value)
                 .map(Self::Initialized);
         }
-        match SelectedInitializeResponse::from_value(selected, value) {
+        match SelectedInitializeResponse::from_json(selected, value) {
             Some(response) if selected < requested => Ok(Self::LowerVersion(
                 InitializationVersionMismatch::new(requested, response?),
             )),
@@ -893,7 +893,7 @@ mod imp {
                 if accepts_lower_version
                     && mode.initialization_role == InitializationRole::Initiator
                     && wire_version < mode.api
-                    && let Some(response) = super::SelectedInitializeResponse::from_value(
+                    && let Some(response) = super::SelectedInitializeResponse::from_json(
                         wire_version.as_protocol_version(),
                         value.clone(),
                     )
@@ -1270,7 +1270,7 @@ mod imp {
     ) -> Result<(), crate::Error> {
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
-            <crate::schema::v2::InitializeResponse as crate::JsonRpcResponse>::from_value(
+            <crate::schema::v2::InitializeResponse as crate::JsonRpcResponse>::from_json(
                 "initialize",
                 value.clone(),
             )?;
@@ -1615,7 +1615,7 @@ mod imp {
 
             let v2_response = v2_initialize_response(ProtocolVersion::V2);
             assert_eq!(
-                super::super::InitializeOutcome::from_value(
+                super::super::InitializeOutcome::from_json(
                     "initialize",
                     serde_json::to_value(&v2_response)?
                 )?,
@@ -1623,7 +1623,7 @@ mod imp {
             );
 
             let v1_response = v1_initialize_response();
-            let outcome = super::super::InitializeOutcome::from_value(
+            let outcome = super::super::InitializeOutcome::from_json(
                 "initialize",
                 serde_json::to_value(&v1_response)?,
             )?;
@@ -1646,7 +1646,7 @@ mod imp {
                 serde_json::json!({}),
                 serde_json::json!({ "protocolVersion": 3 }),
             ] {
-                super::super::InitializeOutcome::from_value("initialize", value)
+                super::super::InitializeOutcome::from_json("initialize", value)
                     .expect_err("only v2 and lower known versions are outcomes");
             }
             Ok(())

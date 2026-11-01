@@ -93,7 +93,7 @@ impl JsonRpcResponse for PongResponse {
         serde_json::to_value(self).map_err(agent_client_protocol::Error::into_internal_error)
     }
 
-    fn from_value(
+    fn from_json(
         _method: &str,
         value: serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {

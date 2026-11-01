@@ -436,7 +436,7 @@ impl ConnectTo<Agent> for FutureInitializeV2Client {
             else {
                 continue;
             };
-            let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+            let initialize = v2::InitializeResponse::from_json("initialize", result)?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
             if let Some(task) = agent_task {
                 task.abort();
@@ -731,8 +731,8 @@ where
     assert_eq!(request.to_untyped_message()?.method(), method);
     assert!(request_variant(request));
 
-    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
-    assert!(response_variant(v2::AgentResponse::from_value(
+    <Req::Response as JsonRpcResponse>::from_json(method, response.clone())?;
+    assert!(response_variant(v2::AgentResponse::from_json(
         method, response
     )?));
     Ok(())
@@ -758,8 +758,8 @@ where
     assert_eq!(request.to_untyped_message()?.method(), method);
     assert!(request_variant(request));
 
-    <Req::Response as JsonRpcResponse>::from_value(method, response.clone())?;
-    assert!(response_variant(v2::ClientResponse::from_value(
+    <Req::Response as JsonRpcResponse>::from_json(method, response.clone())?;
+    assert!(response_variant(v2::ClientResponse::from_json(
         method, response
     )?));
     Ok(())
@@ -1047,7 +1047,7 @@ fn mcp_over_acp_v1_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 
     macro_rules! assert_response_mapping {
         ($ty:ty, $method:literal, $value:expr, $pattern:pat) => {{
-            let response = <$ty as JsonRpcResponse>::from_value($method, $value)?;
+            let response = <$ty as JsonRpcResponse>::from_json($method, $value)?;
             assert!(matches!(response, $pattern));
         }};
     }
@@ -1108,7 +1108,7 @@ fn mcp_carriers_preserve_inner_outcomes_in_both_protocol_versions() -> Result<()
                 let carrier = $schema::MessageMcpResponse::success(result.clone()).meta(meta.clone());
                 let value = json_value(carrier)?;
                 assert_eq!(value, serde_json::json!({"result": result, "_meta": meta}));
-                let response = $schema::ClientResponse::from_value("mcp/message", value.clone())?;
+                let response = $schema::ClientResponse::from_json("mcp/message", value.clone())?;
                 let $schema::ClientResponse::MessageMcpResponse(carrier) = response else {
                     panic!("expected MCP response");
                 };
@@ -1132,7 +1132,7 @@ fn mcp_carriers_preserve_inner_outcomes_in_both_protocol_versions() -> Result<()
             let value = json_value(carrier)?;
             assert_eq!(value, serde_json::json!({"error": inner_error, "_meta": meta}));
             // This is a successful *outer* ACP response, not an ACP Error.
-            let response = $schema::ClientResponse::from_value("mcp/message", value)?;
+            let response = $schema::ClientResponse::from_json("mcp/message", value)?;
             let $schema::ClientResponse::MessageMcpResponse(carrier) = response else {
                 panic!("expected MCP response");
             };
@@ -2777,7 +2777,7 @@ async fn protocol_router_routes_future_protocol_version_to_v2() -> Result<(), Er
         let RawJsonRpcMessage::Response(RawJsonRpcResponse::Result { result, .. }) = message else {
             continue;
         };
-        let initialize = v2::InitializeResponse::from_value("initialize", result)?;
+        let initialize = v2::InitializeResponse::from_json("initialize", result)?;
         assert_eq!(initialize.protocol_version, ProtocolVersion::V2);
         agent_task.abort();
         return Ok(());

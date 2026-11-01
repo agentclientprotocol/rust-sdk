@@ -4069,7 +4069,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         let hook: ResponseRouteHook = Box::new(move |method, value| {
-            let response = Req::Response::from_value(method, value.clone())?;
+            let response = Req::Response::from_json(method, value.clone())?;
             response_hook(&response)
         });
         self.send_request_to_with_options(
@@ -4099,7 +4099,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         let hook: ResponseRouteHook = Box::new(move |method, value| {
-            let response = Req::Response::from_value(method, value.clone())?;
+            let response = Req::Response::from_json(method, value.clone())?;
             response_hook(&response)
         });
         self.send_request_to_with_options(
@@ -4226,7 +4226,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
             cancellation,
             response_ordering,
         )
-        .map(move |json| <Req::Response>::from_value(&method, json));
+        .map(move |json| <Req::Response>::from_json(&method, json));
         PreparedRequest {
             sent,
             publication: RequestPublication {
@@ -4772,7 +4772,7 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> Responder<serde_json::Value, P> {
-        self.wrap_params(|method, value| T::from_value(method, value?))
+        self.wrap_params(|method, value| T::from_json(method, value?))
     }
 
     /// Return a new Responder with a different method name.
@@ -5044,7 +5044,7 @@ impl<T: JsonRpcResponse, P: Protocol> ResponseRouter<T, P> {
     /// and which checks (dynamically) that the JSON value it receives
     /// can be converted to `T`.
     pub fn erase_to_json(self) -> ResponseRouter<serde_json::Value, P> {
-        self.wrap_params(|method, value| T::from_value(method, value?))
+        self.wrap_params(|method, value| T::from_json(method, value?))
     }
 
     /// The same router for protocol `Q`. Fails only if the request ID is not
@@ -5171,11 +5171,11 @@ pub trait JsonRpcResponse: 'static + Debug + Sized + Send + Clone {
     fn into_json(self, method: &str) -> Result<serde_json::Value, crate::Error>;
 
     /// Parse a JSON value into the response type.
-    fn from_value(method: &str, value: serde_json::Value) -> Result<Self, crate::Error>;
+    fn from_json(method: &str, value: serde_json::Value) -> Result<Self, crate::Error>;
 }
 
 impl JsonRpcResponse for serde_json::Value {
-    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+    fn from_json(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
         Ok(value)
     }
 
@@ -5473,7 +5473,7 @@ impl Dispatch {
                     // Parse the response result
                     let typed_result = match result {
                         Ok(value) => {
-                            match <Req::Response as JsonRpcResponse>::from_value(method, value) {
+                            match <Req::Response as JsonRpcResponse>::from_json(method, value) {
                                 Ok(parsed) => {
                                     tracing::trace!("parse ok");
                                     Ok(parsed)

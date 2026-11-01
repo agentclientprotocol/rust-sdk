@@ -72,11 +72,11 @@ fn create_elicitation_response_round_trips_json() {
         .unwrap();
     assert_eq!(value, json!({ "action": "decline" }));
 
-    let parsed = CreateElicitationResponse::from_value("elicitation/create", value).unwrap();
+    let parsed = CreateElicitationResponse::from_json("elicitation/create", value).unwrap();
     assert!(matches!(parsed.action, ElicitationAction::Decline));
 
     let enum_response =
-        ClientResponse::from_value("elicitation/create", json!({ "action": "cancel" })).unwrap();
+        ClientResponse::from_json("elicitation/create", json!({ "action": "cancel" })).unwrap();
     assert!(matches!(
         enum_response,
         ClientResponse::CreateElicitationResponse(_)
@@ -143,7 +143,7 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
     ));
 
     let parsed_response =
-        v2::ClientResponse::from_value("elicitation/create", json!({ "action": "decline" }))?;
+        v2::ClientResponse::from_json("elicitation/create", json!({ "action": "decline" }))?;
     assert!(matches!(
         parsed_response,
         v2::ClientResponse::CreateElicitationResponse(_)

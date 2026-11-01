@@ -47,7 +47,7 @@ impl JsonRpcResponse for EchoRequestResponse {
         agent_client_protocol::util::json_cast(self)
     }
 
-    fn from_value(
+    fn from_json(
         _method: &str,
         value: serde_json::Value,
     ) -> Result<Self, agent_client_protocol::Error> {

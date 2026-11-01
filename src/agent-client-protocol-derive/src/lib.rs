@@ -215,7 +215,7 @@ pub fn derive_json_rpc_response_payload(input: TokenStream) -> TokenStream {
                 #krate::__private::serde_json::to_value(self).map_err(#krate::Error::into_internal_error)
             }
 
-            fn from_value(#method_arg: &str, #value_arg: #krate::__private::serde_json::Value) -> ::core::result::Result<Self, #krate::Error> {
+            fn from_json(#method_arg: &str, #value_arg: #krate::__private::serde_json::Value) -> ::core::result::Result<Self, #krate::Error> {
                 #krate::__private::json_cast(#value_arg)
             }
         }

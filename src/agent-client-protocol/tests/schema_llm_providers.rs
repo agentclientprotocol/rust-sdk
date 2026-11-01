@@ -81,15 +81,15 @@ fn provider_requests_have_typed_v1_jsonrpc_routes() {
     ));
 
     assert!(matches!(
-        AgentResponse::from_value("providers/list", json!({ "providers": [] })).unwrap(),
+        AgentResponse::from_json("providers/list", json!({ "providers": [] })).unwrap(),
         AgentResponse::ListProvidersResponse(_)
     ));
     assert!(matches!(
-        AgentResponse::from_value("providers/set", json!({})).unwrap(),
+        AgentResponse::from_json("providers/set", json!({})).unwrap(),
         AgentResponse::SetProviderResponse(_)
     ));
     assert!(matches!(
-        AgentResponse::from_value("providers/disable", json!({})).unwrap(),
+        AgentResponse::from_json("providers/disable", json!({})).unwrap(),
         AgentResponse::DisableProviderResponse(_)
     ));
 }
@@ -218,15 +218,15 @@ fn provider_requests_have_typed_draft_v2_aggregate_routes() -> Result<(), Error>
     ));
 
     assert!(matches!(
-        v2::AgentResponse::from_value("providers/list", json!({ "providers": [] }))?,
+        v2::AgentResponse::from_json("providers/list", json!({ "providers": [] }))?,
         v2::AgentResponse::ListProvidersResponse(_)
     ));
     assert!(matches!(
-        v2::AgentResponse::from_value("providers/set", json!({}))?,
+        v2::AgentResponse::from_json("providers/set", json!({}))?,
         v2::AgentResponse::SetProviderResponse(_)
     ));
     assert!(matches!(
-        v2::AgentResponse::from_value("providers/disable", json!({}))?,
+        v2::AgentResponse::from_json("providers/disable", json!({}))?,
         v2::AgentResponse::DisableProviderResponse(_)
     ));
     Ok(())

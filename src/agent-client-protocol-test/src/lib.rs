@@ -186,7 +186,7 @@ macro_rules! impl_jr_response_payload {
             fn into_json(self, _method: &str) -> Result<serde_json::Value, crate::Error> {
                 Ok(serde_json::to_value(self)?)
             }
-            fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
+            fn from_json(_method: &str, value: serde_json::Value) -> Result<Self, crate::Error> {
                 Ok(serde_json::from_value(value)?)
             }
         }
