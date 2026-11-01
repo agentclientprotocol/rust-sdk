@@ -1,13 +1,11 @@
 //! ACP protocol schema types and message implementations.
 //!
 //! Each protocol version's messages (requests, responses, notifications and
-//! supporting types) are in their own module: [`v1`](crate::schema::v1),
-//! also reachable as [`crate::v1::schema`], and, with
-//! `unstable_protocol_v2`, `v2`, also reachable as
-//! `agent_client_protocol::v2::schema`. The module root holds only the items
-//! every version shares, such as
-//! [`ProtocolVersion`](crate::schema::ProtocolVersion) and the proxy protocol
-//! types.
+//! supporting types) are in their own module: [`v1`], also reachable as
+//! [`crate::v1::schema`], and, with `unstable_protocol_v2`, `v2`, also
+//! reachable as `agent_client_protocol::v2::schema`. The module root holds
+//! only the items every version shares, such as [`ProtocolVersion`] and the
+//! proxy protocol types.
 //!
 //! The types come from the `agent-client-protocol-schema` crate, which this
 //! crate pins to one exact version. Use them through this module instead of

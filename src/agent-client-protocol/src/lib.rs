@@ -202,7 +202,6 @@ mod jsonrpc;
 pub mod mcp_server;
 /// Role types for ACP connections
 pub mod role;
-/// ACP protocol messages, by protocol version, and the version-neutral schema items.
 pub mod schema;
 /// Utility functions and types
 pub mod util;
