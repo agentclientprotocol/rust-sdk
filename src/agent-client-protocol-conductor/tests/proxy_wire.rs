@@ -438,3 +438,40 @@ async fn successor_envelope_params_are_optional() {
         conductor -> proxy: {"jsonrpc":"2.0","id":"p-bad","error":{"code":-32602,"message":"Invalid params","data":{"error":"missing field `method`","json":{"params":{}},"phase":"deserialization"}}}
     "#]]);
 }
+
+/// A conductor in proxy mode treats a repeated `proxy/initialize` like a
+/// conductor in agent mode treats a repeated `initialize`: it forwards it
+/// through its chain without instantiating the chain again.
+#[tokio::test(flavor = "current_thread")]
+async fn proxy_mode_conductor_forwards_repeated_proxy_initialize() {
+    let (predecessor, mut conductor_end) = raw_component::<Proxy>("predecessor");
+    let conductor = ConductorImpl::new_proxy("proxy-mode", vec![Proxy.v1().name("inner")]);
+    let task = tokio::spawn(async move {
+        drop(conductor.connect_to(predecessor).await);
+    });
+    let (params, result) = initialize_lines(1);
+
+    for id in [1, 2] {
+        conductor_end.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"proxy/initialize","params":{params}}}"#
+        ));
+        // The inner proxy forwards `initialize` to the conductor's successor,
+        // which the conductor reaches through its own predecessor.
+        let (line, wrapped) = conductor_end.recv_json().await;
+        assert_eq!(wrapped["method"], "proxy/successor", "{line}");
+        assert_eq!(wrapped["params"]["method"], "initialize", "{line}");
+        conductor_end.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+            wrapped["id"]
+        ));
+        let (line, response) = conductor_end.recv_json().await;
+        assert_eq!(response["id"], id, "{line}");
+        assert_eq!(
+            response["result"],
+            serde_json::from_str::<Value>(&result).unwrap(),
+            "{line}"
+        );
+    }
+
+    task.abort();
+}

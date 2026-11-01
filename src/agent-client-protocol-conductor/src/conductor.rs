@@ -919,7 +919,22 @@ where
             }
             InitializationState::Ready => {
                 self.initialization = InitializationState::Ready;
-                Ok(Some(message))
+                // A repeated initialization request is forwarded through the
+                // chain like the first one, without instantiating it again.
+                // The chain's entry point is `initialize`, so a conductor in
+                // proxy mode renames a repeated `proxy/initialize` here, as
+                // it did the first one. Without this the first proxy would
+                // reject it as a `proxy/initialize` from outside the
+                // conductor.
+                Ok(Some(match message {
+                    Dispatch::Request(mut request, responder)
+                        if request.method() == self.host.initialize_method(Token::new()) =>
+                    {
+                        request.method = "initialize".to_string();
+                        Dispatch::Request(request, responder)
+                    }
+                    message => message,
+                }))
             }
             InitializationState::Failed(error) => {
                 let result = match message {

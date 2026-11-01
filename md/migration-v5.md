@@ -1281,6 +1281,9 @@ request for a version above the selected one is still rejected.
   protocol version instead of closing its connection. An invalid
   `protocolVersion` is answered with `-32602` instead of `-32603`, and a
   request for a different version than the first one with `-32600`.
+- A conductor in proxy mode forwards a repeated `proxy/initialize` through its
+  chain, as a conductor in agent mode forwards a repeated `initialize`. It used
+  to answer it with `-32600` ("only sent by the conductor").
 - Conductor traces record the messages between the last proxy and the agent.
   Trace snapshots and tools that read traces see these extra events.
 - `agent_client_protocol_trace_viewer::TraceViewerConfig` is
