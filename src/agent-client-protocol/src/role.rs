@@ -8,8 +8,7 @@ use std::{any::TypeId, fmt::Debug, future::Future, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{METHOD_SUCCESSOR_MESSAGE, SuccessorMessage};
-use crate::util::json_cast_params;
+use crate::schema::{SuccessorMessage, v1::PROXY_METHOD_NAMES};
 use crate::{Builder, ConnectionTo, Dispatch, Handled, JsonRpcMessage, UntypedMessage};
 
 /// Roles for the ACP protocol.
@@ -173,6 +172,7 @@ where
 
     // Handle other messages by looking at the 'remote style'
     let method = dispatch.method();
+    let proxy_successor = PROXY_METHOD_NAMES.proxy_successor;
     match counterpart.remote_style(peer) {
         RemoteStyle::Counterpart => {
             // "Counterpart" is the default peer, no special checks required.
@@ -182,7 +182,7 @@ where
         RemoteStyle::Predecessor => {
             // "Predecessor" is the default peer, no special checks required.
             tracing::trace!("handle_incoming_dispatch: Predecessor style, passing through");
-            if method == METHOD_SUCCESSOR_MESSAGE {
+            if method == proxy_successor {
                 // Methods coming from the successor are not coming from
                 // our counterpart.
                 Ok(Handled::No {
@@ -195,10 +195,10 @@ where
         }
         RemoteStyle::Successor => {
             // Successor style means we have to look for a special method name.
-            if method != METHOD_SUCCESSOR_MESSAGE {
+            if method != proxy_successor {
                 tracing::trace!(
                     method,
-                    expected = METHOD_SUCCESSOR_MESSAGE,
+                    expected = proxy_successor,
                     "handle_incoming_dispatch: Successor style but method doesn't match, returning Handled::No"
                 );
                 return Ok(Handled::No {
@@ -218,7 +218,11 @@ where
                     "Response variant cannot be unwrapped as SuccessorMessage",
                 )
             })?;
-            let SuccessorMessage { message, meta } = json_cast_params(untyped_message.params())?;
+            let SuccessorMessage { message, meta } =
+                SuccessorMessage::<UntypedMessage>::parse_message(
+                    untyped_message.method(),
+                    untyped_message.params(),
+                )?;
             let successor_dispatch = dispatch.try_map_message(|_| Ok(message))?;
             tracing::trace!(
                 unwrapped_method = %successor_dispatch.method(),

@@ -1,3 +1,10 @@
+#[cfg(feature = "unstable_session_archive")]
+use crate::schema::v1::{
+    ArchiveSessionRequest, ArchiveSessionResponse, UnarchiveSessionRequest,
+    UnarchiveSessionResponse,
+};
+#[cfg(feature = "unstable_auth_status")]
+use crate::schema::v1::{AuthStatusRequest, AuthStatusResponse};
 use crate::schema::v1::{
     AuthenticateRequest, AuthenticateResponse, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
@@ -13,6 +20,10 @@ use crate::schema::v1::{
 };
 #[cfg(feature = "unstable_session_fork")]
 use crate::schema::v1::{ForkSessionRequest, ForkSessionResponse};
+#[cfg(feature = "unstable_session_status")]
+use crate::schema::v1::{SessionStatusRequest, SessionStatusResponse};
+#[cfg(feature = "unstable_session_set_title")]
+use crate::schema::v1::{SetSessionTitleRequest, SetSessionTitleResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");
@@ -31,6 +42,8 @@ impl_jsonrpc_request!(
     "providers/disable"
 );
 impl_jsonrpc_request!(LogoutRequest, LogoutResponse, "logout");
+#[cfg(feature = "unstable_auth_status")]
+impl_jsonrpc_request!(AuthStatusRequest, AuthStatusResponse, "auth/status");
 impl_jsonrpc_request!(LoadSessionRequest, LoadSessionResponse, "session/load");
 impl_jsonrpc_request!(ListSessionsRequest, ListSessionsResponse, "session/list");
 impl_jsonrpc_request!(
@@ -53,6 +66,30 @@ impl_jsonrpc_request!(
 
 #[cfg(feature = "unstable_session_fork")]
 impl_jsonrpc_request!(ForkSessionRequest, ForkSessionResponse, "session/fork");
+#[cfg(feature = "unstable_session_archive")]
+impl_jsonrpc_request!(
+    ArchiveSessionRequest,
+    ArchiveSessionResponse,
+    "session/archive"
+);
+#[cfg(feature = "unstable_session_archive")]
+impl_jsonrpc_request!(
+    UnarchiveSessionRequest,
+    UnarchiveSessionResponse,
+    "session/unarchive"
+);
+#[cfg(feature = "unstable_session_status")]
+impl_jsonrpc_request!(
+    SessionStatusRequest,
+    SessionStatusResponse,
+    "session/status"
+);
+#[cfg(feature = "unstable_session_set_title")]
+impl_jsonrpc_request!(
+    SetSessionTitleRequest,
+    SetSessionTitleResponse,
+    "session/set_title"
+);
 impl_jsonrpc_request!(
     ResumeSessionRequest,
     ResumeSessionResponse,

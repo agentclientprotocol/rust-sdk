@@ -210,6 +210,8 @@ macro_rules! impl_v2_jsonrpc_response_enum {
 impl_v2_jsonrpc_request!(v2::InitializeRequest, v2::InitializeResponse, "initialize");
 impl_v2_jsonrpc_request!(v2::LoginAuthRequest, v2::LoginAuthResponse, "auth/login");
 impl_v2_jsonrpc_request!(v2::LogoutAuthRequest, v2::LogoutAuthResponse, "auth/logout");
+#[cfg(feature = "unstable_auth_status")]
+impl_v2_jsonrpc_request!(v2::AuthStatusRequest, v2::AuthStatusResponse, "auth/status");
 #[cfg(feature = "unstable_llm_providers")]
 impl_v2_jsonrpc_request!(
     v2::ListProvidersRequest,
@@ -245,6 +247,30 @@ impl_v2_jsonrpc_request!(
     v2::ForkSessionResponse,
     "session/fork"
 );
+#[cfg(feature = "unstable_session_archive")]
+impl_v2_jsonrpc_request!(
+    v2::ArchiveSessionRequest,
+    v2::ArchiveSessionResponse,
+    "session/archive"
+);
+#[cfg(feature = "unstable_session_archive")]
+impl_v2_jsonrpc_request!(
+    v2::UnarchiveSessionRequest,
+    v2::UnarchiveSessionResponse,
+    "session/unarchive"
+);
+#[cfg(feature = "unstable_session_status")]
+impl_v2_jsonrpc_request!(
+    v2::SessionStatusRequest,
+    v2::SessionStatusResponse,
+    "session/status"
+);
+#[cfg(feature = "unstable_session_set_title")]
+impl_v2_jsonrpc_request!(
+    v2::SetSessionTitleRequest,
+    v2::SetSessionTitleResponse,
+    "session/set_title"
+);
 impl_v2_jsonrpc_request!(
     v2::ResumeSessionRequest,
     v2::ResumeSessionResponse,
@@ -259,6 +285,16 @@ impl_v2_jsonrpc_request!(
     v2::SetSessionConfigOptionRequest,
     v2::SetSessionConfigOptionResponse,
     "session/set_config_option"
+);
+impl_v2_jsonrpc_request!(
+    v2::CancelToolCallRequest,
+    v2::CancelToolCallResponse,
+    "tool_call/cancel"
+);
+impl_v2_jsonrpc_request!(
+    v2::CancelTerminalRequest,
+    v2::CancelTerminalResponse,
+    "terminal/cancel"
 );
 impl_v2_jsonrpc_request!(v2::PromptRequest, v2::PromptResponse, "session/prompt");
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -282,6 +318,8 @@ impl_v2_jsonrpc_request!(
 
 impl_v2_jsonrpc_notification!(v2::UpdateSessionNotification, "session/update");
 impl_v2_jsonrpc_notification!(v2::CompleteElicitationNotification, "elicitation/complete");
+#[cfg(feature = "unstable_auth_status")]
+impl_v2_jsonrpc_notification!(v2::AuthStatusUpdateNotification, "auth/status_update");
 
 impl_jsonrpc_protocol_level_notification_enum!(v2::ProtocolLevelNotification {
     CancelRequestNotification => "$/cancel_request",
@@ -291,6 +329,8 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     InitializeRequest => "initialize",
     LoginAuthRequest => "auth/login",
     LogoutAuthRequest => "auth/logout",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusRequest => "auth/status",
     #[cfg(feature = "unstable_llm_providers")]
     ListProvidersRequest => "providers/list",
     #[cfg(feature = "unstable_llm_providers")]
@@ -302,8 +342,18 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     DeleteSessionRequest => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionRequest => "session/fork",
+    #[cfg(feature = "unstable_session_archive")]
+    ArchiveSessionRequest => "session/archive",
+    #[cfg(feature = "unstable_session_archive")]
+    UnarchiveSessionRequest => "session/unarchive",
+    #[cfg(feature = "unstable_session_status")]
+    SessionStatusRequest => "session/status",
+    #[cfg(feature = "unstable_session_set_title")]
+    SetSessionTitleRequest => "session/set_title",
     ResumeSessionRequest => "session/resume",
     CloseSessionRequest => "session/close",
+    CancelToolCallRequest => "tool_call/cancel",
+    CancelTerminalRequest => "terminal/cancel",
     SetSessionConfigOptionRequest => "session/set_config_option",
     PromptRequest => "session/prompt",
     [ext] ExtMethodRequest,
@@ -313,6 +363,8 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     InitializeResponse => "initialize",
     LoginAuthResponse => "auth/login",
     LogoutAuthResponse => "auth/logout",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusResponse => "auth/status",
     #[cfg(feature = "unstable_llm_providers")]
     ListProvidersResponse => "providers/list",
     #[cfg(feature = "unstable_llm_providers")]
@@ -324,8 +376,18 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     DeleteSessionResponse => "session/delete",
     #[cfg(feature = "unstable_session_fork")]
     ForkSessionResponse => "session/fork",
+    #[cfg(feature = "unstable_session_archive")]
+    ArchiveSessionResponse => "session/archive",
+    #[cfg(feature = "unstable_session_archive")]
+    UnarchiveSessionResponse => "session/unarchive",
+    #[cfg(feature = "unstable_session_status")]
+    SessionStatusResponse => "session/status",
+    #[cfg(feature = "unstable_session_set_title")]
+    SetSessionTitleResponse => "session/set_title",
     ResumeSessionResponse => "session/resume",
     CloseSessionResponse => "session/close",
+    CancelToolCallResponse => "tool_call/cancel",
+    CancelTerminalResponse => "terminal/cancel",
     SetSessionConfigOptionResponse => "session/set_config_option",
     PromptResponse => "session/prompt",
     [ext] ExtMethodResponse,
@@ -357,5 +419,7 @@ impl_v2_jsonrpc_response_enum!(v2::ClientResponse {
 impl_v2_jsonrpc_notification_enum!(v2::AgentNotification {
     UpdateSessionNotification => "session/update",
     CompleteElicitationNotification => "elicitation/complete",
+    #[cfg(feature = "unstable_auth_status")]
+    AuthStatusUpdateNotification => "auth/status_update",
     [ext] ExtNotification,
 });

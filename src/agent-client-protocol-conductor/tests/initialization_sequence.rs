@@ -90,7 +90,7 @@ impl ConnectTo<Conductor> for InitComponent {
                     cx.send_request_to(agent_client_protocol::Agent, request.initialize)
                         .on_receiving_result(async move |response| {
                             let response: InitializeResponse = response?;
-                            responder.respond(response)
+                            responder.respond(response.into())
                         })
                 },
                 agent_client_protocol::on_receive_request!(),
@@ -269,7 +269,7 @@ impl ConnectTo<Conductor> for BadProxy {
                     // BUG: forwards v1::InitializeProxyRequest instead of request.initialize
                     cx.send_request_to(Agent, request)
                         .on_receiving_result(async move |response| {
-                            let response: InitializeResponse = response?;
+                            let response = response?;
                             responder.respond(response)
                         })
                 },

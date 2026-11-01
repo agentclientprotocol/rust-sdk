@@ -282,7 +282,7 @@ their path.
 | `SessionMessage::SessionMessage(Dispatch)` | `v1::SessionMessage::Message(v1::Dispatch)` |
 | `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
-| `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest` |
+| `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest`, now the schema crate's type; see [Proxy chains](#proxy-chains) |
 | `RestoredSession::session()`, `session_mut()`, `response()`, `into_parts()`, `into_session()` (and the `OpenedV2Session` equivalents) | the `session` and `response` fields |
 | `ActiveSession::response()`, `modes()`, `config_options()`, `meta()` | removed; use `v1::SessionSetup::response` |
 | v1 `SessionBuilder::start_session() -> ActiveSession` | returns `v1::SessionSetup<'static, _, NewSessionResponse>` |
@@ -354,9 +354,8 @@ use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 ```
 
 `agent_client_protocol::schema::v1` and `schema::v2` stay, next to the
-version-neutral schema items (`ProtocolVersion`, `SuccessorMessage`, the
-`proxy/*` method constants), so code that imports `schema::v2` keeps
-compiling.
+version-neutral schema items (`ProtocolVersion` and `SuccessorMessage`), so
+code that imports `schema::v2` keeps compiling.
 
 ### A v1 client
 
@@ -1018,7 +1017,34 @@ new. `Error::new(MCP_BACKEND_FAILURE, ..)` still compiles. Compare with
 `i32::from(error.code)`, and use `.value()` where you need an `i32` (for
 example, against a JSON `code`).
 
-## Proxy method names
+## Schema 1.15
+
+This release uses `agent-client-protocol-schema` 1.15. Its new unstable
+methods are forwarded as SDK features under the same names, and each is part
+of the `unstable` feature:
+
+| SDK feature | Methods |
+| --- | --- |
+| `unstable_auth_status` | `auth/status`, and the `auth/status_update` notification |
+| `unstable_session_archive` | `session/archive`, `session/unarchive` |
+| `unstable_session_status` | `session/status` |
+| `unstable_session_set_title` | `session/set_title` |
+
+With a feature enabled, the v1 and v2 dispatch enums (`ClientRequest`,
+`AgentResponse`, `AgentNotification`) parse these methods into their typed
+variants, and each request type implements `JsonRpcRequest`. Draft v2 also
+adds `tool_call/cancel` and `terminal/cancel` (background work), which need
+only `unstable_protocol_v2`.
+
+The schema's `unstable_proxy_chains` feature is not forwarded: the SDK always
+enables it. See [Proxy chains](#proxy-chains).
+
+The schema enums gained variants under these features. They are
+`#[non_exhaustive]`, so matches need no change.
+
+## Proxy chains
+
+### Proxy method names
 
 The proxy protocol now uses the method names defined by the
 [ACP proxy chains RFD](https://agentclientprotocol.com/rfds/proxy-chains).
@@ -1030,10 +1056,9 @@ extensions.
 | `_proxy/initialize` | `proxy/initialize` |
 | `_proxy/successor` | `proxy/successor` |
 
-The message shapes are unchanged. `proxy/successor` still flattens the inner
-ACP message into its params and sends optional metadata as `_meta`. The
-non-spec `meta` key is no longer read on receive; see
-[`SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive](#successormessage-and-initializeproxyrequest-are-non-exhaustive).
+The message shapes are unchanged. `proxy/successor` still carries the wrapped
+message's `method` and `params` in its params and sends optional envelope
+metadata as `_meta`. The non-spec `meta` key is no longer read on receive.
 
 ### Upgrade conductors and proxies together
 
@@ -1043,35 +1068,95 @@ release cannot drive a proxy built with an earlier release, and vice versa.
 Upgrade the conductor and every proxy in a chain at the same time, including
 nested conductors running in proxy mode.
 
-Code that uses the SDK types (`schema::v1::InitializeProxyRequest`, formerly
-`schema::InitializeProxyRequest`, `schema::v2::InitializeProxyRequest`,
-`SuccessorMessage`, `METHOD_INITIALIZE_PROXY`, `METHOD_SUCCESSOR_MESSAGE`, or
-the `Proxy` and `Conductor` roles) needs no changes for the rename. Update any hard-coded method
+Code that only uses the `Proxy` and `Conductor` roles and their default
+forwarding needs no changes for the rename. Update any hard-coded method
 strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
 
-### `SuccessorMessage` and `InitializeProxyRequest` are non-exhaustive
+### Proxy types come from the schema crate
 
-`schema::SuccessorMessage`, `schema::v1::InitializeProxyRequest` and
-`schema::v2::InitializeProxyRequest` are `#[non_exhaustive]`, so the proxy
-protocol can add fields in a minor release. Their fields stay public for
-reading, but outside the SDK you build them with constructors:
+`agent-client-protocol-schema` 1.15 defines the proxy-chain messages behind
+its `unstable_proxy_chains` feature. The SDK always enables that feature, so
+proxy and conductor support needs no feature flag, and it uses the schema's
+types instead of its own. `schema::v1` and `schema::v2` re-export the schema
+crate's modules, so most paths stay the same:
+
+| Before | After |
+| --- | --- |
+| `schema::v1::InitializeProxyRequest` (SDK type) | `schema::v1::InitializeProxyRequest` (schema type, same path) |
+| `schema::v2::InitializeProxyRequest` (SDK type) | `schema::v2::InitializeProxyRequest` (schema type, same path) |
+| response of `InitializeProxyRequest`: `InitializeResponse` | `schema::v1::InitializeProxyResponse` / `schema::v2::InitializeProxyResponse` |
+| `schema::METHOD_INITIALIZE_PROXY` | `schema::v1::PROXY_METHOD_NAMES.proxy_initialize` |
+| `schema::METHOD_SUCCESSOR_MESSAGE` | `schema::v1::PROXY_METHOD_NAMES.proxy_successor` |
+| (none) | `schema::v1::ProxySuccessorRequest`, `ProxySuccessorNotification`, `ProxySuccessorResponse` |
+| (none) | `schema::v1::ProxyRequest`, `ProxyResponse`, `ProxyNotification` |
+| `schema::SuccessorMessage` | unchanged; see below |
+
+Each `v2` type is at the same name in `schema::v2`. The SDK implements its
+JSON-RPC traits for all of them: `InitializeProxyRequest` is answered with
+`InitializeProxyResponse`, `ProxySuccessorRequest` with
+`ProxySuccessorResponse` (the wrapped request's raw result), and
+`ProxyRequest` with `ProxyResponse`.
+
+`InitializeProxyResponse` is a transparent wrapper around the version's
+`InitializeResponse`, so the wire format is unchanged. A proxy that answers
+`proxy/initialize` itself wraps its response, and one that forwards the
+successor's `initialize` response converts it:
 
 ```rust,ignore
 // Before
-let message = SuccessorMessage { message: request, meta: None };
-let init = v1::InitializeProxyRequest { initialize };
+async |request: v1::InitializeProxyRequest, responder, cx| {
+    cx.send_request_to(Agent, request.initialize)
+        .forward_response_to(responder)
+}
+responder.respond(v1::InitializeResponse::new(version))
 
 // After
-let message = SuccessorMessage::new(request);
-let message = SuccessorMessage::new(request).meta(meta);
-let init = v1::InitializeProxyRequest::new(initialize); // or initialize.into()
+async |request: v1::InitializeProxyRequest, responder, cx| {
+    cx.send_request_to(Agent, request.initialize)
+        .map(|response| Ok(response.into()))
+        .forward_response_to(responder)
+}
+responder.respond(v1::InitializeResponse::new(version).into())
+// or v1::InitializeProxyResponse::new(v1::InitializeResponse::new(version))
 ```
 
-`SuccessorMessage::meta` is now `Option<serde_json::Map<String, Value>>`
-instead of `Option<Value>`, because ACP `_meta` is always an object. A
-`proxy/successor` request whose `_meta` is not an object is accepted and
-its `_meta` is ignored, and the non-spec `meta` key is ignored instead of
-being read as `_meta`.
+`InitializeProxyRequest`, `InitializeProxyResponse` and the successor
+envelopes are `#[non_exhaustive]`. Build them with `new`, the builder methods,
+or `From` (`initialize.into()`), and read their public fields.
+
+### `SuccessorMessage` stays as a typed view of `proxy/successor`
+
+`schema::SuccessorMessage<M>` remains. The schema's `ProxySuccessorRequest`
+and `ProxySuccessorNotification` hold the wrapped message as a raw `method`
+and raw `params`, and exist once per protocol version. `SuccessorMessage<M>`
+holds the wrapped message as a typed SDK message `M`, works for every protocol
+version, and for a wrapped request has that request's response type, because
+the RFD returns the result of a wrapped request unchanged. The SDK's proxy
+routing uses it to wrap and unwrap messages for a proxy's successor.
+
+Its wire format is the schema envelope and it is built and parsed through the
+schema types. As a result:
+
+- `SuccessorMessage` no longer implements `Serialize` and `Deserialize`. Use
+  its `JsonRpcMessage` implementation (`to_untyped_message`, `parse_message`),
+  or the schema envelope types for raw JSON.
+- An envelope without `params`, or with `"params": null`, is accepted and
+  unwraps to a message without params. Earlier releases rejected an omitted
+  `params`.
+- `meta` is `Option<schema::v1::Meta>`, the same
+  `serde_json::Map<String, Value>` as before. A `_meta` that is not an object
+  is ignored.
+
+`SuccessorMessage` is `#[non_exhaustive]`; build it with
+`SuccessorMessage::new(message)` and `.meta(meta)`.
+
+### Results and errors pass through unchanged
+
+The RFD requires the result or error of a wrapped request to reach the
+original requester unchanged. The default proxy forwarding used to answer a
+`session/new` with a parse error (`-32700`) when the successor's result had no
+readable `sessionId`. It now forwards that result unchanged and only skips
+routing the session's updates.
 
 ### `ConductorHostRole` is sealed
 
@@ -1196,6 +1281,9 @@ request for a version above the selected one is still rejected.
   protocol version instead of closing its connection. An invalid
   `protocolVersion` is answered with `-32602` instead of `-32603`, and a
   request for a different version than the first one with `-32600`.
+- A conductor in proxy mode forwards a repeated `proxy/initialize` through its
+  chain, as a conductor in agent mode forwards a repeated `initialize`. It used
+  to answer it with `-32600` ("only sent by the conductor").
 - Conductor traces record the messages between the last proxy and the agent.
   Trace snapshots and tools that read traces see these extra events.
 - `agent_client_protocol_trace_viewer::TraceViewerConfig` is

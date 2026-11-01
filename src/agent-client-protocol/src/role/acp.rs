@@ -12,9 +12,9 @@ use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
-use crate::schema::METHOD_INITIALIZE_PROXY;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::v1::InitializeRequest;
+use crate::schema::v1::PROXY_METHOD_NAMES;
 use crate::schema::v1::SessionId;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::schema::{ProtocolVersion, v2};
@@ -1612,7 +1612,7 @@ impl ConnectTo<Conductor> for ProxyProtocolRouter {
         };
         let conductor = RunningProtocolPeer::new(conductor);
         let Some((first_frame, conductor, selected)) =
-            select_protocol_peer(conductor, METHOD_INITIALIZE_PROXY, supported).await?
+            select_protocol_peer(conductor, PROXY_METHOD_NAMES.proxy_initialize, supported).await?
         else {
             return Ok(());
         };
@@ -1684,12 +1684,13 @@ async fn forward_proxy_dispatch(
     let message = match message {
         Dispatch::Request(request, responder) if request.method() == "initialize" => {
             responder.respond_with_error(crate::Error::invalid_request().data(format!(
-                "proxies must be initialized with `{METHOD_INITIALIZE_PROXY}`"
+                "proxies must be initialized with `{}`",
+                PROXY_METHOD_NAMES.proxy_initialize
             )))?;
             return Ok(Handled::Yes);
         }
         Dispatch::Request(mut request, responder)
-            if request.method() == METHOD_INITIALIZE_PROXY =>
+            if request.method() == PROXY_METHOD_NAMES.proxy_initialize =>
         {
             request.method = "initialize".to_string();
             cx.send_ordered_request_to::<Raw, _, _>(Agent, request)
@@ -1706,13 +1707,17 @@ async fn forward_proxy_dispatch(
             sent.on_receiving_result({
                 let cx = cx.clone();
                 async move |result| {
-                    let result = result.and_then(|response| {
-                        let envelope: NewSessionResponseEnvelope =
-                            crate::util::json_cast(response.clone())?;
-                        cx.add_dynamic_handler(ProxySessionMessages::new(envelope.session_id))?
-                            .detach();
-                        Ok(response)
-                    });
+                    // The result goes back unchanged, as the proxy chains RFD
+                    // requires, even when no session routing can be installed
+                    // from it.
+                    if let Ok(response) = &result
+                        && let Err(error) = install_proxy_session_routing(&cx, response)
+                    {
+                        tracing::warn!(
+                            error = ?crate::util::redacted_error(error.code),
+                            "forwarding a `session/new` result without session routing"
+                        );
+                    }
                     responder.respond_with_result(result)
                 }
             })?;
@@ -1731,6 +1736,17 @@ async fn forward_proxy_dispatch(
         })
         .await
         .done()
+}
+
+/// Route the updates of the session a forwarded `session/new` result created.
+fn install_proxy_session_routing(
+    cx: &ConnectionTo<Conductor>,
+    response: &serde_json::Value,
+) -> Result<(), crate::Error> {
+    let envelope: NewSessionResponseEnvelope = crate::util::json_cast(response)?;
+    cx.add_dynamic_handler(ProxySessionMessages::new(envelope.session_id))?
+        .detach();
+    Ok(())
 }
 
 impl Conductor {

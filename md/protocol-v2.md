@@ -355,9 +355,10 @@ carries the version every component accepted. A component that cannot accept
 it, such as a v2-only agent behind a v1-only proxy, rejects the
 initialization, and the client sees the error.
 
-Proxy implementations use
-`agent_client_protocol::schema::v2::InitializeProxyRequest`. Its response is the
-v2 `InitializeResponse`. `schema::v1::InitializeProxyRequest` is the v1
+Proxy implementations use the schema crate's
+`agent_client_protocol::schema::v2::InitializeProxyRequest`. Its response is
+`schema::v2::InitializeProxyResponse`, a transparent wrapper around the v2
+`InitializeResponse`. `schema::v1::InitializeProxyRequest` is the v1
 type. Static conductor component providers can carry either selected
 schema, but each supplied component must support that version. Use
 `Agent.protocol_router()` or `Proxy.protocol_router()` when a static component

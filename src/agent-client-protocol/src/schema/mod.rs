@@ -322,85 +322,25 @@ mod proxy_protocol;
 mod v2_impls;
 
 /// Agent Client Protocol v1 schema types.
+///
+/// This re-exports the schema crate's `v1` module, including its proxy-chain
+/// types (`InitializeProxyRequest`, `ProxySuccessorRequest` and the rest),
+/// which the SDK always enables.
 pub mod v1 {
     pub use agent_client_protocol_schema::v1::*;
-
-    /// Initialize request for a protocol-v1 proxy component.
-    ///
-    /// A conductor sends this (`proxy/initialize`) instead of `initialize` to
-    /// components that have a successor in the chain. Components that receive
-    /// it know they are operating as a proxy and should forward messages to
-    /// their successor. With `unstable_protocol_v2`, `schema::v2` has the
-    /// protocol-v2 request of the same name.
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
-    #[request(
-        method = "proxy/initialize",
-        response = InitializeResponse,
-        crate = crate
-    )]
-    #[non_exhaustive]
-    pub struct InitializeProxyRequest {
-        /// The underlying protocol-v1 initialize request data.
-        #[serde(flatten)]
-        pub initialize: InitializeRequest,
-    }
-
-    impl InitializeProxyRequest {
-        /// Create a proxy initialization request from a normal v1 initialization request.
-        #[must_use]
-        pub fn new(initialize: InitializeRequest) -> Self {
-            Self { initialize }
-        }
-    }
-
-    impl From<InitializeRequest> for InitializeProxyRequest {
-        fn from(initialize: InitializeRequest) -> Self {
-            Self::new(initialize)
-        }
-    }
 }
 
 /// Agent Client Protocol v2 draft schema types.
+///
+/// This re-exports the schema crate's `v2` module, including its proxy-chain
+/// types.
 #[cfg(feature = "unstable_protocol_v2")]
 pub mod v2 {
     pub use agent_client_protocol_schema::v2::*;
-
-    /// Initialize request for a protocol-v2 proxy component.
-    ///
-    /// This uses the same `proxy/initialize` method as
-    /// [`schema::v1::InitializeProxyRequest`](super::v1::InitializeProxyRequest),
-    /// but carries the v2 initialize request and response schemas.
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, crate::JsonRpcRequest)]
-    #[request(
-        method = "proxy/initialize",
-        response = InitializeResponse,
-        crate = crate
-    )]
-    #[non_exhaustive]
-    pub struct InitializeProxyRequest {
-        /// The underlying protocol-v2 initialize request data.
-        #[serde(flatten)]
-        pub initialize: InitializeRequest,
-    }
-
-    impl InitializeProxyRequest {
-        /// Create a proxy initialization request from a normal v2 initialization request.
-        #[must_use]
-        pub fn new(initialize: InitializeRequest) -> Self {
-            Self { initialize }
-        }
-    }
-
-    impl From<InitializeRequest> for InitializeProxyRequest {
-        fn from(initialize: InitializeRequest) -> Self {
-            Self::new(initialize)
-        }
-    }
 }
 
 pub use agent_client_protocol_schema::{
     IntoMaybeUndefined, IntoOption, MaybeUndefined, ProtocolVersion,
 };
 
-// Re-export SDK-local proxy protocol types flatly.
-pub use proxy_protocol::*;
+pub use proxy_protocol::SuccessorMessage;

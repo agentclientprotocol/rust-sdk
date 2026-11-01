@@ -99,6 +99,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
                     .v1
                     .record_proxy_initialize(request.initialize.protocol_version);
                 cx.send_request_to(Agent, request.initialize)
+                    .map(|response| Ok(response.into()))
                     .forward_response_to(responder)
             },
             agent_client_protocol::on_receive_request!(),
@@ -130,6 +131,7 @@ fn components(observations: Arc<Observations>) -> ProxiesAndAgent {
                     .v2
                     .record_proxy_initialize(request.initialize.protocol_version);
                 cx.send_request_to(Agent, request.initialize)
+                    .map(|response| Ok(response.into()))
                     .forward_response_to(responder)
             },
             agent_client_protocol::on_receive_request!(),

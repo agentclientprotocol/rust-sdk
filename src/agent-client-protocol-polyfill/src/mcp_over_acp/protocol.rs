@@ -1,7 +1,7 @@
 use agent_client_protocol::{
     Error, JsonRpcMessage, JsonRpcResponse, UntypedMessage,
     schema::{
-        METHOD_INITIALIZE_PROXY, ProtocolVersion,
+        ProtocolVersion,
         v1::{self, LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest},
     },
 };
@@ -61,7 +61,7 @@ impl PolyfillProtocol {
     }
 
     pub(crate) fn from_initialize_request(request: &UntypedMessage) -> Result<Self, Error> {
-        if request.method() != METHOD_INITIALIZE_PROXY {
+        if request.method() != v1::PROXY_METHOD_NAMES.proxy_initialize {
             return Err(Error::invalid_request().data("expected initialize proxy request"));
         }
         let requested = serde_json::from_value::<ProtocolVersion>(

@@ -85,9 +85,9 @@ impl ConnectTo<Conductor> for FiniteProxy {
                 Client,
                 async move |request: v1::InitializeProxyRequest, responder, _cx| {
                     assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);
-                    responder.respond(v1::InitializeResponse::new(
-                        request.initialize.protocol_version,
-                    ))?;
+                    responder.respond(
+                        v1::InitializeResponse::new(request.initialize.protocol_version).into(),
+                    )?;
                     initialized
                         .unbounded_send(())
                         .map_err(Error::into_internal_error)
