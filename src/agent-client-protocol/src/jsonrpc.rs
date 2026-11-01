@@ -3546,24 +3546,6 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         self.incoming_closed.state.shutdown_rx.clone().await;
     }
 
-    /// Whether this connection uses the ACP protocol v2 API.
-    ///
-    /// Shared code paths select v2 behavior with this runtime check rather than
-    /// with the `unstable_protocol_v2` feature, so enabling the feature never
-    /// changes how a v1 (or guard-less) connection behaves. Always `false`
-    /// without the feature, because no v2 connection can exist.
-    #[cfg_attr(not(feature = "unstable_protocol_v2"), allow(clippy::unused_self))]
-    pub(crate) fn is_acp_v2(&self) -> bool {
-        #[cfg(feature = "unstable_protocol_v2")]
-        {
-            self.protocol_version() == Some(crate::schema::ProtocolVersion::V2)
-        }
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        {
-            false
-        }
-    }
-
     /// Return the counterpart role this connection is talking to.
     pub fn counterpart(&self) -> Counterpart {
         self.counterpart.clone()

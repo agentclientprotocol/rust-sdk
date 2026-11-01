@@ -297,12 +297,18 @@ impl Role for Agent {
             .if_dispatch_from(Agent, async |message: Dispatch| {
                 // Stable v1 session helpers install a dynamic handler after
                 // `session/new`. Retry session messages to close the race
-                // between the response and that registration.
+                // between the response and that registration. An unguarded
+                // connection (`Builder::new`) can use the v1 helpers through
+                // `into_protocol::<V1>()`, so it retries too.
                 //
-                // V2 uses typed handlers installed before the connection
-                // starts. Retrying an unhandled v2 message would retain it
-                // forever because no per-session dynamic handler is expected.
-                let retry = message.has_session_id() && !connection.is_acp_v2();
+                // Every other version (v2 and later) uses typed handlers
+                // installed before the connection starts. Retrying an
+                // unhandled message there would retain it forever because no
+                // per-session dynamic handler is expected.
+                let retry = message.has_session_id()
+                    && connection
+                        .protocol_version()
+                        .is_none_or(|version| version == crate::schema::ProtocolVersion::V1);
                 Ok(Handled::No { message, retry })
             })
             .await
