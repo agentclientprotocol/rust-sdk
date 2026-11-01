@@ -346,7 +346,9 @@ pub mod connecting_as_client {
     //!
     //! - [`send_prompt`] - Send a text prompt to the agent
     //! - [`read_update`] - Read the next update (text chunk, tool call, etc.)
-    //! - [`read_to_string`] - Read all text until the turn ends
+    //!   or the prompt's response
+    //! - [`read_to_string`] - Read all text until the turn ends. If the agent
+    //!   answers the prompt with an error, this returns that error.
     //!
     //! With the core SDK's `unstable_mcp_over_acp` feature, the session builder
     //! also supports adding MCP servers with [`with_mcp_server`].
@@ -826,14 +828,14 @@ pub mod per_session_mcp_server {
     //!             // Build the session and run code after it starts
     //!             connection.build_session_from(request)
     //!                 .with_mcp_server(mcp_server)?
-    //!                 .on_proxy_session_start(responder, async move |session_id| {
+    //!                 .on_proxy_session_start(responder, async move |response| {
     //!                     // Session proxying is installed before this callback is spawned.
     //!                     //
     //!                     // Use this for follow-up work that may wait for later connection
     //!                     // traffic. Register ID-independent state in the request handler.
     //!                     // For ID-keyed state, preinstall a gate that later handlers await,
     //!                     // then populate it here.
-    //!                     tracing::info!(%session_id, "Session started");
+    //!                     tracing::info!(session_id = %response.session_id, "Session started");
     //!                     Ok(())
     //!                 })
     //!         }, agent_client_protocol::on_receive_request!())
@@ -849,7 +851,7 @@ pub mod per_session_mcp_server {
     //! 1. Sends `NewSessionRequest` to the agent
     //! 2. When the response arrives, responds to the client automatically
     //! 3. Sets up message proxying for the session
-    //! 4. Runs your callback with the `SessionId`
+    //! 4. Runs your callback with a clone of the `NewSessionResponse`
     //!
     //! The callback runs after the session is established but doesn't block
     //! the message handler. It is suitable for follow-up work and eventual
@@ -866,8 +868,8 @@ pub mod per_session_mcp_server {
     //! `v2::ResumeSessionBuilder` handles `session/resume`. With
     //! `unstable_session_fork`, `v2::ForkSessionBuilder` handles `session/fork`.
     //! Their `on_proxy_session_start` callbacks receive a `v2::SessionSetup`,
-    //! not just a session ID, so they retain both the command-only handle and
-    //! the complete operation-specific response:
+    //! which holds the command-only handle as well as the complete
+    //! operation-specific response:
     //!
     //! ```rust,ignore
     //! use agent_client_protocol::schema::v2;
@@ -953,13 +955,13 @@ pub mod per_session_mcp_server {
     //!
     //!             let task_connection = connection.clone();
     //!             connection.spawn(async move {
-    //!                 let session_id = task_connection.build_session_from(request)
+    //!                 let response = task_connection.build_session_from(request)
     //!                     .with_mcp_server(mcp_server)?
     //!                     .block_task()
     //!                     .start_session_proxy(responder)
     //!                     .await?;
     //!
-    //!                 tracing::info!(%session_id, "Session started");
+    //!                 tracing::info!(session_id = %response.session_id, "Session started");
     //!                 Ok(())
     //!             })?;
     //!             Ok(())

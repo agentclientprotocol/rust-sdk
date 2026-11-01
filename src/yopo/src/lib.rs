@@ -122,8 +122,8 @@ pub async fn prompt_with_callback(
                 loop {
                     let update = session.read_update().await?;
                     match update {
-                        agent_client_protocol::v1::SessionMessage::SessionMessage(message) => {
-                            MatchDispatch::new(message)
+                        agent_client_protocol::v1::SessionMessage::Message(message) => {
+                            MatchDispatch::new(message.into_raw())
                                 .if_notification(async |notification: SessionNotification| {
                                     tracing::debug!(
                                         ?notification,
@@ -167,8 +167,8 @@ pub async fn prompt_with_callback(
                                 .otherwise(async |_msg| Ok(()))
                                 .await?;
                         }
-                        agent_client_protocol::v1::SessionMessage::StopReason(stop_reason) => {
-                            match stop_reason {
+                        agent_client_protocol::v1::SessionMessage::PromptResponse(response) => {
+                            match response?.stop_reason {
                                 StopReason::EndTurn => break,
                                 StopReason::MaxTokens => {
                                     tracing::debug!("Agent hit max tokens limit");

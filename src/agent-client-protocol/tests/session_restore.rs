@@ -79,7 +79,7 @@ fn dispatch_barrier_notification() -> RawJsonRpcMessage {
 }
 
 fn session_message_text(message: SessionMessage) -> String {
-    let SessionMessage::SessionMessage(dispatch) = message else {
+    let SessionMessage::Message(dispatch) = message else {
         panic!("expected a session notification")
     };
     let untyped = dispatch

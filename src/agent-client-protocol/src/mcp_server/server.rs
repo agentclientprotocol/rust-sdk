@@ -28,7 +28,7 @@ use crate::{
     util::MatchDispatchFrom,
 };
 
-#[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
+#[cfg(feature = "unstable_mcp_over_acp")]
 use crate::{JsonRpcMessage, UntypedMessage};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -36,6 +36,33 @@ use crate::role::HasPeer;
 
 #[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_session_fork"))]
 use crate::schema::v1::ForkSessionRequest;
+
+/// Append an MCP server declaration to the `mcpServers` array of a raw
+/// session setup request, leaving every other field as received.
+#[cfg(feature = "unstable_mcp_over_acp")]
+fn append_raw_declaration(
+    request: &mut UntypedMessage,
+    declaration: &impl serde::Serialize,
+) -> Result<(), crate::Error> {
+    let serde_json::Value::Object(params) = &mut request.params else {
+        return Err(
+            crate::Error::invalid_params().data("session setup parameters must be an object")
+        );
+    };
+    let declaration =
+        serde_json::to_value(declaration).map_err(crate::Error::into_internal_error)?;
+    match params.get_mut("mcpServers") {
+        Some(serde_json::Value::Array(servers)) => servers.push(declaration),
+        Some(value) => *value = serde_json::Value::Array(vec![declaration]),
+        None => {
+            params.insert(
+                "mcpServers".to_string(),
+                serde_json::Value::Array(vec![declaration]),
+            );
+        }
+    }
+    Ok(())
+}
 
 /// A runtime-agnostic MCP server.
 ///
@@ -239,12 +266,41 @@ where
         }
     }
 
-    /// Append this MCP server's native ACP declaration to a session setup request.
-    fn append_declaration(&self, mcp_servers: &mut Vec<SchemaMcpServer>) {
-        mcp_servers.push(SchemaMcpServer::Acp(McpServerAcp::new(
+    fn declaration(&self) -> SchemaMcpServer {
+        SchemaMcpServer::Acp(McpServerAcp::new(
             self.connect.name(),
             self.server_id.clone(),
-        )));
+        ))
+    }
+
+    /// Append this MCP server's native ACP declaration to a session setup request.
+    fn append_declaration(&self, mcp_servers: &mut Vec<SchemaMcpServer>) {
+        mcp_servers.push(self.declaration());
+    }
+
+    /// Whether `request` is a valid v1 session setup request this server
+    /// attaches to. A setup request with malformed parameters is an error.
+    fn validate_session_setup(request: &UntypedMessage) -> Result<bool, crate::Error> {
+        match request.method() {
+            "session/new" => {
+                NewSessionRequest::parse_message(request.method(), request.params())?;
+                Ok(true)
+            }
+            "session/load" => {
+                LoadSessionRequest::parse_message(request.method(), request.params())?;
+                Ok(true)
+            }
+            "session/resume" => {
+                ResumeSessionRequest::parse_message(request.method(), request.params())?;
+                Ok(true)
+            }
+            #[cfg(feature = "unstable_session_fork")]
+            "session/fork" => {
+                ForkSessionRequest::parse_message(request.method(), request.params())?;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
     }
 }
 
@@ -346,19 +402,7 @@ where
                 )));
             }
         }
-        let declaration =
-            serde_json::to_value(self.declaration()).map_err(crate::Error::into_internal_error)?;
-        match params.get_mut("mcpServers") {
-            Some(serde_json::Value::Array(servers)) => servers.push(declaration),
-            Some(value) => *value = serde_json::Value::Array(vec![declaration]),
-            None => {
-                params.insert(
-                    "mcpServers".to_string(),
-                    serde_json::Value::Array(vec![declaration]),
-                );
-            }
-        }
-        Ok(())
+        append_raw_declaration(request, &self.declaration())
     }
 
     /// Attach this server to a draft protocol v2 session setup request.
@@ -486,53 +530,21 @@ where
         message: Dispatch,
         cx: ConnectionTo<Counterpart>,
     ) -> Result<Handled<Dispatch>, crate::Error> {
-        let matcher = MatchDispatchFrom::new(message, &cx)
-            .if_request_from(Client, async |mut request: NewSessionRequest, responder| {
-                self.append_declaration(&mut request.mcp_servers);
+        // Edit the raw request so fields the v1 schema types do not model
+        // reach the agent unchanged.
+        MatchDispatchFrom::new(message, &cx)
+            .if_request_from(Client, async |mut request: UntypedMessage, responder| {
+                if Self::validate_session_setup(&request)? {
+                    append_raw_declaration(&mut request, &self.declaration())?;
+                }
                 Ok(Handled::No {
                     message: (request, responder),
                     retry: false,
                 })
             })
             .await
-            .if_request_from(
-                Client,
-                async |mut request: LoadSessionRequest, responder| {
-                    self.append_declaration(&mut request.mcp_servers);
-                    Ok(Handled::No {
-                        message: (request, responder),
-                        retry: false,
-                    })
-                },
-            )
+            .otherwise_delegate(&mut self.active_session)
             .await
-            .if_request_from(
-                Client,
-                async |mut request: ResumeSessionRequest, responder| {
-                    self.append_declaration(&mut request.mcp_servers);
-                    Ok(Handled::No {
-                        message: (request, responder),
-                        retry: false,
-                    })
-                },
-            )
-            .await;
-
-        #[cfg(feature = "unstable_session_fork")]
-        let matcher = matcher
-            .if_request_from(
-                Client,
-                async |mut request: ForkSessionRequest, responder| {
-                    self.append_declaration(&mut request.mcp_servers);
-                    Ok(Handled::No {
-                        message: (request, responder),
-                        retry: false,
-                    })
-                },
-            )
-            .await;
-
-        matcher.otherwise_delegate(&mut self.active_session).await
     }
 
     fn describe_chain(&self) -> impl std::fmt::Debug {
@@ -841,6 +853,118 @@ mod tests {
             &request
         )?);
         assert_eq!(request.method(), "session/prompt");
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "unstable_mcp_over_acp"))]
+mod v1_tests {
+    use std::{path::PathBuf, sync::Arc};
+
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    use super::{McpSessionHandler, append_raw_declaration};
+    use crate::{
+        Conductor, DynConnectTo, Error, UntypedMessage,
+        mcp_server::{McpConnectionTo, McpServerConnect},
+        role,
+        schema::v1::{
+            LoadSessionRequest, McpServer, McpServerAcpId, McpServerHttp, NewSessionRequest,
+            ResumeSessionRequest, SessionId,
+        },
+    };
+
+    struct UnusedMcpConnect;
+
+    impl McpServerConnect<Conductor> for UnusedMcpConnect {
+        fn name(&self) -> String {
+            "global-v1-server".to_owned()
+        }
+
+        fn connect(&self, _context: McpConnectionTo<Conductor>) -> DynConnectTo<role::mcp::Client> {
+            panic!("declaration tests must not connect to the MCP server")
+        }
+    }
+
+    fn handler() -> McpSessionHandler<Conductor> {
+        McpSessionHandler::new_with_service(
+            McpServerAcpId::new("global-v1-server-id"),
+            Arc::new(UnusedMcpConnect),
+            None,
+        )
+    }
+
+    fn assert_raw_append_preserves_params(
+        handler: &McpSessionHandler<Conductor>,
+        method: &str,
+        params: impl Serialize,
+    ) -> Result<(), Error> {
+        let mut params = serde_json::to_value(params)?;
+        let Value::Object(params_object) = &mut params else {
+            panic!("session setup params should serialize as an object");
+        };
+        // Fields the v1 schema types do not model must reach the agent.
+        params_object.insert("futureField".to_owned(), json!("kept"));
+        params_object.insert(
+            "_futureSessionField".to_owned(),
+            json!({ "must": ["remain", "untouched"] }),
+        );
+
+        let mut expected = params.clone();
+        expected
+            .get_mut("mcpServers")
+            .and_then(Value::as_array_mut)
+            .expect("test request should contain mcpServers")
+            .push(serde_json::to_value(handler.declaration())?);
+
+        let mut request = UntypedMessage::new(method, params)?;
+        assert!(McpSessionHandler::<Conductor>::validate_session_setup(
+            &request
+        )?);
+        append_raw_declaration(&mut request, &handler.declaration())?;
+
+        assert_eq!(
+            request.params, expected,
+            "global attachment must only append its declaration"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v1_global_mcp_declaration_preserves_all_session_setup_params() -> Result<(), Error> {
+        let handler = handler();
+        let cwd = PathBuf::from("/tmp/global-v1-mcp");
+        let session_id = SessionId::new("session-to-restore");
+        let existing = vec![McpServer::Http(McpServerHttp::new(
+            "client-server",
+            "https://example.com/mcp",
+        ))];
+
+        assert_raw_append_preserves_params(
+            &handler,
+            "session/new",
+            NewSessionRequest::new(cwd.clone()).mcp_servers(existing.clone()),
+        )?;
+        assert_raw_append_preserves_params(
+            &handler,
+            "session/load",
+            LoadSessionRequest::new(session_id.clone(), cwd.clone()).mcp_servers(existing.clone()),
+        )?;
+        assert_raw_append_preserves_params(
+            &handler,
+            "session/resume",
+            ResumeSessionRequest::new(session_id, cwd).mcp_servers(existing),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn v1_global_mcp_declaration_ignores_other_requests() -> Result<(), Error> {
+        let request = UntypedMessage::new("session/prompt", json!({ "sessionId": "s" }))?;
+        assert!(!McpSessionHandler::<Conductor>::validate_session_setup(
+            &request
+        )?);
         Ok(())
     }
 }
