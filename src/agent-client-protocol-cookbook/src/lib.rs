@@ -240,7 +240,9 @@ pub mod v2_one_shot_prompt {
     //!                     Some(option) => schema::RequestPermissionOutcome::Selected(
     //!                         schema::SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                     ),
-    //!                     // `cancelled` is only valid after cancelling the work.
+    //!                     // Stop the prompt and decline. After `session/cancel`, the
+    //!                     // client may answer `cancelled` without waiting for the
+    //!                     // agent's `$/cancel_request`.
     //!                     None => {
     //!                         connection.send_notification(schema::CancelSessionNotification::new(
     //!                             request.session_id.clone(),

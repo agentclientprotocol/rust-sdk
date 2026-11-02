@@ -126,9 +126,11 @@ async fn wait_until_idle(
 
 /// Declines a permission request in this non-interactive example.
 ///
-/// Selects the agent's `reject_once` option when it offers one. The
-/// `cancelled` outcome is only valid once the client has cancelled the active
-/// work, so without such an option this sends `session/cancel` first.
+/// Selects the agent's `reject_once` option when it offers one. Otherwise it
+/// sends `session/cancel` to stop the prompt and answers with the `cancelled`
+/// outcome. The agent stops waiting for the request after `session/cancel`,
+/// and a client may answer a request of the cancelled work this way without
+/// waiting for the agent's `$/cancel_request`.
 fn reject_permission(
     request: &schema::RequestPermissionRequest,
     connection: &ConnectionTo<Agent>,
