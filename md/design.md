@@ -126,6 +126,33 @@ graph TD
     H2 -->|matches| Process2[Process Prompt]
 ```
 
+### Unhandled Messages
+
+When no handler claims a message, the dispatch loop answers a request with
+`-32601` (Method not found), ignores a notification, and forwards a response to
+its awaiter.
+
+A handler can instead return `Handled::No { retry: true, .. }` to park the
+message until a dynamic handler is added. On v1 and unguarded connections, a
+client's role does this for messages from the agent that carry a `sessionId`,
+so messages that arrive just before a session's dynamic handler is installed
+are not lost. Parking is bounded:
+
+- A connection parks at most 1024 messages. Parking one more gives up on the
+  oldest: a request gets `-32601`, a notification is dropped with a log.
+- A session request the role retries is parked only while a dropped dynamic
+  handler's removal is still queued. `ActiveSession::proxy_remaining_messages`
+  relies on this to hand a session over to its proxy handler. Once no such
+  removal is left, the request gets `-32601`. Any other unhandled session
+  request is answered right away, so the agent never waits for a handler that
+  nobody registers.
+
+The SDK's session helpers install the session handler before the next incoming
+message is dispatched, so they do not depend on parking. The answer is `-32601`
+and not `-32002` (Resource not found): the SDK cannot tell an unknown session
+from a method nobody implements, and v1 assigns `-32002` for unknown sessions to
+Agents answering session requests.
+
 ### Ordering Guarantees
 
 The dispatch loop provides sequential processing:

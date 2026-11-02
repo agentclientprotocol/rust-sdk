@@ -335,6 +335,11 @@ impl Role for Agent {
                 // connection (`Builder::new`) can use the v1 helpers through
                 // `into_protocol::<V1>()`, so it retries too.
                 //
+                // The incoming actor bounds this retry: it parks at most
+                // `MAX_PARKED_MESSAGES`, and parks a request only while a
+                // deactivated session handler awaits removal or replacement.
+                // Any other unhandled request is answered with `-32601`.
+                //
                 // Every other version (v2 and later) uses typed handlers
                 // installed before the connection starts. Retrying an
                 // unhandled message there would retain it forever because no

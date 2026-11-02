@@ -257,3 +257,149 @@ async fn v1_client_retries_unhandled_session_messages() {
 
     agent.finish().await;
 }
+
+/// The most messages a connection parks for dynamic handlers, as documented
+/// on `Handled`.
+const MAX_PARKED_MESSAGES: usize = 1024;
+
+/// A session request from the agent that no handler claims gets an error.
+/// Before, the `Agent` role's retry parked it forever and the agent never
+/// got an answer.
+#[tokio::test(flavor = "current_thread")]
+async fn v1_client_answers_unhandled_session_request() {
+    let mut agent = WirePeer::connect(Client.v1());
+
+    agent.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "session/request_permission",
+        "params": {
+            "sessionId": "untracked",
+            "toolCall": { "toolCallId": "call-1" },
+            "options": [],
+        },
+    }));
+    let response = agent.recv().await;
+    assert_eq!(response["id"], 1);
+    assert_eq!(response["error"]["code"], -32601);
+    assert_eq!(response["error"]["data"], "session/request_permission");
+
+    agent.finish().await;
+}
+
+/// Records the `index` of every `session/update` it receives until one marks
+/// the end.
+struct CollectUpdates(Option<tokio::sync::oneshot::Sender<Vec<u64>>>, Vec<u64>);
+
+impl HandleDispatchFrom<Agent> for CollectUpdates {
+    fn handle_dispatch_from(
+        &mut self,
+        message: Dispatch,
+        _connection: ConnectionTo<Agent>,
+    ) -> impl Future<Output = Result<Handled<Dispatch>, Error>> + Send {
+        std::future::ready(match message {
+            Dispatch::Notification(notification) if notification.method() == "session/update" => {
+                match notification.params()["index"].as_u64() {
+                    Some(index) => self.1.push(index),
+                    None => {
+                        if let Some(tx) = self.0.take() {
+                            tx.send(std::mem::take(&mut self.1))
+                                .expect("test is waiting for the updates");
+                        }
+                    }
+                }
+                Ok(Handled::Yes)
+            }
+            message => Ok(Handled::No {
+                message,
+                retry: false,
+            }),
+        })
+    }
+
+    fn describe_chain(&self) -> impl std::fmt::Debug {
+        "CollectUpdates"
+    }
+}
+
+/// Early session notifications wait for a handler registered later, but the
+/// queue keeps only the newest `MAX_PARKED_MESSAGES`.
+#[tokio::test(flavor = "current_thread")]
+async fn v1_client_parks_a_bounded_number_of_session_notifications() {
+    let (collected_tx, collected_rx) = tokio::sync::oneshot::channel();
+    let mut collected_tx = Some(collected_tx);
+    let client = Client.v1().on_receive_request(
+        async move |request: UntypedMessage,
+                    responder: agent_client_protocol::Responder<Value, V1>,
+                    cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
+            assert_eq!(request.method(), "_test/register_session_handler");
+            cx.add_dynamic_handler(CollectUpdates(collected_tx.take(), Vec::new()))?
+                .detach();
+            responder.respond(json!({}))
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let mut agent = WirePeer::connect(client);
+
+    for index in 0..=MAX_PARKED_MESSAGES {
+        agent.send(&json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": { "sessionId": "s", "index": index },
+        }));
+    }
+    agent.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "_test/register_session_handler",
+        "params": {},
+    }));
+    assert_eq!(agent.recv().await["id"], 1);
+    agent.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": { "sessionId": "s" },
+    }));
+
+    let collected = tokio::time::timeout(TIMEOUT, collected_rx)
+        .await
+        .expect("the parked updates should reach the new handler")
+        .expect("handler collected the updates");
+    // The oldest update was dropped to make room for the newest.
+    let expected = (1..=MAX_PARKED_MESSAGES as u64).collect::<Vec<_>>();
+    assert_eq!(collected, expected);
+
+    agent.finish().await;
+}
+
+/// Requests a handler asks to retry are parked too, and the oldest one is
+/// answered with an error once the queue is full.
+#[tokio::test(flavor = "current_thread")]
+async fn parked_requests_are_answered_when_the_queue_is_full() {
+    let client = Client.v1().on_receive_request(
+        async |request: UntypedMessage,
+               responder: agent_client_protocol::Responder<Value, V1>,
+               _cx: agent_client_protocol::v1::ConnectionTo<Agent>| {
+            Ok::<_, Error>(Handled::No {
+                message: (request, responder),
+                retry: true,
+            })
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
+    let mut agent = WirePeer::connect(client);
+
+    for id in 0..=MAX_PARKED_MESSAGES {
+        agent.send(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "_test/parked",
+            "params": {},
+        }));
+    }
+    let response = agent.recv().await;
+    assert_eq!(response["id"], 0);
+    assert_eq!(response["error"]["code"], -32601);
+
+    agent.finish().await;
+}
