@@ -2,6 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::error::ErrorOrigin;
+
 /// Why a driven connection stopped.
 ///
 /// A connection driven by [`Builder::connect_to`](crate::Builder::connect_to)
@@ -73,21 +75,24 @@ impl ConnectionTermination {
 /// Stable discriminator stored in the `data.reason` field of errors produced
 /// when a connection terminates for a reason other than clean incoming EOF
 /// before a request receives its response.
+///
+/// The `data` field is informational. Use [`is_connection_terminated`] to
+/// detect these errors: a peer can send this value in its own error data.
 pub const CONNECTION_TERMINATED_REASON: &str = "connection_terminated";
 
 /// Return whether `error` reports that the connection terminated before a
 /// request received its response.
 ///
+/// Only errors the SDK produced for its own connection match. An error
+/// response received from a peer never does, even when its `data.reason` is
+/// [`CONNECTION_TERMINATED_REASON`], and neither does an error built from the
+/// same code, message, and data.
+///
 /// Requests failed by clean incoming EOF instead satisfy
 /// [`is_incoming_transport_closed`](crate::is_incoming_transport_closed).
 #[must_use]
 pub fn is_connection_terminated(error: &crate::Error) -> bool {
-    error
-        .data
-        .as_ref()
-        .and_then(|data| data.get("reason"))
-        .and_then(serde_json::Value::as_str)
-        == Some(CONNECTION_TERMINATED_REASON)
+    error.origin == ErrorOrigin::ConnectionTerminated
 }
 
 pub(super) fn connection_terminated_error(
@@ -96,6 +101,7 @@ pub(super) fn connection_terminated_error(
 ) -> crate::Error {
     let mut error = crate::Error::internal_error();
     error.message = "Connection terminated".to_string();
+    error.origin = ErrorOrigin::ConnectionTerminated;
     error.data(serde_json::json!({
         "reason": CONNECTION_TERMINATED_REASON,
         "method": method,
