@@ -1050,6 +1050,12 @@ variants, and each request type implements `JsonRpcRequest`. Draft v2 also
 adds `tool_call/cancel` and `terminal/cancel` (background work), which need
 only `unstable_protocol_v2`.
 
+An `Agent.v2()` agent without a handler for `tool_call/cancel` or
+`terminal/cancel` answers them with `-32602` (Invalid params) instead of
+`-32601` (Method not found), as the spec requires for a tool call or terminal
+that is unknown or not cancellable. A typed or catch-all handler still takes
+precedence. v1 and unguarded agents are unchanged.
+
 The schema's `unstable_proxy_chains` feature is not forwarded: the SDK always
 enables it. See [Proxy chains](#proxy-chains).
 
@@ -1163,6 +1169,18 @@ schema types. As a result:
 
 `SuccessorMessage` is `#[non_exhaustive]`; build it with
 `SuccessorMessage::new(message)` and `.meta(meta)`.
+
+### Proxies send `$/cancel_request` plain
+
+A proxy cancels a request it sent to its successor with a plain
+`$/cancel_request` whose `requestId` is the ID of the `proxy/successor`
+request, as the proxy chains RFD specifies. Earlier releases wrapped the
+notification in `proxy/successor`. `SentRequest::cancel`,
+`RequestCancellationHandle::cancel` and `ConnectionTo::send_cancel_request_to`
+now send it plain for every peer. The conductor and the SDK still accept the
+wrapped form and treat it the same way, so a v5 conductor works with proxies
+built on earlier releases. No code change is needed unless you match the
+wrapped form on the wire.
 
 ### Results and errors pass through unchanged
 
@@ -1298,6 +1316,11 @@ request for a version above the selected one is still rejected.
 - A conductor in proxy mode forwards a repeated `proxy/initialize` through its
   chain, as a conductor in agent mode forwards a repeated `initialize`. It used
   to answer it with `-32600` ("only sent by the conductor").
+- The conductor no longer forwards `proxy/successor` from its client (in agent
+  mode) or from its agent, or one wrapped in a second `proxy/successor`. It
+  answers such a request with `-32600` and drops such a notification. It used
+  to forward them, so the client or the agent could send a message that a
+  proxy received as coming from its successor.
 - Conductor traces record the messages between the last proxy and the agent.
   Trace snapshots and tools that read traces see these extra events.
 - `agent_client_protocol_trace_viewer::TraceViewerConfig` is

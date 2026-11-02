@@ -318,7 +318,10 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
 
     /// Send a `$/cancel_request` notification to a specific peer.
     ///
-    /// See [`send_cancel_request`](Self::send_cancel_request).
+    /// The notification is always sent plain, never wrapped in
+    /// `proxy/successor`, as the raw
+    /// [`ConnectionTo::send_cancel_request_to`](crate::ConnectionTo::send_cancel_request_to)
+    /// describes. See [`send_cancel_request`](Self::send_cancel_request).
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,

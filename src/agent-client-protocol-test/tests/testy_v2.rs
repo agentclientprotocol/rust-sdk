@@ -849,3 +849,40 @@ async fn testy_v2_holds_prompts_during_active_work() {
         .expect("Testy v2 held prompts timed out")
         .expect("Testy v2 held prompts failed");
 }
+
+/// Testy v2 never advertises `capabilities.cancel`, so it answers
+/// `tool_call/cancel` and `terminal/cancel` with `-32602`, as the spec
+/// answers a request for an unknown or non-cancellable tool call or terminal.
+#[tokio::test(flavor = "current_thread")]
+async fn testy_v2_answers_entity_cancel_with_invalid_params() {
+    tokio::time::timeout(
+        TIMEOUT,
+        Client
+            .v2()
+            .connect_with(testy::v2::Testy::new(), async |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+                let error = connection
+                    .send_request(v2::CancelToolCallRequest::new("s", "c"))
+                    .block_task()
+                    .await
+                    .expect_err("Testy has no cancellable tool call");
+                assert_eq!(i32::from(error.code), -32602, "{error:?}");
+                let error = connection
+                    .send_request(v2::CancelTerminalRequest::new("s", "t"))
+                    .block_task()
+                    .await
+                    .expect_err("Testy has no cancellable terminal");
+                assert_eq!(i32::from(error.code), -32602, "{error:?}");
+                Ok(())
+            }),
+    )
+    .await
+    .expect("Testy v2 entity cancel timed out")
+    .expect("Testy v2 entity cancel failed");
+}

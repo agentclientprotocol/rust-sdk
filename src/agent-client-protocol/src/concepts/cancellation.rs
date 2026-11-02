@@ -31,9 +31,12 @@
 //! # }
 //! ```
 //!
-//! The [`SentRequest`] remembers the peer and any proxy wrapping used for the
-//! original request, so this also works for requests sent through
-//! [`ConnectionTo::send_request_to`].
+//! The [`SentRequest`] remembers the connection and ID of the original request,
+//! so this also works for requests sent through
+//! [`ConnectionTo::send_request_to`]. The notification is always a plain
+//! `$/cancel_request`: for a request a proxy sent to its successor in a
+//! `proxy/successor` envelope, its `requestId` is the ID of that
+//! `proxy/successor` request, and the notification is not wrapped.
 //!
 //! When another task needs to request cancellation after the request is consumed,
 //! retain a [`RequestCancellationHandle`] first. Its drop is inert; an
@@ -80,7 +83,7 @@
 //! Explicit cancellation does not discard the selected callback's or future's
 //! response. Cloned handles share the same once-only cancellation state as
 //! [`SentRequest::cancel`] and automatic request-drop cancellation, and remember
-//! the original peer and proxy wrapping. Dropping a cancellation handle does
+//! the original request's connection and ID. Dropping a cancellation handle does
 //! nothing. Cancelling a prepared request before publication is also a no-op; it is not remembered for
 //! later publication. Responses and local failures disarm cancellation before
 //! application callbacks run. Detaching suppresses only automatic cancellation:
@@ -164,6 +167,14 @@
 //! was allocated on a different connection and would be meaningless to the
 //! next peer.
 //!
+//! A proxy cancels a request it sent to its successor with a plain
+//! `$/cancel_request` carrying the ID of the `proxy/successor` request. The
+//! conductor then cancels the request it forwarded to the next component with
+//! that hop's ID. Receivers also accept a `$/cancel_request` wrapped in
+//! `proxy/successor`, which earlier SDK releases sent, and treat it the same
+//! way: its `requestId` still names a request on the connection it arrived
+//! on.
+//!
 //! ## Custom methods on proxies
 //!
 //! A proxy that intercepts a method with its own handler decides what
@@ -234,8 +245,8 @@
 //! ID on the peer connection you are targeting, use
 //! [`ConnectionTo::send_cancel_request_to`]. Most code should use
 //! [`SentRequest::cancel`] or [`RequestCancellationHandle::cancel`] instead,
-//! because they share SDK settlement state and already know the correct peer,
-//! request ID, and proxy wrapping.
+//! because they share SDK settlement state and already know the correct
+//! request ID.
 //!
 //! [`block_task`]: crate::SentRequest::block_task
 //! [`on_receiving_result`]: crate::SentRequest::on_receiving_result

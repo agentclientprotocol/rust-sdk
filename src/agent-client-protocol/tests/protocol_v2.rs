@@ -3372,3 +3372,205 @@ async fn v2_agent_ignores_unknown_notifications_and_cancellations() -> Result<()
     agent_task.await.map_err(Error::into_internal_error)??;
     Ok(())
 }
+
+/// An initialized v2 agent with only an `initialize` handler, driven over a
+/// raw channel.
+fn initialized_v2_agent_channel<H>(
+    agent: agent_client_protocol::v2::Builder<Agent, H>,
+) -> (
+    agent_client_protocol::Channel,
+    tokio::task::JoinHandle<Result<(), Error>>,
+)
+where
+    H: HandleDispatchFrom<Client> + 'static,
+{
+    let (channel, driver) = ConnectTo::<Client>::into_channel_and_future(agent);
+    let task = tokio::spawn(driver.expect("v2 agent owns a connection driver"));
+    (channel, task)
+}
+
+async fn initialize_raw_v2(channel: &mut agent_client_protocol::Channel) -> Result<(), Error> {
+    let response = raw_v2_response(
+        channel,
+        RawJsonRpcId::Number(1),
+        "initialize",
+        json_value(v2_initialize_request(ProtocolVersion::V2))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 2, "{response}");
+    Ok(())
+}
+
+fn v2_initialize_only_agent()
+-> agent_client_protocol::v2::Builder<Agent, impl HandleDispatchFrom<Client>> {
+    Agent.v2().on_receive_request(
+        async |initialize: v2::InitializeRequest, responder, _cx| {
+            responder.respond(v2_initialize_response_with_session(
+                initialize.protocol_version,
+            ))
+        },
+        agent_client_protocol::on_receive_request!(),
+    )
+}
+
+/// A v2 agent without handlers for `tool_call/cancel` and `terminal/cancel`
+/// answers them with `-32602`, as the spec answers a request for an unknown
+/// or non-cancellable tool call or terminal, not with `-32601`. Before
+/// initialization the usual `-32600` applies.
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_answers_unhandled_entity_cancel_with_invalid_params() -> Result<(), Error> {
+    let (mut channel, task) = initialized_v2_agent_channel(v2_initialize_only_agent());
+
+    let before = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(0),
+        "tool_call/cancel",
+        json!({ "sessionId": "s", "toolCallId": "c" }),
+    )
+    .await?;
+    assert_eq!(before["error"]["code"], -32600, "{before}");
+
+    initialize_raw_v2(&mut channel).await?;
+
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(2),
+        "tool_call/cancel",
+        json!({ "sessionId": "s", "toolCallId": "c" }),
+    )
+    .await?;
+    assert_eq!(
+        response["error"],
+        json!({
+            "code": -32602,
+            "message": "the tool call is unknown or not cancellable",
+            "data": { "toolCallId": "c" },
+        }),
+        "{response}"
+    );
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(3),
+        "terminal/cancel",
+        json!({ "sessionId": "s", "terminalId": "t" }),
+    )
+    .await?;
+    assert_eq!(
+        response["error"],
+        json!({
+            "code": -32602,
+            "message": "the terminal is unknown or not cancellable",
+            "data": { "terminalId": "t" },
+        }),
+        "{response}"
+    );
+    // Other unknown methods still get `-32601`.
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(4),
+        "_vendor/unknown",
+        json!({}),
+    )
+    .await?;
+    assert_eq!(response["error"]["code"], -32601, "{response}");
+
+    task.abort();
+    Ok(())
+}
+
+/// A typed handler for `tool_call/cancel` and a catch-all handler that
+/// answers `terminal/cancel` take precedence over the default `-32602`.
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_entity_cancel_handlers_take_precedence() -> Result<(), Error> {
+    let agent = v2_initialize_only_agent()
+        .on_receive_request(
+            async |_request: v2::CancelToolCallRequest, responder, _cx| {
+                responder.respond(v2::CancelToolCallResponse::new())
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_dispatch(
+            async |dispatch: agent_client_protocol::v2::Dispatch, _cx| match dispatch {
+                agent_client_protocol::Dispatch::Request(request, responder)
+                    if request.method() == "terminal/cancel" =>
+                {
+                    responder.respond_with_result(Ok(json!({ "caughtAll": true })))?;
+                    Ok(agent_client_protocol::Handled::Yes)
+                }
+                message => Ok(agent_client_protocol::Handled::No {
+                    message,
+                    retry: false,
+                }),
+            },
+            agent_client_protocol::on_receive_dispatch!(),
+        );
+    let (mut channel, task) = initialized_v2_agent_channel(agent);
+    initialize_raw_v2(&mut channel).await?;
+
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(2),
+        "tool_call/cancel",
+        json!({ "sessionId": "s", "toolCallId": "c" }),
+    )
+    .await?;
+    assert_eq!(response["result"], json!({}), "{response}");
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(3),
+        "terminal/cancel",
+        json!({ "sessionId": "s", "terminalId": "t" }),
+    )
+    .await?;
+    assert_eq!(
+        response["result"],
+        json!({ "caughtAll": true }),
+        "{response}"
+    );
+
+    task.abort();
+    Ok(())
+}
+
+/// v1 has no `tool_call/cancel` or `terminal/cancel`: a v1 agent and an
+/// agent without a version guard answer them with `-32601` like any other
+/// unknown method.
+#[tokio::test(flavor = "current_thread")]
+async fn v1_and_raw_agents_answer_entity_cancel_with_method_not_found() -> Result<(), Error> {
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(Testy::new());
+    let task = tokio::spawn(driver.expect("v1 agent owns a connection driver"));
+    let response = raw_v2_response(
+        &mut channel,
+        RawJsonRpcId::Number(1),
+        "initialize",
+        json_value(v1_initialize_request(ProtocolVersion::V1))?,
+    )
+    .await?;
+    assert_eq!(response["result"]["protocolVersion"], 1, "{response}");
+    for (id, method) in [(2, "tool_call/cancel"), (3, "terminal/cancel")] {
+        let response = raw_v2_response(
+            &mut channel,
+            RawJsonRpcId::Number(id),
+            method,
+            json!({ "sessionId": "s", "toolCallId": "c", "terminalId": "t" }),
+        )
+        .await?;
+        assert_eq!(response["error"]["code"], -32601, "{method}: {response}");
+    }
+    task.abort();
+
+    let (mut channel, driver) = ConnectTo::<Client>::into_channel_and_future(Builder::new(Agent));
+    let task = tokio::spawn(driver.expect("raw agent owns a connection driver"));
+    for (id, method) in [(1, "tool_call/cancel"), (2, "terminal/cancel")] {
+        let response = raw_v2_response(
+            &mut channel,
+            RawJsonRpcId::Number(id),
+            method,
+            json!({ "sessionId": "s", "toolCallId": "c", "terminalId": "t" }),
+        )
+        .await?;
+        assert_eq!(response["error"]["code"], -32601, "{method}: {response}");
+    }
+    task.abort();
+    Ok(())
+}

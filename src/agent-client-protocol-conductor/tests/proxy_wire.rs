@@ -6,6 +6,9 @@
 //! - The results and errors of wrapped requests reach the original requester
 //!   unchanged, in both directions, as the proxy chains RFD requires.
 //! - `proxy/initialize` and `proxy/successor` keep their wire format.
+//! - The conductor does not forward `proxy/successor` from the client or the
+//!   agent.
+//! - `$/cancel_request` is plain on every hop and names that hop's request.
 
 use std::{io, time::Duration};
 
@@ -473,5 +476,407 @@ async fn proxy_mode_conductor_forwards_repeated_proxy_initialize() {
         );
     }
 
+    task.abort();
+}
+
+/// Initialize a chain whose only proxy is the raw `proxy_end`, answering as
+/// the raw agent.
+async fn initialize_through_raw_proxy(
+    client: &mut Endpoint,
+    proxy_end: &mut Endpoint,
+    agent: &mut Endpoint,
+) {
+    let (params, result) = initialize_lines(1);
+    client.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{params}}}"#
+    ));
+    let (_, init) = proxy_end.recv_json().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":"p-init","method":"proxy/successor","params":{{"method":"initialize","params":{params}}}}}"#
+    ));
+    let (_, request) = agent.recv_json().await;
+    agent.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        request["id"]
+    ));
+    proxy_end.recv().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        init["id"]
+    ));
+    client.recv().await;
+}
+
+/// A conductor in agent mode does not forward `proxy/successor` from its
+/// client or from its agent. Only the conductor wraps messages from a proxy's
+/// successor, so forwarding one would let the client or the agent forge
+/// messages that appear to come from the other side. A request gets
+/// `-32600` and a notification is dropped. A proxy cannot do the same by
+/// wrapping `proxy/successor` twice.
+#[tokio::test(flavor = "current_thread")]
+async fn agent_mode_conductor_rejects_misplaced_proxy_successor() {
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let (mut client, mut agent, task) = start_chain(vec![DynConnectTo::new(proxy)]);
+    initialize_through_raw_proxy(&mut client, &mut proxy_end, &mut agent).await;
+    let mut transcript = Transcript::default();
+
+    // From the client.
+    client.send(r#"{"jsonrpc":"2.0","id":"c-forged","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    let line = client.recv().await;
+    transcript.record("conductor -> client", &line);
+    client.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    // The dropped notification never reaches the proxy: the next line it
+    // receives is the client's next message.
+    client.send(r#"{"jsonrpc":"2.0","method":"_vendor/after-client","params":{}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // From the agent.
+    agent.send(r#"{"jsonrpc":"2.0","id":"a-forged","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    let line = agent.recv().await;
+    transcript.record("conductor -> agent", &line);
+    agent.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}"#);
+    agent.send(r#"{"jsonrpc":"2.0","method":"_vendor/after-agent","params":{}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // From the proxy, wrapped twice.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-forged","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    // The proxy's own `proxy/successor` traffic still reaches the agent.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-1","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}"#);
+    let (line, request) = agent.recv_json().await;
+    transcript.record("conductor -> agent", &line);
+    agent.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"done":true}}}}"#,
+        request["id"]
+    ));
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+    proxy_end.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"z":3}}}"#);
+    let line = agent.recv().await;
+    transcript.record("conductor -> agent", &line);
+
+    task.abort();
+    transcript.check(&expect![[r#"
+        conductor -> client: {"jsonrpc":"2.0","id":"c-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"_vendor/after-client","params":{}}
+        conductor -> agent: {"jsonrpc":"2.0","id":"a-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/after-agent","params":{}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> agent: {"jsonrpc":"2.0","id":"<generated>","method":"_vendor/request","params":{"y":2}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-1","result":{"done":true}}
+        conductor -> agent: {"jsonrpc":"2.0","method":"_vendor/note","params":{"z":3}}
+    "#]]);
+}
+
+/// A conductor in proxy mode receives `proxy/successor` from its own
+/// conductor for the messages of its successor and delivers them to its last
+/// proxy. It does not forward one that its conductor wrapped twice, which
+/// would reach the last proxy as a `proxy/successor` from the successor.
+#[tokio::test(flavor = "current_thread")]
+async fn proxy_mode_conductor_rejects_misplaced_proxy_successor() {
+    let (predecessor, mut outer) = raw_component::<Proxy>("outer conductor");
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let conductor = ConductorImpl::new_proxy("proxy-mode", vec![DynConnectTo::new(proxy)]);
+    let task = tokio::spawn(async move {
+        drop(conductor.connect_to(predecessor).await);
+    });
+    let mut transcript = Transcript::default();
+    let (params, result) = initialize_lines(1);
+
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"proxy/initialize","params":{params}}}"#
+    ));
+    let (_, init) = proxy_end.recv_json().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":"p-init","method":"proxy/successor","params":{{"method":"initialize","params":{params}}}}}"#
+    ));
+    let (_, request) = outer.recv_json().await;
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        request["id"]
+    ));
+    proxy_end.recv().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        init["id"]
+    ));
+    outer.recv().await;
+
+    // Wrapped twice by the outer conductor.
+    outer.send(r#"{"jsonrpc":"2.0","id":"o-forged","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+    let line = outer.recv().await;
+    transcript.record("conductor -> outer", &line);
+    outer.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"proxy/successor","params":{"method":"_vendor/forged","params":{}}}}"#);
+
+    // Messages from the successor still reach the proxy, wrapped once.
+    outer.send(r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"x":1}}}"#);
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+    outer.send(r#"{"jsonrpc":"2.0","id":"o-1","method":"proxy/successor","params":{"method":"_vendor/ask","params":{"q":1}}}"#);
+    let (line, wrapped) = proxy_end.recv_json().await;
+    transcript.record("conductor -> proxy", &line);
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"answer":42}}}}"#,
+        wrapped["id"]
+    ));
+    let line = outer.recv().await;
+    transcript.record("conductor -> outer", &line);
+
+    // The proxy's messages for its successor still reach the outer conductor.
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-1","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}"#);
+    let (line, request) = outer.recv_json().await;
+    transcript.record("conductor -> outer", &line);
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{{"done":true}}}}"#,
+        request["id"]
+    ));
+    let line = proxy_end.recv().await;
+    transcript.record("conductor -> proxy", &line);
+
+    task.abort();
+    transcript.check(&expect![[r#"
+        conductor -> outer: {"jsonrpc":"2.0","id":"o-forged","error":{"code":-32600,"message":"Invalid request","data":"`proxy/successor` is only exchanged between the conductor and the proxies it initialized"}}
+        conductor -> proxy: {"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"_vendor/note","params":{"x":1}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"<generated>","method":"proxy/successor","params":{"method":"_vendor/ask","params":{"q":1}}}
+        conductor -> outer: {"jsonrpc":"2.0","id":"o-1","result":{"answer":42}}
+        conductor -> outer: {"jsonrpc":"2.0","id":"<generated>","method":"proxy/successor","params":{"method":"_vendor/request","params":{"y":2}}}
+        conductor -> proxy: {"jsonrpc":"2.0","id":"p-1","result":{"done":true}}
+    "#]]);
+}
+
+/// One line on a tapped hop: `(hop, line)`.
+type TappedLine = (String, Value);
+
+/// Run `proxy` in-process behind a tap that records every line it exchanges
+/// with the conductor in `log`, labelled `conductor -> {name}` or
+/// `{name} -> conductor`.
+fn tapped_proxy(
+    name: &'static str,
+    proxy: impl ConnectTo<agent_client_protocol::Conductor> + 'static,
+    log: mpsc::UnboundedSender<TappedLine>,
+) -> DynConnectTo<agent_client_protocol::Conductor> {
+    let (conductor_side, mut conductor_end) =
+        raw_component::<agent_client_protocol::Conductor>(name);
+    let (proxy_side, mut proxy_end) = raw_component::<Proxy>(name);
+    tokio::spawn(async move {
+        drop(proxy.connect_to(proxy_side).await);
+    });
+    tokio::spawn(async move {
+        loop {
+            let (hop, line, to) = tokio::select! {
+                Some(line) = conductor_end.rx.next() => {
+                    (format!("conductor -> {name}"), line, &proxy_end)
+                }
+                Some(line) = proxy_end.rx.next() => {
+                    (format!("{name} -> conductor"), line, &conductor_end)
+                }
+                else => break,
+            };
+            log.unbounded_send((hop, serde_json::from_str(&line).expect("peers write JSON")))
+                .ok();
+            to.send(&line);
+        }
+    });
+    DynConnectTo::new(conductor_side)
+}
+
+/// The ID of the request on `hop` whose method, or wrapped method, is
+/// `method`.
+fn request_id_on(lines: &[TappedLine], hop: &str, method: &str) -> Value {
+    lines
+        .iter()
+        .find(|(h, line)| {
+            h == hop
+                && line.get("id").is_some()
+                && (line["method"] == method
+                    || (line["method"] == "proxy/successor" && line["params"]["method"] == method))
+        })
+        .unwrap_or_else(|| panic!("no `{method}` request on `{hop}`"))
+        .1["id"]
+        .clone()
+}
+
+/// Every `$/cancel_request` on `hop`, plain or wrapped, as it was written.
+fn cancels_on(lines: &[TappedLine], hop: &str) -> Vec<Value> {
+    lines
+        .iter()
+        .filter(|(h, line)| {
+            h == hop
+                && (line["method"] == "$/cancel_request"
+                    || line["params"]["method"] == "$/cancel_request")
+        })
+        .map(|(_, line)| line.clone())
+        .collect()
+}
+
+/// Cancelling a request through a chain of two SDK proxies cancels it one
+/// hop at a time. Each hop carries one plain `$/cancel_request` with the ID
+/// of the request on that hop: proxies cancel the `proxy/successor` request
+/// they sent with its own ID and do not wrap the notification.
+async fn assert_cancellation_is_plain_on_every_hop(
+    first: DynConnectTo<agent_client_protocol::Conductor>,
+    second: DynConnectTo<agent_client_protocol::Conductor>,
+    version: u16,
+    log_rx: &mut mpsc::UnboundedReceiver<TappedLine>,
+) {
+    let (mut client, mut agent, task) = start_chain(vec![first, second]);
+    initialize(&mut client, &mut agent, version).await;
+
+    client.send(r#"{"jsonrpc":"2.0","id":"c-1","method":"_vendor/slow","params":{}}"#);
+    let (line, request) = agent.recv_json().await;
+    assert_eq!(request["method"], "_vendor/slow", "{line}");
+    client.send(r#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"c-1"}}"#);
+
+    // The agent's request is cancelled, with its own ID.
+    let (line, cancel) = agent.recv_json().await;
+    assert_eq!(
+        cancel,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancel_request",
+            "params": { "requestId": request["id"] },
+        }),
+        "{line}"
+    );
+    agent.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"error":{{"code":-32800,"message":"Request cancelled"}}}}"#,
+        request["id"]
+    ));
+    let (line, response) = client.recv_json().await;
+    assert_eq!(response["id"], "c-1", "{line}");
+    assert_eq!(response["error"]["code"], -32800, "{line}");
+    task.abort();
+
+    let mut lines = Vec::new();
+    while let Ok(line) = log_rx.try_recv() {
+        lines.push(line);
+    }
+    for hop in [
+        "conductor -> first",
+        "first -> conductor",
+        "conductor -> second",
+        "second -> conductor",
+    ] {
+        let id = request_id_on(&lines, hop, "_vendor/slow");
+        assert_eq!(
+            cancels_on(&lines, hop),
+            vec![json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancel_request",
+                "params": { "requestId": id },
+            })],
+            "`{hop}` should carry one plain `$/cancel_request` for its own request"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn v1_proxies_cancel_their_successor_request_plain() {
+    let (log, mut log_rx) = mpsc::unbounded();
+    assert_cancellation_is_plain_on_every_hop(
+        tapped_proxy("first", Proxy.v1().name("first"), log.clone()),
+        tapped_proxy("second", Proxy.v1().name("second"), log),
+        1,
+        &mut log_rx,
+    )
+    .await;
+}
+
+#[cfg(feature = "unstable_protocol_v2")]
+#[tokio::test(flavor = "current_thread")]
+async fn v2_proxies_cancel_their_successor_request_plain() {
+    let (log, mut log_rx) = mpsc::unbounded();
+    assert_cancellation_is_plain_on_every_hop(
+        tapped_proxy("first", Proxy.v2().name("first"), log.clone()),
+        tapped_proxy("second", Proxy.v2().name("second"), log),
+        2,
+        &mut log_rx,
+    )
+    .await;
+}
+
+/// The conductor maps a `$/cancel_request` from a proxy to the request it
+/// forwarded on the next hop, whether the proxy sends it plain or, as
+/// earlier SDK releases did, wrapped in `proxy/successor`. In proxy mode the
+/// conductor cancels the request it forwarded to its own conductor plain.
+#[tokio::test(flavor = "current_thread")]
+async fn conductor_maps_plain_and_wrapped_cancel_from_a_proxy() {
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let (mut client, mut agent, task) = start_chain(vec![DynConnectTo::new(proxy)]);
+    initialize_through_raw_proxy(&mut client, &mut proxy_end, &mut agent).await;
+
+    for (id, cancel) in [
+        (
+            "p-plain",
+            r#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"p-plain"}}"#,
+        ),
+        (
+            "p-wrapped",
+            r#"{"jsonrpc":"2.0","method":"proxy/successor","params":{"method":"$/cancel_request","params":{"requestId":"p-wrapped"}}}"#,
+        ),
+    ] {
+        proxy_end.send(&format!(
+            r#"{{"jsonrpc":"2.0","id":"{id}","method":"proxy/successor","params":{{"method":"_vendor/slow","params":{{}}}}}}"#
+        ));
+        let (_, request) = agent.recv_json().await;
+        proxy_end.send(cancel);
+        let (line, received) = agent.recv_json().await;
+        assert_eq!(
+            received,
+            json!({
+                "jsonrpc": "2.0",
+                "method": "$/cancel_request",
+                "params": { "requestId": request["id"] },
+            }),
+            "{line}"
+        );
+    }
+    task.abort();
+
+    // Proxy mode: the request the conductor forwarded to its own conductor.
+    let (predecessor, mut outer) = raw_component::<Proxy>("outer conductor");
+    let (proxy, mut proxy_end) = raw_component::<agent_client_protocol::Conductor>("proxy");
+    let conductor = ConductorImpl::new_proxy("proxy-mode", vec![DynConnectTo::new(proxy)]);
+    let task = tokio::spawn(async move {
+        drop(conductor.connect_to(predecessor).await);
+    });
+    let (params, result) = initialize_lines(1);
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"proxy/initialize","params":{params}}}"#
+    ));
+    let (_, init) = proxy_end.recv_json().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":"p-init","method":"proxy/successor","params":{{"method":"initialize","params":{params}}}}}"#
+    ));
+    let (_, request) = outer.recv_json().await;
+    outer.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        request["id"]
+    ));
+    proxy_end.recv().await;
+    proxy_end.send(&format!(
+        r#"{{"jsonrpc":"2.0","id":{},"result":{result}}}"#,
+        init["id"]
+    ));
+    outer.recv().await;
+
+    proxy_end.send(r#"{"jsonrpc":"2.0","id":"p-1","method":"proxy/successor","params":{"method":"_vendor/slow","params":{}}}"#);
+    let (line, request) = outer.recv_json().await;
+    assert_eq!(request["method"], "proxy/successor", "{line}");
+    proxy_end.send(r#"{"jsonrpc":"2.0","method":"$/cancel_request","params":{"requestId":"p-1"}}"#);
+    let (line, received) = outer.recv_json().await;
+    assert_eq!(
+        received,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancel_request",
+            "params": { "requestId": request["id"] },
+        }),
+        "{line}"
+    );
     task.abort();
 }

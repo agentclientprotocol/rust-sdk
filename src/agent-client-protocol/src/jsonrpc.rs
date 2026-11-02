@@ -4176,8 +4176,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         let response_ordering = ResponseOrdering::default();
         let role_id = peer.role_id();
         let remote_style = self.counterpart.remote_style(peer);
-        let cancellation =
-            SentRequestCancellation::new(self.message_tx.clone(), remote_style, id.raw().clone());
+        let cancellation = SentRequestCancellation::new(self.message_tx.clone(), id.raw().clone());
         let pending_reply = PendingReply {
             id: id.raw().clone(),
             method: method.clone(),
@@ -4292,9 +4291,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// the default counterpart peer.
     ///
     /// Prefer [`SentRequest::cancel`] when you have the request handle: it
-    /// already knows the correct peer, request ID, and proxy wrapping. Use this
-    /// low-level method only when implementing custom routing with a request ID
-    /// that is valid on this connection.
+    /// already knows the correct request ID. Use this low-level method only
+    /// when implementing custom routing with a request ID that is valid on
+    /// this connection.
     pub fn send_cancel_request(
         &self,
         request_id: impl Into<RawJsonRpcId>,
@@ -4308,24 +4307,28 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// Send a `$/cancel_request` notification for an arbitrary request ID to a
     /// specific peer.
     ///
+    /// `$/cancel_request` is hop-local, so the notification is always sent
+    /// plain, never wrapped in `proxy/successor`, even to a proxy's
+    /// successor. To cancel a request sent to a successor, pass the ID of the
+    /// `proxy/successor` request on this connection.
+    ///
     /// Prefer [`SentRequest::cancel`] when you have the request handle: it
-    /// already knows the correct peer, request ID, and proxy wrapping. Use this
-    /// low-level method only when implementing custom routing with a request ID
-    /// that is valid on the target peer's connection.
+    /// already knows the correct request ID. Use this low-level method only
+    /// when implementing custom routing with a request ID that is valid on
+    /// this connection.
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
-        peer: Peer,
+        _peer: Peer,
         request_id: impl Into<RawJsonRpcId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,
     {
-        self.send_notification_to(
-            peer,
-            crate::v1::schema::CancelRequestNotification::new(crate::v1::schema::RequestId::from(
-                request_id.into(),
-            )),
+        let untyped = crate::v1::schema::CancelRequestNotification::new(
+            crate::v1::schema::RequestId::from(request_id.into()),
         )
+        .to_untyped_message()?;
+        send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
     }
 
     /// Register a dynamic message handler, used to intercept messages specific to a particular session
@@ -6196,8 +6199,9 @@ impl SentRequestCancellationDisarm {
 ///
 /// Clones share the request's cancellation state with [`SentRequest::cancel`],
 /// forwarded cancellation, and request-drop automatic cancellation. At most one
-/// cancellation notification is attempted, with the original peer and proxy
-/// wrapping. Dropping this handle neither cancels the request nor disables its
+/// cancellation notification is attempted, on the original request's
+/// connection. It is a plain `$/cancel_request`, even for a request sent to a
+/// successor in a `proxy/successor` envelope. Dropping this handle neither cancels the request nor disables its
 /// automatic cancellation.
 ///
 /// Cancellation before publication is a no-op and is not remembered for later
@@ -6212,7 +6216,6 @@ impl SentRequestCancellationDisarm {
 #[derive(Clone)]
 pub struct RequestCancellationHandle {
     message_tx: OutgoingMessageTx,
-    remote_style: crate::role::RemoteStyle,
     request_id: RawJsonRpcId,
     disarm: SentRequestCancellationDisarm,
 }
@@ -6241,9 +6244,12 @@ impl RequestCancellationHandle {
 
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
-        let untyped = self.remote_style.transform_outgoing_message(
-            crate::v1::schema::CancelRequestNotification::new(self.request_id.clone()),
-        )?;
+        //
+        // `$/cancel_request` is hop-local and always sent plain, even for a
+        // request sent to a successor: its `requestId` names the
+        // `proxy/successor` request on this connection.
+        let untyped = crate::v1::schema::CancelRequestNotification::new(self.request_id.clone())
+            .to_untyped_message()?;
 
         send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
     }
@@ -6254,7 +6260,6 @@ impl Debug for RequestCancellationHandle {
         formatter
             .debug_struct("RequestCancellationHandle")
             .field("request_id", &self.request_id)
-            .field("remote_style", &self.remote_style)
             .field("armed", &self.disarm.is_armed())
             .finish_non_exhaustive()
     }
@@ -6267,15 +6272,10 @@ struct SentRequestCancellation {
 }
 
 impl SentRequestCancellation {
-    fn new(
-        message_tx: OutgoingMessageTx,
-        remote_style: crate::role::RemoteStyle,
-        request_id: RawJsonRpcId,
-    ) -> Self {
+    fn new(message_tx: OutgoingMessageTx, request_id: RawJsonRpcId) -> Self {
         Self {
             handle: RequestCancellationHandle {
                 message_tx,
-                remote_style,
                 request_id,
                 disarm: SentRequestCancellationDisarm::new(),
             },
@@ -6415,9 +6415,12 @@ impl<T, P: Protocol> SentRequest<T, P> {
 
     /// Send a `$/cancel_request` notification for this outgoing request.
     ///
-    /// This uses the same peer and message wrapping that were used to send the
-    /// original request, so it is the preferred way to cancel a [`SentRequest`]
-    /// when the request handle is still available.
+    /// The notification goes over the connection the original request used,
+    /// with that request's ID, so this is the preferred way to cancel a
+    /// [`SentRequest`] when the request handle is still available. It is sent
+    /// plain, never wrapped in `proxy/successor`: for a request sent to a
+    /// successor, the ID names the `proxy/successor` request on this
+    /// connection, as the proxy chains RFD specifies.
     ///
     /// At most one cancellation attempt is made per request, shared with
     /// retained handles, forwarded cancellation, and automatic cancellation
@@ -6448,8 +6451,8 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// Forward cancellation of another request to this one.
     ///
     /// When the request that `source` belongs to is cancelled by its peer,
-    /// a `$/cancel_request` for *this* request is sent to its peer, using the
-    /// same wrapping as the original request. The response is still awaited
+    /// a `$/cancel_request` for *this* request is sent to its peer, plain and
+    /// with this request's ID, as [`cancel`](Self::cancel) sends it. The response is still awaited
     /// and delivered as usual (normal data or a cancellation error), so this
     /// composes with [`block_task`](Self::block_task) and
     /// [`on_receiving_result`](Self::on_receiving_result).
