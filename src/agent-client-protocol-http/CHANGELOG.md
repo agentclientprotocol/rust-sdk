@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v3.6.0...agent-client-protocol-http-v5.0.0) - 2026-11-02
+
+### Added
+
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+- *(acp)* [**breaking**] version-neutral raw JSON-RPC request IDs ([#466](https://github.com/agentclientprotocol/rust-sdk/pull/466))
+- *(acp)* [**breaking**] version-neutral SDK Error with conversions to v1 and v2 schema errors ([#465](https://github.com/agentclientprotocol/rust-sdk/pull/465))
+- [**breaking**] breaking cleanups for the next major release ([#461](https://github.com/agentclientprotocol/rust-sdk/pull/461))
+- *(acp)* [**breaking**] rename proxy methods to proxy/initialize and proxy/successor ([#460](https://github.com/agentclientprotocol/rust-sdk/pull/460))
+- *(acp)* [**breaking**] remove JSON-RPC batch support ([#454](https://github.com/agentclientprotocol/rust-sdk/pull/454))
+
+### Fixed
+
+- *(http)* only open session streams for sessions the connection knows ([#483](https://github.com/agentclientprotocol/rust-sdk/pull/483))
+- *(acp)* [**breaking**] tighten the root connection and builder surface for multi-version use ([#477](https://github.com/agentclientprotocol/rust-sdk/pull/477))
+- [**breaking**] narrow transport and MCP APIs and fix rmcp integration issues ([#476](https://github.com/agentclientprotocol/rust-sdk/pull/476))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] reach each protocol version's schema only through v1::schema / v2::schema ([#481](https://github.com/agentclientprotocol/rust-sdk/pull/481))
+- prepare the 5.0 release (migration guide, stability policy, version pins) ([#479](https://github.com/agentclientprotocol/rust-sdk/pull/479))
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v2.2.0...agent-client-protocol-http-v3.0.0) - 2026-10-06
 
 ### Added

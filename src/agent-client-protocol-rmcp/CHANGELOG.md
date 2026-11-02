@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v4.0.6...agent-client-protocol-rmcp-v5.0.0) - 2026-11-02
+
+### Added
+
+- *(acp)* [**breaking**] v1 connection type, SessionSetup, and the v5 migration guide ([#472](https://github.com/agentclientprotocol/rust-sdk/pull/472))
+- *(acp)* [**breaking**] version-neutral Builder::new and v1::schema / v2::schema ([#470](https://github.com/agentclientprotocol/rust-sdk/pull/470))
+- *(rmcp)* [**breaking**] move the rmcp integration behind a versioned rmcp_3 feature ([#471](https://github.com/agentclientprotocol/rust-sdk/pull/471))
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+
+### Fixed
+
+- [**breaking**] narrow transport and MCP APIs and fix rmcp integration issues ([#476](https://github.com/agentclientprotocol/rust-sdk/pull/476))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] reach each protocol version's schema only through v1::schema / v2::schema ([#481](https://github.com/agentclientprotocol/rust-sdk/pull/481))
+- prepare the 5.0 release (migration guide, stability policy, version pins) ([#479](https://github.com/agentclientprotocol/rust-sdk/pull/479))
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [4.0.6](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v4.0.5...agent-client-protocol-rmcp-v4.0.6) - 2026-10-28
 
 ### Other

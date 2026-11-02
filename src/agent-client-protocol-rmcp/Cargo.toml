@@ -1,6 +1,6 @@
 [package]
 name = "agent-client-protocol-rmcp"
-version = "4.0.6"
+version = "5.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
