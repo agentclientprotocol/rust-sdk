@@ -68,6 +68,25 @@ Open a session stream before sending methods such as `session/prompt`,
 `session/new` or `session/fork` response returns a new `sessionId`, open an SSE
 stream for that returned session before expecting updates or responses for it.
 
+The server only keeps streams for sessions that exist on the connection. A
+session exists once the agent names it: in a `session/new` or `session/fork`
+result, in a successful response to a request scoped to that session (such as
+`session/load` or `session/resume`), or in a request or notification the agent
+sends for it. The server records a new session before it queues the response
+that names it, so a stream opened right after that response finds it.
+
+Sending a session-scoped request does not create a session stream. If the
+session has no stream when the agent answers, the response goes to the
+connection stream instead.
+
+A client may open a stream for a session that does not exist yet, so it
+receives the updates `session/load` replays. The server allows up to 16 such
+unconfirmed session streams per connection and forgets each one when the client
+closes it before the agent names the session. Beyond that limit, a `GET` for an
+unknown `Acp-Session-Id` gets `404 Not Found`. A successful `session/close` or
+`session/delete` removes the session's stream. A client still reading it
+receives the response and the stream stays open until the client closes it.
+
 ## Features
 
 The crate does not enable either transport side by default. Opt into only the side(s) you need.

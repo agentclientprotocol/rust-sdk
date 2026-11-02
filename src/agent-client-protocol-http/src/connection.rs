@@ -22,10 +22,76 @@ enum OutboundTransport {
     WebSocket(WebSocketOutbound),
 }
 
+/// The most session streams a client may hold open for sessions this
+/// connection does not know yet.
+///
+/// A client may open a session stream before the `session/load` or
+/// `session/resume` request that makes the session known, so the stream sees
+/// the session's replayed updates. Such a stream stays unconfirmed until the
+/// agent names the session. Beyond this limit, a GET for an unknown session
+/// gets `404 Not Found`.
+pub(crate) const MAX_UNCONFIRMED_SESSION_STREAMS: usize = 16;
+
 struct HttpOutbound {
     connection_stream: OutboundMailbox,
-    session_streams: RwLock<HashMap<String, Arc<OutboundMailbox>>>,
-    pending_routes: Mutex<HashMap<RawJsonRpcId, VecDeque<ResponseRoute>>>,
+    session_streams: Arc<StdMutex<SessionStreams>>,
+    pending_routes: Mutex<HashMap<RawJsonRpcId, VecDeque<PendingRoute>>>,
+}
+
+/// Session streams of one HTTP connection, keyed by session ID.
+#[derive(Default)]
+struct SessionStreams {
+    streams: HashMap<String, SessionStream>,
+}
+
+struct SessionStream {
+    mailbox: Arc<OutboundMailbox>,
+    /// Whether the agent has named this session on the connection.
+    ///
+    /// The agent names a session when it answers `session/new` or
+    /// `session/fork` with its `sessionId`, answers a request scoped to it with
+    /// a result, or sends a request or notification carrying it.
+    confirmed: bool,
+}
+
+/// Why a session-scoped GET could not take its stream.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SessionStreamUnavailable {
+    /// Another subscriber already holds the stream.
+    Busy,
+    /// The session is unknown to this connection and no unconfirmed stream
+    /// slot is free.
+    Unknown,
+    /// The connection has no per-session streams (WebSocket).
+    NotHttp,
+}
+
+/// How a request's response is routed, and what it does to the connection's
+/// known sessions when it succeeds.
+struct PendingRoute {
+    route: ResponseRoute,
+    effect: SessionEffect,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionEffect {
+    None,
+    /// A result names a new session in `sessionId` (`session/new`,
+    /// `session/fork`).
+    Opens,
+    /// A result ends the session the request is scoped to (`session/close`,
+    /// `session/delete`).
+    Closes,
+}
+
+impl SessionEffect {
+    fn for_method(method: &str) -> Self {
+        match method {
+            "session/new" | "session/fork" => Self::Opens,
+            "session/close" | "session/delete" => Self::Closes,
+            _ => Self::None,
+        }
+    }
 }
 
 struct WebSocketOutbound {
@@ -40,6 +106,16 @@ struct OutboundMailbox {
 pub(crate) struct OutboundLease {
     receiver: Option<mpsc::UnboundedReceiver<String>>,
     receiver_slot: Arc<StdMutex<Option<mpsc::UnboundedReceiver<String>>>>,
+    session: Option<SessionLease>,
+}
+
+/// Ties a session stream lease to its entry in [`SessionStreams`].
+struct SessionLease {
+    streams: Weak<StdMutex<SessionStreams>>,
+    session_id: String,
+    /// Keeps the sender alive while the stream is open, even if the session's
+    /// entry is removed (for example after `session/close`).
+    mailbox: Arc<OutboundMailbox>,
 }
 
 impl OutboundMailbox {
@@ -66,7 +142,15 @@ impl OutboundMailbox {
         Some(OutboundLease {
             receiver: Some(receiver),
             receiver_slot: self.receiver_slot.clone(),
+            session: None,
         })
+    }
+
+    fn is_leased(&self) -> bool {
+        self.receiver_slot
+            .lock()
+            .expect("outbound mailbox receiver lock poisoned")
+            .is_none()
     }
 }
 
@@ -98,6 +182,17 @@ impl Drop for OutboundLease {
             .expect("outbound mailbox receiver lock poisoned");
         debug_assert!(receiver_slot.is_none());
         *receiver_slot = Some(receiver);
+        drop(receiver_slot);
+
+        // An unconfirmed session stream only exists while a client holds it.
+        if let Some(session) = self.session.take()
+            && let Some(streams) = session.streams.upgrade()
+        {
+            streams
+                .lock()
+                .expect("session streams lock poisoned")
+                .release_unconfirmed(&session.session_id, &session.mailbox);
+        }
     }
 }
 
@@ -117,24 +212,26 @@ impl Connection {
             .map_err(|_| "agent channel closed")
     }
 
-    pub(crate) async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
+    pub(crate) async fn record_pending_route(
+        &self,
+        id: RawJsonRpcId,
+        route: ResponseRoute,
+        method: &str,
+    ) {
         self.outbound_transport
-            .record_pending_route(id, route)
+            .record_pending_route(id, route, method)
             .await;
-    }
-
-    pub(crate) async fn ensure_session(&self, session_id: &str) {
-        self.outbound_transport.ensure_session(session_id).await;
     }
 
     pub(crate) fn subscribe_connection_stream(&self) -> Option<OutboundLease> {
         self.outbound_transport.subscribe_connection_stream()
     }
 
-    pub(crate) async fn subscribe_session_stream(&self, session_id: &str) -> Option<OutboundLease> {
-        self.outbound_transport
-            .subscribe_session_stream(session_id)
-            .await
+    pub(crate) fn subscribe_session_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<OutboundLease, SessionStreamUnavailable> {
+        self.outbound_transport.subscribe_session_stream(session_id)
     }
 
     pub(crate) fn subscribe_all_outbound(&self) -> Option<OutboundLease> {
@@ -148,6 +245,18 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn push_connection_stream_for_test(&self, msg: String) -> Result<(), &'static str> {
         self.outbound_transport.push_connection_stream_for_test(msg)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_stream_count_for_test(&self) -> usize {
+        let OutboundTransport::Http(http) = &self.outbound_transport else {
+            return 0;
+        };
+        http.session_streams
+            .lock()
+            .expect("session streams lock poisoned")
+            .streams
+            .len()
     }
 
     #[cfg(test)]
@@ -211,20 +320,12 @@ impl OutboundTransport {
         Self::WebSocket(WebSocketOutbound::new())
     }
 
-    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
+    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute, method: &str) {
         let Self::Http(http) = self else {
             return;
         };
 
-        http.record_pending_route(id, route).await;
-    }
-
-    async fn ensure_session(&self, session_id: &str) {
-        let Self::Http(http) = self else {
-            return;
-        };
-
-        http.ensure_session(session_id).await;
+        http.record_pending_route(id, route, method).await;
     }
 
     fn subscribe_connection_stream(&self) -> Option<OutboundLease> {
@@ -234,10 +335,13 @@ impl OutboundTransport {
         }
     }
 
-    async fn subscribe_session_stream(&self, session_id: &str) -> Option<OutboundLease> {
+    fn subscribe_session_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<OutboundLease, SessionStreamUnavailable> {
         match self {
-            Self::Http(http) => http.session_stream(session_id).await.try_acquire(),
-            Self::WebSocket(_) => None,
+            Self::Http(http) => http.subscribe_session_stream(session_id),
+            Self::WebSocket(_) => Err(SessionStreamUnavailable::NotHttp),
         }
     }
 
@@ -288,37 +392,66 @@ impl HttpOutbound {
     fn new() -> Self {
         Self {
             connection_stream: OutboundMailbox::new(),
-            session_streams: RwLock::new(HashMap::new()),
+            session_streams: Arc::new(StdMutex::new(SessionStreams::default())),
             pending_routes: Mutex::new(HashMap::new()),
         }
     }
 
-    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute) {
+    async fn record_pending_route(&self, id: RawJsonRpcId, route: ResponseRoute, method: &str) {
         if let Some(key) = pending_route_key(&id) {
             self.pending_routes
                 .lock()
                 .await
                 .entry(key)
                 .or_default()
-                .push_back(route);
+                .push_back(PendingRoute {
+                    route,
+                    effect: SessionEffect::for_method(method),
+                });
         }
     }
 
-    async fn ensure_session(&self, session_id: &str) {
-        self.session_stream(session_id).await;
-    }
-
-    async fn session_stream(&self, session_id: &str) -> Arc<OutboundMailbox> {
-        if let Some(stream) = self.session_streams.read().await.get(session_id) {
-            return stream.clone();
-        }
-
+    fn session_streams(&self) -> std::sync::MutexGuard<'_, SessionStreams> {
         self.session_streams
-            .write()
-            .await
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(OutboundMailbox::new()))
-            .clone()
+            .lock()
+            .expect("session streams lock poisoned")
+    }
+
+    /// Lease the stream of a session this connection knows, or of an unknown
+    /// session while fewer than [`MAX_UNCONFIRMED_SESSION_STREAMS`] unconfirmed
+    /// streams are open.
+    fn subscribe_session_stream(
+        &self,
+        session_id: &str,
+    ) -> Result<OutboundLease, SessionStreamUnavailable> {
+        let mut streams = self.session_streams();
+        let mailbox = if let Some(stream) = streams.streams.get(session_id) {
+            stream.mailbox.clone()
+        } else {
+            if streams.unconfirmed_count() >= MAX_UNCONFIRMED_SESSION_STREAMS {
+                return Err(SessionStreamUnavailable::Unknown);
+            }
+            let mailbox = Arc::new(OutboundMailbox::new());
+            streams.streams.insert(
+                session_id.to_string(),
+                SessionStream {
+                    mailbox: mailbox.clone(),
+                    confirmed: false,
+                },
+            );
+            mailbox
+        };
+        drop(streams);
+
+        let mut lease = mailbox
+            .try_acquire()
+            .ok_or(SessionStreamUnavailable::Busy)?;
+        lease.session = Some(SessionLease {
+            streams: Arc::downgrade(&self.session_streams),
+            session_id: session_id.to_string(),
+            mailbox,
+        });
+        Ok(lease)
     }
 
     async fn route_outbound(
@@ -326,32 +459,119 @@ impl HttpOutbound {
         msg: &RawJsonRpcMessage,
         serialized: String,
     ) -> Result<(), &'static str> {
-        let route = match msg {
+        let target = match msg {
             RawJsonRpcMessage::Request(_) | RawJsonRpcMessage::Notification(_) => {
+                // The agent names the session, so it exists on this connection.
                 session_id_from_message(msg)
-                    .map_or(ResponseRoute::Connection, ResponseRoute::Session)
+                    .map(|session_id| self.session_streams().confirm(&session_id))
             }
-            RawJsonRpcMessage::Response(_) => {
-                let route = match msg.response_id().and_then(pending_route_key) {
+            RawJsonRpcMessage::Response(response) => {
+                let pending = match msg.response_id().and_then(pending_route_key) {
                     Some(key) => {
                         let mut pending_routes = self.pending_routes.lock().await;
                         take_pending_route(&mut pending_routes, &key)
                     }
                     None => None,
                 };
-                route.unwrap_or(ResponseRoute::Connection)
+                pending.and_then(|pending| self.response_target(response, pending))
             }
         };
 
-        match route {
-            ResponseRoute::Connection => {
+        match target {
+            None => {
                 trace!(target = "connection", "→ connection-scoped stream");
                 self.connection_stream.push(serialized)
             }
-            ResponseRoute::Session(sid) => {
+            Some(mailbox) => {
                 trace!(target = "session", "→ session-scoped stream");
-                self.session_stream(&sid).await.push(serialized)
+                mailbox.push(serialized)
             }
+        }
+    }
+
+    /// Update the known sessions for a response and pick its session stream.
+    ///
+    /// `None` routes the response to the connection stream. A response scoped
+    /// to a session with no stream goes there too, so a POST naming an
+    /// unknown session allocates nothing and its error still reaches the
+    /// client.
+    fn response_target(
+        &self,
+        response: &agent_client_protocol::RawJsonRpcResponse,
+        pending: PendingRoute,
+    ) -> Option<Arc<OutboundMailbox>> {
+        let result = match response {
+            agent_client_protocol::RawJsonRpcResponse::Result { result, .. } => Some(result),
+            agent_client_protocol::RawJsonRpcResponse::Error { .. } => None,
+        };
+        let mut streams = self.session_streams();
+
+        // Record a created session before its response is queued, so a GET
+        // sent right after the client reads the response finds it.
+        if pending.effect == SessionEffect::Opens
+            && let Some(session_id) = result
+                .and_then(|result| result.get("sessionId"))
+                .and_then(serde_json::Value::as_str)
+        {
+            streams.confirm(session_id);
+        }
+
+        let ResponseRoute::Session(session_id) = pending.route else {
+            return None;
+        };
+        let mut target = streams
+            .streams
+            .get(&session_id)
+            .map(|stream| stream.mailbox.clone());
+        if result.is_some() {
+            match pending.effect {
+                SessionEffect::Closes => {
+                    // A queued response would be lost with the removed
+                    // mailbox, so send it on the connection stream unless a
+                    // client is reading the session stream.
+                    if target.as_ref().is_some_and(|mailbox| !mailbox.is_leased()) {
+                        target = None;
+                    }
+                    streams.streams.remove(&session_id);
+                }
+                SessionEffect::None | SessionEffect::Opens => {
+                    streams.confirm(&session_id);
+                }
+            }
+        }
+        target
+    }
+}
+
+impl SessionStreams {
+    /// Mark a session as known, creating its stream if needed.
+    fn confirm(&mut self, session_id: &str) -> Arc<OutboundMailbox> {
+        let stream = self
+            .streams
+            .entry(session_id.to_string())
+            .or_insert_with(|| SessionStream {
+                mailbox: Arc::new(OutboundMailbox::new()),
+                confirmed: false,
+            });
+        stream.confirmed = true;
+        stream.mailbox.clone()
+    }
+
+    fn unconfirmed_count(&self) -> usize {
+        self.streams
+            .values()
+            .filter(|stream| !stream.confirmed)
+            .count()
+    }
+
+    /// Forget an unconfirmed session stream once its subscriber leaves.
+    fn release_unconfirmed(&mut self, session_id: &str, mailbox: &Arc<OutboundMailbox>) {
+        if self
+            .streams
+            .get(session_id)
+            .is_some_and(|stream| !stream.confirmed && Arc::ptr_eq(&stream.mailbox, mailbox))
+        {
+            self.streams.remove(session_id);
         }
     }
 }
@@ -566,9 +786,9 @@ fn pending_route_key(id: &RawJsonRpcId) -> Option<RawJsonRpcId> {
 }
 
 fn take_pending_route(
-    pending_routes: &mut HashMap<RawJsonRpcId, VecDeque<ResponseRoute>>,
+    pending_routes: &mut HashMap<RawJsonRpcId, VecDeque<PendingRoute>>,
     key: &RawJsonRpcId,
-) -> Option<ResponseRoute> {
+) -> Option<PendingRoute> {
     let routes = pending_routes.get_mut(key)?;
     let route = routes.pop_front();
     let remove_entry = routes.is_empty();
@@ -652,16 +872,8 @@ mod tests {
     #[tokio::test]
     async fn slow_session_mailbox_does_not_stall_other_routes() {
         let outbound = HttpOutbound::new();
-        let mut slow_session = outbound
-            .session_stream("slow-session")
-            .await
-            .try_acquire()
-            .unwrap();
-        let mut fast_session = outbound
-            .session_stream("fast-session")
-            .await
-            .try_acquire()
-            .unwrap();
+        let mut slow_session = outbound.subscribe_session_stream("slow-session").unwrap();
+        let mut fast_session = outbound.subscribe_session_stream("fast-session").unwrap();
 
         timeout(Duration::from_secs(1), async {
             for index in 0..ISSUE_288_BURST {
@@ -1178,10 +1390,7 @@ mod tests {
         }));
         let (_connection_id, connection) = registry.create_connection().await;
         let mut connection_rx = connection.subscribe_connection_stream().unwrap();
-        let mut session_rx = connection
-            .subscribe_session_stream("session-1")
-            .await
-            .unwrap();
+        let mut session_rx = connection.subscribe_session_stream("session-1").unwrap();
 
         connection.start_router().await;
 
@@ -1254,14 +1463,207 @@ mod tests {
         assert!(serde_json::from_str::<RawJsonRpcMessage>(&text).is_ok());
 
         assert!(connection.subscribe_connection_stream().is_none());
-        assert!(
-            connection
-                .subscribe_session_stream("session-1")
-                .await
-                .is_none()
+        assert_eq!(
+            connection.subscribe_session_stream("session-1").err(),
+            Some(SessionStreamUnavailable::NotHttp)
         );
 
         exit.notify_one();
         connection.shutdown().await;
+    }
+
+    fn session_count(outbound: &HttpOutbound) -> usize {
+        outbound.session_streams().streams.len()
+    }
+
+    async fn route(outbound: &HttpOutbound, message: &RawJsonRpcMessage) {
+        let serialized = serde_json::to_string(message).unwrap();
+        outbound.route_outbound(message, serialized).await.unwrap();
+    }
+
+    fn result(id: i64, result: serde_json::Value) -> RawJsonRpcMessage {
+        RawJsonRpcMessage::response(RawJsonRpcId::Number(id), Ok(result))
+    }
+
+    fn method_from(text: &str) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(text).unwrap()
+    }
+
+    #[tokio::test]
+    async fn unknown_session_streams_are_bounded_and_released() {
+        let outbound = HttpOutbound::new();
+        let mut leases = (0..MAX_UNCONFIRMED_SESSION_STREAMS)
+            .map(|index| {
+                outbound
+                    .subscribe_session_stream(&format!("made-up-{index}"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            outbound.subscribe_session_stream("one-too-many").err(),
+            Some(SessionStreamUnavailable::Unknown)
+        );
+        assert_eq!(session_count(&outbound), MAX_UNCONFIRMED_SESSION_STREAMS);
+
+        // Leaving an unconfirmed stream forgets it and frees its slot.
+        leases.pop();
+        assert_eq!(
+            session_count(&outbound),
+            MAX_UNCONFIRMED_SESSION_STREAMS - 1
+        );
+        let _replacement = outbound.subscribe_session_stream("one-too-many").unwrap();
+        drop(leases);
+        assert_eq!(session_count(&outbound), 1);
+    }
+
+    #[tokio::test]
+    async fn created_session_stream_is_known_before_its_response_is_queued() {
+        let outbound = HttpOutbound::new();
+        // Fill every unconfirmed slot so only known sessions can be opened.
+        let _unknown = (0..MAX_UNCONFIRMED_SESSION_STREAMS)
+            .map(|index| {
+                outbound
+                    .subscribe_session_stream(&format!("made-up-{index}"))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut connection_rx = outbound.connection_stream.try_acquire().unwrap();
+
+        outbound
+            .record_pending_route(
+                RawJsonRpcId::Number(1),
+                ResponseRoute::Connection,
+                "session/new",
+            )
+            .await;
+        route(
+            &outbound,
+            &result(1, serde_json::json!({ "sessionId": "created" })),
+        )
+        .await;
+        let update = RawJsonRpcMessage::notification(
+            "session/update".to_string(),
+            serde_json::json!({ "sessionId": "created" }),
+        )
+        .unwrap();
+        route(&outbound, &update).await;
+
+        // The client reads the response, then opens the session stream.
+        let response = connection_rx.recv().await.unwrap();
+        assert_eq!(method_from(&response)["result"]["sessionId"], "created");
+        let mut session_rx = outbound.subscribe_session_stream("created").unwrap();
+        assert_eq!(
+            method_from(&session_rx.recv().await.unwrap())["method"],
+            "session/update"
+        );
+
+        // A known session survives its subscriber leaving.
+        drop(session_rx);
+        assert!(outbound.subscribe_session_stream("created").is_ok());
+    }
+
+    #[tokio::test]
+    async fn session_scoped_request_for_unknown_session_allocates_no_stream() {
+        let outbound = HttpOutbound::new();
+        let mut connection_rx = outbound.connection_stream.try_acquire().unwrap();
+
+        outbound
+            .record_pending_route(
+                RawJsonRpcId::Number(7),
+                ResponseRoute::Session("made-up".to_string()),
+                "session/prompt",
+            )
+            .await;
+        assert_eq!(session_count(&outbound), 0);
+
+        let error = RawJsonRpcMessage::response(
+            RawJsonRpcId::Number(7),
+            Err(agent_client_protocol::Error::invalid_params()),
+        );
+        route(&outbound, &error).await;
+
+        // The error reaches the client on the connection stream.
+        assert_eq!(session_count(&outbound), 0);
+        assert_eq!(method_from(&connection_rx.recv().await.unwrap())["id"], 7);
+    }
+
+    #[tokio::test]
+    async fn stream_opened_before_load_is_confirmed_by_its_result() {
+        let outbound = HttpOutbound::new();
+        let mut session_rx = outbound.subscribe_session_stream("loaded").unwrap();
+        outbound
+            .record_pending_route(
+                RawJsonRpcId::Number(2),
+                ResponseRoute::Session("loaded".to_string()),
+                "session/load",
+            )
+            .await;
+        let replay = RawJsonRpcMessage::notification(
+            "session/update".to_string(),
+            serde_json::json!({ "sessionId": "loaded" }),
+        )
+        .unwrap();
+        route(&outbound, &replay).await;
+        route(&outbound, &result(2, serde_json::json!({}))).await;
+
+        // Replayed updates and the response arrive in order on the stream.
+        assert_eq!(
+            method_from(&session_rx.recv().await.unwrap())["method"],
+            "session/update"
+        );
+        assert_eq!(method_from(&session_rx.recv().await.unwrap())["id"], 2);
+
+        drop(session_rx);
+        assert_eq!(session_count(&outbound), 1);
+        assert!(outbound.subscribe_session_stream("loaded").is_ok());
+    }
+
+    #[tokio::test]
+    async fn failed_load_leaves_session_unknown() {
+        let outbound = HttpOutbound::new();
+        let mut session_rx = outbound.subscribe_session_stream("missing").unwrap();
+        outbound
+            .record_pending_route(
+                RawJsonRpcId::Number(3),
+                ResponseRoute::Session("missing".to_string()),
+                "session/load",
+            )
+            .await;
+        let error = RawJsonRpcMessage::response(
+            RawJsonRpcId::Number(3),
+            Err(agent_client_protocol::Error::invalid_params()),
+        );
+        route(&outbound, &error).await;
+
+        assert_eq!(method_from(&session_rx.recv().await.unwrap())["id"], 3);
+        drop(session_rx);
+        assert_eq!(session_count(&outbound), 0);
+    }
+
+    #[tokio::test]
+    async fn closed_session_stream_is_removed() {
+        let outbound = HttpOutbound::new();
+        let mut connection_rx = outbound.connection_stream.try_acquire().unwrap();
+        outbound.session_streams().confirm("open");
+        outbound.session_streams().confirm("unwatched");
+        let mut session_rx = outbound.subscribe_session_stream("open").unwrap();
+
+        for (id, session_id) in [(4, "open"), (5, "unwatched")] {
+            outbound
+                .record_pending_route(
+                    RawJsonRpcId::Number(id),
+                    ResponseRoute::Session(session_id.to_string()),
+                    "session/close",
+                )
+                .await;
+            route(&outbound, &result(id, serde_json::json!({}))).await;
+        }
+
+        assert_eq!(session_count(&outbound), 0);
+        // A subscribed stream still receives its close response. Without a
+        // subscriber, the response goes to the connection stream.
+        assert_eq!(method_from(&session_rx.recv().await.unwrap())["id"], 4);
+        assert_eq!(method_from(&connection_rx.recv().await.unwrap())["id"], 5);
     }
 }

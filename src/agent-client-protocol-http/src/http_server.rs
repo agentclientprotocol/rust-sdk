@@ -12,7 +12,7 @@ use axum::{
 use tracing::{error, info};
 
 use crate::{
-    connection::{Connection, ConnectionRegistry, ResponseRoute},
+    connection::{Connection, ConnectionRegistry, ResponseRoute, SessionStreamUnavailable},
     protocol::{
         EVENT_STREAM_MIME_TYPE, HEADER_CONNECTION_ID, HEADER_SESSION_ID, JSON_MIME_TYPE,
         apply_session_header_to_message, is_initialize_request, method_for_message,
@@ -129,22 +129,19 @@ pub(crate) async fn handle_post(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    let mut session_routes = Vec::new();
-    let mut pending_routes = Vec::new();
-    // Malformed and any other non-message frames carry no routes.
+    // Malformed and any other non-message frames carry no routes. A POST
+    // naming a session does not make it known: only the agent does that, so a
+    // client cannot allocate session streams for made-up session IDs.
     if let TransportFrame::Single(message) = &mut frame {
         let route = match prepare_message_route(message, session_id.as_deref()) {
             Ok(route) => route,
             Err(error) => return (StatusCode::BAD_REQUEST, error).into_response(),
         };
-        collect_route(message, route, &mut session_routes, &mut pending_routes);
-    }
-
-    for session_id in session_routes {
-        connection.ensure_session(&session_id).await;
-    }
-    for (request_id, route) in pending_routes {
-        connection.record_pending_route(request_id, route).await;
+        if let (RawJsonRpcMessage::Request(request), Some(route)) = (&*message, route) {
+            connection
+                .record_pending_route(request.id.clone(), route, request.method.as_ref())
+                .await;
+        }
     }
 
     if connection.send_frame_to_agent(frame).is_err() {
@@ -226,20 +223,6 @@ fn prepare_message_route(
     })
 }
 
-fn collect_route(
-    message: &RawJsonRpcMessage,
-    route: Option<ResponseRoute>,
-    session_routes: &mut Vec<String>,
-    pending_routes: &mut Vec<(agent_client_protocol::RawJsonRpcId, ResponseRoute)>,
-) {
-    if let Some(ResponseRoute::Session(session_id)) = &route {
-        session_routes.push(session_id.clone());
-    }
-    if let (RawJsonRpcMessage::Request(request), Some(route)) = (message, route) {
-        pending_routes.push((request.id.clone(), route));
-    }
-}
-
 struct InitializeCleanup {
     registry: Option<Arc<ConnectionRegistry>>,
     connection_id: String,
@@ -316,15 +299,23 @@ pub(crate) async fn handle_get(
 
     let session_id = header_value(request.headers(), HEADER_SESSION_ID);
     let receiver = match session_id.as_deref() {
-        Some(session_id) => connection.subscribe_session_stream(session_id).await,
-        None => connection.subscribe_connection_stream(),
+        Some(session_id) => connection.subscribe_session_stream(session_id),
+        None => connection
+            .subscribe_connection_stream()
+            .ok_or(SessionStreamUnavailable::Busy),
     };
-    let Some(mut receiver) = receiver else {
-        return (
-            StatusCode::CONFLICT,
-            "outbound stream already has a subscriber",
-        )
-            .into_response();
+    let mut receiver = match receiver {
+        Ok(receiver) => receiver,
+        Err(SessionStreamUnavailable::Busy) => {
+            return (
+                StatusCode::CONFLICT,
+                "outbound stream already has a subscriber",
+            )
+                .into_response();
+        }
+        Err(SessionStreamUnavailable::Unknown | SessionStreamUnavailable::NotHttp) => {
+            return (StatusCode::NOT_FOUND, "unknown Acp-Session-Id").into_response();
+        }
     };
     let mut closed = connection.subscribe_closed();
     let stream = async_stream::stream! {
@@ -985,6 +976,81 @@ mod tests {
             assert_eq!(body.as_ref(), b"Acp-Session-Id header required", "{method}");
             assert!(forwarded_rx.try_recv().is_err(), "{method}");
         }
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn get_for_unknown_session_returns_not_found_once_unconfirmed_slots_are_used() {
+        let (forwarded_tx, _forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+        let request = |session_id: &str| {
+            Request::builder()
+                .method("GET")
+                .uri("/acp")
+                .header(header::ACCEPT, EVENT_STREAM_MIME_TYPE)
+                .header(HEADER_CONNECTION_ID, connection_id.as_str())
+                .header(HEADER_SESSION_ID, session_id)
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let mut open = Vec::new();
+        for index in 0..crate::connection::MAX_UNCONFIRMED_SESSION_STREAMS {
+            let response = handle_get(registry.clone(), request(&format!("made-up-{index}"))).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            open.push(response);
+        }
+        for index in 0..100 {
+            let response = handle_get(registry.clone(), request(&format!("extra-{index}"))).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+        assert_eq!(
+            connection.session_stream_count_for_test(),
+            crate::connection::MAX_UNCONFIRMED_SESSION_STREAMS
+        );
+
+        // Closing the streams forgets the sessions nobody confirmed.
+        drop(open);
+        assert_eq!(connection.session_stream_count_for_test(), 0);
+        connection.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn post_with_unknown_session_does_not_allocate_session_stream() {
+        let (forwarded_tx, mut forwarded_rx) = mpsc::unbounded_channel();
+        let registry = Arc::new(ConnectionRegistry::new(Arc::new(CapturingAgentFactory {
+            forwarded: forwarded_tx,
+        })));
+        let (connection_id, connection) = registry.create_connection().await;
+
+        for index in 0..100 {
+            let body = json!({
+                "jsonrpc": "2.0",
+                "id": index,
+                "method": "session/prompt",
+                "params": { "prompt": [] }
+            })
+            .to_string();
+            let request = Request::builder()
+                .method("POST")
+                .uri("/acp")
+                .header(header::CONTENT_TYPE, JSON_MIME_TYPE)
+                .header(HEADER_CONNECTION_ID, connection_id.as_str())
+                .header(HEADER_SESSION_ID, format!("made-up-{index}"))
+                .body(Body::from(body))
+                .unwrap();
+            let response = handle_post(State(registry.clone()), request).await;
+            assert_eq!(response.status(), StatusCode::ACCEPTED);
+            timeout(Duration::from_secs(1), forwarded_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+
+        assert_eq!(connection.session_stream_count_for_test(), 0);
         connection.shutdown().await;
     }
 }
