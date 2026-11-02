@@ -89,7 +89,8 @@ an ordered callback or response future still receives the eventual result.
 
 The handle shares once-only cancellation and settlement state with
 `SentRequest::cancel`, forwarded cancellation, and automatic request-drop
-cancellation. It uses the same peer and proxy wrapping. Dropping the handle
+cancellation. It cancels over the original request's connection with that
+request's ID. Dropping the handle
 neither sends cancellation nor disables automatic request-drop cancellation.
 To cancel when a caller is abandoned, its application-owned guard or abandonment
 handler must explicitly call `cancel()` and handle any immediate error.
@@ -153,8 +154,10 @@ the full decision matrix.
 
 When the notification targets a request that was wrapped in a
 `proxy/successor` envelope (see the [Protocol Reference](./protocol.md)), the
-`$/cancel_request` is wrapped in the same envelope, and `requestId` refers to
-the JSON-RPC `id` of the wrapped request on that connection.
+`$/cancel_request` is sent plain, not wrapped, and `requestId` is the JSON-RPC
+`id` of the `proxy/successor` request on that connection. Receivers, including
+the conductor, also accept a `$/cancel_request` wrapped in `proxy/successor`,
+which earlier SDK releases sent, and treat it the same way.
 
 The conductor translates cancellations between hops. Since request IDs are
 reallocated at every hop, a raw `$/cancel_request` cannot match anything

@@ -473,7 +473,8 @@ async fn malformed_successor_request_is_rejected_as_invalid_params() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_delivers_callback() {
+async fn prepared_cancellation_handle_sends_plain_cancel_for_successor_request_and_delivers_callback()
+ {
     use agent_client_protocol::{RawJsonRpcMessage, TransportFrame, UntypedMessage};
     use futures::channel::oneshot;
     use serde_json::json;
@@ -523,12 +524,14 @@ async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_deliver
         let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(cancellation))) =
             peer.rx.next().await
         else {
-            panic!("expected the successor-wrapped cancellation");
+            panic!("expected the plain cancellation");
         };
-        assert_eq!(cancellation.method.as_ref(), "proxy/successor");
+        // `$/cancel_request` is hop-local: it is sent plain, with the ID of
+        // the `proxy/successor` request on this connection.
+        assert_eq!(cancellation.method.as_ref(), "$/cancel_request");
         assert_eq!(
             serde_json::to_value(cancellation.params).unwrap(),
-            json!({"method": "$/cancel_request", "params": {"requestId": request.id}})
+            json!({"requestId": request.id})
         );
         let Some(TransportFrame::Single(RawJsonRpcMessage::Notification(boundary))) =
             peer.rx.next().await
@@ -557,7 +560,7 @@ async fn prepared_cancellation_handle_sends_successor_wrapped_cancel_and_deliver
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
+async fn cancelling_request_sent_to_successor_peer_sends_plain_cancel() {
     use tokio::task::LocalSet;
 
     let local = LocalSet::new();
@@ -590,9 +593,8 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                     agent_client_protocol::on_receive_request!(),
                 )
                 // Matches only a `$/cancel_request` wrapped in a
-                // `proxy/successor` envelope: observing it here proves the
-                // client wrapped the outgoing cancellation the same way as
-                // the request it refers to.
+                // `proxy/successor` envelope, which the client must not send:
+                // cancellation is hop-local.
                 .on_receive_notification_from(
                     WrappedSuccessor,
                     async move |cancel: CancelRequestNotification,
@@ -604,8 +606,8 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
                     },
                     agent_client_protocol::on_receive_notification!(),
                 )
-                // Matches only an *unwrapped* `$/cancel_request`; the client
-                // must never send one for a successor-wrapped request.
+                // Matches only an *unwrapped* `$/cancel_request`: the client
+                // sends this one, with the `proxy/successor` request's ID.
                 .on_receive_notification(
                     async move |cancel: CancelRequestNotification,
                                 _cx: ConnectionTo<WrappedCounterpart>| {
@@ -646,12 +648,12 @@ async fn cancelling_request_sent_to_successor_peer_sends_wrapped_cancel() {
 
             assert_eq!(i32::from(error.code), -32800);
 
-            // The cancellation arrived wrapped, for the wrapped request's
-            // outer JSON-RPC id, and never in unwrapped form.
-            let received = next_with_timeout(&mut wrapped_cancel_rx).await;
+            // The cancellation arrived plain, for the wrapped request's
+            // outer JSON-RPC id, and never in wrapped form.
+            let received = next_with_timeout(&mut plain_cancel_rx).await;
             assert_eq!(received, expected_id);
-            assert_no_event(&mut wrapped_cancel_rx);
             assert_no_event(&mut plain_cancel_rx);
+            assert_no_event(&mut wrapped_cancel_rx);
         })
         .await;
 }

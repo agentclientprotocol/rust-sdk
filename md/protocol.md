@@ -122,6 +122,13 @@ has none. Optional metadata for the envelope itself may be included as `_meta`
 next to `method` and `params`; the inner message keeps its own `_meta` inside
 its `params`.
 
+`$/cancel_request` is hop-local and is never wrapped. To cancel a
+`proxy/successor` request, a proxy sends a plain `$/cancel_request` whose
+`requestId` is the ID of that `proxy/successor` request. The conductor then
+cancels the request it forwarded to the next component, with that hop's ID.
+The conductor still accepts a `$/cancel_request` wrapped in `proxy/successor`
+and treats it the same way.
+
 Only a proxy and its conductor send `proxy/successor`. The conductor answers a
 `proxy/successor` request from the agent, or from the client of a conductor in
 agent mode, with `-32600` and drops such a notification, without forwarding

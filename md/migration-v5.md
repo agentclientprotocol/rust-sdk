@@ -1164,6 +1164,18 @@ schema types. As a result:
 `SuccessorMessage` is `#[non_exhaustive]`; build it with
 `SuccessorMessage::new(message)` and `.meta(meta)`.
 
+### Proxies send `$/cancel_request` plain
+
+A proxy cancels a request it sent to its successor with a plain
+`$/cancel_request` whose `requestId` is the ID of the `proxy/successor`
+request, as the proxy chains RFD specifies. Earlier releases wrapped the
+notification in `proxy/successor`. `SentRequest::cancel`,
+`RequestCancellationHandle::cancel` and `ConnectionTo::send_cancel_request_to`
+now send it plain for every peer. The conductor and the SDK still accept the
+wrapped form and treat it the same way, so a v5 conductor works with proxies
+built on earlier releases. No code change is needed unless you match the
+wrapped form on the wire.
+
 ### Results and errors pass through unchanged
 
 The RFD requires the result or error of a wrapped request to reach the

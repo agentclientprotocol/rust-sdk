@@ -33,6 +33,13 @@ each transport and maps the logical chain onto those connections:
   typed proxy abstraction.
 - JSON-RPC responses remain paired with the request context that caused them.
 
+Cancellation is hop-local. A `$/cancel_request` names a request on the
+connection it arrives on, so the conductor never forwards one. When a request
+it forwarded is cancelled, it sends its own `$/cancel_request` to the next
+component with that hop's request ID. It accepts a proxy's cancellation of a
+`proxy/successor` request both plain, as the SDK's proxies send it, and
+wrapped in `proxy/successor`.
+
 `proxy/successor` is exchanged only between the conductor and the proxies it
 initialized, and between a conductor in proxy mode and its own conductor. The
 conductor answers a `proxy/successor` request from the agent, or from the
