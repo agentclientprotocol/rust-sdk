@@ -1,3 +1,6 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use uuid::Uuid;
@@ -36,7 +39,12 @@ impl<Counterpart: Role, H: HandleDispatchFrom<Counterpart>> DynHandleDispatchFro
 
 /// Messages used to add/remove dynamic handlers
 pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
-    AddDynamicHandler(Uuid, Box<dyn DynHandleDispatchFrom<Counterpart>>),
+    /// Registers a handler with the flag its guard clears on drop.
+    AddDynamicHandler(
+        Uuid,
+        Box<dyn DynHandleDispatchFrom<Counterpart>>,
+        Arc<AtomicBool>,
+    ),
     RemoveDynamicHandler(Uuid),
     /// Marks the end of updates queued during ordered response processing.
     Barrier,
@@ -48,7 +56,7 @@ pub(crate) enum DynamicHandlerMessage<Counterpart: Role> {
 impl<Counterpart: Role> std::fmt::Debug for DynamicHandlerMessage<Counterpart> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AddDynamicHandler(arg0, arg1) => f
+            Self::AddDynamicHandler(arg0, arg1, _) => f
                 .debug_tuple("AddDynamicHandler")
                 .field(arg0)
                 .field(&arg1.dyn_describe_chain())

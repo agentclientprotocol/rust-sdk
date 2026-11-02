@@ -1246,7 +1246,7 @@ where
     /// This method ensures proper handoff from active session mode to proxy mode
     /// without losing or reordering messages:
     ///
-    /// 1. **Stop the session handler** - Drop the registration that routes messages
+    /// 1. **Stop the session handler** - Deactivate the handler that routes messages
     ///    to `update_rx`. After this, no new messages will be queued.
     /// 2. **Close the channel** - Drop `update_tx` so we can detect when the channel
     ///    is fully drained.
@@ -1254,9 +1254,13 @@ where
     ///    in `update_rx` to the client, preserving order.
     /// 4. **Install proxy handler** - Now that all queued messages are forwarded,
     ///    install the proxy handler to handle future messages.
+    /// 5. **Remove the session handler** - Drop its registration.
     ///
     /// This sequence prevents the race condition where messages could be delivered
-    /// out of order or lost during the transition.
+    /// out of order or lost during the transition. Messages that arrive between
+    /// steps 1 and 4 wait for the proxy handler. The deactivated handler stays
+    /// registered until the proxy handler is installed, so a request in that
+    /// window waits too instead of being rejected.
     pub fn proxy_remaining_messages(self) -> Result<(), crate::Error>
     where
         Link: HasPeer<Client>,
@@ -1272,10 +1276,12 @@ where
             _runner,
         } = self;
 
-        // Step 1: Drop the session handler registration.
-        // This unregisters the handler that was routing messages to update_rx.
+        // Step 1: Deactivate the session handler.
         // After this point, no new messages will be added to the channel.
-        drop(session_handler_registration);
+        // Its removal is queued only after the proxy handler (step 5): while a
+        // deactivated handler is registered, the incoming actor parks session
+        // requests for the replacement instead of rejecting them.
+        session_handler_registration.deactivate();
 
         // Step 2: Drop the sender side of the channel.
         // This allows us to detect when the channel is fully drained
@@ -1303,6 +1309,9 @@ where
         connection
             .add_dynamic_handler(ProxySessionMessages::new(session_id))?
             .detach();
+
+        // Step 5: Remove the deactivated session handler.
+        drop(session_handler_registration);
 
         // Keep MCP server handlers alive for the lifetime of the proxy
         for registration in mcp_handler_registrations {

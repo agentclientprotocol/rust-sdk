@@ -449,6 +449,17 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 /// By setting `retry: true`, these early notifications are queued until the session's
 /// dynamic handler is added.
 ///
+/// The queue holds at most 1024 messages per connection. Queuing one more gives up on the
+/// oldest: a request gets the "method not found" error, a notification is dropped with a
+/// log, and a response goes to its awaiter.
+///
+/// On v1 and unguarded connections, a client's role also retries unhandled messages from
+/// the agent that carry a `sessionId`. Its notifications are queued as above. Its requests
+/// are queued only while a dropped dynamic handler's removal is still pending, which covers
+/// a session handler being replaced, and are answered with "method not found" once no such
+/// removal is left. Any other unhandled session request is answered right away, so the
+/// agent never waits for a handler that nobody registers.
+///
 /// # Handler Registration
 ///
 /// Most users register handlers using the builder methods on [`Builder`]:
@@ -4355,6 +4366,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
                     active: active.clone(),
                     handler,
                 }),
+                active.clone(),
             ))
             .map_err(crate::util::internal_error)?;
 
@@ -4460,6 +4472,14 @@ impl<R: Role> DynamicHandlerGuard<R> {
 
     pub(crate) fn cleanup(&self) -> Option<Arc<dyn DynamicHandlerCleanup>> {
         self.cleanup.clone()
+    }
+
+    /// Stop the handler from claiming messages without queuing its removal.
+    ///
+    /// Until the guard is dropped, the incoming actor keeps unclaimed session
+    /// requests parked for a replacement handler.
+    pub(crate) fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
     }
 
     /// Keep the dynamic handler registered after this guard is dropped.
@@ -8718,7 +8738,7 @@ mod tests {
             .add_dynamic_handler(NullHandler)
             .expect("v2 dynamic handler should register");
         let added_uuid = match next_dynamic_handler_message(&mut dynamic_handler_rx) {
-            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _)) => uuid,
+            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _, _)) => uuid,
             other => panic!("expected v2 handler registration, got {other:?}"),
         };
 
@@ -8738,7 +8758,7 @@ mod tests {
         let guard = connection.add_dynamic_handler(NullHandler).unwrap();
 
         let added_uuid = match next_dynamic_handler_message(&mut receiver) {
-            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _)) => uuid,
+            Some(DynamicHandlerMessage::AddDynamicHandler(uuid, _, _)) => uuid,
             other => panic!("expected handler registration, got {other:?}"),
         };
 
@@ -8759,7 +8779,7 @@ mod tests {
             .add_dynamic_handler(ClaimingDynamicHandler)
             .expect("dynamic handler should register");
         let mut handler = match next_dynamic_handler_message(&mut receiver) {
-            Some(DynamicHandlerMessage::AddDynamicHandler(_, handler)) => handler,
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, handler, _)) => handler,
             other => panic!("expected handler registration, got {other:?}"),
         };
 
@@ -8783,7 +8803,7 @@ mod tests {
 
         assert!(matches!(
             next_dynamic_handler_message(&mut receiver),
-            Some(DynamicHandlerMessage::AddDynamicHandler(_, _))
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, _, _))
         ));
         assert!(
             barrier.as_mut().now_or_never().is_none(),
@@ -8808,7 +8828,7 @@ mod tests {
 
         assert!(matches!(
             next_dynamic_handler_message(&mut receiver),
-            Some(DynamicHandlerMessage::AddDynamicHandler(_, _))
+            Some(DynamicHandlerMessage::AddDynamicHandler(_, _, _))
         ));
 
         drop(connection);
