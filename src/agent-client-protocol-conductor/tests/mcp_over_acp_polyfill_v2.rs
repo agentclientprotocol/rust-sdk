@@ -13,8 +13,7 @@ use std::{
 
 use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Client, Conductor, ConnectTo, Proxy,
-    schema::{ProtocolVersion, v2},
+    Agent, Client, Conductor, ConnectTo, Proxy, schema::ProtocolVersion, v2::schema as v2,
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;

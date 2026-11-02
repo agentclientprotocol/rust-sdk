@@ -1,8 +1,8 @@
 //! The protocol-v1 connection type and its conversions to and from the raw
 //! connection.
 
-use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::{Agent, Client, ConnectionTo, Error, RawJsonRpcId, V1};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1};
 
 #[tokio::test(flavor = "current_thread")]
 async fn v1_sends_return_v1_typed_handles() -> Result<(), Error> {

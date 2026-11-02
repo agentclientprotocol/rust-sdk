@@ -7,7 +7,7 @@ use std::{
 };
 
 use agent_client_protocol::V1;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAcceptAction, ElicitationAction, ElicitationCapabilities, ElicitationContentValue,
     ElicitationFormCapabilities, ElicitationMode, ElicitationScope, ElicitationUrlCapabilities,
@@ -15,22 +15,20 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{
     Client, Responder,
-    schema::{
-        ProtocolVersion,
-        v1::{
-            AuthenticateRequest, CancelNotification, ClientCapabilities, CloseSessionRequest,
-            ContentBlock, CreateTerminalRequest, CreateTerminalResponse, DeleteSessionRequest,
-            EmbeddedResourceResource, FileSystemCapabilities, InitializeRequest,
-            KillTerminalRequest, KillTerminalResponse, ListSessionsRequest, LoadSessionRequest,
-            LogoutRequest, McpServer, McpServerStdio, NewSessionRequest, PermissionOptionId,
-            PromptRequest, ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest,
-            ReleaseTerminalResponse, RequestPermissionOutcome, RequestPermissionRequest,
-            RequestPermissionResponse, ResumeSessionRequest, SelectedPermissionOutcome, SessionId,
-            SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-            SetSessionModeRequest, StopReason, TerminalExitStatus, TerminalOutputRequest,
-            TerminalOutputResponse, ToolCallContent, ToolCallStatus, WaitForTerminalExitRequest,
-            WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
-        },
+    schema::ProtocolVersion,
+    v1::schema::{
+        AuthenticateRequest, CancelNotification, ClientCapabilities, CloseSessionRequest,
+        ContentBlock, CreateTerminalRequest, CreateTerminalResponse, DeleteSessionRequest,
+        EmbeddedResourceResource, FileSystemCapabilities, InitializeRequest, KillTerminalRequest,
+        KillTerminalResponse, ListSessionsRequest, LoadSessionRequest, LogoutRequest, McpServer,
+        McpServerStdio, NewSessionRequest, PermissionOptionId, PromptRequest, ReadTextFileRequest,
+        ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
+        RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+        ResumeSessionRequest, SelectedPermissionOutcome, SessionId, SessionNotification,
+        SessionUpdate, SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason,
+        TerminalExitStatus, TerminalOutputRequest, TerminalOutputResponse, ToolCallContent,
+        ToolCallStatus, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
+        WriteTextFileRequest, WriteTextFileResponse,
     },
 };
 use agent_client_protocol_test::testy::{TestyCommand, TestyScenario, v1::Testy};
@@ -877,7 +875,7 @@ async fn testy_delete_cancels_in_flight_prompt_before_cleanup()
                 .await?;
             assert_eq!(
                 list.sessions,
-                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
+                [] as [agent_client_protocol::v1::schema::SessionInfo; 0]
             );
             assert!(
                 cx.send_request(PromptRequest::new(
@@ -989,7 +987,7 @@ async fn testy_close_cancels_in_flight_prompt_before_cleanup()
                 .await?;
             assert_eq!(
                 list.sessions,
-                [] as [agent_client_protocol::schema::v1::SessionInfo; 0]
+                [] as [agent_client_protocol::v1::schema::SessionInfo; 0]
             );
             assert!(
                 cx.send_request(PromptRequest::new(

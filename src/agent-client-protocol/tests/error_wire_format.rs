@@ -6,7 +6,7 @@
 //! failures.
 
 use agent_client_protocol::RawJsonRpcId;
-use agent_client_protocol::schema::v1;
+use agent_client_protocol::v1::schema as v1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, Error, JsonRpcRequest, JsonRpcResponse, RawJsonRpcMessage,
     TransportFrame,
@@ -190,8 +190,8 @@ fn v1_expected() -> Value {
 
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_connection {
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
     use agent_client_protocol::{Agent, AgentProtocolRouter, Error};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
     use serde_json::{Value, json};
 
     use super::{FailRequest, SHARED_CASES, check, exchange, fail_requests, respond, shared_error};
@@ -279,7 +279,7 @@ mod v2_connection {
         let requests = vec![
             (
                 "initialize",
-                serde_json::to_value(agent_client_protocol::schema::v1::InitializeRequest::new(
+                serde_json::to_value(agent_client_protocol::v1::schema::InitializeRequest::new(
                     ProtocolVersion::V1,
                 ))
                 .unwrap(),

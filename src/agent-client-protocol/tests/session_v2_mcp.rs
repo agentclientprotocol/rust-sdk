@@ -16,7 +16,8 @@ use agent_client_protocol::{
     JsonRpcResponse, Responder, RunWithConnectionTo,
     mcp_server::{McpConnectionTo, McpServer, McpServerConnect},
     role,
-    schema::{ProtocolVersion, v2},
+    schema::ProtocolVersion,
+    v2::schema as v2,
 };
 use futures::{
     StreamExt as _,

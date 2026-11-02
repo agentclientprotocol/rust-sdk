@@ -5,9 +5,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{Agent, Builder, ByteStreams, Client, Conductor, Error, Proxy};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1, v2::schema as v2};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use tokio::io::duplex;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};

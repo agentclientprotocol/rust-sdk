@@ -478,7 +478,7 @@ async fn start_session_failure_and_cancellation_keep_runner_until_cleanup() {
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_setup {
     use super::*;
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
 
     #[derive(Clone, Copy)]
     enum Setup {

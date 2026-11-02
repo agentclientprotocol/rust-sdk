@@ -5,7 +5,7 @@ use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::v1::{SessionMessage, SessionSetup};
 use agent_client_protocol::{
     Agent, Channel, Client, Conductor, RawJsonRpcMessage, Responder, TransportFrame,
-    schema::v1::{
+    v1::schema::{
         ContentBlock, ContentChunk, NewSessionRequest, NewSessionResponse, PromptRequest,
         PromptResponse, SessionConfigOption, SessionConfigOptionCategory,
         SessionConfigSelectOption, SessionId, SessionNotification, SessionUpdate, StopReason,
@@ -20,7 +20,8 @@ use futures::channel::mpsc;
 #[cfg(feature = "unstable_protocol_v2")]
 use agent_client_protocol::{
     JsonRpcMessage, JsonRpcResponse, Proxy,
-    schema::{ProtocolVersion, SuccessorMessage, v2},
+    schema::{ProtocolVersion, SuccessorMessage},
+    v2::schema as v2,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -295,7 +296,7 @@ async fn prompt_error_reaches_the_session_stream_and_keeps_the_connection() {
     let new_session_id = session_id.clone();
     let other_session_id = SessionId::new("other-session");
     let other_new_session_id = other_session_id.clone();
-    let meta = agent_client_protocol::schema::v1::Meta::from_iter([(
+    let meta = agent_client_protocol::v1::schema::Meta::from_iter([(
         "turn".to_owned(),
         serde_json::json!({ "kept": true }),
     )]);

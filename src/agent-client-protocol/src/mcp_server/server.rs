@@ -21,11 +21,11 @@ use crate::{
     Agent, Client, ConnectionTo, HandleDispatchFrom, Handled,
     jsonrpc::DynamicHandlerGuard,
     mcp_server::active_session::{McpActiveSession, V1McpProtocol},
-    schema::v1::{
+    util::MatchDispatchFrom,
+    v1::schema::{
         LoadSessionRequest, McpServer as SchemaMcpServer, McpServerAcp, McpServerAcpId,
         NewSessionRequest, ResumeSessionRequest,
     },
-    util::MatchDispatchFrom,
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -35,7 +35,7 @@ use crate::{JsonRpcMessage, UntypedMessage};
 use crate::role::HasPeer;
 
 #[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_session_fork"))]
-use crate::schema::v1::ForkSessionRequest;
+use crate::v1::schema::ForkSessionRequest;
 
 /// Append an MCP server declaration to the `mcpServers` array of a raw
 /// session setup request, leaving every other field as received.
@@ -341,28 +341,28 @@ where
         }
     }
 
-    fn declaration(&self) -> crate::schema::v2::McpServer {
-        crate::schema::v2::McpServer::Acp(crate::schema::v2::McpServerAcp::new(
+    fn declaration(&self) -> crate::v2::schema::McpServer {
+        crate::v2::schema::McpServer::Acp(crate::v2::schema::McpServerAcp::new(
             self.connect.name(),
-            crate::schema::v2::McpServerAcpId::from(self.server_id.0.clone()),
+            crate::v2::schema::McpServerAcpId::from(self.server_id.0.clone()),
         ))
     }
 
-    fn append_declaration(&self, mcp_servers: &mut Vec<crate::schema::v2::McpServer>) {
+    fn append_declaration(&self, mcp_servers: &mut Vec<crate::v2::schema::McpServer>) {
         mcp_servers.push(self.declaration());
     }
 
     fn validate_session_setup(request: &UntypedMessage) -> Result<bool, crate::Error> {
         match request.method() {
             "session/new" => {
-                crate::schema::v2::NewSessionRequest::parse_message(
+                crate::v2::schema::NewSessionRequest::parse_message(
                     request.method(),
                     request.params(),
                 )?;
                 Ok(true)
             }
             "session/resume" => {
-                crate::schema::v2::ResumeSessionRequest::parse_message(
+                crate::v2::schema::ResumeSessionRequest::parse_message(
                     request.method(),
                     request.params(),
                 )?;
@@ -370,7 +370,7 @@ where
             }
             #[cfg(feature = "unstable_session_fork")]
             "session/fork" => {
-                crate::schema::v2::ForkSessionRequest::parse_message(
+                crate::v2::schema::ForkSessionRequest::parse_message(
                     request.method(),
                     request.params(),
                 )?;
@@ -413,7 +413,7 @@ where
     /// sending a request the agent must reject.
     pub fn into_dynamic_handler(
         self,
-        mcp_servers: &mut Vec<crate::schema::v2::McpServer>,
+        mcp_servers: &mut Vec<crate::v2::schema::McpServer>,
         cx: &crate::v2::ConnectionTo<Counterpart>,
     ) -> Result<DynamicHandlerGuard<Counterpart>, crate::Error> {
         let name = self.connect.name();
@@ -435,8 +435,8 @@ where
 
 /// The `name` of a v2 MCP server declaration, if it has one.
 #[cfg(all(feature = "unstable_mcp_over_acp", feature = "unstable_protocol_v2"))]
-fn v2_mcp_server_name(server: &crate::schema::v2::McpServer) -> Option<&str> {
-    use crate::schema::v2::McpServer;
+fn v2_mcp_server_name(server: &crate::v2::schema::McpServer) -> Option<&str> {
+    use crate::v2::schema::McpServer;
     match server {
         McpServer::Http(server) => Some(&server.name),
         McpServer::Acp(server) => Some(&server.name),
@@ -627,10 +627,8 @@ mod tests {
         Conductor, DynConnectTo, Error, UntypedMessage,
         mcp_server::{McpConnectionTo, McpServerConnect},
         role,
-        schema::{
-            v1::McpServerAcpId,
-            v2::{self, McpServer},
-        },
+        v1::schema::McpServerAcpId,
+        v2::schema::{self as v2, McpServer},
     };
 
     struct UnusedMcpConnect;
@@ -869,7 +867,7 @@ mod v1_tests {
         Conductor, DynConnectTo, Error, UntypedMessage,
         mcp_server::{McpConnectionTo, McpServerConnect},
         role,
-        schema::v1::{
+        v1::schema::{
             LoadSessionRequest, McpServer, McpServerAcpId, McpServerHttp, NewSessionRequest,
             ResumeSessionRequest, SessionId,
         },

@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use super::McpConnectionTo;
 use crate::{
     Error, RequestCancellation, Role,
-    schema::v1::{McpError, McpRequestId, McpServerAcpId},
+    v1::schema::{McpError, McpRequestId, McpServerAcpId},
 };
 
 /// One MCP invocation against a reusable service.

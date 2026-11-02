@@ -11,7 +11,6 @@ use std::{
 };
 
 use agent_client_protocol::SelectedInitializeResponse;
-use agent_client_protocol::schema::{ProtocolVersion, SuccessorMessage, v1, v2};
 use agent_client_protocol::v2::InitializeOutcome;
 use agent_client_protocol::{
     Agent, AgentProtocolRouter, Builder, ByteStreams, Client, ClientProtocolConnector, Conductor,
@@ -19,6 +18,11 @@ use agent_client_protocol::{
     JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, NullHandler, Proxy,
     RawJsonRpcMessage, RawJsonRpcResponse, Role, RunWithConnectionTo, TransportFrame,
     UntypedMessage, UntypedRole,
+};
+use agent_client_protocol::{
+    schema::{ProtocolVersion, SuccessorMessage},
+    v1::schema as v1,
+    v2::schema as v2,
 };
 use agent_client_protocol_test::MockTransport;
 use agent_client_protocol_test::testy::v1::Testy;

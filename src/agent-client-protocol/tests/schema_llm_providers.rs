@@ -2,17 +2,17 @@
 
 use std::collections::HashMap;
 
-use agent_client_protocol::schema::{
-    ProtocolVersion,
-    v1::{
+use agent_client_protocol::{
+    Agent, Client, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
+};
+use agent_client_protocol::{
+    schema::ProtocolVersion,
+    v1::schema::{
         AgentCapabilities, AgentResponse, ClientRequest, DisableProviderRequest,
         DisableProviderResponse, InitializeRequest, InitializeResponse, ListProvidersRequest,
         ListProvidersResponse, LlmProtocol, ProviderCurrentConfig, ProviderInfo,
         ProvidersCapabilities, SetProviderRequest, SetProviderResponse,
     },
-};
-use agent_client_protocol::{
-    Agent, Client, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
 };
 use serde_json::json;
 
@@ -191,7 +191,7 @@ async fn v1_client_can_list_set_and_disable_providers() -> Result<(), Error> {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn provider_requests_have_typed_draft_v2_aggregate_routes() -> Result<(), Error> {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     assert_request_pair::<v2::ListProvidersRequest, v2::ListProvidersResponse>();
     assert_request_pair::<v2::SetProviderRequest, v2::SetProviderResponse>();
@@ -235,7 +235,7 @@ fn provider_requests_have_typed_draft_v2_aggregate_routes() -> Result<(), Error>
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
 async fn draft_v2_client_can_list_set_and_disable_providers() -> Result<(), Error> {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     fn implementation() -> v2::Implementation {
         v2::Implementation::new("provider-test", env!("CARGO_PKG_VERSION"))

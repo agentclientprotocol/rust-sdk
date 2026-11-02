@@ -233,7 +233,7 @@ impl PolyfillHandler {
         match message {
             Dispatch::Request(mut request, responder) => {
                 if request.method()
-                    == agent_client_protocol::schema::v1::PROXY_METHOD_NAMES.proxy_initialize
+                    == agent_client_protocol::v1::schema::PROXY_METHOD_NAMES.proxy_initialize
                 {
                     // A repeated `proxy/initialize` is forwarded like the
                     // first one, as long as it stays on the connection's

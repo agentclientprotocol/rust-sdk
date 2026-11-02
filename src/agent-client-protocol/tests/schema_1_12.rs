@@ -4,7 +4,7 @@
 ))]
 
 #[cfg(feature = "unstable_session_system_prompt")]
-use agent_client_protocol::{JsonRpcMessage, schema::v1};
+use agent_client_protocol::{JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 
 #[cfg(feature = "unstable_session_system_prompt")]
@@ -27,7 +27,7 @@ fn system_prompts_pass_through_typed_lifecycle_requests() {
 
     #[cfg(feature = "unstable_protocol_v2")]
     {
-        use agent_client_protocol::schema::v2;
+        use agent_client_protocol::v2::schema as v2;
         let prompt = v2::SystemPrompt::new(vec!["Review without editing.".into()]);
         let request = v2::ResumeSessionRequest::new("session-1", "/repo").system_prompt(prompt);
         let params = request.to_untyped_message().unwrap().params;
@@ -57,7 +57,7 @@ fn malformed_system_prompts_are_invalid_params_not_silently_omitted() {
         );
         #[cfg(feature = "unstable_protocol_v2")]
         assert_eq!(
-            agent_client_protocol::schema::v2::NewSessionRequest::parse_message(
+            agent_client_protocol::v2::schema::NewSessionRequest::parse_message(
                 "session/new",
                 &params
             )
@@ -71,7 +71,7 @@ fn malformed_system_prompts_are_invalid_params_not_silently_omitted() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_tool_call_metadata_updates_patch_keys_instead_of_replacing_the_object() {
-    use agent_client_protocol::schema::{MaybeUndefined, v2};
+    use agent_client_protocol::{schema::MaybeUndefined, v2::schema as v2};
 
     let mut stored: v2::ToolCallUpdate = serde_json::from_value(json!({
         "toolCallId": "call-1",

@@ -1,4 +1,4 @@
-use agent_client_protocol::{ErrorCode, JsonRpcMessage, schema::v1};
+use agent_client_protocol::{ErrorCode, JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 
 #[test]
@@ -29,7 +29,7 @@ fn stable_notices_pass_through_typed_session_notifications() {
 
     #[cfg(feature = "unstable_protocol_v2")]
     {
-        use agent_client_protocol::schema::v2;
+        use agent_client_protocol::v2::schema as v2;
         let parsed = v2::AgentNotification::parse_message("session/update", &params).unwrap();
         let v2::AgentNotification::UpdateSessionNotification(notification) = &parsed else {
             panic!("expected a v2 session notification");
@@ -52,7 +52,7 @@ fn acted_on_session_setup_lists_reject_invalid_params() {
 
         #[cfg(feature = "unstable_protocol_v2")]
         {
-            use agent_client_protocol::schema::v2;
+            use agent_client_protocol::v2::schema as v2;
             let error = v2::ClientRequest::parse_message("session/new", &params).unwrap_err();
             assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
         }
@@ -70,7 +70,7 @@ fn acted_on_session_setup_lists_reject_invalid_params() {
 
     #[cfg(feature = "unstable_protocol_v2")]
     {
-        use agent_client_protocol::schema::v2;
+        use agent_client_protocol::v2::schema as v2;
         let parsed = v2::NewSessionRequest::parse_message("session/new", &params).unwrap();
         assert_eq!(parsed.mcp_servers, []);
         assert_eq!(parsed.additional_directories, []);
@@ -87,7 +87,7 @@ fn acted_on_session_setup_lists_reject_invalid_params() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_error_and_custom_stop_reasons_pass_through_typed_notifications() {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     let reason = v2::StopReason::Error(
         v2::ErrorStopReason::new()

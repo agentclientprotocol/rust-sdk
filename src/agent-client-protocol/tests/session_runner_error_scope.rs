@@ -326,7 +326,7 @@ async fn foreground_success_does_not_hide_observed_v1_runner_error() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test]
 async fn immediate_v2_composed_startup_error_preserves_existing_mcp_admission() {
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
 
     tokio::time::timeout(Duration::from_secs(10), async {
         let (transport, mut peer) = Channel::duplex();
@@ -386,7 +386,7 @@ async fn immediate_v2_composed_startup_error_preserves_existing_mcp_admission() 
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test]
 async fn attached_v2_composed_runner_error_remains_connection_fatal() {
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
 
     tokio::time::timeout(Duration::from_secs(10), async {
         let (transport, mut peer) = Channel::duplex();

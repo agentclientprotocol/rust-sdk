@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, McpCapabilities, McpServer, McpServerAcp, MessageMcpNotification,
     MessageMcpRequest, MessageMcpResponse, NewSessionRequest, NewSessionResponse,

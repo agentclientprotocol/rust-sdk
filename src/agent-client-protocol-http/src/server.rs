@@ -229,14 +229,14 @@ struct ServerState {
 /// from the factory (requires the core `unstable_protocol_v2` feature):
 ///
 /// ```no_run
-/// use agent_client_protocol::schema::{v1, v2};
+/// use agent_client_protocol::{v1, v2};
 /// use agent_client_protocol::{Agent, Client, ConnectTo, on_receive_request};
 /// use agent_client_protocol_http::AcpHttpServer;
 ///
 /// fn v1_agent() -> impl ConnectTo<Client> {
 ///     Agent.v1().on_receive_request(
-///         async |init: v1::InitializeRequest, responder, _cx| {
-///             responder.respond(v1::InitializeResponse::new(init.protocol_version))
+///         async |init: v1::schema::InitializeRequest, responder, _cx| {
+///             responder.respond(v1::schema::InitializeResponse::new(init.protocol_version))
 ///         },
 ///         on_receive_request!(),
 ///     )
@@ -244,10 +244,10 @@ struct ServerState {
 ///
 /// fn v2_agent() -> impl ConnectTo<Client> {
 ///     Agent.v2().on_receive_request(
-///         async |init: v2::InitializeRequest, responder, _cx| {
-///             responder.respond(v2::InitializeResponse::new(
+///         async |init: v2::schema::InitializeRequest, responder, _cx| {
+///             responder.respond(v2::schema::InitializeResponse::new(
 ///                 init.protocol_version,
-///                 v2::Implementation::new("example", "0.1.0"),
+///                 v2::schema::Implementation::new("example", "0.1.0"),
 ///             ))
 ///         },
 ///         on_receive_request!(),

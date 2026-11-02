@@ -1,7 +1,7 @@
 #![cfg(feature = "unstable_plan_operations")]
 
 use agent_client_protocol::JsonRpcMessage;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentNotification, ClientCapabilities, PlanCapabilities, PlanEntry, PlanEntryPriority,
     PlanEntryStatus, PlanRemoved, PlanUpdate, PlanUpdateContent, SessionNotification,
     SessionUpdate,
@@ -80,7 +80,7 @@ fn v1_plan_operations_are_capability_gated_and_routed() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn draft_v2_file_and_removal_operations_are_routed() {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     let notification = v2::UpdateSessionNotification::new(
         "session-1",

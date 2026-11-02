@@ -8,8 +8,8 @@ use std::{any::TypeId, fmt::Debug, future::Future, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::{SuccessorMessage, v1::PROXY_METHOD_NAMES};
 use crate::{Builder, ConnectionTo, Dispatch, Handled, JsonRpcMessage, UntypedMessage};
+use crate::{schema::SuccessorMessage, v1::schema::PROXY_METHOD_NAMES};
 
 /// Roles for the ACP protocol.
 pub mod acp;

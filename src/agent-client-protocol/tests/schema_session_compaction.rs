@@ -1,5 +1,5 @@
 use agent_client_protocol::JsonRpcMessage;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentNotification, ClientCapabilities, ClientSessionCapabilities, CompactionCapabilities,
     CompactionStatus, CompactionSummaryChunk, CompactionUpdate, ContentBlock, SessionNotification,
     SessionUpdate, TextContent,
@@ -71,7 +71,7 @@ fn v1_compaction_capability_and_updates_pass_through_session_notifications() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn draft_v2_compaction_updates_pass_through_session_notifications() {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     let notification = v2::UpdateSessionNotification::new(
         "session-1",

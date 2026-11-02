@@ -22,12 +22,12 @@ Use the version's `SystemPrompt::new` builder and pass the complete request
 through the SDK's `_from` session helpers:
 
 ```rust
-use agent_client_protocol::schema::v1;
+use agent_client_protocol::v1::schema;
 
-let instructions = v1::SystemPrompt::new(vec![
+let instructions = schema::SystemPrompt::new(vec![
     "Review changes without modifying files.".into(),
 ]);
-let request = v1::NewSessionRequest::new("/workspace/project")
+let request = schema::NewSessionRequest::new("/workspace/project")
     .system_prompt(instructions);
 // After checking the agent's advertised capability:
 // connection.build_session_from(request).block_task().start_session().await?;
@@ -35,7 +35,7 @@ let request = v1::NewSessionRequest::new("/workspace/project")
 ```
 
 This snippet requires `unstable_session_system_prompt`; v2 additionally
-requires `unstable_protocol_v2` and uses the equivalent `v2` types.
+requires `unstable_protocol_v2` and uses the equivalent `v2::schema` types.
 `SystemPrompt::new` defaults to `append` in Rust, but both `mode` and `content`
 are required on the wire. Omitted or `null` `systemPrompt` supplies no client
 instructions. Malformed values fail typed request decoding with `-32602`;
@@ -87,8 +87,8 @@ component that it is running as a proxy and may forward messages with
 
 The response is the matching version's normal `InitializeResponse` result. The
 SDK uses the schema crate's types, one per version:
-`schema::v1::InitializeProxyRequest` and, with `unstable_protocol_v2`,
-`schema::v2::InitializeProxyRequest`. Each is answered with that version's
+`v1::schema::InitializeProxyRequest` and, with `unstable_protocol_v2`,
+`v2::schema::InitializeProxyRequest`. Each is answered with that version's
 `InitializeProxyResponse`, a transparent wrapper around its
 `InitializeResponse`. Convert a forwarded `initialize` response with `.into()`.
 The final agent receives the ordinary `initialize` method and does not need to
@@ -123,8 +123,8 @@ next to `method` and `params`; the inner message keeps its own `_meta` inside
 its `params`.
 
 The schema types for the envelope are `ProxySuccessorRequest`,
-`ProxySuccessorNotification` and `ProxySuccessorResponse` in `schema::v1` and
-`schema::v2`, with the `ProxyRequest`, `ProxyResponse` and `ProxyNotification`
+`ProxySuccessorNotification` and `ProxySuccessorResponse` in `v1::schema` and
+`v2::schema`, with the `ProxyRequest`, `ProxyResponse` and `ProxyNotification`
 unions and the method names in `PROXY_METHOD_NAMES`. They hold the inner
 message as raw JSON. `schema::SuccessorMessage<M>` is the SDK's typed view of
 the same envelope: it holds the inner message as an SDK message type, works for

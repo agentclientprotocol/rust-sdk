@@ -1,6 +1,6 @@
 //! Method names reported by the v1 schema dispatch enums.
 
-use agent_client_protocol::{Error, ErrorCode, JsonRpcMessage, schema::v1};
+use agent_client_protocol::{Error, ErrorCode, JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 
 #[test]

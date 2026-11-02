@@ -193,7 +193,7 @@ const SECRET: &str = "SDK_SYNTHETIC_PRIVATE_CREDENTIAL";
 /// carrying terminal auth `env` over a real byte stream, capturing all logs at
 /// `level`.
 async fn exchange_secret_bearing_messages(level: tracing::Level) -> String {
-    use agent_client_protocol::schema::v1::{
+    use agent_client_protocol::v1::schema::{
         EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerStdio, NewSessionRequest,
         NewSessionResponse,
     };

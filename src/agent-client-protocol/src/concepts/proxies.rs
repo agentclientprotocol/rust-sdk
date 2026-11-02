@@ -126,7 +126,7 @@
 //!
 //! ```ignore
 //! # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
-//! # use agent_client_protocol::schema::v1::NewSessionRequest;
+//! # use agent_client_protocol::v1::schema::NewSessionRequest;
 //! # use agent_client_protocol::mcp_server::McpServer;
 //! # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
 //! # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {
@@ -147,7 +147,7 @@
 //! ```
 //!
 //! The corresponding v2 proxy uses `Proxy.v2()`, a
-//! `schema::v2::NewSessionRequest`, and the same fluent session-builder shape.
+//! `v2::schema::NewSessionRequest`, and the same fluent session-builder shape.
 //! Its `v2::SessionBuilder::on_proxy_session_start` callback receives an
 //! `v2::SessionSetup` containing both the command-only v2 session handle and the
 //! complete `NewSessionResponse`:
@@ -156,7 +156,7 @@
 //! Proxy.v2()
 //!     .on_receive_request_from(
 //!         Client,
-//!         async |request: schema::v2::NewSessionRequest, responder, cx| {
+//!         async |request: v2::schema::NewSessionRequest, responder, cx| {
 //!             cx.build_session_from(request)
 //!                 .with_mcp_server(my_mcp_server)?
 //!                 .on_proxy_session_start(responder, async |setup| {
@@ -169,7 +169,7 @@
 //!     );
 //! ```
 //!
-//! For `schema::v2::ResumeSessionRequest`, use
+//! For `v2::schema::ResumeSessionRequest`, use
 //! `cx.resume_session_from(request)` and the resulting
 //! `v2::ResumeSessionBuilder` in the same shape. With
 //! `unstable_session_fork`, use `cx.fork_session_from(request)` and

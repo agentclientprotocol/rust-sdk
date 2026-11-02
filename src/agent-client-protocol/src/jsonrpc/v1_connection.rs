@@ -16,7 +16,7 @@ use crate::role::{HasPeer, Role};
 /// [`build_session`](Self::build_session). Requests sent through it return
 /// [`v1::SentRequest`](crate::v1::SentRequest) and
 /// [`v1::PreparedRequest`](crate::v1::PreparedRequest), whose `id()` is a
-/// [`schema::v1::RequestId`](crate::schema::v1::RequestId). The generic
+/// [`v1::schema::RequestId`](crate::v1::schema::RequestId). The generic
 /// JSON-RPC send methods remain schema-agnostic.
 ///
 /// This is a thin, cheaply cloneable handle to the underlying JSON-RPC
@@ -241,7 +241,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// takes any [`RawJsonRpcId`](crate::RawJsonRpcId).
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<crate::v1::schema::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -255,7 +255,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<crate::schema::v1::RequestId>,
+        request_id: impl Into<crate::v1::schema::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,

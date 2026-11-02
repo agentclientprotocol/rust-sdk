@@ -1,6 +1,6 @@
 //! JSON-RPC implementations for the unstable native MCP-over-ACP transport.
 
-use crate::schema::v1::{MessageMcpNotification, MessageMcpRequest, MessageMcpResponse};
+use crate::v1::schema::{MessageMcpNotification, MessageMcpRequest, MessageMcpResponse};
 
 impl_jsonrpc_request!(MessageMcpRequest, MessageMcpResponse, "mcp/message");
 impl_jsonrpc_notification!(MessageMcpNotification, "mcp/message");

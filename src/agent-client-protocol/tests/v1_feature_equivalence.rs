@@ -12,8 +12,7 @@ use std::{io, time::Duration};
 use agent_client_protocol::V1;
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, Dispatch, Error, HandleDispatchFrom, Handled, Lines,
-    Proxy, Role, UntypedMessage,
-    schema::{ProtocolVersion, v1},
+    Proxy, Role, UntypedMessage, schema::ProtocolVersion, v1::schema as v1,
 };
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde_json::{Value, json};

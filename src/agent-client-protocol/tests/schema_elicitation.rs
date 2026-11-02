@@ -1,4 +1,4 @@
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentNotification, AgentRequest, ClientCapabilities, ClientResponse,
     CompleteElicitationNotification, CreateElicitationRequest, CreateElicitationResponse,
     ElicitationAction, ElicitationCapabilities, ElicitationFormCapabilities, ElicitationFormMode,
@@ -46,7 +46,7 @@ fn create_elicitation_request_has_jsonrpc_metadata() {
         CreateElicitationRequest::parse_message("elicitation/create", &untyped.params).unwrap();
     assert!(matches!(
         parsed.mode,
-        agent_client_protocol::schema::v1::ElicitationMode::Form(_)
+        agent_client_protocol::v1::schema::ElicitationMode::Form(_)
     ));
 
     assert_request_response_pair::<CreateElicitationRequest>();
@@ -125,7 +125,7 @@ fn client_capabilities_can_declare_elicitation_modes() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     let request = v2::CreateElicitationRequest::new(
         v2::ElicitationFormMode::new(
@@ -163,8 +163,8 @@ fn protocol_v2_elicitation_variants_are_jsonrpc_mapped() -> Result<(), Error> {
 #[cfg(feature = "unstable_protocol_v2")]
 #[tokio::test(flavor = "current_thread")]
 async fn v2_agent_can_elicit_from_v2_client_before_prompt_completion() -> Result<(), Error> {
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
     use agent_client_protocol::{Agent, Client};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
     use std::collections::BTreeMap;
 
     fn v2_initialize_response_with_session(

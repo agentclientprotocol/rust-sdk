@@ -9,7 +9,7 @@
 ))]
 #![allow(unused_imports)]
 
-use agent_client_protocol::schema::v1;
+use agent_client_protocol::v1::schema as v1;
 use agent_client_protocol::{JsonRpcMessage, JsonRpcResponse};
 use serde_json::{Value, json};
 
@@ -108,7 +108,7 @@ fn v1_session_set_title_round_trips() {
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_methods {
     use agent_client_protocol::JsonRpcMessage;
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
     use serde_json::json;
 
     use super::{assert_message_round_trips, assert_response_round_trips};

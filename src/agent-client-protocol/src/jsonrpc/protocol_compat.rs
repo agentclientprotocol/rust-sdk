@@ -19,7 +19,7 @@ pub(crate) const UNKNOWN_IMPLEMENTATION: &str = "unknown";
 pub(crate) fn normalize_newer_v2_initialize_request(
     params: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
-    use crate::schema::{ProtocolVersion, v2};
+    use crate::{schema::ProtocolVersion, v2::schema as v2};
     use serde::Deserialize as _;
 
     let mut params = params.clone();
@@ -92,7 +92,7 @@ fn retain_object(params: &mut serde_json::Map<String, serde_json::Value>, key: &
 pub(crate) fn normalize_v1_initialize_request(
     params: &serde_json::Value,
 ) -> Result<serde_json::Map<String, serde_json::Value>, crate::Error> {
-    use crate::schema::{ProtocolVersion, v1};
+    use crate::{schema::ProtocolVersion, v1::schema as v1};
     use serde::Deserialize as _;
 
     let info = params
@@ -166,7 +166,7 @@ pub(crate) fn normalize_v1_initialize_request(
 #[non_exhaustive]
 pub enum InitializeOutcome {
     /// The agent selected v2 and the connection is ready for v2 traffic.
-    Initialized(crate::schema::v2::InitializeResponse),
+    Initialized(crate::v2::schema::InitializeResponse),
     /// The agent selected a lower protocol version.
     ///
     /// The connection stays uninitialized: a v2 connection cannot carry the
@@ -245,7 +245,7 @@ impl std::fmt::Display for InitializationVersionMismatch {
 #[non_exhaustive]
 pub enum SelectedInitializeResponse {
     /// The peer selected ACP protocol v1.
-    V1(crate::schema::v1::InitializeResponse),
+    V1(crate::v1::schema::InitializeResponse),
 }
 
 #[cfg(feature = "unstable_protocol_v2")]
@@ -265,7 +265,7 @@ impl SelectedInitializeResponse {
         value: serde_json::Value,
     ) -> Option<Result<Self, crate::Error>> {
         (version == crate::schema::ProtocolVersion::V1).then(|| {
-            <crate::schema::v1::InitializeResponse as crate::JsonRpcResponse>::from_json(
+            <crate::v1::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
                 "initialize",
                 value,
             )
@@ -299,7 +299,7 @@ impl crate::JsonRpcResponse for InitializeOutcome {
             })?;
         let requested = crate::schema::ProtocolVersion::V2;
         if selected == requested {
-            return crate::schema::v2::InitializeResponse::from_json(method, value)
+            return crate::v2::schema::InitializeResponse::from_json(method, value)
                 .map(Self::Initialized);
         }
         match SelectedInitializeResponse::from_json(selected, value) {
@@ -319,12 +319,12 @@ impl crate::JsonRpcResponse for InitializeOutcome {
 /// successful [`InitializeOutcome`] instead of the connection's local error.
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone)]
-pub(crate) struct InitializeNegotiation(pub(crate) crate::schema::v2::InitializeRequest);
+pub(crate) struct InitializeNegotiation(pub(crate) crate::v2::schema::InitializeRequest);
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl crate::JsonRpcMessage for InitializeNegotiation {
     fn matches_method(method: &str) -> bool {
-        crate::schema::v2::InitializeRequest::matches_method(method)
+        crate::v2::schema::InitializeRequest::matches_method(method)
     }
 
     fn method(&self) -> &str {
@@ -336,7 +336,7 @@ impl crate::JsonRpcMessage for InitializeNegotiation {
     }
 
     fn parse_message(method: &str, params: &serde_json::Value) -> Result<Self, crate::Error> {
-        crate::schema::v2::InitializeRequest::parse_message(method, params).map(Self)
+        crate::v2::schema::InitializeRequest::parse_message(method, params).map(Self)
     }
 }
 
@@ -834,7 +834,7 @@ mod imp {
             // below their supported range.
             #[cfg(feature = "unstable_protocol_v2")]
             if mode.api == ProtocolVersionKind::V2 && requested < mode.api.as_protocol_version() {
-                return Err(crate::schema::v2::Error::unsupported_protocol_version(
+                return Err(crate::v2::schema::Error::unsupported_protocol_version(
                     requested,
                     &[mode.api.as_protocol_version()],
                 )
@@ -1250,7 +1250,7 @@ mod imp {
     ) -> Result<(), crate::Error> {
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
-            <crate::schema::v2::InitializeRequest as crate::JsonRpcMessage>::parse_message(
+            <crate::v2::schema::InitializeRequest as crate::JsonRpcMessage>::parse_message(
                 "initialize",
                 value,
             )?;
@@ -1270,7 +1270,7 @@ mod imp {
     ) -> Result<(), crate::Error> {
         #[cfg(feature = "unstable_protocol_v2")]
         if mode.initialization_role != InitializationRole::Unchecked {
-            <crate::schema::v2::InitializeResponse as crate::JsonRpcResponse>::from_json(
+            <crate::v2::schema::InitializeResponse as crate::JsonRpcResponse>::from_json(
                 "initialize",
                 value.clone(),
             )?;
@@ -1515,9 +1515,9 @@ mod imp {
             Ok((compat, result))
         }
 
-        fn v1_initialize_response() -> crate::schema::v1::InitializeResponse {
-            crate::schema::v1::InitializeResponse::new(ProtocolVersion::V1)
-                .agent_info(crate::schema::v1::Implementation::new("v1-agent", "1.0.0"))
+        fn v1_initialize_response() -> crate::v1::schema::InitializeResponse {
+            crate::v1::schema::InitializeResponse::new(ProtocolVersion::V1)
+                .agent_info(crate::v1::schema::Implementation::new("v1-agent", "1.0.0"))
         }
 
         #[test]
@@ -1565,7 +1565,7 @@ mod imp {
 
         #[test]
         fn initialize_negotiation_keeps_failures_as_errors() -> Result<(), crate::Error> {
-            let remote: crate::Error = crate::schema::v2::Error::unsupported_protocol_version(
+            let remote: crate::Error = crate::v2::schema::Error::unsupported_protocol_version(
                 ProtocolVersion::V2,
                 &[ProtocolVersion::V1],
             )
@@ -2250,7 +2250,7 @@ mod imp {
                     "_meta": 7
                 }),
             )?)?;
-            let initialize: crate::schema::v1::InitializeRequest =
+            let initialize: crate::v1::schema::InitializeRequest =
                 serde_json::from_value(request.params().clone())?;
             assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
             assert_eq!(initialize.client_info, None);
@@ -2264,7 +2264,7 @@ mod imp {
                 "initialize",
                 serde_json::json!({ "protocolVersion": 2 }),
             )?)?;
-            let initialize: crate::schema::v1::InitializeRequest =
+            let initialize: crate::v1::schema::InitializeRequest =
                 serde_json::from_value(request.params().clone())?;
             assert_eq!(initialize.client_info, None);
             Ok(())
@@ -2413,12 +2413,12 @@ mod imp {
                     }),
                 )?)?;
                 // The same normalization a v1 agent applies to `initialize`.
-                let initialize: crate::schema::v1::InitializeRequest =
+                let initialize: crate::v1::schema::InitializeRequest =
                     serde_json::from_value(request.params().clone())?;
                 assert_eq!(initialize.protocol_version, ProtocolVersion::V1);
                 assert_eq!(
                     initialize.client_info,
-                    Some(crate::schema::v1::Implementation::new(
+                    Some(crate::v1::schema::Implementation::new(
                         "future-client",
                         "1.0.0"
                     ))

@@ -455,7 +455,7 @@ fn params_from_transport(params: Option<RawJsonRpcParams>) -> serde_json::Value 
 ///
 /// ```
 /// # use agent_client_protocol::{Agent, Client, ConnectTo};
-/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
+/// # use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 /// # use agent_client_protocol_test::StatusUpdate;
 /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
 /// Agent.v1()
@@ -621,7 +621,7 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
+/// # use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -646,7 +646,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol_test::*;
 /// # use agent_client_protocol::{JsonRpcRequest, JsonRpcMessage, UntypedMessage};
-/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
+/// # use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // Define an enum for multiple request types
@@ -685,7 +685,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol_test::*;
 /// # use agent_client_protocol::v1::Dispatch;
-/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, SessionNotification};
+/// # use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse, SessionNotification};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// // on_receive_dispatch receives requests, notifications, and responses
@@ -724,7 +724,7 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
+/// # use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse};
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -832,7 +832,7 @@ where
 ///
 /// ```no_run
 /// # use agent_client_protocol_test::*;
-/// # use agent_client_protocol::schema::v1::InitializeRequest;
+/// # use agent_client_protocol::v1::schema::InitializeRequest;
 /// # async fn example() -> Result<(), agent_client_protocol::Error> {
 /// # let connection = mock_connection();
 /// connection
@@ -863,7 +863,7 @@ where
 /// ```no_run
 /// # use agent_client_protocol::UntypedRole;
 /// # use agent_client_protocol::{Builder};
-/// # use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, SessionNotification};
+/// # use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, SessionNotification};
 /// # async fn example(transport: impl agent_client_protocol::ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol::Error> {
 ///
 /// UntypedRole.builder()
@@ -1310,7 +1310,7 @@ impl<
     ///
     /// ```no_run
     /// # use agent_client_protocol::{Agent, ConnectTo};
-    /// # use agent_client_protocol::schema::v1::{PromptRequest, PromptResponse, SessionNotification};
+    /// # use agent_client_protocol::v1::schema::{PromptRequest, PromptResponse, SessionNotification};
     /// # async fn example(transport: impl ConnectTo<Agent>) -> Result<(), agent_client_protocol::Error> {
     /// Agent.v1().on_receive_request(async |request: PromptRequest, responder, cx| {
     ///     // Send a notification while processing
@@ -1505,7 +1505,7 @@ impl<
     ///
     /// ```ignore
     /// use agent_client_protocol::Agent;
-    /// use agent_client_protocol::schema::v1::InitializeRequest;
+    /// use agent_client_protocol::v1::schema::InitializeRequest;
     ///
     /// // Conductor receiving from agent direction - messages will be unwrapped from SuccessorMessage
     /// connection.on_receive_request_from(Agent, async |req: InitializeRequest, responder, cx| {
@@ -1668,7 +1668,7 @@ impl<
     /// # use agent_client_protocol::UntypedRole;
     /// # use agent_client_protocol::{Builder};
     /// # use agent_client_protocol::ByteStreams;
-    /// # use agent_client_protocol::schema::v1::InitializeRequest;
+    /// # use agent_client_protocol::v1::schema::InitializeRequest;
     /// # use agent_client_protocol_test::*;
     /// # async fn example(transport: impl agent_client_protocol::ConnectTo<UntypedRole>) -> Result<(), agent_client_protocol::Error> {
     ///
@@ -2706,11 +2706,11 @@ fn cancellation_request_id_from_message(
     message: &UntypedMessage,
 ) -> Result<Option<RawJsonRpcId>, crate::Error> {
     let (method, params) = peel_successor_envelopes(&message.method, &message.params);
-    if !crate::schema::v1::CancelRequestNotification::matches_method(method) {
+    if !crate::v1::schema::CancelRequestNotification::matches_method(method) {
         return Ok(None);
     }
 
-    let notification = crate::schema::v1::CancelRequestNotification::parse_message(method, params)?;
+    let notification = crate::v1::schema::CancelRequestNotification::parse_message(method, params)?;
     Ok(Some(notification.request_id.into()))
 }
 
@@ -2757,7 +2757,7 @@ fn peel_successor_envelopes<'message>(
 #[must_use]
 pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) -> bool {
     let method = notification.method();
-    if crate::schema::v1::CancelRequestNotification::matches_method(method) {
+    if crate::v1::schema::CancelRequestNotification::matches_method(method) {
         return true;
     }
     if !crate::schema::SuccessorMessage::<UntypedMessage>::matches_method(method) {
@@ -2767,7 +2767,7 @@ pub fn is_cancel_request_notification<N: JsonRpcNotification>(notification: &N) 
     match notification.to_untyped_message() {
         Ok(untyped) => {
             let (method, _params) = peel_successor_envelopes(&untyped.method, &untyped.params);
-            crate::schema::v1::CancelRequestNotification::matches_method(method)
+            crate::v1::schema::CancelRequestNotification::matches_method(method)
         }
         Err(error) => {
             tracing::debug!(
@@ -4322,7 +4322,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     {
         self.send_notification_to(
             peer,
-            crate::schema::v1::CancelRequestNotification::new(crate::schema::v1::RequestId::from(
+            crate::v1::schema::CancelRequestNotification::new(crate::v1::schema::RequestId::from(
                 request_id.into(),
             )),
         )
@@ -4871,11 +4871,11 @@ impl<T: JsonRpcResponse> Responder<T, Raw> {
     /// dropped, which answers the request with an error.
     ///
     /// ```
-    /// # use agent_client_protocol::{Error, Responder, V1, schema::v1};
-    /// # fn example(responder: Responder<v1::PromptResponse>) -> Result<(), Error> {
-    /// let responder: agent_client_protocol::v1::Responder<v1::PromptResponse> =
+    /// # use agent_client_protocol::{Error, Responder, V1, v1::schema};
+    /// # fn example(responder: Responder<schema::PromptResponse>) -> Result<(), Error> {
+    /// let responder: agent_client_protocol::v1::Responder<schema::PromptResponse> =
     ///     responder.into_protocol::<V1>()?;
-    /// let id: &v1::RequestId = responder.id();
+    /// let id: &schema::RequestId = responder.id();
     /// # let _ = id;
     /// # Ok(())
     /// # }
@@ -6242,7 +6242,7 @@ impl RequestCancellationHandle {
         // Build the notification lazily: most requests are never cancelled,
         // so this avoids serializing a notification per outgoing request.
         let untyped = self.remote_style.transform_outgoing_message(
-            crate::schema::v1::CancelRequestNotification::new(self.request_id.clone()),
+            crate::v1::schema::CancelRequestNotification::new(self.request_id.clone()),
         )?;
 
         send_raw_message(&self.message_tx, OutgoingMessage::Notification { untyped })
@@ -8230,7 +8230,7 @@ mod tests {
             UntypedMessage::new("probe", serde_json::json!({}))
                 .expect("test request should serialize"),
         );
-        let v2_id: crate::schema::v2::RequestId = sent.id().clone();
+        let v2_id: crate::v2::schema::RequestId = sent.id().clone();
         let raw_id = sent.raw_id().clone();
         assert_eq!(
             serde_json::to_value(&v2_id).expect("v2 id should serialize"),

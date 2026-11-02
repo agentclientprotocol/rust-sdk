@@ -1,7 +1,7 @@
 //! A shared method name must not conflate requests and notifications.
 #![cfg(feature = "unstable_mcp_over_acp")]
 
-use agent_client_protocol::{JsonRpcMessage, RawJsonRpcMessage, schema::v1};
+use agent_client_protocol::{JsonRpcMessage, RawJsonRpcMessage, v1::schema as v1};
 use serde_json::{Value, json};
 
 fn params() -> Value {
@@ -90,7 +90,7 @@ async fn unresolved_server_is_a_binding_failure_not_a_peer_mcp_error() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_mcp_method_is_in_separate_request_and_notification_enums() {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
     assert!(matches!(
         v2::AgentRequest::parse_message("mcp/message", &params()).unwrap(),
         v2::AgentRequest::MessageMcpRequest(_)

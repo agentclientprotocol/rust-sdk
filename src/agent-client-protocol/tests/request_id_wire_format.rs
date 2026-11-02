@@ -9,10 +9,10 @@
 
 use std::{io, time::Duration};
 
-use agent_client_protocol::schema::{ProtocolVersion, v1};
 use agent_client_protocol::{
     Agent, ConnectTo, Error, JsonRpcRequest, JsonRpcResponse, Lines, Role,
 };
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1};
 use futures::{SinkExt as _, StreamExt as _, channel::mpsc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -198,7 +198,7 @@ async fn assert_out_of_range_ids_are_rejected(peer: &mut WirePeer) {
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_connection {
     use agent_client_protocol::Agent;
-    use agent_client_protocol::schema::{ProtocolVersion, v2};
+    use agent_client_protocol::{schema::ProtocolVersion, v2::schema as v2};
     use serde_json::json;
 
     use super::{

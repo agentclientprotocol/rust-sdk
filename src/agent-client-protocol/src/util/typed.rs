@@ -49,7 +49,7 @@ fn preserve_retry(
 ///
 /// ```
 /// # use agent_client_protocol::Dispatch;
-/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
+/// # use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 /// # use agent_client_protocol::util::MatchDispatch;
 /// # async fn example(message: Dispatch) -> Result<(), agent_client_protocol::Error> {
 /// MatchDispatch::new(message)
@@ -444,7 +444,7 @@ impl MatchDispatch {
 ///
 /// ```
 /// # use agent_client_protocol::Dispatch;
-/// # use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, StopReason};
+/// # use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse, PromptRequest, PromptResponse, StopReason};
 /// # use agent_client_protocol::util::MatchDispatchFrom;
 /// # async fn example(message: Dispatch, cx: &agent_client_protocol::ConnectionTo<agent_client_protocol::Client>) -> Result<(), agent_client_protocol::Error> {
 /// MatchDispatchFrom::new(message, cx)

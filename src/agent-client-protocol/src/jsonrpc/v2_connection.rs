@@ -48,7 +48,7 @@ impl ConnectionTo<Agent> {
     /// with an `-32600` error without being sent.
     ///
     /// ```no_run
-    /// # use agent_client_protocol::schema::{ProtocolVersion, v2};
+    /// # use agent_client_protocol::{schema::ProtocolVersion, v2::schema};
     /// # use agent_client_protocol::{Client, ConnectTo};
     /// use agent_client_protocol::SelectedInitializeResponse;
     /// use agent_client_protocol::v2::InitializeOutcome;
@@ -56,9 +56,9 @@ impl ConnectionTo<Agent> {
     /// let outcome = Client
     ///     .v2()
     ///     .connect_with(agent, async |cx| {
-    ///         let request = v2::InitializeRequest::new(
+    ///         let request = schema::InitializeRequest::new(
     ///             ProtocolVersion::V2,
-    ///             v2::Implementation::new("example", "0.1.0"),
+    ///             schema::Implementation::new("example", "0.1.0"),
     ///         );
     ///         match cx.send_initialize(request).block_task().await? {
     ///             InitializeOutcome::Initialized(_response) => {
@@ -80,7 +80,7 @@ impl ConnectionTo<Agent> {
     /// ```
     pub fn send_initialize(
         &self,
-        request: crate::schema::v2::InitializeRequest,
+        request: crate::v2::schema::InitializeRequest,
     ) -> SentRequest<InitializeOutcome, V2> {
         let mut prepared = self.inner.prepare_request_to_with_options::<V2, _, _>(
             self.inner.counterpart(),
@@ -308,7 +308,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     /// takes any [`RawJsonRpcId`](crate::RawJsonRpcId).
     pub fn send_cancel_request(
         &self,
-        request_id: impl Into<crate::schema::v2::RequestId>,
+        request_id: impl Into<crate::v2::schema::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Counterpart>,
@@ -322,7 +322,7 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
     pub fn send_cancel_request_to<Peer: Role>(
         &self,
         peer: Peer,
-        request_id: impl Into<crate::schema::v2::RequestId>,
+        request_id: impl Into<crate::v2::schema::RequestId>,
     ) -> Result<(), crate::Error>
     where
         Counterpart: HasPeer<Peer>,

@@ -5,9 +5,9 @@
 //! 2. Multi-component chains: proxies receive `v1::InitializeProxyRequest`
 //! 3. Last component (agent) receives `InitializeRequest`
 
-use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
-use agent_client_protocol::schema::{ProtocolVersion, v1};
+use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 use agent_client_protocol::{Agent, Client, Conductor, ConnectTo, DynConnectTo, Proxy};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_test::testy::v1::Testy;
 use std::sync::Arc;

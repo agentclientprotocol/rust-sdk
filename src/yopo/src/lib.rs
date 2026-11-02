@@ -3,13 +3,13 @@
 //! Provides a convenient API for running one-shot prompts against ACP components.
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::util::MatchDispatch;
+use agent_client_protocol::v1::schema::{
     AudioContent, ContentBlock, EmbeddedResourceResource, ImageContent, InitializeRequest,
     PermissionOptionKind, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
     StopReason, TextContent,
 };
-use agent_client_protocol::util::MatchDispatch;
 use agent_client_protocol::{Agent, Client, ConnectTo, Dispatch, Handled, UntypedMessage, V1};
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ use std::path::PathBuf;
 ///
 /// ```no_run
 /// use yopo::content_block_to_string;
-/// use agent_client_protocol::schema::v1::{ContentBlock, TextContent};
+/// use agent_client_protocol::v1::schema::{ContentBlock, TextContent};
 ///
 /// let block = ContentBlock::Text(TextContent::new("Hello".to_string()));
 /// assert_eq!(content_block_to_string(&block), "Hello");

@@ -24,9 +24,10 @@ Upgrade from 3.6 directly to 5.0.
   release.
 - `agent-client-protocol` depends on one exact version of
   `agent-client-protocol-schema` (an `=` requirement), and a minor SDK release
-  may move that pin to a newer schema release. Use the schema types through
-  `agent_client_protocol::schema`, `v1::schema` and `v2::schema` instead of
-  depending on `agent-client-protocol-schema` directly. A direct dependency
+  may move that pin to a newer schema release. Use each version's message
+  types through `v1::schema` and `v2::schema`, and the version-neutral items
+  through `agent_client_protocol::schema`, instead of depending on
+  `agent-client-protocol-schema` directly. A direct dependency
   must allow the exact version the SDK pins, or Cargo cannot resolve the
   dependency graph.
 
@@ -43,7 +44,8 @@ the imports:
 - `agent_client_protocol::v1` and, with `unstable_protocol_v2`,
   `agent_client_protocol::v2` hold each version's SDK types under the same
   names. Each also re-exports its protocol messages as `schema`:
-  `v1::schema` is `schema::v1` and `v2::schema` is `schema::v2`.
+  `v1::schema` and `v2::schema` replace `schema::v1` and `schema::v2`,
+  which are removed. See [`v1::schema` and `v2::schema`](#v1schema-and-v2schema).
 
 The crate root keeps what every version shares: transports (`Channel`,
 `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`, `TransportFrame` and the `Raw*`
@@ -73,7 +75,7 @@ peer selected.
 | `ForkSessionBuilder` | - | `fork_session*` (`unstable_session_fork`) |
 | `LoadSessionBuilder`, `SessionMessage`, `Blocking`, `NonBlocking`, `SessionBlockState` | v1 session helpers | - |
 | `InitializeOutcome` | - | the result of `send_initialize` |
-| `schema` | `schema::v1` | `schema::v2` |
+| `schema` | the protocol v1 messages | the protocol v2 messages |
 
 ### `v1::ConnectionTo` is its own type
 
@@ -82,7 +84,7 @@ crate root's version-neutral `ConnectionTo`. It is what callbacks on
 `Client.v1()`, `Agent.v1()` and `Proxy.v1()` receive, and it carries the v1
 session helpers (`build_session*`, `load_session*`, `resume_session*`).
 Requests sent through it return `v1::SentRequest<T>` and
-`v1::PreparedRequest<T>`, whose `id()` is a `schema::v1::RequestId`
+`v1::PreparedRequest<T>`, whose `id()` is a `v1::schema::RequestId`
 (`raw_id()` still gives the wire `RawJsonRpcId`). The wire format is
 unchanged.
 
@@ -137,11 +139,11 @@ Where code compared a v1 request's `id()` with IDs from the raw layer, use
   `ConnectionTo`. Turbofish calls name both parameters:
   `spawn_connection::<UntypedRole, _>(...)`.
 - `v1::ConnectionTo::send_cancel_request(_to)` takes
-  `impl Into<schema::v1::RequestId>` and `v2::ConnectionTo::send_cancel_request(_to)`
-  takes `impl Into<schema::v2::RequestId>`, the type their requests' `id()`
+  `impl Into<v1::schema::RequestId>` and `v2::ConnectionTo::send_cancel_request(_to)`
+  takes `impl Into<v2::schema::RequestId>`, the type their requests' `id()`
   returns. The v1 change is source-compatible: `RawJsonRpcId` converts into
-  `schema::v1::RequestId`, so v1 calls that pass one still compile. V2 calls
-  that pass a `RawJsonRpcId` must pass a `schema::v2::RequestId` instead, so
+  `v1::schema::RequestId`, so v1 calls that pass one still compile. V2 calls
+  that pass a `RawJsonRpcId` must pass a `v2::schema::RequestId` instead, so
   the v2 methods can no longer send `{"requestId": null}`, which v2 forbids.
   The raw `ConnectionTo` methods still take any `RawJsonRpcId`.
 - `Builder::with_v2_protocol_guard` (`unstable_protocol_v2`) is removed. A
@@ -282,7 +284,7 @@ their path.
 | `SessionMessage::SessionMessage(Dispatch)` | `v1::SessionMessage::Message(v1::Dispatch)` |
 | `SessionMessage::StopReason(StopReason)` | `v1::SessionMessage::PromptResponse(Result<PromptResponse, Error>)` |
 | `Blocking`, `NonBlocking`, `SessionBlockState` | `v1::Blocking`, `v1::NonBlocking`, `v1::SessionBlockState` |
-| `schema::InitializeProxyRequest` | `schema::v1::InitializeProxyRequest`, now the schema crate's type; see [Proxy chains](#proxy-chains) |
+| `schema::InitializeProxyRequest` | `v1::schema::InitializeProxyRequest`, now the schema crate's type; see [Proxy chains](#proxy-chains) |
 | `RestoredSession::session()`, `session_mut()`, `response()`, `into_parts()`, `into_session()` (and the `OpenedV2Session` equivalents) | the `session` and `response` fields |
 | `ActiveSession::response()`, `modes()`, `config_options()`, `meta()` | removed; use `v1::SessionSetup::response` |
 | v1 `SessionBuilder::start_session() -> ActiveSession` | returns `v1::SessionSetup<'static, _, NewSessionResponse>` |
@@ -338,9 +340,21 @@ In `agent-client-protocol-test`, Testy follows the same layout:
 
 ### `v1::schema` and `v2::schema`
 
+Each protocol version's messages have one path: `agent_client_protocol::v1::schema`
+and, with `unstable_protocol_v2`, `agent_client_protocol::v2::schema`.
+`agent_client_protocol::schema::v1` and `schema::v2` are removed. The root
+`schema` module keeps only the version-neutral items: `ProtocolVersion`,
+`MaybeUndefined`, `IntoOption`, `IntoMaybeUndefined` and `SuccessorMessage`.
+
+| Before | After |
+| --- | --- |
+| `schema::v1::X` | `v1::schema::X` |
+| `schema::v2::X` | `v2::schema::X` |
+| `schema::ProtocolVersion`, `schema::MaybeUndefined`, `schema::SuccessorMessage` | unchanged |
+
 Code that imports the schema modules as `v1` and `v2` cannot also import the
 SDK modules under those names. Import each version's messages through its SDK
-module instead, as `schema`:
+module as `schema`:
 
 ```rust,ignore
 use agent_client_protocol::v2::{self, schema};
@@ -353,9 +367,9 @@ async |request: schema::PromptRequest,
 use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 ```
 
-`agent_client_protocol::schema::v1` and `schema::v2` stay, next to the
-version-neutral schema items (`ProtocolVersion` and `SuccessorMessage`), so
-code that imports `schema::v2` keeps compiling.
+To keep the short `v1::X` and `v2::X` names in code that does not use the
+SDK modules, alias the import: `use agent_client_protocol::v2::schema as v2;`.
+The other examples in this guide use that shorthand for schema types.
 
 ### A v1 client
 
@@ -381,8 +395,8 @@ Client
 
 // After
 use agent_client_protocol::{Agent, Client, ConnectTo};
-use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
-use agent_client_protocol::v1::{ConnectionTo, SessionSetup};
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::v1::{ConnectionTo, SessionSetup, schema::InitializeRequest};
 
 Client
     .v1()
@@ -420,8 +434,8 @@ Agent
 
 // After
 use agent_client_protocol::Agent;
-use agent_client_protocol::schema::v1::{InitializeRequest, InitializeResponse};
 use agent_client_protocol::v1::Responder;
+use agent_client_protocol::v1::schema::{InitializeRequest, InitializeResponse};
 
 Agent
     .v1()
@@ -457,7 +471,7 @@ Client
 
 // After
 use agent_client_protocol::{Agent, Client};
-use agent_client_protocol::schema::{ProtocolVersion, v2};
+use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::v2::{ConnectionTo, InitializeOutcome, SessionSetup};
 
 Client
@@ -494,14 +508,13 @@ Agent
 
 // After
 use agent_client_protocol::{Agent, Client};
-use agent_client_protocol::schema::v2;
-use agent_client_protocol::v2::{ConnectionTo, Responder};
+use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 
 Agent
     .v2()
     .on_receive_request(
-        async |request: v2::PromptRequest,
-               responder: Responder<v2::PromptResponse>,
+        async |request: schema::PromptRequest,
+               responder: Responder<schema::PromptResponse>,
                cx: ConnectionTo<Client>| { ... },
         agent_client_protocol::on_receive_request!(),
     )
@@ -533,8 +546,8 @@ Errors are sent on the wire exactly as before, on both v1 and v2 connections.
   `Error::into_internal_error(err)`. These codes mean the same in every
   protocol version.
 - `agent_client_protocol::Result<T>`, `?` on `serde_json::Error` (becomes
-  `-32602`) and on `anyhow::Error` (an `Error`, `schema::v1::Error` or
-  `schema::v2::Error` inside it is recovered; anything else becomes `-32603`).
+  `-32602`) and on `anyhow::Error` (an `Error`, `v1::schema::Error` or
+  `v2::schema::Error` inside it is recovered; anything else becomes `-32603`).
 - `Display`, `Debug`, `Clone`, `PartialEq`, `Serialize` and `Deserialize`,
   with the same output as before.
 
@@ -545,7 +558,8 @@ removed from the SDK error, because their data differs between protocol
 versions. Build the error for the version you speak and convert it:
 
 ```rust,ignore
-use agent_client_protocol::{Error, schema::{v1, v2}};
+use agent_client_protocol::Error;
+use agent_client_protocol::{v1::schema as v1, v2::schema as v2};
 
 // Before
 Err(Error::session_not_found(session_id))
@@ -566,8 +580,8 @@ wire error (`-32022` with `requested` and `supported`) is the same.
 
 ### Converting to and from the schema errors
 
-`Error` converts losslessly in both directions with `schema::v1::Error` and,
-with `unstable_protocol_v2`, `schema::v2::Error`. Unknown codes and any
+`Error` converts losslessly in both directions with `v1::schema::Error` and,
+with `unstable_protocol_v2`, `v2::schema::Error`. Unknown codes and any
 `data`, including an explicit `null`, are kept.
 
 ```rust,ignore
@@ -604,8 +618,8 @@ the codes every version defines the same way:
 | `ErrorCode::ResourceNotFound` | `ErrorCode::RESOURCE_NOT_FOUND` |
 | `ErrorCode::Other(code)` | `ErrorCode::new(code)` or `code.into()` |
 
-`ErrorCode` compares directly with `schema::v1::ErrorCode` and
-`schema::v2::ErrorCode`, so you can also keep the schema enum and name the
+`ErrorCode` compares directly with `v1::schema::ErrorCode` and
+`v2::schema::ErrorCode`, so you can also keep the schema enum and name the
 version:
 
 ```rust,ignore
@@ -638,7 +652,7 @@ pub enum RawJsonRpcId {
 ```
 
 It has the same variants, serialization, `Display`, `Hash` and ordering as
-`schema::v1::RequestId`, so IDs are sent on the wire exactly as before: `1`
+`v1::schema::RequestId`, so IDs are sent on the wire exactly as before: `1`
 and `"1"` stay distinct, and integers keep the full 64-bit signed range.
 
 ### What changed
@@ -700,8 +714,8 @@ marker selects the type that `id()` returns:
 | Marker | Used by | `id()` |
 | --- | --- | --- |
 | `Raw` (the default) | `HandleDispatchFrom`, `MatchDispatch`, `ConnectionTo::send_request`, `Builder::new` and other unguarded builders | `&RawJsonRpcId` |
-| `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()`; `v1::ConnectionTo` | `&schema::v1::RequestId` |
-| `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `v2::ConnectionTo` | `&schema::v2::RequestId` |
+| `V1` | typed handlers on `Client.v1()`, `Agent.v1()`, `Proxy.v1()`; `v1::ConnectionTo` | `&v1::schema::RequestId` |
+| `V2` (`unstable_protocol_v2`) | typed handlers on `Client.v2()`, `Agent.v2()`, `Proxy.v2()`; `v2::ConnectionTo` | `&v2::schema::RequestId` |
 
 `Dispatch::id()` returns an `Option` of the same type. A `V2` `id()` never
 fails: the SDK rejects `null` request IDs on v2 connections and never assigns
@@ -740,7 +754,7 @@ converts with `v1::RequestId::from(id.clone())`.
 ### Typed handlers on v1 builders
 
 Typed handlers on `Client.v1()`, `Agent.v1()` and `Proxy.v1()` receive `V1`
-handles, so `id()` still returns `&schema::v1::RequestId`. Closures whose
+handles, so `id()` still returns `&v1::schema::RequestId`. Closures whose
 parameters are not annotated need no change. Where the handle type is spelled
 out, use the `v1` alias (or add the marker), because the root default is now
 `Raw`:
@@ -772,7 +786,7 @@ a responder, such as `v1::SessionBuilder::on_proxy_session_start`, take a
 ### v2 code
 
 `id()` on handles from the v2 builders and `v2::ConnectionTo` returns a
-`&schema::v2::RequestId` instead of a `&schema::v1::RequestId`:
+`&v2::schema::RequestId` instead of a `&v1::schema::RequestId`:
 
 ```rust,ignore
 // Before
@@ -951,7 +965,7 @@ router finishes when its input closes.
 
 ### v1 extension methods keep their `_` prefix
 
-Parsing a v1 dispatch enum (`schema::v1::ClientRequest`, `AgentRequest`,
+Parsing a v1 dispatch enum (`v1::schema::ClientRequest`, `AgentRequest`,
 `ClientNotification` or `AgentNotification`) from an extension method used to
 strip the leading `_`: a parsed `_vendor/x` reported `method()` as `vendor/x`
 and was sent on as `vendor/x`, which the peer answered with Method not found.
@@ -1077,21 +1091,21 @@ strings, such as in raw JSON-RPC handlers, test fixtures, or trace filters.
 `agent-client-protocol-schema` 1.15 defines the proxy-chain messages behind
 its `unstable_proxy_chains` feature. The SDK always enables that feature, so
 proxy and conductor support needs no feature flag, and it uses the schema's
-types instead of its own. `schema::v1` and `schema::v2` re-export the schema
-crate's modules, so most paths stay the same:
+types instead of its own. `v1::schema` and `v2::schema` re-export the schema
+crate's modules:
 
 | Before | After |
 | --- | --- |
-| `schema::v1::InitializeProxyRequest` (SDK type) | `schema::v1::InitializeProxyRequest` (schema type, same path) |
-| `schema::v2::InitializeProxyRequest` (SDK type) | `schema::v2::InitializeProxyRequest` (schema type, same path) |
-| response of `InitializeProxyRequest`: `InitializeResponse` | `schema::v1::InitializeProxyResponse` / `schema::v2::InitializeProxyResponse` |
-| `schema::METHOD_INITIALIZE_PROXY` | `schema::v1::PROXY_METHOD_NAMES.proxy_initialize` |
-| `schema::METHOD_SUCCESSOR_MESSAGE` | `schema::v1::PROXY_METHOD_NAMES.proxy_successor` |
-| (none) | `schema::v1::ProxySuccessorRequest`, `ProxySuccessorNotification`, `ProxySuccessorResponse` |
-| (none) | `schema::v1::ProxyRequest`, `ProxyResponse`, `ProxyNotification` |
+| `schema::InitializeProxyRequest` (SDK type) | `v1::schema::InitializeProxyRequest` (schema type) |
+| `schema::v2::InitializeProxyRequest` (SDK type) | `v2::schema::InitializeProxyRequest` (schema type) |
+| response of `InitializeProxyRequest`: `InitializeResponse` | `v1::schema::InitializeProxyResponse` / `v2::schema::InitializeProxyResponse` |
+| `schema::METHOD_INITIALIZE_PROXY` | `v1::schema::PROXY_METHOD_NAMES.proxy_initialize` |
+| `schema::METHOD_SUCCESSOR_MESSAGE` | `v1::schema::PROXY_METHOD_NAMES.proxy_successor` |
+| (none) | `v1::schema::ProxySuccessorRequest`, `ProxySuccessorNotification`, `ProxySuccessorResponse` |
+| (none) | `v1::schema::ProxyRequest`, `ProxyResponse`, `ProxyNotification` |
 | `schema::SuccessorMessage` | unchanged; see below |
 
-Each `v2` type is at the same name in `schema::v2`. The SDK implements its
+Each `v2` type is at the same name in `v2::schema`. The SDK implements its
 JSON-RPC traits for all of them: `InitializeProxyRequest` is answered with
 `InitializeProxyResponse`, `ProxySuccessorRequest` with
 `ProxySuccessorResponse` (the wrapped request's raw result), and
@@ -1143,7 +1157,7 @@ schema types. As a result:
 - An envelope without `params`, or with `"params": null`, is accepted and
   unwraps to a message without params. Earlier releases rejected an omitted
   `params`.
-- `meta` is `Option<schema::v1::Meta>`, the same
+- `meta` is `Option<v1::schema::Meta>`, the same
   `serde_json::Map<String, Value>` as before. A `_meta` that is not an object
   is ignored.
 
@@ -1180,7 +1194,7 @@ is private. Create conductors with `ConductorImpl::new_agent` or
 `InstantiateProxies::instantiate_proxies`,
 `InstantiateProxiesAndAgent::instantiate_proxies_and_agent` and instantiator
 closures receive a `SelectedInitializeRequest` instead of a
-`schema::v1::InitializeRequest`, and return one inside `InstantiatedProxies`
+`v1::schema::InitializeRequest`, and return one inside `InstantiatedProxies`
 or `InstantiatedChain`. It is the client's `initialize` request, parsed for
 the protocol version the conductor selected: `SelectedInitializeRequest::V1`
 or, with `unstable_protocol_v2`, `SelectedInitializeRequest::V2`. This

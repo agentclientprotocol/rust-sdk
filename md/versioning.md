@@ -58,10 +58,11 @@ are private. Work through this list, using v2 as the template. Search for
 `ProtocolVersion::V2` and `unstable_protocol_v2` to find each place.
 
 1. **Schema.** Bump the `agent-client-protocol-schema` pin to a release with
-   the new version's types. Add `schema::v3` in
-   `src/agent-client-protocol/src/schema/mod.rs`, with the JSON-RPC trait
-   implementations for its messages (see `v2_impls.rs`) and its
-   `InitializeProxyRequest`.
+   the new version's types. Implement the JSON-RPC traits for its messages
+   in `src/agent-client-protocol/src/schema/` (see `v2_impls.rs`), including
+   its proxy-chain types (`impl_proxy_jsonrpc!` in `proxy_protocol.rs`). The
+   messages are re-exported as `v3::schema` in step 4, the only public path
+   to them.
 2. **Feature gate.** Add `unstable_protocol_v3` to
    `src/agent-client-protocol/Cargo.toml`, forwarding to the schema crate's
    feature, and to the crates that need a passthrough (the polyfill and the
@@ -72,7 +73,8 @@ are private. Work through this list, using v2 as the template. Search for
    conversions.
 4. **Connection and module.** Add `jsonrpc/v3_connection.rs` and
    `src/agent-client-protocol/src/v3.rs`, re-exporting the shared names
-   (`ConnectionTo`, `Builder`, the request handle aliases, `schema`) and the
+   (`ConnectionTo`, `Builder`, the request handle aliases, and
+   `pub use agent_client_protocol_schema::v3 as schema;`) and the
    version's session API. Add `Client.v3()`, `Agent.v3()` and `Proxy.v3()`.
 5. **Negotiation.** Teach the wire guard in `jsonrpc/protocol_compat.rs` the
    new version: selecting it from `initialize` and `proxy/initialize`,

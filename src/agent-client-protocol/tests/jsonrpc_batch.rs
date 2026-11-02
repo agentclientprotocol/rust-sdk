@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use agent_client_protocol::{
     Agent, ByteStreams, ConnectTo, ConnectionTo, Error, JsonRpcNotification, JsonRpcRequest,
-    JsonRpcResponse, Responder, role::UntypedRole, schema::ProtocolVersion, schema::v1,
+    JsonRpcResponse, Responder, role::UntypedRole, schema::ProtocolVersion, v1::schema as v1,
 };
 use futures::channel::mpsc;
 use serde::{Deserialize, Serialize};
@@ -182,7 +182,7 @@ async fn v1_agent_rejects_a_batched_initialize_and_accepts_a_retry() {
 
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2 {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     use super::*;
 

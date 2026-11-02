@@ -6,11 +6,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     ByteStreams, Channel, Client, Conductor, ConnectTo, Error, Proxy, ProxyProtocolRouter,
     RawJsonRpcMessage, RawJsonRpcResponse, TransportFrame,
 };
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1, v2::schema as v2};
 use futures::StreamExt as _;
 use serde_json::Value;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use agent_client_protocol::schema::SuccessorMessage;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     MessageMcpNotification, MessageMcpRequest, MessageMcpResponse,
 };
 use agent_client_protocol::{

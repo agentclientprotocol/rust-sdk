@@ -137,8 +137,7 @@
 use std::sync::Arc;
 
 #[cfg(feature = "unstable_protocol_v2")]
-use agent_client_protocol::schema::v2;
-use agent_client_protocol::schema::{ProtocolVersion, v1};
+use agent_client_protocol::v2::schema as v2;
 use agent_client_protocol::{
     Agent, BoxFuture, Client, Conductor, ConnectTo, Dispatch, DynConnectTo, Error, JsonRpcMessage,
     Proxy, Responder, Role, RunWithConnectionTo, UntypedMessage, role::HasPeer,
@@ -149,6 +148,7 @@ use agent_client_protocol::{
 };
 use agent_client_protocol::{HandleDispatchFrom, util::MatchDispatchFrom};
 use agent_client_protocol::{Handled, schema::SuccessorMessage};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1};
 use futures::{
     SinkExt, StreamExt,
     channel::mpsc::{self},

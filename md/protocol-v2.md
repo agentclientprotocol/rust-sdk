@@ -83,8 +83,7 @@ Agent
 ```
 
 When v2 mode is enabled, application code should use SDK types from
-`agent_client_protocol::v2` and message types from `v2::schema`, the same
-module as `agent_client_protocol::schema::v2`. Importing
+`agent_client_protocol::v2` and message types from `v2::schema`. Importing
 `agent_client_protocol::v2::{self, schema}` brings both into scope without a
 name clash. The preceding agent fragment demonstrates version negotiation only.
 An agent that advertises session support must also implement the complete
@@ -107,7 +106,7 @@ handle and complete operation-specific response.
 Low-level custom `with_handler` and `with_runner` implementations continue to
 receive the protocol-neutral `ConnectionTo<_>`, and generic `send_request`
 remains schema-agnostic. These generic APIs do not infer a protocol version from
-the Rust payload type: callers on a v2 connection must use `schema::v2` types,
+the Rust payload type: callers on a v2 connection must use `v2::schema` types,
 or deliberately send extension or untyped messages. The connection guard
 enforces negotiation and initialization lifecycle, not Rust-type provenance.
 Dynamic handlers registered through `v2::ConnectionTo::add_dynamic_handler` use
@@ -251,15 +250,14 @@ the agent must reject. It does not rename or drop either server.
 non-blocking setup helpers for a v2 proxy:
 
 ```rust,ignore
-use agent_client_protocol::schema::v2;
-use agent_client_protocol::v2::SessionSetup;
+use agent_client_protocol::v2::{SessionSetup, schema};
 use agent_client_protocol::{Client, Proxy};
 
 Proxy
     .v2()
     .on_receive_request_from(
         Client,
-        async |request: v2::NewSessionRequest, responder, cx| {
+        async |request: schema::NewSessionRequest, responder, cx| {
             cx.build_session_from(request)
                 .with_mcp_server(session_server)?
                 .on_proxy_session_start(responder, async |setup| {
@@ -356,9 +354,9 @@ it, such as a v2-only agent behind a v1-only proxy, rejects the
 initialization, and the client sees the error.
 
 Proxy implementations use the schema crate's
-`agent_client_protocol::schema::v2::InitializeProxyRequest`. Its response is
-`schema::v2::InitializeProxyResponse`, a transparent wrapper around the v2
-`InitializeResponse`. `schema::v1::InitializeProxyRequest` is the v1
+`agent_client_protocol::v2::schema::InitializeProxyRequest`. Its response is
+`v2::schema::InitializeProxyResponse`, a transparent wrapper around the v2
+`InitializeResponse`. `v1::schema::InitializeProxyRequest` is the v1
 type. Static conductor component providers can carry either selected
 schema, but each supplied component must support that version. Use
 `Agent.protocol_router()` or `Proxy.protocol_router()` when a static component
@@ -416,7 +414,7 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
 - V2 request ids must be strings or integers. A v2 connection answers a request
   with a `null` id with `-32600` and `id: null`. V1 connections still accept
   `null` ids.
-- Since schema 1.13, v2 has its own `schema::v2::RequestId` without a `Null`
+- Since schema 1.13, v2 has its own `v2::schema::RequestId` without a `Null`
   variant. Request handles carry a protocol marker as their last type
   parameter: `Responder<T, V2>`, `ResponseRouter<T, V2>`,
   `SentRequest<T, V2>`, `PreparedRequest<T, V2>` and
@@ -424,7 +422,7 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   `v2::ResponseRouter<T>`, `v2::SentRequest<T>`, `v2::PreparedRequest<T>` and
   `v2::Dispatch<Req, Notif>`. Handles from `Client.v2()`, `Agent.v2()`,
   `Proxy.v2()` and `v2::ConnectionTo` use `V2`, so their `id()` returns a
-  `schema::v2::RequestId`, for example to match an elicitation's `requestId`.
+  `v2::schema::RequestId`, for example to match an elicitation's `requestId`.
   It never fails, because the SDK rejects `null` IDs on v2 connections and
   never assigns `null` itself. v1 builders use `V1`. Low-level
   `HandleDispatchFrom` and `MatchDispatch` handlers are not tied to a version:
@@ -502,17 +500,17 @@ applications built with v2 support to control v2 rollout with a runtime feature
 flag:
 
 ```rust
-use agent_client_protocol::schema::{v1, v2};
+use agent_client_protocol::{v1, v2};
 use agent_client_protocol::{Agent, ConnectTo};
 
-# fn implementation() -> v2::Implementation {
-#     v2::Implementation::new("example", "0.1.0")
+# fn implementation() -> v2::schema::Implementation {
+#     v2::schema::Implementation::new("example", "0.1.0")
 # }
 # async fn serve(client_transport: impl agent_client_protocol::ConnectTo<Agent>) -> agent_client_protocol::Result<()> {
 # let enable_protocol_v2 = true;
 let v1_agent = Agent.v1().on_receive_request(
-    async |initialize: v1::InitializeRequest, responder, _cx| {
-        responder.respond(v1::InitializeResponse::new(initialize.protocol_version))
+    async |initialize: v1::schema::InitializeRequest, responder, _cx| {
+        responder.respond(v1::schema::InitializeResponse::new(initialize.protocol_version))
     },
     agent_client_protocol::on_receive_request!(),
 );
@@ -521,8 +519,8 @@ let agent = Agent.protocol_router().with_v1(v1_agent);
 
 let agent = if enable_protocol_v2 {
     let v2_agent = Agent.v2().on_receive_request(
-        async |initialize: v2::InitializeRequest, responder, _cx| {
-            responder.respond(v2::InitializeResponse::new(
+        async |initialize: v2::schema::InitializeRequest, responder, _cx| {
+            responder.respond(v2::schema::InitializeResponse::new(
                 initialize.protocol_version,
                 implementation(),
             ))
@@ -576,7 +574,7 @@ arrive before initialization are ignored. The proxy protocol router, whose
 with `-32022` but closes after a rejection.
 
 Custom endpoints can construct the same wire error with
-`schema::v2::Error::unsupported_protocol_version(requested, supported).into()`.
+`v2::schema::Error::unsupported_protocol_version(requested, supported).into()`.
 The code is defined by v2 negotiation, not by a change to the v1 protocol.
 The SDK's version-neutral `Error` carries any numeric code, so a v1 client
 receives the initialization error as an unknown code without new v1 schema
@@ -739,7 +737,7 @@ removes keys whose values are `null`, and replaces each other value whole.
 Nested objects are not merged; nested nulls are ordinary data. An empty object
 does not clear metadata. Replay uses the same rules and never implicitly resets
 metadata. `ToolCallUpdate::apply_update` and `TerminalUpdate::apply_update`
-apply this rule; use `schema::v2::apply_meta_update` for application-owned
+apply this rule; use `v2::schema::apply_meta_update` for application-owned
 message, session, compaction, or subagent projections. Metadata on chunks,
 content, snapshots, and `plan_update` is not an entity patch.
 
@@ -836,7 +834,7 @@ Client projections should also follow these rules:
 
 Draft v2 type changes:
 
-- JSON-RPC batching is removed from v2, and `schema::v2::JsonRpcBatch` no
+- JSON-RPC batching is removed from v2, and `v2::schema::JsonRpcBatch` no
   longer exists. The SDK dropped batch support in both protocol versions:
   every connection answers a JSON array with a single `-32600` error with
   `id: null` (see [JSON-RPC batches](#json-rpc-batches)).
