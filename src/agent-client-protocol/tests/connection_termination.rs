@@ -255,3 +255,62 @@ async fn dropping_the_driver_publishes_dropped() {
     assert!(is_connection_terminated(&error), "{error:?}");
     assert_eq!(error.data.as_ref().unwrap()["termination"], "dropped");
 }
+
+/// A peer's error response carrying the SDK's termination reasons in its
+/// data must not make the local connection look terminated or closed.
+#[tokio::test]
+async fn peer_errors_with_termination_reasons_do_not_match() {
+    let (transport, mut peer) = Channel::duplex();
+
+    let cx = within(UntypedRole.builder().connect_with(transport, async |cx| {
+        for (message, reason, termination) in [
+            (
+                "Connection terminated",
+                agent_client_protocol::CONNECTION_TERMINATED_REASON,
+                Some("local_shutdown"),
+            ),
+            (
+                "Incoming transport closed",
+                agent_client_protocol::INCOMING_TRANSPORT_CLOSED_REASON,
+                None,
+            ),
+        ] {
+            let request = cx.send_request(MyRequest {});
+            let Some(TransportFrame::Single(RawJsonRpcMessage::Request(sent))) =
+                peer.rx.next().await
+            else {
+                panic!("expected the request");
+            };
+            // The exact error the SDK produces locally, sent from the wire.
+            let mut data = serde_json::json!({ "reason": reason, "method": "myRequest" });
+            if let Some(termination) = termination {
+                data["termination"] = termination.into();
+            }
+            let mut forged = Error::internal_error().data(data);
+            forged.message = message.to_string();
+            peer.tx
+                .unbounded_send(TransportFrame::Single(RawJsonRpcMessage::response(
+                    sent.id,
+                    Err(forged.clone()),
+                )))
+                .expect("connection is alive");
+
+            let error = request
+                .block_task()
+                .await
+                .expect_err("the peer answered with an error");
+            assert_eq!(error, forged, "the peer's error is delivered unchanged");
+            assert!(!is_connection_terminated(&error), "{error:?}");
+            assert!(!is_incoming_transport_closed(&error), "{error:?}");
+            // Building the same error locally does not match either.
+            assert!(!is_connection_terminated(&forged));
+            assert!(!is_incoming_transport_closed(&forged));
+        }
+        assert_eq!(cx.termination(), None, "the connection is still running");
+        Ok(cx)
+    }))
+    .await
+    .expect("foreground succeeds");
+
+    assert_eq!(cx.termination(), Some(ConnectionTermination::LocalShutdown));
+}

@@ -161,6 +161,7 @@ macro_rules! schema_error_code_conversions {
                     code: error.code.into(),
                     message: error.message,
                     data: error.data,
+                    origin: ErrorOrigin::Unmarked,
                 }
             }
         }
@@ -216,7 +217,7 @@ schema_error_code_conversions!(v2);
 /// }
 /// # }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct Error {
@@ -230,6 +231,48 @@ pub struct Error {
     /// omits the field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
+    /// Marks errors the SDK produced locally. It is never serialized, so an
+    /// error received from a peer can't carry it.
+    #[serde(skip)]
+    pub(crate) origin: ErrorOrigin,
+}
+
+/// Which locally produced condition an [`Error`] reports, if any.
+///
+/// [`is_connection_terminated`](crate::is_connection_terminated) and
+/// [`is_incoming_transport_closed`](crate::is_incoming_transport_closed) check
+/// this marker instead of the error's `data`, which a peer controls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ErrorOrigin {
+    /// Any error not marked below, including every error received from a peer.
+    #[default]
+    Unmarked,
+    /// The incoming transport reached clean EOF before a response arrived.
+    IncomingTransportClosed,
+    /// The connection terminated before a response arrived.
+    ConnectionTerminated,
+}
+
+// The origin marker is not part of an error's value: it is not serialized,
+// compared or printed, so errors behave as the JSON-RPC objects they hold.
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        self.code == other.code && self.message == other.message && self.data == other.data
+    }
+}
+
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "the origin marker is not part of the error's value"
+)]
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Error")
+            .field("code", &self.code)
+            .field("message", &self.message)
+            .field("data", &self.data)
+            .finish()
+    }
 }
 
 impl Error {
@@ -240,6 +283,7 @@ impl Error {
             code: code.into(),
             message: message.into(),
             data: None,
+            origin: ErrorOrigin::Unmarked,
         }
     }
 
@@ -397,6 +441,7 @@ mod tests {
                     code: code.into(),
                     message: message.into(),
                     data: data.clone(),
+                    origin: ErrorOrigin::Unmarked,
                 })
             })
         })

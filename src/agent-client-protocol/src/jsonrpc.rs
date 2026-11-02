@@ -3363,23 +3363,27 @@ impl Debug for IncomingClosed {
 /// Stable discriminator stored in the `data.reason` field of errors produced
 /// when the incoming transport reaches clean EOF before a request receives its
 /// response.
+///
+/// The `data` field is informational. Use [`is_incoming_transport_closed`] to
+/// detect these errors: a peer can send this value in its own error data.
 pub const INCOMING_TRANSPORT_CLOSED_REASON: &str = "incoming_transport_closed";
 
 /// Return whether `error` reports that the incoming transport reached clean
 /// EOF before a request received its response.
+///
+/// Only errors the SDK produced for its own connection match. An error
+/// response received from a peer never does, even when its `data.reason` is
+/// [`INCOMING_TRANSPORT_CLOSED_REASON`], and neither does an error built from
+/// the same code, message, and data.
 #[must_use]
 pub fn is_incoming_transport_closed(error: &crate::Error) -> bool {
-    error
-        .data
-        .as_ref()
-        .and_then(|data| data.get("reason"))
-        .and_then(serde_json::Value::as_str)
-        == Some(INCOMING_TRANSPORT_CLOSED_REASON)
+    error.origin == crate::error::ErrorOrigin::IncomingTransportClosed
 }
 
 fn incoming_transport_closed_error(method: &str) -> crate::Error {
     let mut error = crate::Error::internal_error();
     error.message = "Incoming transport closed".to_string();
+    error.origin = crate::error::ErrorOrigin::IncomingTransportClosed;
     error.data(serde_json::json!({
         "reason": INCOMING_TRANSPORT_CLOSED_REASON,
         "method": method,

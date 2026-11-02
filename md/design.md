@@ -182,6 +182,7 @@ The termination is published once, synchronously, as the driver future returns o
 
 - No further handler, close callback, runner, or `spawn`ed task of the connection runs afterwards; each has completed or been dropped. `on_close` callbacks run only for clean EOF.
 - Requests pending at clean EOF were already failed with `incoming_transport_closed`. Every request still pending at termination, and every request sent afterwards, fails with an error whose `data.reason` is `connection_terminated` (`is_connection_terminated()`), with `data.termination` naming the variant.
+- `is_incoming_transport_closed()` and `is_connection_terminated()` check a marker the SDK sets on the errors it produces. The marker is never serialized, so an error response from a peer never matches, even when its `data` carries the same `reason`. The `data` fields only describe the error.
 - Dropping the driver performs only this synchronous bookkeeping. The SDK does not promise asynchronous cleanup, close callbacks, or output draining after an arbitrary drop.
 
 Termination is not child-process reaping or application-queue drain; applications that own those remain responsible for them.

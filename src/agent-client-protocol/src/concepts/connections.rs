@@ -99,7 +99,8 @@
 //! `{"reason":"incoming_transport_closed","method":"..."}`. Requests made
 //! after EOF fail the same way; use
 //! [`is_incoming_transport_closed`](crate::is_incoming_transport_closed) to
-//! identify this error. In `connect_with`, notification and response sends
+//! identify this error. It matches only errors the SDK produced locally, not
+//! a peer's error response with the same data. In `connect_with`, notification and response sends
 //! remain available so applications can choose their own half-close policy;
 //! reactive `connect_to` stops accepting them when its final drain begins.
 //!
