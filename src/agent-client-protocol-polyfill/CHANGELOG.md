@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v3.6.0...agent-client-protocol-polyfill-v5.0.0) - 2026-11-02
+
+### Added
+
+- *(acp)* [**breaking**] adopt schema 1.15.0 and its proxy-chain types ([#480](https://github.com/agentclientprotocol/rust-sdk/pull/480))
+
+### Fixed
+
+- *(acp)* [**breaking**] tighten the root connection and builder surface for multi-version use ([#477](https://github.com/agentclientprotocol/rust-sdk/pull/477))
+- *(conductor)* [**breaking**] narrow the conductor API and fix multi-version chains ([#475](https://github.com/agentclientprotocol/rust-sdk/pull/475))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] reach each protocol version's schema only through v1::schema / v2::schema ([#481](https://github.com/agentclientprotocol/rust-sdk/pull/481))
+- prepare the 5.0 release (migration guide, stability policy, version pins) ([#479](https://github.com/agentclientprotocol/rust-sdk/pull/479))
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-polyfill-v3.3.0...agent-client-protocol-polyfill-v3.4.0) - 2026-10-16
 
 ### Fixed

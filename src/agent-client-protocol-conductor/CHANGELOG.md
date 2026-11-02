@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.6.0...agent-client-protocol-conductor-v5.0.0) - 2026-11-02
+
+### Added
+
+- *(acp)* [**breaking**] adopt schema 1.15.0 and its proxy-chain types ([#480](https://github.com/agentclientprotocol/rust-sdk/pull/480))
+- *(acp)* [**breaking**] v1 connection type, SessionSetup, and the v5 migration guide ([#472](https://github.com/agentclientprotocol/rust-sdk/pull/472))
+- *(acp)* [**breaking**] version-neutral Builder::new and v1::schema / v2::schema ([#470](https://github.com/agentclientprotocol/rust-sdk/pull/470))
+- *(rmcp)* [**breaking**] move the rmcp integration behind a versioned rmcp_3 feature ([#471](https://github.com/agentclientprotocol/rust-sdk/pull/471))
+- *(acp)* [**breaking**] type request handle IDs by protocol version ([#467](https://github.com/agentclientprotocol/rust-sdk/pull/467))
+- *(acp)* [**breaking**] version-neutral raw JSON-RPC request IDs ([#466](https://github.com/agentclientprotocol/rust-sdk/pull/466))
+- *(acp)* [**breaking**] version-neutral SDK Error with conversions to v1 and v2 schema errors ([#465](https://github.com/agentclientprotocol/rust-sdk/pull/465))
+- *(acp)* negotiate proxy/initialize versions like initialize ([#464](https://github.com/agentclientprotocol/rust-sdk/pull/464))
+- *(acp)* [**breaking**] rename proxy methods to proxy/initialize and proxy/successor ([#460](https://github.com/agentclientprotocol/rust-sdk/pull/460))
+- *(acp)* [**breaking**] keep v1 independent of unstable_protocol_v2; version-agnostic conductor and proxies ([#459](https://github.com/agentclientprotocol/rust-sdk/pull/459))
+- *(acp)* [**breaking**] remove JSON-RPC batch support ([#454](https://github.com/agentclientprotocol/rust-sdk/pull/454))
+
+### Fixed
+
+- conform the conductor and proxies to the proxy-chains RFD cleanup ([#2743](https://github.com/agentclientprotocol/rust-sdk/pull/2743)) and default v2 entity cancel to -32602 ([#482](https://github.com/agentclientprotocol/rust-sdk/pull/482))
+- *(conductor)* [**breaking**] narrow the conductor API and fix multi-version chains ([#475](https://github.com/agentclientprotocol/rust-sdk/pull/475))
+- [**breaking**] narrow transport and MCP APIs and fix rmcp integration issues ([#476](https://github.com/agentclientprotocol/rust-sdk/pull/476))
+- *(acp)* [**breaking**] version-neutral wire envelopes and extensible proxy types ([#478](https://github.com/agentclientprotocol/rust-sdk/pull/478))
+- *(acp)* [**breaking**] v1 session stream reports prompt errors and full responses ([#474](https://github.com/agentclientprotocol/rust-sdk/pull/474))
+- *(acp)* reject proxy MCP server names that collide with the client's ([#456](https://github.com/agentclientprotocol/rust-sdk/pull/456))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- *(acp)* [**breaking**] reach each protocol version's schema only through v1::schema / v2::schema ([#481](https://github.com/agentclientprotocol/rust-sdk/pull/481))
+- prepare the 5.0 release (migration guide, stability policy, version pins) ([#479](https://github.com/agentclientprotocol/rust-sdk/pull/479))
+- *(acp)* [**breaking**] v1 and v2 modules with versioned entry points ([#469](https://github.com/agentclientprotocol/rust-sdk/pull/469))
+
 ## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.5.0...agent-client-protocol-conductor-v3.6.0) - 2026-10-28
 
 ### Fixed

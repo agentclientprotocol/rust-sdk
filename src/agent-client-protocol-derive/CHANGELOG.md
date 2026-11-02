@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v3.6.0...agent-client-protocol-derive-v5.0.0) - 2026-11-02
+
+### Fixed
+
+- *(acp)* [**breaking**] tighten the root connection and builder surface for multi-version use ([#477](https://github.com/agentclientprotocol/rust-sdk/pull/477))
+- *(acp)* [**breaking**] version-neutral wire envelopes and extensible proxy types ([#478](https://github.com/agentclientprotocol/rust-sdk/pull/478))
+- remove redundant license-file metadata ([#448](https://github.com/agentclientprotocol/rust-sdk/pull/448))
+
+### Other
+
+- prepare the 5.0 release (migration guide, stability policy, version pins) ([#479](https://github.com/agentclientprotocol/rust-sdk/pull/479))
+
 ## [3.6.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-derive-v3.5.0...agent-client-protocol-derive-v3.6.0) - 2026-10-28
 
 ### Fixed
