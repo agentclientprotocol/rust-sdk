@@ -412,12 +412,14 @@ impl Agent {
     /// implementation for v1 clients.
     ///
     /// The client may repeat `initialize` after the previous one completed
-    /// and before it sends any other request. Each repeat is dispatched to
-    /// the initialize handler and the latest one is authoritative. A repeat
-    /// after any other request, while an initialize is in flight, or
-    /// requesting a version below v2 is rejected with `-32600`. A repeat that
-    /// fails keeps the previous initialization in place. Requests with a
-    /// `null` id are rejected with `-32600`.
+    /// and before it sends any other request. Each repeat is negotiated like
+    /// the first one and dispatched to the initialize handler, and the latest
+    /// successful one is authoritative. A repeat requesting a version below v2
+    /// gets `-32022` (Unsupported protocol version), as a first request would.
+    /// A repeat after any other request or while an initialize is in flight
+    /// is rejected with `-32600`. A repeat that fails keeps the previous
+    /// initialization in place. Requests with a `null` id are rejected with
+    /// `-32600`.
     ///
     /// An initialized agent without a handler for `tool_call/cancel` or
     /// `terminal/cancel` answers them with `-32602` (Invalid params), not
@@ -448,9 +450,11 @@ impl Agent {
     ///
     /// The selected implementation owns the connection. A repeated
     /// `initialize` is forwarded to it and is never re-routed, so it is
-    /// evaluated against the selected version: a v2 implementation rejects a
-    /// repeat requesting v1 with `-32600`, and a v1 implementation selects v1
-    /// for a repeat requesting a newer version. A first `initialize` with a
+    /// negotiated like a first request against the selected version alone. A
+    /// v2 implementation answers a repeat requesting v1 with `-32022` listing
+    /// only v2, since the connection cannot switch to the v1 API, and the v2
+    /// initialization stays in effect. A v1 implementation selects v1 for a
+    /// repeat requesting a newer version. A first `initialize` with a
     /// `null` id that would select v2 is rejected with `-32600`, like any
     /// other invalid first request.
     ///

@@ -825,13 +825,16 @@ mod imp {
             mut message: UntypedMessage,
         ) -> Result<UntypedMessage, crate::Error> {
             let requested = required_protocol_version_from_value(message.params())?;
-            if mode.initialization_role == InitializationRole::Responder {
-                self.ensure_repeat_keeps_version(requested)?;
-            }
+            // A repeated initialize is negotiated like the first one, and an
+            // error returned here leaves the previous initialization in place.
+            //
             // A proxy negotiates `proxy/initialize` exactly as an agent
             // negotiates `initialize`. V1 retains its original
             // fallback-to-latest bootstrap. Only v2 endpoints reject a version
-            // below their supported range.
+            // below their supported range, with `-32022`. That includes a
+            // repeat asking a v2 connection for v1: the connection cannot
+            // switch to another version's API, so v2 is the only version it
+            // supports.
             #[cfg(feature = "unstable_protocol_v2")]
             if mode.api == ProtocolVersionKind::V2 && requested < mode.api.as_protocol_version() {
                 return Err(crate::v2::schema::Error::unsupported_protocol_version(
@@ -1073,25 +1076,6 @@ mod imp {
                     state.initialization = InitializationState::Uninitialized;
                 }
             }
-        }
-
-        /// Reject a repeated initialize requesting a version below the one
-        /// the previous initialization selected. The agent never re-selects.
-        fn ensure_repeat_keeps_version(
-            &self,
-            requested: ProtocolVersion,
-        ) -> Result<(), crate::Error> {
-            let state = self
-                .state
-                .lock()
-                .expect("protocol compatibility state mutex poisoned");
-            let selected = state.negotiated.as_protocol_version();
-            if state.initialized && requested < selected {
-                return Err(crate::Error::invalid_request().data(format!(
-                    "a repeated initialize must not request a version below the selected ACP protocol version {selected}",
-                )));
-            }
-            Ok(())
         }
 
         fn has_initialized(&self) -> bool {
@@ -2041,7 +2025,7 @@ mod imp {
         }
 
         #[test]
-        fn v2_agent_rejects_lower_version_repeat_without_losing_ready_state()
+        fn v2_agent_answers_lower_version_repeat_like_a_first_initialize()
         -> Result<(), crate::Error> {
             let agent = initialized_v2_agent()?;
             let error = agent
@@ -2049,9 +2033,17 @@ mod imp {
                     "initialize",
                     serde_json::json!({ "protocolVersion": 1, "clientCapabilities": {} }),
                 )?)
-                .expect_err("a repeat must not request a version below the selected one");
-            assert_eq!(i32::from(error.code), -32600);
+                .expect_err("a v2 agent supports no version at or below v1");
+            // Handled like a first initialize: no supported version is at or
+            // below v1, so the repeat gets -32022 with the supported versions.
+            assert_eq!(i32::from(error.code), -32022);
+            assert_eq!(
+                error.data,
+                Some(serde_json::json!({ "requested": 1, "supported": [2] }))
+            );
+            // The failed repeat leaves the previous initialization in effect.
             assert_eq!(initialization_state(&agent), InitializationState::Ready);
+            assert_eq!(agent.active_wire_version(), ProtocolVersionKind::V2);
             agent.incoming_message(UntypedMessage::new(
                 "initialize",
                 v2_initialize_request(ProtocolVersion::V2),
