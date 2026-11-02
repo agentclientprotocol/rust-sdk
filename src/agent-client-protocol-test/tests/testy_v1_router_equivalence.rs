@@ -7,8 +7,7 @@
 use std::time::Duration;
 
 use agent_client_protocol::{
-    ByteStreams, Client, ConnectTo,
-    schema::{ProtocolVersion, v1},
+    ByteStreams, Client, ConnectTo, schema::ProtocolVersion, v1::schema as v1,
 };
 use agent_client_protocol_test::testy::{self, v1::Testy};
 use serde_json::{Value, json};

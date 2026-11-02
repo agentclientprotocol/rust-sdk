@@ -7,7 +7,7 @@
 
 use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, InitializeRequest, InitializeResponse, LoadSessionRequest,
     LoadSessionResponse, McpServer as SchemaMcpServer, McpServerAcpId, NewSessionRequest,
     NewSessionResponse, ResumeSessionRequest, ResumeSessionResponse, SessionId,

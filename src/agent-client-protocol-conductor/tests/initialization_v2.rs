@@ -5,11 +5,11 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use agent_client_protocol::schema::{ProtocolVersion, v1, v2};
 use agent_client_protocol::{
     Agent, Builder, ByteStreams, Client, Conductor, ConnectTo, ConnectionTo, DynConnectTo, Error,
     JsonRpcRequest, JsonRpcResponse, Proxy, UntypedMessage,
 };
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1, v2::schema as v2};
 use agent_client_protocol_conductor::{
     ConductorImpl, InstantiateProxies, InstantiateProxiesAndAgent, InstantiatedChain,
     InstantiatedProxies, ProxiesAndAgent, SelectedInitializeRequest,

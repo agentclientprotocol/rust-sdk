@@ -11,13 +11,13 @@ use crate::{
         run::{NullRun, RunWithConnectionTo, RunnerErrorScope},
     },
     role::{HasPeer, acp::ProxySessionMessages},
-    schema::v1::{
+    util::{MatchDispatch, MatchDispatchFrom},
+    v1::ConnectionTo,
+    v1::schema::{
         ContentBlock, ContentChunk, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
         NewSessionResponse, PromptRequest, PromptResponse, ResumeSessionRequest,
         ResumeSessionResponse, SessionId, SessionNotification, SessionUpdate,
     },
-    util::{MatchDispatch, MatchDispatchFrom},
-    v1::ConnectionTo,
 };
 
 use crate::Raw;
@@ -811,7 +811,7 @@ where
     ///
     /// ```ignore
     /// # use agent_client_protocol::{Proxy, Client, Conductor, ConnectTo};
-    /// # use agent_client_protocol::schema::v1::NewSessionRequest;
+    /// # use agent_client_protocol::v1::schema::NewSessionRequest;
     /// # use agent_client_protocol::mcp_server::McpServer;
     /// # use agent_client_protocol_rmcp::rmcp_3::McpServerExt;
     /// # async fn example(transport: impl ConnectTo<Proxy>) -> Result<(), agent_client_protocol::Error> {

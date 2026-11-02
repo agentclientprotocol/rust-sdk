@@ -19,7 +19,7 @@ use agent_client_protocol::{
     Builder, Channel, ConnectionTo, Dispatch, HandleDispatchFrom, Handled, JsonRpcMessage,
     JsonRpcRequest, JsonRpcResponse, RawJsonRpcId, Responder, Role, RoleId, SentRequest,
     role::UntypedRole,
-    schema::v1::{CancelRequestNotification, ProtocolLevelNotification},
+    v1::schema::{CancelRequestNotification, ProtocolLevelNotification},
 };
 use expect_test::expect;
 use futures::channel::mpsc;

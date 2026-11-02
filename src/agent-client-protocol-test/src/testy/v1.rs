@@ -3,7 +3,7 @@
 use super::{TestyCommand, TestyScenario, parse_command};
 use agent_client_protocol::v1::{ConnectionTo, Responder, SentRequest};
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     AgentAuthCapabilities, AgentCapabilities, AudioContent, AuthMethod, AuthMethodAgent,
     AuthenticateRequest, AuthenticateResponse, AvailableCommand, AvailableCommandInput,
     AvailableCommandsUpdate, CancelNotification, CloseSessionRequest, CloseSessionResponse,
@@ -25,7 +25,7 @@ use agent_client_protocol::schema::v1::{
     ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
     UnstructuredCommandInput, UsageUpdate, WriteTextFileRequest,
 };
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CompleteElicitationNotification, CreateElicitationRequest, ElicitationAction,
     ElicitationCapabilities, ElicitationFormMode, ElicitationRequestScope, ElicitationSchema,
     ElicitationSessionScope, ElicitationUrlMode, MultiSelectPropertySchema, RequestId,
@@ -964,7 +964,7 @@ impl Testy {
         terminal_id: TerminalId,
         report: &mut Vec<String>,
     ) -> Result<(), agent_client_protocol::Error> {
-        let request = agent_client_protocol::schema::v1::ReleaseTerminalRequest::new(
+        let request = agent_client_protocol::v1::schema::ReleaseTerminalRequest::new(
             session_id.clone(),
             terminal_id,
         );
@@ -1283,7 +1283,7 @@ impl Testy {
                         session_id,
                         connection,
                         "terminal/wait_for_exit",
-                        agent_client_protocol::schema::v1::WaitForTerminalExitRequest::new(
+                        agent_client_protocol::v1::schema::WaitForTerminalExitRequest::new(
                             session_id.clone(),
                             terminal_id.clone(),
                         ),
@@ -1298,7 +1298,7 @@ impl Testy {
                         session_id,
                         connection,
                         "terminal/kill",
-                        agent_client_protocol::schema::v1::KillTerminalRequest::new(
+                        agent_client_protocol::v1::schema::KillTerminalRequest::new(
                             session_id.clone(),
                             terminal_id.clone(),
                         ),
@@ -1313,7 +1313,7 @@ impl Testy {
                         session_id,
                         connection,
                         "terminal/release",
-                        agent_client_protocol::schema::v1::ReleaseTerminalRequest::new(
+                        agent_client_protocol::v1::schema::ReleaseTerminalRequest::new(
                             session_id.clone(),
                             terminal_id,
                         ),
@@ -1664,7 +1664,7 @@ fn invalid_params(message: impl ToString) -> agent_client_protocol::Error {
 
 /// `-32002` for a session that does not exist or is not active on this connection.
 fn session_not_found(session_id: &SessionId) -> agent_client_protocol::Error {
-    agent_client_protocol::schema::v1::Error::session_not_found(session_id.clone()).into()
+    agent_client_protocol::v1::schema::Error::session_not_found(session_id.clone()).into()
 }
 
 fn is_supported_mode_id(mode_id: &SessionModeId) -> bool {

@@ -10,9 +10,9 @@
 //! verifies that MCP requests travel all the way back to the client.
 
 use agent_client_protocol::mcp_server::McpServer;
-use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
 use agent_client_protocol::v1::SessionSetup;
 use agent_client_protocol::{Client, Role, RunWithConnectionTo};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema::InitializeRequest};
 use agent_client_protocol_conductor::trace::TraceEvent;
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use agent_client_protocol_polyfill::mcp_over_acp::McpOverAcpPolyfill;

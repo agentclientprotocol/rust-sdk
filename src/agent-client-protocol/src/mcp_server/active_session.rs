@@ -11,11 +11,11 @@ use crate::{
     RawJsonRpcResponse, RequestCancellation, Responder, Role, TransportFrame,
     jsonrpc::DynamicHandlerCleanup,
     role::HasPeer,
-    schema::v1::{
+    util::MatchDispatchFrom,
+    v1::schema::{
         McpError, McpRequestId, McpServerAcpId, MessageMcpNotification, MessageMcpRequest,
         MessageMcpResponse,
     },
-    util::MatchDispatchFrom,
 };
 use futures::{
     StreamExt,
@@ -132,14 +132,14 @@ impl McpProtocol for V1McpProtocol {
 
 #[cfg(feature = "unstable_protocol_v2")]
 impl McpProtocol for V2McpProtocol {
-    type MessageRequest = crate::schema::v2::MessageMcpRequest;
-    type MessageResponse = crate::schema::v2::MessageMcpResponse;
-    type MessageNotification = crate::schema::v2::MessageMcpNotification;
+    type MessageRequest = crate::v2::schema::MessageMcpRequest;
+    type MessageResponse = crate::v2::schema::MessageMcpResponse;
+    type MessageNotification = crate::v2::schema::MessageMcpNotification;
     fn response(outcome: McpOutcome) -> Self::MessageResponse {
         match outcome {
             McpOutcome::Result(value) => Self::MessageResponse::success(value),
             McpOutcome::Error(error) => {
-                let mut wire = crate::schema::v2::McpError::new(error.code, error.message);
+                let mut wire = crate::v2::schema::McpError::new(error.code, error.message);
                 wire.data = error.data;
                 wire.extra = error.extra;
                 Self::MessageResponse::error(wire)

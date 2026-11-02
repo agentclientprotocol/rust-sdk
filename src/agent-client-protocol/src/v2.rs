@@ -2,8 +2,7 @@
 //!
 //! Start a v2 connection with [`Client.v2()`](crate::Client::v2),
 //! [`Agent.v2()`](crate::Agent::v2) or [`Proxy.v2()`](crate::Proxy::v2). The
-//! protocol v2 message types are in [`v2::schema`](schema), the same module as
-//! [`agent_client_protocol::schema::v2`](crate::schema::v2).
+//! protocol v2 message types are in [`v2::schema`](schema).
 //!
 //! This module uses the same names as [`crate::v1`] for protocol v2's
 //! connection, builder, request handles and `schema`. The session APIs differ:
@@ -20,7 +19,7 @@
 //! [`schema`].
 //!
 //! The request handles here are the crate-root handles with the [`V2`]
-//! protocol marker: `id()` returns a [`schema::v2::RequestId`].
+//! protocol marker: `id()` returns a [`v2::schema::RequestId`].
 //!
 //! Requires the `unstable_protocol_v2` crate feature.
 //!
@@ -55,17 +54,21 @@
 //! Stabilizing protocol v2 only removes the `unstable_protocol_v2` gate. See
 //! [Stability](crate#stability) in the crate docs.
 //!
-//! [`schema::v2::RequestId`]: crate::schema::v2::RequestId
+//! [`v2::schema::RequestId`]: crate::v2::schema::RequestId
 
 use crate::{NullClose, NullHandler, UntypedMessage, V2, jsonrpc::run::NullRun};
 
-/// The protocol v2 message types: the same module as
-/// [`agent_client_protocol::schema::v2`](crate::schema::v2).
+/// The protocol v2 message types: requests, responses, notifications and
+/// their supporting types, re-exported from the `agent-client-protocol-schema`
+/// crate's `v2` module.
 ///
+/// This is the only path to them.
 /// `use agent_client_protocol::v2::{self, schema};` brings both the SDK
 /// types and the messages into scope under names that do not clash with the
-/// SDK's `v2` module.
-pub use crate::schema::v2 as schema;
+/// SDK's `v2` module. The version-neutral items, such as
+/// [`ProtocolVersion`](crate::schema::ProtocolVersion), are in
+/// [`crate::schema`].
+pub use agent_client_protocol_schema::v2 as schema;
 
 pub use crate::jsonrpc::InitializeOutcome;
 pub use crate::jsonrpc::v2_connection::ConnectionTo;
@@ -83,11 +86,11 @@ pub type Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullClos
     crate::Builder<Host, Handler, Runner, Close, V2>;
 
 /// A v2 request's [`Responder`](crate::Responder): `id()` returns a
-/// [`schema::v2::RequestId`](crate::schema::v2::RequestId).
+/// [`v2::schema::RequestId`](crate::v2::schema::RequestId).
 pub type Responder<T = serde_json::Value> = crate::Responder<T, V2>;
 
 /// A v2 [`ResponseRouter`](crate::ResponseRouter): `id()` returns a
-/// [`schema::v2::RequestId`](crate::schema::v2::RequestId).
+/// [`v2::schema::RequestId`](crate::v2::schema::RequestId).
 pub type ResponseRouter<T = serde_json::Value> = crate::ResponseRouter<T, V2>;
 
 /// A request sent through a v2 [`ConnectionTo`]: the

@@ -8,9 +8,9 @@ use serde::Serialize;
 
 use crate::jsonrpc::{ConnectionTo, RawJsonRpcId};
 use crate::role::Role;
-use crate::schema::v1;
+use crate::v1::schema as v1;
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v2;
+use crate::v2::schema as v2;
 
 /// The protocol version of a request handle or builder, as a type.
 ///
@@ -24,8 +24,8 @@ use crate::schema::v2;
 /// | Marker | `RequestId` | `Connection<Counterpart>` |
 /// | --- | --- | --- |
 /// | [`Raw`] (the default) | [`RawJsonRpcId`] | [`ConnectionTo`] |
-/// | [`V1`] | [`schema::v1::RequestId`](crate::schema::v1::RequestId) | [`v1::ConnectionTo`](crate::v1::ConnectionTo) |
-/// | `V2` (`unstable_protocol_v2`) | `schema::v2::RequestId` | `v2::ConnectionTo` |
+/// | [`V1`] | [`v1::schema::RequestId`](crate::v1::schema::RequestId) | [`v1::ConnectionTo`](crate::v1::ConnectionTo) |
+/// | `V2` (`unstable_protocol_v2`) | `v2::schema::RequestId` | `v2::ConnectionTo` |
 ///
 /// - Typed handlers on `Client.v1()`, `Agent.v1()` and
 ///   `Proxy.v1()`, and requests sent through `v1::ConnectionTo`, use [`V1`].
@@ -46,15 +46,15 @@ use crate::schema::v2;
 /// one with `into_protocol`, and any handle converts back with `into_raw`.
 ///
 /// ```
-/// use agent_client_protocol::{RawJsonRpcId, Responder, V1, schema::v1};
+/// use agent_client_protocol::{RawJsonRpcId, Responder, V1, v1::schema};
 ///
-/// fn log_request(responder: &Responder<v1::PromptResponse, V1>) {
-///     let id: &v1::RequestId = responder.id();
+/// fn log_request(responder: &Responder<schema::PromptResponse, V1>) {
+///     let id: &schema::RequestId = responder.id();
 ///     let wire_id: &RawJsonRpcId = responder.raw_id();
 ///     assert_eq!(RawJsonRpcId::from(id.clone()), *wire_id);
 /// }
 ///
-/// fn log_raw_request(responder: &Responder<v1::PromptResponse>) {
+/// fn log_raw_request(responder: &Responder<schema::PromptResponse>) {
 ///     // `Responder<T>` is `Responder<T, Raw>`.
 ///     let id: &RawJsonRpcId = responder.id();
 ///     # let _ = id;
@@ -64,9 +64,9 @@ use crate::schema::v2;
 /// Generic code can accept handles of any version:
 ///
 /// ```
-/// use agent_client_protocol::{Protocol, Responder, schema::v1};
+/// use agent_client_protocol::{Protocol, Responder, v1::schema};
 ///
-/// fn reject<P: Protocol>(responder: Responder<v1::PromptResponse, P>) -> agent_client_protocol::Result<()> {
+/// fn reject<P: Protocol>(responder: Responder<schema::PromptResponse, P>) -> agent_client_protocol::Result<()> {
 ///     responder.respond_with_error(agent_client_protocol::Error::invalid_params())
 /// }
 /// ```

@@ -6,8 +6,7 @@ use std::sync::{
 
 use agent_client_protocol::{
     Agent, Channel, Client, ConnectTo, Error, RawJsonRpcMessage, RawJsonRpcResponse,
-    TransportFrame,
-    schema::{ProtocolVersion, v1},
+    TransportFrame, schema::ProtocolVersion, v1::schema as v1,
 };
 use futures::StreamExt as _;
 use serde_json::{Value, json};
@@ -218,7 +217,7 @@ async fn standalone_v1_proxy_negotiates_like_a_v1_agent() -> Result<(), Error> {
     for requested in [0_u16, 1, 2, 3, u16::MAX] {
         let proxy = agent_client_protocol::Proxy.v1().on_receive_request_from(
             Client,
-            async move |request: agent_client_protocol::schema::v1::InitializeProxyRequest,
+            async move |request: agent_client_protocol::v1::schema::InitializeProxyRequest,
                         responder,
                         _cx| {
                 assert_eq!(request.initialize.protocol_version, ProtocolVersion::V1);

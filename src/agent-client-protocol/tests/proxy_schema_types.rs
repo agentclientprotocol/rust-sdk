@@ -3,10 +3,10 @@
 
 #![allow(unused_imports)]
 
-use agent_client_protocol::schema::{SuccessorMessage, v1};
 use agent_client_protocol::{
     ErrorCode, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse, UntypedMessage,
 };
+use agent_client_protocol::{schema::SuccessorMessage, v1::schema as v1};
 use serde_json::{Value, json};
 
 /// Compile-time check that `Req` is answered with `Resp`.
@@ -152,7 +152,7 @@ fn proxy_method_names_come_from_the_schema() {
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2 {
     use agent_client_protocol::JsonRpcMessage;
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
     use serde_json::json;
 
     use super::{assert_message_round_trips, assert_response_round_trips};

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use agent_client_protocol::V1;
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::{
     CancelRequestNotification, ContentBlock, ContentChunk, InitializeRequest, InitializeResponse,
     McpRequestId, McpServer as SchemaMcpServer, McpServerAcpId, MessageMcpNotification,
     MessageMcpRequest, MessageMcpResponse, NewSessionRequest, NewSessionResponse, PermissionOption,

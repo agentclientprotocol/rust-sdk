@@ -13,12 +13,10 @@ use std::{
 use agent_client_protocol::{
     Agent, Client, Error,
     mcp_server::McpServer,
-    schema::{
-        ProtocolVersion,
-        v1::{
-            AgentCapabilities, InitializeRequest, InitializeResponse, McpCapabilities,
-            McpServer as AcpMcpServer, NewSessionRequest, NewSessionResponse, SessionCapabilities,
-        },
+    schema::ProtocolVersion,
+    v1::schema::{
+        AgentCapabilities, InitializeRequest, InitializeResponse, McpCapabilities,
+        McpServer as AcpMcpServer, NewSessionRequest, NewSessionResponse, SessionCapabilities,
     },
 };
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};

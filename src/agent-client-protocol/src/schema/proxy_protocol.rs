@@ -2,16 +2,17 @@
 //!
 //! The message types come from the schema crate, where they sit behind its
 //! `unstable_proxy_chains` feature, which this SDK always enables:
-//! `schema::v1` (and, with `unstable_protocol_v2`, `schema::v2`) has
-//! [`InitializeProxyRequest`](super::v1::InitializeProxyRequest),
-//! [`InitializeProxyResponse`](super::v1::InitializeProxyResponse),
-//! [`ProxySuccessorRequest`](super::v1::ProxySuccessorRequest),
-//! [`ProxySuccessorNotification`](super::v1::ProxySuccessorNotification),
-//! [`ProxySuccessorResponse`](super::v1::ProxySuccessorResponse), the
-//! [`ProxyRequest`](super::v1::ProxyRequest),
-//! [`ProxyResponse`](super::v1::ProxyResponse) and
-//! [`ProxyNotification`](super::v1::ProxyNotification) unions, and the method
-//! names in [`PROXY_METHOD_NAMES`](super::v1::PROXY_METHOD_NAMES).
+//! [`v1::schema`](crate::v1::schema) (and, with `unstable_protocol_v2`,
+//! `v2::schema`) has
+//! [`InitializeProxyRequest`](crate::v1::schema::InitializeProxyRequest),
+//! [`InitializeProxyResponse`](crate::v1::schema::InitializeProxyResponse),
+//! [`ProxySuccessorRequest`](crate::v1::schema::ProxySuccessorRequest),
+//! [`ProxySuccessorNotification`](crate::v1::schema::ProxySuccessorNotification),
+//! [`ProxySuccessorResponse`](crate::v1::schema::ProxySuccessorResponse), the
+//! [`ProxyRequest`](crate::v1::schema::ProxyRequest),
+//! [`ProxyResponse`](crate::v1::schema::ProxyResponse) and
+//! [`ProxyNotification`](crate::v1::schema::ProxyNotification) unions, and the method
+//! names in [`PROXY_METHOD_NAMES`](crate::v1::schema::PROXY_METHOD_NAMES).
 //!
 //! This module implements the SDK's JSON-RPC traits for those types and adds
 //! [`SuccessorMessage`], a version-neutral typed view of a `proxy/successor`
@@ -23,8 +24,8 @@ use std::sync::Arc;
 
 use serde_json::value::RawValue;
 
-use crate::schema::{IntoOption, v1};
 use crate::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, UntypedMessage};
+use crate::{schema::IntoOption, v1::schema as v1};
 
 /// `proxy/successor`, the method of every successor envelope.
 const PROXY_SUCCESSOR: &str = v1::PROXY_METHOD_NAMES.proxy_successor;
@@ -39,7 +40,7 @@ const PROXY_INITIALIZE: &str = v1::PROXY_METHOD_NAMES.proxy_initialize;
 macro_rules! impl_proxy_jsonrpc {
     ($ns:ident) => {
         const _: () = {
-            use $crate::schema::$ns::{
+            use $crate::$ns::schema::{
                 InitializeProxyRequest, InitializeProxyResponse, ProxyNotification, ProxyRequest,
                 ProxyResponse, ProxySuccessorNotification, ProxySuccessorRequest,
                 ProxySuccessorResponse,
@@ -202,8 +203,8 @@ fn to_raw_value(value: &serde_json::Value) -> Result<Arc<RawValue>, crate::Error
 
 /// A typed view of a `proxy/successor` envelope.
 ///
-/// The schema's [`ProxySuccessorRequest`](super::v1::ProxySuccessorRequest)
-/// and [`ProxySuccessorNotification`](super::v1::ProxySuccessorNotification)
+/// The schema's [`ProxySuccessorRequest`](crate::v1::schema::ProxySuccessorRequest)
+/// and [`ProxySuccessorNotification`](crate::v1::schema::ProxySuccessorNotification)
 /// carry the wrapped message as a raw method name and raw params, with one
 /// copy of each type per protocol version. `SuccessorMessage<M>` holds the
 /// wrapped message as an SDK message type `M` instead and works for every

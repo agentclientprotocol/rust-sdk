@@ -1,16 +1,16 @@
 use agent_client_protocol::{
     Error, JsonRpcMessage, JsonRpcResponse, UntypedMessage,
-    schema::{
-        ProtocolVersion,
-        v1::{self, LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest},
+    schema::ProtocolVersion,
+    v1::schema::{
+        self as v1, LoadSessionRequest, McpServer, NewSessionRequest, ResumeSessionRequest,
     },
 };
 use serde_json::{Map, Value};
 
 #[cfg(feature = "unstable_session_fork")]
-use agent_client_protocol::schema::v1::ForkSessionRequest;
+use agent_client_protocol::v1::schema::ForkSessionRequest;
 #[cfg(feature = "unstable_protocol_v2")]
-use agent_client_protocol::schema::v2;
+use agent_client_protocol::v2::schema as v2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PolyfillProtocol {
@@ -110,7 +110,7 @@ impl PolyfillProtocol {
     ) -> Result<DownstreamMcpMode, Error> {
         let mode = match self {
             Self::V1 => {
-                let parsed = agent_client_protocol::schema::v1::InitializeResponse::from_json(
+                let parsed = agent_client_protocol::v1::schema::InitializeResponse::from_json(
                     "initialize",
                     response.clone(),
                 )?;
@@ -274,7 +274,7 @@ impl PolyfillProtocol {
         let (server_id, request_id, method, params) = match self {
             Self::V1 => {
                 let parsed =
-                    agent_client_protocol::schema::v1::MessageMcpNotification::parse_message(
+                    agent_client_protocol::v1::schema::MessageMcpNotification::parse_message(
                         raw.method(),
                         raw.params(),
                     )?;

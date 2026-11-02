@@ -141,7 +141,7 @@ pub(crate) fn execute<R: Role, S: Service<RoleServer>>(
             Ok(inbound) => inbound,
             Err(error) => {
                 return Ok(McpOutcome::Error(
-                    acp::schema::v1::McpError::new(
+                    acp::v1::schema::McpError::new(
                         if error.to_string().contains("unknown variant") {
                             -32601
                         } else {

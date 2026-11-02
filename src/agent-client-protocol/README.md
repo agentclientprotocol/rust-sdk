@@ -27,7 +27,7 @@ agent-client-protocol = { version = "5", features = ["process"] }
 
 ```rust,no_run
 use agent_client_protocol::{AcpAgent, Client, Result};
-use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema::InitializeRequest};
 
 # async fn connect() -> Result<()> {
 let agent = AcpAgent::from_args(["my-agent"])?;
@@ -137,8 +137,10 @@ application uses explicitly; a lean dependency no longer needs
   `unstable_protocol_v2` gate.
 - This crate depends on one exact version of `agent-client-protocol-schema`
   (an `=` requirement), and a minor release may move that pin to a newer
-  schema release. Use the schema types through `agent_client_protocol::schema`,
-  `v1::schema` and `v2::schema` instead of depending on
+  schema release. Use each version's message types through
+  `agent_client_protocol::v1::schema` and `agent_client_protocol::v2::schema`,
+  and the version-neutral items such as `ProtocolVersion` through
+  `agent_client_protocol::schema`, instead of depending on
   `agent-client-protocol-schema` directly. A direct dependency must allow the
   exact version this crate pins, or Cargo cannot resolve the dependency graph.
 - All SDK crates share one version number, so moving a public dependency of

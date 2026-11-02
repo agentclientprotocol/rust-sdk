@@ -21,12 +21,10 @@
 //!
 //! - [`Client.v1()`](Client::v1), [`Agent.v1()`](Agent::v1) and
 //!   [`Proxy.v1()`](Proxy::v1) start a stable protocol v1 connection. Its
-//!   types are in [`v1`] and its messages in [`v1::schema`] (also reachable
-//!   as [`schema::v1`]).
+//!   types are in [`v1`] and its messages in [`v1::schema`].
 //! - With the `unstable_protocol_v2` feature, `Client.v2()`, `Agent.v2()` and
 //!   `Proxy.v2()` start a draft protocol v2 connection. Its types are in
-//!   `agent_client_protocol::v2` and its messages in `v2::schema` (also
-//!   reachable as `schema::v2`).
+//!   `agent_client_protocol::v2` and its messages in `v2::schema`.
 //!
 //! The `v1` and `v2` modules use the same names for the connection, the builder,
 //! the request handles and `schema` (`ConnectionTo`, `Builder`, `Responder`,
@@ -66,7 +64,7 @@
 //!
 //! ```no_run
 //! use agent_client_protocol::Client;
-//! use agent_client_protocol::schema::{ProtocolVersion, v1::InitializeRequest};
+//! use agent_client_protocol::{schema::ProtocolVersion, v1::schema::InitializeRequest};
 //! use agent_client_protocol::v1::SessionSetup;
 //!
 //! # async fn run(transport: impl agent_client_protocol::ConnectTo<agent_client_protocol::Client>) -> agent_client_protocol::Result<()> {
@@ -145,10 +143,12 @@
 //!   `unstable_protocol_v2` gate.
 //! - This crate depends on one exact version of `agent-client-protocol-schema`
 //!   (an `=` requirement), and a minor release may move that pin to a newer
-//!   schema release. Use the schema types through [`schema`], [`v1::schema`]
-//!   and `v2::schema` instead of depending on `agent-client-protocol-schema`
-//!   directly. A direct dependency must allow the exact version this crate
-//!   pins, or Cargo cannot resolve the dependency graph.
+//!   schema release. Use each version's message types through [`v1::schema`]
+//!   and `v2::schema`, and the version-neutral items such as
+//!   [`ProtocolVersion`](schema::ProtocolVersion) through [`schema`], instead
+//!   of depending on `agent-client-protocol-schema` directly. A direct
+//!   dependency must allow the exact version this crate pins, or Cargo cannot
+//!   resolve the dependency graph.
 //! - All SDK crates share one version number, so moving a public dependency of
 //!   any of them to a new major version, such as `axum` or `reqwest` in
 //!   `agent-client-protocol-http`, is a major release of all of them.

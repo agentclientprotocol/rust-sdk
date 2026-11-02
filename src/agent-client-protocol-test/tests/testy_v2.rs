@@ -4,8 +4,7 @@ use std::{path::PathBuf, time::Duration};
 
 use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Client, Error,
-    schema::{ProtocolVersion, v1, v2},
+    Client, Error, schema::ProtocolVersion, v1::schema as v1, v2::schema as v2,
 };
 use agent_client_protocol_test::testy::{self, TestyCommand, TestyScenario};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};

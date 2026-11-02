@@ -14,7 +14,7 @@ The core SDK. Provides:
 - **Versioned connection builders** (`Client.v1()`, `Agent.v2()`, ..., `connect_to()`, `connect_with()`)
 - **Per-version modules** (`agent_client_protocol::v1`, and `agent_client_protocol::v2` with `unstable_protocol_v2`) - the same names (`ConnectionTo`, `Builder`, `Responder`, `SessionBuilder`, ...) for each protocol version
 - **Message handling** (`on_receive_request`, `on_receive_notification`, `on_receive_dispatch`)
-- **Protocol types** (`agent_client_protocol::schema::*`) - all ACP message types
+- **Protocol types** (`agent_client_protocol::v1::schema`, and `agent_client_protocol::v2::schema` with `unstable_protocol_v2`) - each protocol version's ACP message types, with the version-neutral items such as `ProtocolVersion` in `agent_client_protocol::schema`
 - **Transports and process launching** (`Channel`, `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`)
 - **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions through the opt-in `unstable_mcp_over_acp` transport
 

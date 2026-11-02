@@ -10,8 +10,8 @@ use crate::{
     SentRequest, V2,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
     role::{HasPeer, acp::ProxySessionMessages},
-    schema::v2,
     v2::ConnectionTo,
+    v2::schema as v2,
 };
 
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -249,7 +249,7 @@ where
     ///
     /// Register typed session update handlers before connecting. When the
     /// request asks for replay, the agent sends those updates before the
-    /// [`v2::ResumeSessionResponse`]. Call
+    /// [`v2::schema::ResumeSessionResponse`](v2::ResumeSessionResponse). Call
     /// [`ResumeSessionBuilder::start_session`] to publish the request.
     pub fn resume_session_from(
         &self,
@@ -262,7 +262,7 @@ where
 /// Builder for a draft protocol v2 `session/new` request.
 ///
 /// Protocol v2 acknowledges `session/prompt` independently from inbound
-/// session updates. Register typed [`v2::UpdateSessionNotification`] and
+/// session updates. Register typed [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification) and
 /// session request handlers on [`v2::Builder`](crate::v2::Builder) before connecting, then use
 /// [`Self::start_session`] to create the command-only [`ActiveSession`] handle or
 /// `on_proxy_session_start` to forward setup through a proxy.
@@ -355,7 +355,7 @@ where
     /// Send `session/new` and return its independently consumable request.
     ///
     /// The successful result contains both a cloneable command handle and the
-    /// complete [`v2::NewSessionResponse`]. Consume the returned request with
+    /// complete [`v2::schema::NewSessionResponse`](v2::NewSessionResponse). Consume the returned request with
     /// [`SentRequest::block_task`], [`SentRequest::on_receiving_result`], or
     /// another explicit [`SentRequest`] completion mode.
     ///
@@ -407,7 +407,7 @@ where
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
                 let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.0.clone()),
+                    crate::v1::schema::SessionId::from(session_id.0.clone()),
                 )) {
                     Ok(route) => route,
                     Err(error) => return responder.respond_with_error(error),
@@ -430,8 +430,8 @@ where
 /// Builder for an unstable draft protocol v2 `session/fork` request.
 ///
 /// A successful fork creates a new independent session whose ID comes from the
-/// [`v2::ForkSessionResponse`]. Register typed
-/// [`v2::UpdateSessionNotification`] and interactive request handlers on
+/// [`v2::schema::ForkSessionResponse`](v2::ForkSessionResponse). Register typed
+/// [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification) and interactive request handlers on
 /// [`v2::Builder`](crate::v2::Builder) before connecting, then use [`Self::start_session`] to
 /// obtain a command handle for the fork or `on_proxy_session_start` to forward
 /// setup through a proxy.
@@ -529,7 +529,7 @@ where
     /// Send `session/fork` and return its independently consumable request.
     ///
     /// The successful result contains both a cloneable command handle for the
-    /// newly created fork and the complete [`v2::ForkSessionResponse`]. Consume
+    /// newly created fork and the complete [`v2::schema::ForkSessionResponse`](v2::ForkSessionResponse). Consume
     /// the returned request with [`SentRequest::block_task`],
     /// [`SentRequest::on_receiving_result`], or another explicit [`SentRequest`]
     /// completion mode.
@@ -585,7 +585,7 @@ where
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
                 let route = match raw_connection.add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.0.clone()),
+                    crate::v1::schema::SessionId::from(session_id.0.clone()),
                 )) {
                     Ok(route) => route,
                     Err(error) => return responder.respond_with_error(error),
@@ -608,7 +608,7 @@ where
 /// Builder for a draft protocol v2 `session/resume` request.
 ///
 /// Replay updates arrive before the resume response. Direct clients must
-/// register typed [`v2::UpdateSessionNotification`] and interactive request
+/// register typed [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification) and interactive request
 /// handlers on [`v2::Builder`](crate::v2::Builder) before connecting. Proxies should use
 /// [`Self::on_proxy_session_start`], which makes downstream session routing
 /// ready before publishing the resume request.
@@ -703,7 +703,7 @@ where
     /// Send `session/resume` and return its independently consumable request.
     ///
     /// The successful result contains both a cloneable command handle and the
-    /// complete [`v2::ResumeSessionResponse`]. Consume the returned request
+    /// complete [`v2::schema::ResumeSessionResponse`](v2::ResumeSessionResponse). Consume the returned request
     /// with [`SentRequest::block_task`], [`SentRequest::on_receiving_result`],
     /// or another explicit [`SentRequest`] completion mode.
     ///
@@ -759,7 +759,7 @@ where
             session_connection
                 .raw_connection()
                 .add_dynamic_handler(ProxySessionMessages::new(
-                    crate::schema::v1::SessionId::from(session_id.0.clone()),
+                    crate::v1::schema::SessionId::from(session_id.0.clone()),
                 ))?,
         );
 
@@ -812,8 +812,8 @@ where
 /// Cloneable command handle for a draft protocol v2 session.
 ///
 /// Inbound protocol traffic is intentionally not owned by this value. Receive
-/// authoritative [`v2::UpdateSessionNotification`] values and interactive
-/// requests such as [`v2::RequestPermissionRequest`] through typed handlers
+/// authoritative [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification) values and interactive
+/// requests such as [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest) through typed handlers
 /// installed on [`v2::Builder`](crate::v2::Builder).
 #[derive(Debug, Clone)]
 pub struct ActiveSession<Link>
@@ -842,7 +842,7 @@ where
     ///
     /// A successful response only acknowledges that the agent accepted the
     /// prompt. The accepted user message, output, state changes, and completion
-    /// arrive independently through [`v2::UpdateSessionNotification`].
+    /// arrive independently through [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification).
     pub fn send_prompt(&self, prompt: impl ToString) -> SentRequest<v2::PromptResponse, V2> {
         self.send_prompt_blocks(vec![prompt.to_string().into()])
     }
@@ -880,12 +880,12 @@ where
     /// not covered, although the agent may stop it too.
     ///
     /// If foreground work was active, cancellation completes when the agent
-    /// reports an `idle` state update with [`v2::StopReason::Cancelled`]; no
+    /// reports an `idle` state update with [`v2::schema::StopReason::Cancelled`](v2::StopReason::Cancelled); no
     /// completion update is required when nothing was running. `cancelled` is only
     /// reported for work the client cancelled, through this notification or
     /// by closing the session. The client should immediately mark unfinished
     /// tool calls for the active work as cancelled and must resolve every
-    /// pending [`v2::RequestPermissionRequest`] in the session with the
+    /// pending [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest) in the session with the
     /// cancelled outcome.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#cancellation>.
@@ -939,7 +939,7 @@ where
     /// Closing is idempotent. An agent should answer a close of an unknown or
     /// already-closed session with success, and an older agent may answer
     /// `-32002` instead, so this helper resolves a `-32002` response as a
-    /// successful, empty [`v2::CloseSessionResponse`]. Other errors are
+    /// successful, empty [`v2::schema::CloseSessionResponse`](v2::CloseSessionResponse). Other errors are
     /// returned unchanged.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/session-setup#closing-active-sessions>.

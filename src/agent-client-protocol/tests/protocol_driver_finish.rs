@@ -14,7 +14,7 @@ use std::{
 use agent_client_protocol::{
     Agent, Channel, Client, Conductor, ConnectTo, ConnectionDriver, Error, JsonRpcNotification,
     Lines, Proxy, RawJsonRpcMessage, RawJsonRpcResponse, Role, TransportFrame,
-    schema::{ProtocolVersion, v1},
+    schema::ProtocolVersion, v1::schema as v1,
 };
 use futures::{FutureExt as _, SinkExt as _, StreamExt as _, channel::mpsc};
 use serde::{Deserialize, Serialize};

@@ -1,8 +1,8 @@
 use agent_client_protocol::JsonRpcMessage;
 use agent_client_protocol::schema::SuccessorMessage;
 #[cfg(feature = "unstable_mcp_over_acp")]
-use agent_client_protocol::schema::v1::MessageMcpRequest;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::schema::MessageMcpRequest;
+use agent_client_protocol::v1::schema::{
     ContentBlock, Meta, PromptRequest, SessionId, TextContent,
 };
 use serde_json::Value;

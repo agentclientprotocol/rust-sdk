@@ -12,12 +12,12 @@
 //! ```
 
 use agent_client_protocol::schema::ProtocolVersion;
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::v1::ConnectionTo;
+use agent_client_protocol::v1::schema::{
     ContentBlock, InitializeRequest, NewSessionRequest, PermissionOptionKind, PromptRequest,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, TextContent,
 };
-use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{AcpAgent, Agent};
 use clap::Parser;
 use std::path::PathBuf;

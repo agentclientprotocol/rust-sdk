@@ -8,10 +8,11 @@
 
 use std::future::Future;
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::schema::ProtocolVersion;
+use agent_client_protocol::v1::schema as v1_schema;
+use agent_client_protocol::v1::schema::{
     InitializeRequest, InitializeResponse, NewSessionResponse, PromptRequest,
 };
-use agent_client_protocol::schema::{ProtocolVersion, v1 as v1_schema};
 use agent_client_protocol::{
     Agent, Builder, Channel, Client, ConnectionDriver, ConnectionTo, Dispatch, DynConnectTo, Error,
     ErrorCode, PreparedRequest, Proxy, RawJsonRpcId, RawJsonRpcMessage, Responder, ResponseRouter,
@@ -63,8 +64,8 @@ fn request_handles_are_send_static() {
     send_static::<v1::Dispatch<PromptRequest>>();
     #[cfg(feature = "unstable_protocol_v2")]
     {
-        use agent_client_protocol::schema::v2 as v2_schema;
         use agent_client_protocol::v2;
+        use agent_client_protocol::v2::schema as v2_schema;
         send_static::<v2::Responder<v2_schema::InitializeResponse>>();
         send_static::<v2::SentRequest<v2_schema::InitializeResponse>>();
         send_static::<v2::SentRequest<v2::InitializeOutcome>>();
@@ -83,7 +84,7 @@ fn sessions_are_send() {
         use agent_client_protocol::v2;
         send_sync_static::<v2::ActiveSession<Agent>>();
         send_static::<v2::SessionBuilder<Agent>>();
-        send_static::<v2::SessionSetup<Agent, agent_client_protocol::schema::v2::NewSessionResponse>>(
+        send_static::<v2::SessionSetup<Agent, agent_client_protocol::v2::schema::NewSessionResponse>>(
         );
     }
 }
@@ -180,8 +181,8 @@ async fn futures_agent(transport: Channel) {
 
 #[cfg(feature = "unstable_protocol_v2")]
 async fn futures_v2(transport: Channel) {
-    use agent_client_protocol::schema::v2 as v2_schema;
     use agent_client_protocol::v2;
+    use agent_client_protocol::v2::schema as v2_schema;
 
     let _connect = send_future(Client.v2().connect_with(
         transport,

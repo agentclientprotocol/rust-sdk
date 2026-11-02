@@ -1,16 +1,16 @@
 use std::sync::{Arc, Mutex};
 
-use agent_client_protocol::schema::v1::{
+use agent_client_protocol::util::MatchDispatchFrom;
+use agent_client_protocol::v1::schema::{
     AgentCapabilities, ContentBlock, InitializeRequest, InitializeResponse, Meta,
     NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse, SessionId, StopReason,
     TextContent,
 };
-use agent_client_protocol::schema::{ProtocolVersion, v1};
-use agent_client_protocol::util::MatchDispatchFrom;
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, ConnectionTo, Dispatch, HandleDispatchFrom, Handled,
     JsonRpcResponse, Proxy,
 };
+use agent_client_protocol::{schema::ProtocolVersion, v1::schema as v1};
 use agent_client_protocol_conductor::{ConductorImpl, ProxiesAndAgent};
 use serde_json::Value;
 use tokio::io::duplex;

@@ -1,7 +1,7 @@
 use crate::{ConnectionTo, role::Role};
 
 #[cfg(feature = "unstable_mcp_over_acp")]
-use crate::schema::v1::{McpRequestId, McpServerAcpId};
+use crate::v1::schema::{McpRequestId, McpServerAcpId};
 #[cfg(feature = "unstable_mcp_over_acp")]
 use futures::channel::oneshot;
 #[cfg(feature = "unstable_mcp_over_acp")]
@@ -139,7 +139,7 @@ mod tests {
     #[cfg(feature = "unstable_mcp_over_acp")]
     #[test]
     fn acp_context_exposes_server_and_request_ids() {
-        use crate::schema::v1::{McpRequestId, McpServerAcpId};
+        use crate::v1::schema::{McpRequestId, McpServerAcpId};
 
         let server_id = McpServerAcpId::new("server-id");
         let request_id = McpRequestId::new("request-id");

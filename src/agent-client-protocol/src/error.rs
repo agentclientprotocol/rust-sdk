@@ -3,29 +3,29 @@
 //! Every SDK callback and connection method uses [`Error`], whichever ACP
 //! version the connection speaks. It holds exactly what a JSON-RPC error
 //! object carries on the wire (a code, a message and optional data), so it
-//! converts losslessly to and from [`schema::v1::Error`] and
-//! `schema::v2::Error`.
+//! converts losslessly to and from [`v1::schema::Error`] and
+//! `v2::schema::Error`.
 //!
 //! Constructors for codes that mean the same in every protocol version live
 //! here. Constructors whose error data differs between versions stay on the
 //! schema types; convert their result with `.into()`:
 //!
 //! ```
-//! use agent_client_protocol::{Error, schema::v1};
+//! use agent_client_protocol::{Error, v1::schema};
 //!
-//! let missing: Error = v1::Error::resource_not_found(Some("file:///a.txt".into())).into();
-//! assert_eq!(missing.code, v1::ErrorCode::ResourceNotFound);
+//! let missing: Error = schema::Error::resource_not_found(Some("file:///a.txt".into())).into();
+//! assert_eq!(missing.code, schema::ErrorCode::ResourceNotFound);
 //! ```
 //!
-//! [`schema::v1::Error`]: crate::schema::v1::Error
+//! [`v1::schema::Error`]: crate::v1::schema::Error
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v2;
-use crate::schema::{IntoOption, v1};
+use crate::v2::schema as v2;
+use crate::{schema::IntoOption, v1::schema as v1};
 
 /// Result type whose error defaults to the SDK's [`Error`].
 pub type Result<T, E = Error> = std::result::Result<T, E>;
@@ -34,15 +34,16 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 ///
 /// This is the integer on the wire. It is not tied to one ACP version: it
 /// can hold any `i32`, converts to and from `i32`, and converts losslessly to
-/// and from [`v1::ErrorCode`] and `v2::ErrorCode`. It can also be compared
-/// with either schema enum directly:
+/// and from [`v1::schema::ErrorCode`](crate::v1::schema::ErrorCode) and
+/// `v2::schema::ErrorCode`. It can also be compared with either schema enum
+/// directly:
 ///
 /// ```
-/// use agent_client_protocol::{Error, ErrorCode, schema::v1};
+/// use agent_client_protocol::{Error, ErrorCode, v1::schema};
 ///
 /// let error = Error::invalid_params();
 /// assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
-/// assert_eq!(error.code, v1::ErrorCode::InvalidParams);
+/// assert_eq!(error.code, schema::ErrorCode::InvalidParams);
 /// assert_eq!(i32::from(error.code), -32602);
 /// ```
 ///
@@ -195,21 +196,21 @@ schema_error_code_conversions!(v2);
 /// | `-32603` | [`Error::internal_error`], [`Error::into_internal_error`] |
 /// | `-32800` | [`Error::request_cancelled`] |
 /// | `-32000` | [`Error::auth_required`] |
-/// | `-32002` | `v1::Error::resource_not_found(uri)`, `v1::Error::session_not_found(id)`, `v2::Error::resource_not_found()`, `v2::Error::session_not_found(id)` |
-/// | `-32022` | `v2::Error::unsupported_protocol_version(requested, supported)` |
+/// | `-32002` | `v1::schema::Error::resource_not_found(uri)`, `v1::schema::Error::session_not_found(id)`, `v2::schema::Error::resource_not_found()`, `v2::schema::Error::session_not_found(id)` |
+/// | `-32022` | `v2::schema::Error::unsupported_protocol_version(requested, supported)` |
 ///
-/// Convert back with `v1::Error::from(error)` or `v2::Error::from(error)` to
-/// use a schema version's view of the error. Typed v2 error data is read
-/// with `serde_json`:
+/// Convert back with `v1::schema::Error::from(error)` or
+/// `v2::schema::Error::from(error)` to use a schema version's view of the
+/// error. Typed v2 error data is read with `serde_json`:
 ///
 /// ```
 /// # #[cfg(feature = "unstable_protocol_v2")] {
-/// use agent_client_protocol::{Error, schema::v2};
+/// use agent_client_protocol::{Error, v2::schema};
 ///
-/// let error: Error = v2::Error::session_not_found("sess_1").into();
-/// if error.code == v2::ErrorCode::ResourceNotFound
+/// let error: Error = schema::Error::session_not_found("sess_1").into();
+/// if error.code == schema::ErrorCode::ResourceNotFound
 ///     && let Some(data) = error.data.clone()
-///     && let Ok(data) = serde_json::from_value::<v2::SessionNotFoundErrorData>(data)
+///     && let Ok(data) = serde_json::from_value::<schema::SessionNotFoundErrorData>(data)
 /// {
 ///     assert_eq!(data.session_id.0.as_ref(), "sess_1");
 /// }

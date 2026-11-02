@@ -15,8 +15,7 @@ use agent_client_protocol::mcp_server::McpServer;
 use agent_client_protocol::v1::ConnectionTo;
 use agent_client_protocol::{
     Agent, Client, Conductor, ConnectTo, DynConnectTo, Error, Lines, Proxy, Responder,
-    UntypedMessage,
-    schema::{ProtocolVersion, v1},
+    UntypedMessage, schema::ProtocolVersion, v1::schema as v1,
 };
 use agent_client_protocol_conductor::{
     ConductorImpl, InstantiatedChain, SelectedInitializeRequest,

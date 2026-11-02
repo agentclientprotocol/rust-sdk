@@ -1,5 +1,5 @@
-use crate::schema::v1::{CreateElicitationRequest, CreateElicitationResponse};
-use crate::schema::v1::{
+use crate::v1::schema::{CreateElicitationRequest, CreateElicitationResponse};
+use crate::v1::schema::{
     CreateTerminalRequest, CreateTerminalResponse, KillTerminalRequest, KillTerminalResponse,
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionRequest, RequestPermissionResponse, TerminalOutputRequest,

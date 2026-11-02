@@ -1,11 +1,11 @@
 #[cfg(feature = "unstable_session_archive")]
-use crate::schema::v1::{
+use crate::v1::schema::{
     ArchiveSessionRequest, ArchiveSessionResponse, UnarchiveSessionRequest,
     UnarchiveSessionResponse,
 };
 #[cfg(feature = "unstable_auth_status")]
-use crate::schema::v1::{AuthStatusRequest, AuthStatusResponse};
-use crate::schema::v1::{
+use crate::v1::schema::{AuthStatusRequest, AuthStatusResponse};
+use crate::v1::schema::{
     AuthenticateRequest, AuthenticateResponse, CloseSessionRequest, CloseSessionResponse,
     DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
     ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
@@ -14,16 +14,16 @@ use crate::schema::v1::{
     SetSessionConfigOptionResponse, SetSessionModeRequest, SetSessionModeResponse,
 };
 #[cfg(feature = "unstable_llm_providers")]
-use crate::schema::v1::{
+use crate::v1::schema::{
     DisableProviderRequest, DisableProviderResponse, ListProvidersRequest, ListProvidersResponse,
     SetProviderRequest, SetProviderResponse,
 };
 #[cfg(feature = "unstable_session_fork")]
-use crate::schema::v1::{ForkSessionRequest, ForkSessionResponse};
+use crate::v1::schema::{ForkSessionRequest, ForkSessionResponse};
 #[cfg(feature = "unstable_session_status")]
-use crate::schema::v1::{SessionStatusRequest, SessionStatusResponse};
+use crate::v1::schema::{SessionStatusRequest, SessionStatusResponse};
 #[cfg(feature = "unstable_session_set_title")]
-use crate::schema::v1::{SetSessionTitleRequest, SetSessionTitleResponse};
+use crate::v1::schema::{SetSessionTitleRequest, SetSessionTitleResponse};
 
 impl_jsonrpc_request!(InitializeRequest, InitializeResponse, "initialize");
 impl_jsonrpc_request!(AuthenticateRequest, AuthenticateResponse, "authenticate");

@@ -1,6 +1,6 @@
 //! JSON-RPC trait implementations for protocol-level (`$/`-prefixed) messages.
 
-use crate::schema::v1::{CancelRequestNotification, ProtocolLevelNotification};
+use crate::v1::schema::{CancelRequestNotification, ProtocolLevelNotification};
 
 impl_jsonrpc_notification!(CancelRequestNotification, "$/cancel_request");
 

@@ -4,8 +4,8 @@ use std::{cell::RefCell, rc::Rc, time::Duration};
 
 use agent_client_protocol::v2::ConnectionTo;
 use agent_client_protocol::{
-    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportFrame,
-    schema::{ProtocolVersion, v2},
+    Agent, Channel, Client, Error, RawJsonRpcMessage, TransportFrame, schema::ProtocolVersion,
+    v2::schema as v2,
 };
 use futures::{StreamExt as _, channel::mpsc};
 use serde_json::json;

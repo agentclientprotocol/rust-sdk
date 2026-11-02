@@ -1,4 +1,4 @@
-use agent_client_protocol::schema::v1::{AgentCapabilities, InitializeRequest, InitializeResponse};
+use agent_client_protocol::v1::schema::{AgentCapabilities, InitializeRequest, InitializeResponse};
 use agent_client_protocol::{Agent, Result, Stdio};
 
 #[tokio::main]

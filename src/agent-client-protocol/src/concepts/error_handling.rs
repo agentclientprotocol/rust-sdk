@@ -112,29 +112,29 @@
 //! schema version's constructors and converted with `.into()`:
 //!
 //! - `-32002` for a missing resource:
-//!   [`schema::v1::Error::resource_not_found(uri)`][crate::schema::v1::Error::resource_not_found]
-//!   takes an optional `uri`, and `schema::v2::Error::resource_not_found()`
+//!   [`v1::schema::Error::resource_not_found(uri)`][crate::v1::schema::Error::resource_not_found]
+//!   takes an optional `uri`, and `v2::schema::Error::resource_not_found()`
 //!   takes none
 //! - `-32002` with `data.sessionId`, for a session-scoped request naming a
 //!   session that does not exist or is not active on the connection:
-//!   [`schema::v1::Error::session_not_found(id)`][crate::schema::v1::Error::session_not_found]
-//!   or `schema::v2::Error::session_not_found(id)`
+//!   [`v1::schema::Error::session_not_found(id)`][crate::v1::schema::Error::session_not_found]
+//!   or `v2::schema::Error::session_not_found(id)`
 //! - `-32022` for an agent that supports no protocol version at or below the
 //!   requested one:
-//!   `schema::v2::Error::unsupported_protocol_version(requested, supported)`
+//!   `v2::schema::Error::unsupported_protocol_version(requested, supported)`
 //!   (protocol v2 only)
 //!
 //! ```
-//! use agent_client_protocol::{Error, schema::v1};
+//! use agent_client_protocol::{Error, v1::schema};
 //!
-//! # fn lookup(session_id: v1::SessionId) -> Result<(), Error> {
-//! return Err(v1::Error::session_not_found(session_id).into());
+//! # fn lookup(session_id: schema::SessionId) -> Result<(), Error> {
+//! return Err(schema::Error::session_not_found(session_id).into());
 //! # }
 //! ```
 //!
 //! Compare codes with [`ErrorCode`][crate::ErrorCode]'s constants, or with a
-//! schema version's `ErrorCode` enum. `v1::Error::from(error)` and
-//! `v2::Error::from(error)` convert back without losing anything, which is
+//! schema version's `ErrorCode` enum. `v1::schema::Error::from(error)` and
+//! `v2::schema::Error::from(error)` convert back without losing anything, which is
 //! how to read typed v2 error data such as `SessionNotFoundErrorData`.
 //!
 //! Codes from `-32768` to `-32000` and from `-32899` to `-32800` are reserved

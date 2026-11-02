@@ -4,9 +4,9 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::v1;
+use crate::v1::schema as v1;
 #[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v2;
+use crate::v2::schema as v2;
 
 /// A JSON-RPC `id` exactly as it appears on the wire: an integer, a string or
 /// `null`.
@@ -24,15 +24,17 @@ use crate::schema::v2;
 /// `null` ID before dispatch. Error responses to messages whose ID cannot be
 /// read also carry `null`.
 ///
-/// It converts losslessly to and from [`v1::RequestId`], and from
-/// `v2::RequestId`. Converting to `v2::RequestId` fails only for `null`:
+/// It converts losslessly to and from
+/// [`v1::schema::RequestId`](crate::v1::schema::RequestId), and from
+/// `v2::schema::RequestId`. Converting to `v2::schema::RequestId` fails only
+/// for `null`:
 ///
 /// ```
-/// use agent_client_protocol::{RawJsonRpcId, schema::v1};
+/// use agent_client_protocol::{RawJsonRpcId, v1::schema};
 ///
-/// let id = RawJsonRpcId::from(v1::RequestId::Number(7));
+/// let id = RawJsonRpcId::from(schema::RequestId::Number(7));
 /// assert_eq!(id, RawJsonRpcId::Number(7));
-/// assert_eq!(v1::RequestId::from(id), v1::RequestId::Number(7));
+/// assert_eq!(schema::RequestId::from(id), schema::RequestId::Number(7));
 /// assert_eq!(serde_json::to_string(&RawJsonRpcId::from("7".to_string())).unwrap(), r#""7""#);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -53,7 +55,7 @@ pub enum RawJsonRpcId {
 
 impl fmt::Display for RawJsonRpcId {
     /// Integers and strings are written without quotes, and `null` as `null`,
-    /// as [`v1::RequestId`] does. Use `serde_json` for the wire form.
+    /// as [`v1::schema::RequestId`](v1::RequestId) does. Use `serde_json` for the wire form.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Null => f.write_str("null"),

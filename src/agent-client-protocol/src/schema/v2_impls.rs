@@ -1,6 +1,6 @@
 //! JSON-RPC trait implementations for the experimental schema v2 namespace.
 
-use crate::schema::v2;
+use crate::v2::schema as v2;
 use crate::{JsonRpcMessage, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse, UntypedMessage};
 
 macro_rules! impl_v2_jsonrpc_request {

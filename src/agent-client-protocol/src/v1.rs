@@ -2,8 +2,7 @@
 //!
 //! Start a v1 connection with [`Client.v1()`](crate::Client::v1),
 //! [`Agent.v1()`](crate::Agent::v1) or [`Proxy.v1()`](crate::Proxy::v1). The
-//! protocol v1 message types are in [`v1::schema`](schema), the same module as
-//! [`agent_client_protocol::schema::v1`](crate::schema::v1).
+//! protocol v1 message types are in [`v1::schema`](schema).
 //!
 //! With the `unstable_protocol_v2` feature, `agent_client_protocol::v2` uses
 //! the same names for protocol v2's connection, builder, request handles and
@@ -20,7 +19,7 @@
 //! [`schema`].
 //!
 //! The request handles here are the crate-root handles with the [`V1`]
-//! protocol marker: `id()` returns a [`schema::v1::RequestId`].
+//! protocol marker: `id()` returns a [`v1::schema::RequestId`].
 //!
 //! ```no_run
 //! use agent_client_protocol::schema::ProtocolVersion;
@@ -40,19 +39,23 @@
 //! # }
 //! ```
 //!
-//! [`schema::v1::RequestId`]: crate::schema::v1::RequestId
+//! [`v1::schema::RequestId`]: crate::v1::schema::RequestId
 //! [`read_update`]: ActiveSession::read_update
 //! [`read_to_string`]: ActiveSession::read_to_string
 
 use crate::{NullClose, NullHandler, UntypedMessage, V1, jsonrpc::run::NullRun};
 
-/// The protocol v1 message types: the same module as
-/// [`agent_client_protocol::schema::v1`](crate::schema::v1).
+/// The protocol v1 message types: requests, responses, notifications and
+/// their supporting types, re-exported from the `agent-client-protocol-schema`
+/// crate's `v1` module.
 ///
+/// This is the only path to them.
 /// `use agent_client_protocol::v1::{self, schema};` brings both the SDK
 /// types and the messages into scope under names that do not clash with the
-/// SDK's `v1` module.
-pub use crate::schema::v1 as schema;
+/// SDK's `v1` module. The version-neutral items, such as
+/// [`ProtocolVersion`](crate::schema::ProtocolVersion), are in
+/// [`crate::schema`].
+pub use agent_client_protocol_schema::v1 as schema;
 
 pub use crate::jsonrpc::v1_connection::ConnectionTo;
 
@@ -71,11 +74,11 @@ pub type Builder<Host, Handler = NullHandler, Runner = NullRun, Close = NullClos
     crate::Builder<Host, Handler, Runner, Close, V1>;
 
 /// A v1 request's [`Responder`](crate::Responder): `id()` returns a
-/// [`schema::v1::RequestId`](crate::schema::v1::RequestId).
+/// [`v1::schema::RequestId`](crate::v1::schema::RequestId).
 pub type Responder<T = serde_json::Value> = crate::Responder<T, V1>;
 
 /// A v1 [`ResponseRouter`](crate::ResponseRouter): `id()` returns a
-/// [`schema::v1::RequestId`](crate::schema::v1::RequestId).
+/// [`v1::schema::RequestId`](crate::v1::schema::RequestId).
 pub type ResponseRouter<T = serde_json::Value> = crate::ResponseRouter<T, V1>;
 
 /// A request sent through a v1 [`ConnectionTo`]: the

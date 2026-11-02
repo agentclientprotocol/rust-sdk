@@ -1,5 +1,5 @@
 use agent_client_protocol::JsonRpcMessage;
-use agent_client_protocol::schema::v1::{ToolCall, ToolCallUpdateFields};
+use agent_client_protocol::v1::schema::{ToolCall, ToolCallUpdateFields};
 use serde_json::json;
 
 #[test]
@@ -24,7 +24,7 @@ fn v1_tool_call_name_serializes_and_updates() {
 
 #[test]
 fn v1_tool_call_names_survive_session_notifications() {
-    use agent_client_protocol::schema::v1::{
+    use agent_client_protocol::v1::schema::{
         AgentNotification, SessionNotification, SessionUpdate, ToolCallUpdate,
     };
 
@@ -46,7 +46,7 @@ fn v1_tool_call_names_survive_session_notifications() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_tool_call_name_has_patch_semantics() {
-    use agent_client_protocol::schema::{MaybeUndefined, v2::ToolCallUpdate};
+    use agent_client_protocol::{schema::MaybeUndefined, v2::schema::ToolCallUpdate};
 
     let named = ToolCallUpdate::new("call_1").name("read_file");
     assert_eq!(named.name, MaybeUndefined::Value("read_file".to_string()));
@@ -81,7 +81,7 @@ fn v2_tool_call_name_has_patch_semantics() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_tool_call_names_survive_session_notifications() {
-    use agent_client_protocol::schema::v2::{
+    use agent_client_protocol::v2::schema::{
         AgentNotification, SessionUpdate, ToolCallUpdate, UpdateSessionNotification,
     };
 

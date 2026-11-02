@@ -1,6 +1,6 @@
 #![cfg(feature = "unstable_subagents")]
 
-use agent_client_protocol::schema::v1;
+use agent_client_protocol::v1::schema as v1;
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification};
 use serde_json::json;
 
@@ -41,7 +41,7 @@ fn v1_subagent_update_uses_existing_session_notification_route() {
 #[cfg(feature = "unstable_protocol_v2")]
 #[test]
 fn v2_subagent_update_uses_existing_session_notification_route() {
-    use agent_client_protocol::schema::v2;
+    use agent_client_protocol::v2::schema as v2;
 
     let notification = v2::UpdateSessionNotification::new(
         "parent",

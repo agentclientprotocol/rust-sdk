@@ -1,14 +1,14 @@
-//! ACP protocol schema types and message implementations.
+//! Version-neutral ACP schema items.
 //!
 //! Each protocol version's messages (requests, responses, notifications and
-//! supporting types) are in their own module: [`v1`], also reachable as
-//! [`crate::v1::schema`], and, with `unstable_protocol_v2`, `v2`, also
-//! reachable as `agent_client_protocol::v2::schema`. The module root holds
-//! only the items every version shares, such as [`ProtocolVersion`] and the
-//! proxy protocol types.
+//! supporting types) are in that version's SDK module: [`crate::v1::schema`]
+//! and, with `unstable_protocol_v2`, `agent_client_protocol::v2::schema`. This
+//! module holds only the items every version shares: [`ProtocolVersion`],
+//! [`MaybeUndefined`], the [`IntoOption`] and [`IntoMaybeUndefined`]
+//! conversion traits, and [`SuccessorMessage`].
 //!
 //! The types come from the `agent-client-protocol-schema` crate, which this
-//! crate pins to one exact version. Use them through this module instead of
+//! crate pins to one exact version. Use them through the SDK instead of
 //! depending on `agent-client-protocol-schema` directly.
 
 // ---------------------------------------------------------------------------
@@ -141,8 +141,8 @@ macro_rules! impl_jsonrpc_request_enum {
                     _ => {
                         if method.starts_with('_') {
                             $crate::util::json_cast_params(params).map(
-                                |ext_req: $crate::schema::v1::ExtRequest| {
-                                    Self::$ext_variant($crate::schema::v1::ExtRequest::new(
+                                |ext_req: $crate::v1::schema::ExtRequest| {
+                                    Self::$ext_variant($crate::v1::schema::ExtRequest::new(
                                         method.to_string(),
                                         ext_req.params,
                                     ))
@@ -203,8 +203,8 @@ macro_rules! impl_jsonrpc_notification_enum {
                     _ => {
                         if method.starts_with('_') {
                             $crate::util::json_cast_params(params).map(
-                                |ext_notif: $crate::schema::v1::ExtNotification| {
-                                    Self::$ext_variant($crate::schema::v1::ExtNotification::new(
+                                |ext_notif: $crate::v1::schema::ExtNotification| {
+                                    Self::$ext_variant($crate::v1::schema::ExtNotification::new(
                                         method.to_string(),
                                         ext_notif.params,
                                     ))
@@ -320,24 +320,6 @@ mod protocol_level;
 mod proxy_protocol;
 #[cfg(feature = "unstable_protocol_v2")]
 mod v2_impls;
-
-/// Agent Client Protocol v1 schema types.
-///
-/// This re-exports the schema crate's `v1` module, including its proxy-chain
-/// types (`InitializeProxyRequest`, `ProxySuccessorRequest` and the rest),
-/// which the SDK always enables.
-pub mod v1 {
-    pub use agent_client_protocol_schema::v1::*;
-}
-
-/// Agent Client Protocol v2 draft schema types.
-///
-/// This re-exports the schema crate's `v2` module, including its proxy-chain
-/// types.
-#[cfg(feature = "unstable_protocol_v2")]
-pub mod v2 {
-    pub use agent_client_protocol_schema::v2::*;
-}
 
 pub use agent_client_protocol_schema::{
     IntoMaybeUndefined, IntoOption, MaybeUndefined, ProtocolVersion,

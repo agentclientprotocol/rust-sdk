@@ -12,13 +12,11 @@ use crate::jsonrpc::{Builder, handlers::NullHandler, run::NullRun};
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::jsonrpc::{TransportFrame, raw_is_response_only_shape};
 use crate::role::{HasPeer, RemoteStyle};
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::v1::InitializeRequest;
-use crate::schema::v1::PROXY_METHOD_NAMES;
-use crate::schema::v1::SessionId;
-#[cfg(feature = "unstable_protocol_v2")]
-use crate::schema::{ProtocolVersion, v2};
 use crate::util::MatchDispatchFrom;
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::v1::schema::InitializeRequest;
+use crate::v1::schema::PROXY_METHOD_NAMES;
+use crate::v1::schema::SessionId;
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::{
     Channel, RawJsonRpcError, RawJsonRpcMessage, RawJsonRpcParams,
@@ -27,6 +25,8 @@ use crate::{
 #[cfg(feature = "unstable_protocol_v2")]
 use crate::{ConnectTo, DynConnectTo};
 use crate::{ConnectionTo, Dispatch, HandleDispatchFrom, Handled, Role, RoleId};
+#[cfg(feature = "unstable_protocol_v2")]
+use crate::{schema::ProtocolVersion, v2::schema as v2};
 
 #[derive(serde::Deserialize)]
 struct NewSessionResponseEnvelope {
@@ -1001,7 +1001,7 @@ fn select_configured_protocol(
     supported: SupportedProtocols,
 ) -> Result<SelectedProtocol, crate::Error> {
     supported.select(requested).ok_or_else(|| {
-        crate::schema::v2::Error::unsupported_protocol_version(requested, &supported.versions())
+        crate::v2::schema::Error::unsupported_protocol_version(requested, &supported.versions())
             .into()
     })
 }

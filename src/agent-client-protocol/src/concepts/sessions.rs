@@ -180,7 +180,7 @@
 //!
 //! ```
 //! # use agent_client_protocol::{Client, Agent, ConnectTo};
-//! # use agent_client_protocol::schema::v1::NewSessionRequest;
+//! # use agent_client_protocol::v1::schema::NewSessionRequest;
 //! # async fn example(transport: impl ConnectTo<Client>) -> Result<(), agent_client_protocol::Error> {
 //! Client.v1()
 //!     .on_receive_request(async |req: NewSessionRequest, responder, cx| {
@@ -215,7 +215,7 @@
 //! Proxy.v2()
 //!     .on_receive_request_from(
 //!         Client,
-//!         async |request: schema::v2::NewSessionRequest, responder, cx| {
+//!         async |request: v2::schema::NewSessionRequest, responder, cx| {
 //!             cx.build_session_from(request)
 //!                 .on_proxy_session_start(responder, async |setup| {
 //!                     let SessionSetup { session, response, .. } = setup;

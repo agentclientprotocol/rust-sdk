@@ -8,7 +8,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, Client, ConnectionTo, Error, ErrorCode, Responder, RunWithConnectionTo,
-    schema::{ProtocolVersion, v2},
+    schema::ProtocolVersion, v2::schema as v2,
 };
 use futures::{
     StreamExt as _,
