@@ -223,6 +223,16 @@ struct ServerState {
 /// connection. Each `initialize` POST or WebSocket upgrade calls it once, and
 /// the component runs until the client sends `DELETE` or disconnects.
 ///
+/// A session-scoped SSE `GET` (with `Acp-Session-Id`) opens the stream of a
+/// session the agent has named on that connection: in a `session/new` or
+/// `session/fork` result, in a result for a request scoped to the session, or
+/// in a request or notification it sent. A client may also open up to 16
+/// streams for sessions not named yet, such as one it is about to
+/// `session/load`. Those streams are dropped when the client closes them
+/// before the agent names the session. Any other session ID gets
+/// `404 Not Found`. A successful `session/close` or `session/delete` forgets
+/// the session.
+///
 /// The transport forwards JSON-RPC messages unchanged, so the component decides
 /// which protocol versions it speaks. To serve ACP v1 and v2 on one endpoint,
 /// return an `AgentProtocolRouter`
