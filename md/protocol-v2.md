@@ -418,10 +418,12 @@ The SDK handles the `initialize` negotiation at the JSON-RPC boundary:
   before it sends any other request, for example to resend its parameters for
   the version the agent selected. The agent dispatches each repeat to its
   initialize handler and the latest one is authoritative. While a repeat is in
-  flight, other requests are rejected as they are during the first. A repeat
-  requesting a version below the selected one is rejected with `-32600`. A
-  repeat that fails, whether rejected by the SDK or by the handler, keeps the
-  previous initialization in place and the client may repeat again. The first
+  flight, other requests are rejected as they are during the first. Each
+  repeat is negotiated like the first `initialize`: a v2 agent selects v2 for a
+  request for v2 or newer, and answers a request below v2 with `-32022` and
+  `data: { "requested", "supported": [2] }`. A repeat that fails, whether
+  rejected by the SDK or by the handler, keeps the previous initialization in
+  place and the client may repeat again. The first
   other request closes this window: a later `initialize` is rejected with
   `-32600` on both sides and the connection stays ready. Notifications such as
   `$/cancel_request` do not close it.
@@ -565,9 +567,11 @@ below v2 with a structured version-mismatch error. The router
 normalizes a v2 initialize request when selecting a v1 implementation, but does
 not convert messages between v1 and v2 after routing. The selected
 implementation owns the connection: a repeated `initialize` is forwarded to it
-and never re-routed, so it is evaluated against the selected version. A v2
-implementation rejects a repeat that requests v1 with `-32600`, and a v1
-implementation selects v1 for a repeat that requests a newer version. The
+and never re-routed, so it is negotiated like a first `initialize` against the
+selected version alone. A v2 implementation answers a repeat that requests v1
+with `-32022` listing only v2, because the connection cannot switch to the v1
+API, and the v2 initialization stays in effect. A v1 implementation selects v1
+for a repeat that requests a newer version. The
 router preserves the complete initial frame when handing it to the selected
 implementation. A batched first `initialize` gets one `-32600` error with
 `id: null`, and the client may send `initialize` again. Response-only frames

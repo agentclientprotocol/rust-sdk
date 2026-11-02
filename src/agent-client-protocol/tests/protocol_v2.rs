@@ -1565,9 +1565,10 @@ async fn protocol_router_rejects_null_request_id_on_v2_route() -> Result<(), Err
 #[tokio::test(flavor = "current_thread")]
 async fn protocol_router_forwards_repeated_initialize_to_selected_implementation()
 -> Result<(), Error> {
-    // A v2 route accepts a repeat for v2 and rejects one for v1 with -32600:
-    // the selected implementation owns the connection and the router does
-    // not re-route.
+    // A v2 route accepts a repeat for v2. A repeat for v1 is handled like a
+    // first initialize by the selected v2 implementation, which owns the
+    // connection and supports no version at or below v1: it gets -32022 and
+    // the v2 initialization stays in effect. The router does not re-route.
     let agent = Agent
         .protocol_router()
         .with_v1(v1_agent_with_session("v1-session"))
@@ -1591,7 +1592,12 @@ async fn protocol_router_forwards_repeated_initialize_to_selected_implementation
         json_value(v1_initialize_request(ProtocolVersion::V1))?,
     )
     .await?;
-    assert_eq!(response["error"]["code"], -32600, "{response}");
+    assert_eq!(response["error"]["code"], -32022, "{response}");
+    assert_eq!(
+        response["error"]["data"],
+        serde_json::json!({ "requested": 1, "supported": [2] }),
+        "{response}"
+    );
     let response = raw_v2_response(
         &mut channel,
         RawJsonRpcId::Number(4),
