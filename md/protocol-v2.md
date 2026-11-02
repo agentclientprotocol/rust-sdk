@@ -196,17 +196,21 @@ V2 deliberately separates prompt submission from session observation:
   not yet inserted; those prompt requests fail with `-32800` (request
   cancelled), while a prompt whose user message was already inserted still
   succeeds with its message ID. A prompt sent after it is not cancelled.
-  Background activity is not covered, although the agent may stop it too.
+  Work in the latest `background` list is not covered and keeps running; the
+  agent may stop background activity it does not list.
   Cancellation of active foreground work completes after the required `idle`
   update with stop reason `cancelled`; cancelling an idle session need not
   emit another completion. `cancelled` is reserved for work the client
   cancelled with `session/cancel` or by closing the session; work the agent
   stops on its own uses another reason, such as `error`. The client should immediately mark unfinished tool calls for the active work as
-  cancelled and must resolve every pending permission request in that session
-  with the cancelled outcome, without answering twice or affecting other
-  sessions. Elicitations are not all cancelled implicitly: agents should use
-  individual `$/cancel_request` for interactions made irrelevant by the
-  cancelled work. Cancelling or dropping the prompt's `SentRequest` is the
+  cancelled. The agent owns pending permission requests: it stops waiting
+  for those of the cancelled work, treats them as not approved, and should
+  cancel each with `$/cancel_request`. The client answers a cancelled
+  permission request with the `cancelled` outcome, and may answer one it
+  knows belongs to the cancelled work that way without waiting. Permission
+  requests for listed background work stay open. Elicitations are not all
+  cancelled implicitly: agents should use individual `$/cancel_request` for
+  interactions made irrelevant by the cancelled work. Cancelling or dropping the prompt's `SentRequest` is the
   separate JSON-RPC request-cancellation mechanism; insertion still requires a
   successful prompt response with its message ID.
 - `set_config_option` must only name a `configId` the agent advertised for
@@ -738,6 +742,18 @@ an inserted prompt would insert another message and could repeat side effects.
 When closing cancels active work, final updates and idle with `cancelled`
 precede the close response. An uninserted prompt cancelled by close gets
 `-32800`; an inserted one still gets its successful message ID.
+
+On `session/cancel`, the agent must stop waiting for the pending
+`session/request_permission` requests of the cancelled foreground work and
+treat them as not approved. It should cancel each of them with
+`$/cancel_request`: call `SentRequest::cancel` or
+`RequestCancellationHandle::cancel`, or drop the `SentRequest`, which sends
+`$/cancel_request` and discards the late answer. Requests for work in the
+latest `background` list are not affected. Before responding to
+`session/close`, the agent must cancel every pending permission request and
+elicitation in the session with `$/cancel_request`. Protocol v1 is unchanged:
+there the client must answer every pending permission request with
+`cancelled` when it sends `session/cancel`.
 
 Agents reject unsupported replay cursor types with `-32602`, rather than
 substituting another cursor. Retained user messages preserve the prompt

@@ -748,6 +748,182 @@ async fn v2_permission_requests_use_a_separate_typed_handler() {
         .expect("v2 typed permission test failed");
 }
 
+/// On `session/cancel`, a v2 agent stops waiting for the cancelled work's
+/// pending permission request, treats it as not approved, and cancels it with
+/// `$/cancel_request`. The client answers the cancelled request with the
+/// `cancelled` outcome.
+#[tokio::test(flavor = "current_thread")]
+async fn v2_agent_cancels_pending_permission_requests_on_session_cancel() {
+    let pending_permission: Arc<Mutex<Option<agent_client_protocol::RequestCancellationHandle>>> =
+        Arc::default();
+    let (outcome_tx, mut outcome_rx) =
+        mpsc::unbounded::<Result<v2::RequestPermissionResponse, Error>>();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v2::NewSessionRequest,
+                   responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                responder.respond(v2::NewSessionResponse::new(v2::SessionId::new(
+                    "permission-cancel-session",
+                )))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let pending_permission = pending_permission.clone();
+                async move |request: v2::PromptRequest,
+                            responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
+                            connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                    responder.respond(v2::PromptResponse::new("permission-cancel-user"))?;
+                    connection.send_notification(v2::UpdateSessionNotification::new(
+                        request.session_id.clone(),
+                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(
+                            v2::RunningStateUpdate::new(),
+                        )),
+                    ))?;
+
+                    let permission = connection.send_request(v2::RequestPermissionRequest::new(
+                        request.session_id,
+                        "Run command?",
+                        vec![v2::PermissionOption::new(
+                            "allow",
+                            "Allow",
+                            v2::PermissionOptionKind::AllowOnce,
+                        )],
+                    ));
+                    *pending_permission.lock().expect("pending permission lock") =
+                        Some(permission.cancellation_handle());
+                    let outcome_tx = outcome_tx.clone();
+                    permission.on_receiving_result(async move |result| {
+                        outcome_tx
+                            .unbounded_send(result)
+                            .map_err(Error::into_internal_error)
+                    })
+                }
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_notification(
+            {
+                let pending_permission = pending_permission.clone();
+                async move |cancel: v2::CancelSessionNotification,
+                            connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                    // The agent owns its pending permission requests: cancel
+                    // them and end the work without waiting for the answers.
+                    let pending = pending_permission
+                        .lock()
+                        .expect("pending permission lock")
+                        .take();
+                    if let Some(permission) = pending {
+                        permission.cancel()?;
+                    }
+                    connection.send_notification(v2::UpdateSessionNotification::new(
+                        cancel.session_id,
+                        v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(
+                            v2::IdleStateUpdate::new().stop_reason(v2::StopReason::Cancelled),
+                        )),
+                    ))
+                }
+            },
+            agent_client_protocol::on_receive_notification!(),
+        );
+
+    let (update_tx, mut update_rx) = mpsc::unbounded();
+    let (permission_tx, mut permission_rx) = mpsc::unbounded::<(
+        v2::RequestPermissionRequest,
+        Responder<v2::RequestPermissionResponse, agent_client_protocol::V2>,
+    )>();
+    let client = Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
+                update_tx
+                    .unbounded_send(update)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |request: v2::RequestPermissionRequest,
+                        responder: Responder<
+                v2::RequestPermissionResponse,
+                agent_client_protocol::V2,
+            >,
+                        _connection: agent_client_protocol::v2::ConnectionTo<Agent>| {
+                permission_tx
+                    .unbounded_send((request, responder))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .connect_with(agent, async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+
+            let session = connection
+                .build_session(cwd()?)
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            session.send_prompt("ask").block_task().await?;
+            assert!(matches!(
+                next_update(&mut update_rx).await.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_))
+            ));
+
+            let (request, responder) = permission_rx
+                .next()
+                .await
+                .expect("permission handler should forward the request");
+            assert_eq!(request.session_id, session.session_id().clone());
+
+            session.cancel_active_work()?;
+            responder.cancellation().cancelled().await;
+
+            // The agent ended the cancelled work before the client answered.
+            assert!(matches!(
+                next_update(&mut update_rx).await.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
+                    if idle.stop_reason == Some(v2::StopReason::Cancelled)
+            ));
+
+            responder.respond(v2::RequestPermissionResponse::new(
+                v2::CancelledPermissionOutcome::new().into(),
+            ))?;
+            let outcome = outcome_rx
+                .next()
+                .await
+                .expect("the agent should observe the permission answer")?;
+            assert!(matches!(
+                outcome.outcome,
+                v2::RequestPermissionOutcome::Cancelled(_)
+            ));
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("v2 permission cancellation test timed out")
+        .expect("v2 permission cancellation test failed");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn unhandled_v2_session_messages_are_not_deferred() {
     let (permission_result_tx, mut permission_result_rx) =

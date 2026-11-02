@@ -876,17 +876,22 @@ where
     /// received before it that the agent has not yet inserted; those prompt
     /// requests fail with `-32800` (request cancelled). A prompt sent after
     /// this notification is not cancelled by it. A prompt whose user message was already
-    /// inserted still succeeds with its `messageId`. Background activity is
-    /// not covered, although the agent may stop it too.
+    /// inserted still succeeds with its `messageId`. Work in the latest
+    /// `background` list is not covered and keeps running.
     ///
     /// If foreground work was active, cancellation completes when the agent
     /// reports an `idle` state update with [`v2::schema::StopReason::Cancelled`](v2::StopReason::Cancelled); no
     /// completion update is required when nothing was running. `cancelled` is only
     /// reported for work the client cancelled, through this notification or
     /// by closing the session. The client should immediately mark unfinished
-    /// tool calls for the active work as cancelled and must resolve every
-    /// pending [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest) in the session with the
-    /// cancelled outcome.
+    /// tool calls for the active work as cancelled.
+    ///
+    /// The agent stops waiting for pending
+    /// [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest)s
+    /// of the cancelled work and should cancel each of them with
+    /// `$/cancel_request`. Answer a cancelled permission request with the
+    /// `cancelled` outcome. A client may also answer a request it knows belongs
+    /// to the cancelled work that way without waiting for `$/cancel_request`.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#cancellation>.
     pub fn cancel_active_work(&self) -> Result<(), crate::Error> {
@@ -931,6 +936,8 @@ where
     /// whose user message closing kept from being inserted fails with `-32800`
     /// (request cancelled); one already inserted still succeeds with its
     /// message ID. Prompt responses need not precede the close response.
+    /// Before it responds, the agent cancels every pending permission request
+    /// and elicitation in the session with `$/cancel_request`.
     ///
     /// Existing clones of this local command handle are not invalidated, but
     /// the session is no longer active: the agent rejects later commands for it
