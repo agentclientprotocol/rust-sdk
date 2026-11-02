@@ -89,6 +89,20 @@ name clash. The preceding agent fragment demonstrates version negotiation only.
 An agent that advertises session support must also implement the complete
 baseline session surface shown in the runnable quickstart.
 
+## Unhandled `tool_call/cancel` and `terminal/cancel`
+
+An initialized `Agent.v2()` agent without a handler for `tool_call/cancel` or
+`terminal/cancel` answers them with `-32602` (Invalid params), not `-32601`
+(Method not found). Neither method has an initialize-time capability: a Client
+sends one only for a tool call or terminal that advertises
+`capabilities.cancel`, and the spec answers a request for an unknown, final or
+non-cancellable one with `-32602`. The error's `data` holds the request's
+`toolCallId` or `terminalId`. A typed handler for `v2::schema::CancelToolCallRequest`
+or `v2::schema::CancelTerminalRequest`, or a catch-all handler that answers the
+request, takes precedence. Before initialization these requests get `-32600`
+like any other. v1 agents and agents built with `Builder::new` answer them with
+`-32601`, since v1 has no such methods.
+
 ## High-level v2 sessions
 
 Stable callbacks receive `v1::ConnectionTo<_>` and expose the protocol v1

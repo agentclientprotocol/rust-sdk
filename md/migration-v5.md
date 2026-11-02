@@ -1050,6 +1050,12 @@ variants, and each request type implements `JsonRpcRequest`. Draft v2 also
 adds `tool_call/cancel` and `terminal/cancel` (background work), which need
 only `unstable_protocol_v2`.
 
+An `Agent.v2()` agent without a handler for `tool_call/cancel` or
+`terminal/cancel` answers them with `-32602` (Invalid params) instead of
+`-32601` (Method not found), as the spec requires for a tool call or terminal
+that is unknown or not cancellable. A typed or catch-all handler still takes
+precedence. v1 and unguarded agents are unchanged.
+
 The schema's `unstable_proxy_chains` feature is not forwarded: the SDK always
 enables it. See [Proxy chains](#proxy-chains).
 
