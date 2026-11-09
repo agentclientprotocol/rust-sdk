@@ -103,6 +103,13 @@ request, takes precedence. Before initialization these requests get `-32600`
 like any other. v1 agents and agents built with `Builder::new` answer them with
 `-32601`, since v1 has no such methods.
 
+`sessionId` is the session that reports the tool call or terminal. For a
+subagent's tool call or terminal, that is the child session. The item's own
+`capabilities.cancel` enables the request even when the child session doesn't
+advertise `cancel`, and it enables nothing else on the child. Send
+`v2::schema::CancelToolCallRequest` or `v2::schema::CancelTerminalRequest` with
+the child's `sessionId`.
+
 ## High-level v2 sessions
 
 Stable callbacks receive `v1::ConnectionTo<_>` and expose the protocol v1
@@ -702,9 +709,10 @@ lenient decoding.
 
 ### Schema 1.12
 
-Client-provided system prompts are available through the independent
-`unstable_session_system_prompt` feature. Use the complete lifecycle request
-with `_from` helpers and negotiate the agent's capability first; see
+Client-provided system prompts were added behind the
+`unstable_session_system_prompt` feature. Schema 1.16 stabilizes them and the
+feature has been removed. Use the complete lifecycle request with `_from`
+helpers and negotiate the agent's capability first; see
 [Client-provided system prompts](./protocol.md#client-provided-system-prompts).
 Next Edit Suggestions, their document events, and their position-encoding
 capabilities have been removed from both protocol versions.
