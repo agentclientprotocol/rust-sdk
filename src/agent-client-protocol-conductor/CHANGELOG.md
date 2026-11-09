@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v5.0.0...agent-client-protocol-conductor-v5.1.0) - 2026-11-09
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-conductor-v3.6.0...agent-client-protocol-conductor-v5.0.0) - 2026-11-02
 
 ### Added
