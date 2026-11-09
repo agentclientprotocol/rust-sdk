@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.0.0...v5.1.0) - 2026-11-09
+
+### Added
+
+- *(acp)* adopt schema 1.16.0 and stable client system prompts ([#490](https://github.com/agentclientprotocol/rust-sdk/pull/490))
+
 ## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/v3.6.0...v5.0.0) - 2026-11-02
 
 ### Added
