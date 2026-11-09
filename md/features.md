@@ -129,14 +129,16 @@ with `unstable_protocol_v2`, draft v2. This is schema support, not a subagent
 scheduler or an implementation of application-level ownership and lifecycle
 policy.
 
-Schema 1.12 adds `unstable_session_system_prompt`, also included in `unstable`.
-It exposes `SystemPrompt` and the session system-prompt capability types in v1
-and, with `unstable_protocol_v2`, v2. Send it on the complete lifecycle request
-through `build_session_from`, `load_session_from` (v1), `resume_session_from`,
-or `fork_session_from` (v2, with `unstable_session_fork`). Local feature flags
-do not negotiate peer support: only send `systemPrompt` when the agent
-advertises it, and only use `override` when `mode.override` is advertised.
-See [Client-provided system prompts](./protocol.md#client-provided-system-prompts).
+Client-provided system prompts are stable in schema 1.16 and available without
+feature flags in v1. Draft v2 only needs `unstable_protocol_v2`. The former
+`unstable_session_system_prompt` SDK feature has been removed. `SystemPrompt`
+and the session system-prompt capability types are always available. Send it
+on the complete lifecycle request through `build_session_from`,
+`load_session_from` (v1), or `resume_session_from`. `systemPrompt` on
+`session/fork` still requires `unstable_session_fork`. Only send `systemPrompt`
+when the agent advertises it, and only use `override` when `mode.override` is
+advertised. See
+[Client-provided system prompts](./protocol.md#client-provided-system-prompts).
 
 Schema 1.15 adds `unstable_auth_status` (`auth/status` and the
 `auth/status_update` notification), `unstable_session_archive`

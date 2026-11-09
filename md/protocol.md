@@ -11,10 +11,9 @@ flag. MCP-over-ACP is also unstable and is available only with the
 
 ## Client-provided system prompts
 
-Schema 1.12 exposes draft client-authored instructions with the
-`unstable_session_system_prompt` feature. In v1, check
-`agentCapabilities.sessionCapabilities.systemPrompt`; in v2, check
-`capabilities.session.systemPrompt`. Omitted or `null` means unsupported.
+Schema 1.16 stabilizes client-authored instructions, so they need no feature
+flag. In v1, check `agentCapabilities.sessionCapabilities.systemPrompt`; in v2,
+check `capabilities.session.systemPrompt`. Omitted or `null` means unsupported.
 An object advertises support for text content in `append` mode. Only request
 `override` if the agent also advertises `systemPrompt.mode.override`.
 
@@ -34,19 +33,19 @@ let request = schema::NewSessionRequest::new("/workspace/project")
 # let _ = request;
 ```
 
-This snippet requires `unstable_session_system_prompt`; v2 additionally
-requires `unstable_protocol_v2` and uses the equivalent `v2::schema` types.
+In v2, this needs `unstable_protocol_v2` and uses the equivalent `v2::schema`
+types.
 `SystemPrompt::new` defaults to `append` in Rust, but both `mode` and `content`
 are required on the wire. Omitted or `null` `systemPrompt` supplies no client
 instructions. Malformed values fail typed request decoding with `-32602`;
 unknown modes are preserved for forwarding, not treated as append.
 
-Clients should re-send the prompt on load (v1), resume, and fork. Agents that
-advertise support must apply a supplied prompt or reject the lifecycle
-operation, not silently create or restore a session without it. Override
-replaces agent-authored default instructions, not tools, permissions, or
-workspace instructions. Only supply content trusted at system-instruction
-precedence. Enabling the local Cargo feature does not advertise peer support.
+Clients should re-send the prompt on load (v1), resume, and fork (with
+`unstable_session_fork`). Agents that advertise support must apply a supplied
+prompt or reject the lifecycle operation, not silently create or restore a
+session without it. Override replaces agent-authored default instructions, not
+tools, permissions, or workspace instructions. Only supply content trusted at
+system-instruction precedence.
 
 ## Method Summary
 

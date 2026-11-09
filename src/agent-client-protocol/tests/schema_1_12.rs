@@ -1,13 +1,6 @@
-#![cfg(any(
-    feature = "unstable_session_system_prompt",
-    feature = "unstable_protocol_v2"
-))]
-
-#[cfg(feature = "unstable_session_system_prompt")]
 use agent_client_protocol::{JsonRpcMessage, v1::schema as v1};
 use serde_json::json;
 
-#[cfg(feature = "unstable_session_system_prompt")]
 #[test]
 fn system_prompts_pass_through_typed_lifecycle_requests() {
     let prompt = v1::SystemPrompt::new(vec!["Review without editing.".into()]);
@@ -38,7 +31,6 @@ fn system_prompts_pass_through_typed_lifecycle_requests() {
     }
 }
 
-#[cfg(feature = "unstable_session_system_prompt")]
 #[test]
 fn malformed_system_prompts_are_invalid_params_not_silently_omitted() {
     use agent_client_protocol::ErrorCode;
