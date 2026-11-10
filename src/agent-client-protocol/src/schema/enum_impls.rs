@@ -34,6 +34,8 @@ impl_jsonrpc_request_enum!(ClientRequest {
     UnarchiveSessionRequest => "session/unarchive",
     #[cfg(feature = "unstable_session_status")]
     SessionStatusRequest => "session/status",
+    #[cfg(feature = "unstable_session_options")]
+    SessionOptionsRequest => "session/options",
     #[cfg(feature = "unstable_session_set_title")]
     SetSessionTitleRequest => "session/set_title",
     ResumeSessionRequest => "session/resume",
@@ -68,6 +70,8 @@ impl_jsonrpc_response_enum!(AgentResponse {
     UnarchiveSessionResponse => "session/unarchive",
     #[cfg(feature = "unstable_session_status")]
     SessionStatusResponse => "session/status",
+    #[cfg(feature = "unstable_session_options")]
+    SessionOptionsResponse => "session/options",
     #[cfg(feature = "unstable_session_set_title")]
     SetSessionTitleResponse => "session/set_title",
     ResumeSessionResponse => "session/resume",
