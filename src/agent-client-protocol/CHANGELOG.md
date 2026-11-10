@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.2.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.1.0...v5.2.0) - 2026-11-10
+
+### Added
+
+- *(acp)* adopt schema 1.17.0 and add unstable_session_options ([#497](https://github.com/agentclientprotocol/rust-sdk/pull/497))
+
 ## [5.1.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.0.0...v5.1.0) - 2026-11-09
 
 ### Added
