@@ -148,6 +148,19 @@ is also included in `unstable`, and the v1 and v2 dispatch enums parse the
 methods into their typed variants when the feature is enabled. Draft v2 also
 gains `tool_call/cancel` and `terminal/cancel` with `unstable_protocol_v2`.
 
+Schema 1.17 adds `unstable_session_options`, which is also included in
+`unstable`. It exposes `session/options`, the `sessionCapabilities.options`
+(v1) and `session.options` (v2) capability, and `configOptions` on
+`session/new`, `session/load` (v1) and `session/resume`. Send initial values
+on the complete lifecycle request through `build_session_from`,
+`load_session_from` (v1), or `resume_session_from`, and only when the agent
+advertises the capability. A malformed `configOptions` entry fails the request
+with `-32602`. The agent ignores an entry whose `configId` is unknown or whose
+value is not allowed, so compare the `configOptions` in the response with what
+you sent. Schema 1.17 also adds the `session` tool call content variant
+(`ToolCallContent::Session`) under `unstable_subagents`, and `description` on
+`AuthAccount` under `unstable_auth_status`.
+
 The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
 always enables it, because the `Proxy` and `Conductor` roles and the conductor
 crate use its `proxy/initialize` and `proxy/successor` types.

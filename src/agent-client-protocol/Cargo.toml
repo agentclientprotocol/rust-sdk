@@ -57,6 +57,7 @@ unstable = [
     "unstable_plan_operations",
     "unstable_session_archive",
     "unstable_session_fork",
+    "unstable_session_options",
     "unstable_session_set_title",
     "unstable_session_status",
     "unstable_subagents",
@@ -68,6 +69,7 @@ unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
 unstable_plan_operations = ["agent-client-protocol-schema/unstable_plan_operations"]
 unstable_session_archive = ["agent-client-protocol-schema/unstable_session_archive"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
+unstable_session_options = ["agent-client-protocol-schema/unstable_session_options"]
 unstable_session_set_title = ["agent-client-protocol-schema/unstable_session_set_title"]
 unstable_session_status = ["agent-client-protocol-schema/unstable_session_status"]
 unstable_subagents = ["agent-client-protocol-schema/unstable_subagents"]

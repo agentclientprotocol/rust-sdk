@@ -20,6 +20,8 @@ use crate::v1::schema::{
 };
 #[cfg(feature = "unstable_session_fork")]
 use crate::v1::schema::{ForkSessionRequest, ForkSessionResponse};
+#[cfg(feature = "unstable_session_options")]
+use crate::v1::schema::{SessionOptionsRequest, SessionOptionsResponse};
 #[cfg(feature = "unstable_session_status")]
 use crate::v1::schema::{SessionStatusRequest, SessionStatusResponse};
 #[cfg(feature = "unstable_session_set_title")]
@@ -83,6 +85,12 @@ impl_jsonrpc_request!(
     SessionStatusRequest,
     SessionStatusResponse,
     "session/status"
+);
+#[cfg(feature = "unstable_session_options")]
+impl_jsonrpc_request!(
+    SessionOptionsRequest,
+    SessionOptionsResponse,
+    "session/options"
 );
 #[cfg(feature = "unstable_session_set_title")]
 impl_jsonrpc_request!(

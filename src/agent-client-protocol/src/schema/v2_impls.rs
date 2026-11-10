@@ -265,6 +265,12 @@ impl_v2_jsonrpc_request!(
     v2::SessionStatusResponse,
     "session/status"
 );
+#[cfg(feature = "unstable_session_options")]
+impl_v2_jsonrpc_request!(
+    v2::SessionOptionsRequest,
+    v2::SessionOptionsResponse,
+    "session/options"
+);
 #[cfg(feature = "unstable_session_set_title")]
 impl_v2_jsonrpc_request!(
     v2::SetSessionTitleRequest,
@@ -348,6 +354,8 @@ impl_v2_jsonrpc_request_enum!(v2::ClientRequest {
     UnarchiveSessionRequest => "session/unarchive",
     #[cfg(feature = "unstable_session_status")]
     SessionStatusRequest => "session/status",
+    #[cfg(feature = "unstable_session_options")]
+    SessionOptionsRequest => "session/options",
     #[cfg(feature = "unstable_session_set_title")]
     SetSessionTitleRequest => "session/set_title",
     ResumeSessionRequest => "session/resume",
@@ -382,6 +390,8 @@ impl_v2_jsonrpc_response_enum!(v2::AgentResponse {
     UnarchiveSessionResponse => "session/unarchive",
     #[cfg(feature = "unstable_session_status")]
     SessionStatusResponse => "session/status",
+    #[cfg(feature = "unstable_session_options")]
+    SessionOptionsResponse => "session/options",
     #[cfg(feature = "unstable_session_set_title")]
     SetSessionTitleResponse => "session/set_title",
     ResumeSessionResponse => "session/resume",
