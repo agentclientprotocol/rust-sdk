@@ -249,7 +249,9 @@ where
     ///
     /// Register typed session update handlers before connecting. When the
     /// request asks for replay, the agent sends those updates before the
-    /// [`v2::schema::ResumeSessionResponse`](v2::ResumeSessionResponse). Call
+    /// [`v2::schema::ResumeSessionResponse`](v2::ResumeSessionResponse), and
+    /// ends the replayed history with a
+    /// [`v2::schema::ReplayComplete`](v2::ReplayComplete) update. Call
     /// [`ResumeSessionBuilder::start_session`] to publish the request.
     pub fn resume_session_from(
         &self,

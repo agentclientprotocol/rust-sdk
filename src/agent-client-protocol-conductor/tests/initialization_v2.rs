@@ -212,22 +212,19 @@ async fn run_with_conductor(
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
-    // Boxed: the v2 initialize types make this future large.
-    Box::pin(
-        Client
-            .v2()
-            .name("v2-editor")
-            .with_spawned(|_cx| async move {
-                ConductorImpl::new_agent("v2-conductor", components)
-                    .run(ByteStreams::new(
-                        conductor_out.compat_write(),
-                        conductor_in.compat(),
-                    ))
-                    .await
-            })
-            .connect_with(transport, editor_task),
-    )
-    .await
+    Client
+        .v2()
+        .name("v2-editor")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", components)
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, editor_task)
+        .await
 }
 
 async fn run_raw_client_with_conductor(
@@ -238,20 +235,18 @@ async fn run_raw_client_with_conductor(
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
 
-    Box::pin(
-        Builder::new(Client)
-            .name("raw-v2-editor")
-            .with_spawned(|_cx| async move {
-                ConductorImpl::new_agent("v2-conductor", components)
-                    .run(ByteStreams::new(
-                        conductor_out.compat_write(),
-                        conductor_in.compat(),
-                    ))
-                    .await
-            })
-            .connect_with(transport, editor_task),
-    )
-    .await
+    Builder::new(Client)
+        .name("raw-v2-editor")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", components)
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, editor_task)
+        .await
 }
 
 async fn assert_invalid_final_agent_initialize_response(
@@ -624,45 +619,41 @@ async fn v2_session_new_preserves_request_and_response_through_proxy() -> Result
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
-    Box::pin(
-        Client
-            .v2()
-            .on_receive_notification(
-                async move |notification: UntypedMessage, _cx| {
-                    update_tx
-                        .unbounded_send(notification)
-                        .map_err(Error::into_internal_error)
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .name("v2-editor")
-            .with_spawned(|_cx| async move {
-                ConductorImpl::new_agent("v2-conductor", components)
-                    .run(ByteStreams::new(
-                        conductor_out.compat_write(),
-                        conductor_in.compat(),
-                    ))
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |notification: UntypedMessage, _cx| {
+                update_tx
+                    .unbounded_send(notification)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .name("v2-editor")
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", components)
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, async move |cx| {
+            let received_initialize = cx.send_request(initialize_request).block_task().await?;
+            assert_eq!(received_initialize, initialize_response);
+
+            let received_session = cx.send_request(session_request).block_task().await?;
+            assert_eq!(received_session, session_response);
+
+            let received_update =
+                tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
                     .await
-            })
-            .connect_with(transport, async move |cx| {
-                let received_initialize = cx.send_request(initialize_request).block_task().await?;
-                assert_eq!(received_initialize, initialize_response);
-
-                let received_session = cx.send_request(session_request).block_task().await?;
-                assert_eq!(received_session, session_response);
-
-                let received_update =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
-                        .await
-                        .expect("post-session update should not hang")
-                        .ok_or_else(|| {
-                            Error::internal_error().data("session update channel closed")
-                        })?;
-                assert_eq!(received_update, session_update);
-                Ok(())
-            }),
-    )
-    .await?;
+                    .expect("post-session update should not hang")
+                    .ok_or_else(|| Error::internal_error().data("session update channel closed"))?;
+            assert_eq!(received_update, session_update);
+            Ok(())
+        })
+        .await?;
 
     Ok(())
 }
@@ -729,60 +720,53 @@ async fn v2_proxy_session_helper_preserves_response_and_routes_later_updates() -
     let (editor_out, conductor_in) = duplex(4096);
     let (conductor_out, editor_in) = duplex(4096);
     let transport = ByteStreams::new(editor_out.compat_write(), editor_in.compat());
-    Box::pin(
-        Client
-            .v2()
-            .on_receive_notification(
-                async move |update: v2::UpdateSessionNotification, _cx| {
-                    update_tx
-                        .unbounded_send(update)
-                        .map_err(Error::into_internal_error)
-                },
-                agent_client_protocol::on_receive_notification!(),
-            )
-            .with_spawned(|_cx| async move {
-                ConductorImpl::new_agent("v2-conductor", ProxiesAndAgent::new(agent).proxy(proxy))
-                    .run(ByteStreams::new(
-                        conductor_out.compat_write(),
-                        conductor_in.compat(),
-                    ))
+    Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification, _cx| {
+                update_tx
+                    .unbounded_send(update)
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .with_spawned(|_cx| async move {
+            ConductorImpl::new_agent("v2-conductor", ProxiesAndAgent::new(agent).proxy(proxy))
+                .run(ByteStreams::new(
+                    conductor_out.compat_write(),
+                    conductor_in.compat(),
+                ))
+                .await
+        })
+        .connect_with(transport, async move |cx| {
+            cx.send_request(initialize_request).block_task().await?;
+
+            let received = cx
+                .send_request(v2::NewSessionRequest::new("/v2-helper-session"))
+                .block_task()
+                .await?;
+            assert_eq!(received, session_response);
+
+            let (callback_session_id, callback_response) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), callback_rx.next())
                     .await
-            })
-            .connect_with(transport, async move |cx| {
-                cx.send_request(initialize_request).block_task().await?;
+                    .expect("proxy session callback should not hang")
+                    .ok_or_else(|| Error::internal_error().data("proxy callback channel closed"))?;
+            assert_eq!(callback_session_id, session_id);
+            assert_eq!(callback_response, expected_callback_response);
 
-                let received = cx
-                    .send_request(v2::NewSessionRequest::new("/v2-helper-session"))
-                    .block_task()
-                    .await?;
-                assert_eq!(received, session_response);
-
-                let (callback_session_id, callback_response) =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), callback_rx.next())
-                        .await
-                        .expect("proxy session callback should not hang")
-                        .ok_or_else(|| {
-                            Error::internal_error().data("proxy callback channel closed")
-                        })?;
-                assert_eq!(callback_session_id, session_id);
-                assert_eq!(callback_response, expected_callback_response);
-
-                let update =
-                    tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
-                        .await
-                        .expect("post-response session update should not hang")
-                        .ok_or_else(|| {
-                            Error::internal_error().data("session update channel closed")
-                        })?;
-                assert_eq!(update.session_id, session_id);
-                assert!(matches!(
-                    update.update,
-                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_))
-                ));
-                Ok(())
-            }),
-    )
-    .await
+            let update = tokio::time::timeout(std::time::Duration::from_secs(2), update_rx.next())
+                .await
+                .expect("post-response session update should not hang")
+                .ok_or_else(|| Error::internal_error().data("session update channel closed"))?;
+            assert_eq!(update.session_id, session_id);
+            assert!(matches!(
+                update.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_))
+            ));
+            Ok(())
+        })
+        .await
 }
 
 #[tokio::test]

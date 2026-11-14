@@ -1165,7 +1165,9 @@ impl<
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let location = Location::caller();
-        self.with_runner(SpawnedRun::<_, P>::new(location, task))
+        // Boxed for the same reason as `main_fn` in `connect_with`: the driver
+        // would otherwise store the task's captured state once per layer.
+        self.with_runner(SpawnedRun::<_, P>::new(location, Box::new(task)))
     }
 
     /// Run a callback when the incoming transport reaches clean EOF.
@@ -1723,9 +1725,15 @@ impl<
         transport: impl ConnectTo<Host> + 'static,
         main_fn: impl AsyncFnOnce(P::Connection<Host::Counterpart>) -> Result<R, crate::Error>,
     ) -> Result<R, crate::Error> {
+        // The driver moves `main_fn` through several nested futures, and each
+        // one reserves room for it. Box the closure and its future so that the
+        // returned future holds the caller's captured state once instead of
+        // once per layer. Otherwise a closure that captures a few kilobytes,
+        // such as an `initialize` request and response, makes it very large.
+        let main_fn = Box::new(main_fn);
         let (_, future) =
             self.into_connection_and_future(transport, false, async move |connection| {
-                main_fn(protocol::connection_from_raw::<P, _>(connection)).await
+                Box::pin(main_fn(protocol::connection_from_raw::<P, _>(connection))).await
             });
         future.await
     }

@@ -218,6 +218,14 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                     if message.message_id == agent_message_id
                         && only_text(&message.content) == Some("hello from v2")
             ));
+            // `replay_complete` follows the last replayed update and precedes
+            // current-state synchronization and the response.
+            let replay_complete = next_update(&mut event_rx).await;
+            assert_eq!(replay_complete.session_id, session_id);
+            assert!(matches!(
+                replay_complete.update,
+                v2::SessionUpdate::ReplayComplete(_)
+            ));
             assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
@@ -246,6 +254,8 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
                             .map_err(Error::into_internal_error)
                     }
                 })?;
+            // Without `replayFrom` there is no replay, so no `replay_complete`:
+            // the first update is the session info snapshot.
             assert_session_info_snapshot(next_update(&mut event_rx).await);
             assert!(matches!(
                 next_update(&mut event_rx).await.update,
@@ -268,6 +278,90 @@ async fn testy_router_runs_v2_prompt_lifecycle_and_resume_replay() {
         .await
         .expect("Testy v2 lifecycle timed out")
         .expect("Testy v2 lifecycle failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_marks_the_end_of_an_empty_replay() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let update_tx = event_tx.clone();
+    let client = Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
+                update_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+
+            let session_id = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session
+                .session_id()
+                .clone();
+            connection
+                .send_request(v2::CloseSessionRequest::new(session_id.clone()))
+                .block_task()
+                .await?;
+
+            let resume = v2::ResumeSessionRequest::new(session_id.clone(), PathBuf::from("/tmp"))
+                .replay_from(v2::ReplayFrom::from(v2::ReplayFromStart::new()));
+            connection
+                .resume_session_from(resume)
+                .start_session()
+                .on_receiving_result({
+                    let event_tx = event_tx.clone();
+                    async move |result| {
+                        result?;
+                        event_tx
+                            .send(TestEvent::ResumeResponded)
+                            .map_err(Error::into_internal_error)
+                    }
+                })?;
+
+            // The session has no history. `replay_complete` is still sent, as
+            // the first update for the session after the request.
+            let replay_complete = next_update(&mut event_rx).await;
+            assert_eq!(replay_complete.session_id, session_id);
+            assert!(matches!(
+                replay_complete.update,
+                v2::SessionUpdate::ReplayComplete(_)
+            ));
+            assert_session_info_snapshot(next_update(&mut event_rx).await);
+            assert!(matches!(
+                next_update(&mut event_rx).await.update,
+                v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle))
+                    if idle.stop_reason.is_none()
+            ));
+            assert!(matches!(
+                next_event(&mut event_rx).await,
+                TestEvent::ResumeResponded
+            ));
+
+            connection
+                .send_request(v2::CloseSessionRequest::new(session_id))
+                .block_task()
+                .await?;
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 empty replay timed out")
+        .expect("Testy v2 empty replay failed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

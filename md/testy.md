@@ -118,7 +118,9 @@ The v2 implementation follows the split prompt lifecycle:
 `wait_for_cancel` makes this separation deterministic for client tests: prompt acceptance returns
 while work remains active, and `session/cancel` is confirmed by `idle` with the `cancelled` stop
 reason. Testy also keeps simple message history and replays it before a `session/resume` response
-when the client requests replay from the start. Every successful resume sends
+when the client requests replay from the start. It ends that replay with a
+`replay_complete` update, also when the history is empty, and sends none when
+replay was not requested. Every successful resume sends
 the current session info (`session_info_update` with the title) and a current
 idle-state snapshot after any replay and before responding, including when
 replay was not requested. Neither is a replayed historical change, and the

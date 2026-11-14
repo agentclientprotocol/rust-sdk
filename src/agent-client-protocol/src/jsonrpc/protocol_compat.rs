@@ -164,6 +164,10 @@ pub(crate) fn normalize_v1_initialize_request(
 #[cfg(feature = "unstable_protocol_v2")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "built once per connection; boxing the response would only make it harder to match on"
+)]
 pub enum InitializeOutcome {
     /// The agent selected v2 and the connection is ready for v2 traffic.
     Initialized(crate::v2::schema::InitializeResponse),

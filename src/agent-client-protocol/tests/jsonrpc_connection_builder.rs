@@ -742,3 +742,60 @@ async fn test_connection_builder_as_component() -> Result<(), agent_client_proto
     )
     .await
 }
+
+// ============================================================================
+// Connection future size
+// ============================================================================
+
+/// The size of a `connect_with` future whose `main_fn` captures `N` bytes.
+fn connect_with_future_size<const N: usize>() -> usize {
+    let (transport, _peer) = agent_client_protocol::Channel::duplex();
+    let captured = [0u8; N];
+    let future = UntypedRole
+        .builder()
+        .connect_with(transport, async move |_cx| {
+            std::hint::black_box(&captured);
+            Ok(())
+        });
+    std::mem::size_of_val(&future)
+}
+
+/// The size of a `connect_with` future whose `with_spawned` task captures `N`
+/// bytes.
+fn with_spawned_future_size<const N: usize>() -> usize {
+    let (transport, _peer) = agent_client_protocol::Channel::duplex();
+    let captured = [0u8; N];
+    let future = UntypedRole
+        .builder()
+        .with_spawned(move |_cx| async move {
+            std::hint::black_box(&captured);
+            Ok(())
+        })
+        .connect_with(transport, async |_cx| Ok(()));
+    std::mem::size_of_val(&future)
+}
+
+/// The driver moves the caller's closures through several nested futures.
+/// They are boxed, so the connection future holds their captured state at
+/// most once. Unboxed, it held one copy per layer: a closure that captured a
+/// few kilobytes, such as an `initialize` request and response, made the
+/// future large enough for `clippy::large_futures` to ask callers to box it.
+#[test]
+fn connection_future_does_not_multiply_captured_state() {
+    const CAPTURED: usize = 4096;
+    const SLACK: usize = 128;
+
+    let grown = connect_with_future_size::<CAPTURED>();
+    let base = connect_with_future_size::<0>();
+    assert!(
+        grown <= base + CAPTURED + SLACK,
+        "`connect_with` stores its closure more than once: {base} -> {grown} bytes"
+    );
+
+    let grown = with_spawned_future_size::<CAPTURED>();
+    let base = with_spawned_future_size::<0>();
+    assert!(
+        grown <= base + SLACK,
+        "`with_spawned` stores its task inline: {base} -> {grown} bytes"
+    );
+}

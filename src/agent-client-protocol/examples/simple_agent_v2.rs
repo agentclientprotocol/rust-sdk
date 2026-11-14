@@ -98,10 +98,12 @@ impl EchoAgent {
         sessions
     }
 
+    /// Reattach to a session. Returns the history to replay when the client
+    /// sent a `replayFrom` cursor, and `None` when it asked for no replay.
     fn resume_session(
         &self,
         request: &schema::ResumeSessionRequest,
-    ) -> Result<Vec<schema::SessionUpdate>> {
+    ) -> Result<Option<Vec<schema::SessionUpdate>>> {
         require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.state.lock().expect("session state lock poisoned");
@@ -123,8 +125,8 @@ impl EchoAgent {
         }
 
         let history = match &request.replay_from {
-            None => Vec::new(),
-            Some(schema::ReplayFrom::Start(_)) => session.history.clone(),
+            None => None,
+            Some(schema::ReplayFrom::Start(_)) => Some(session.history.clone()),
             Some(_) => return Err(invalid_params("unsupported replay cursor")),
         };
         session.active = true;
@@ -546,8 +548,18 @@ async fn main() -> Result<()> {
                         Ok(history) => history,
                         Err(error) => return responder.respond_with_error(error),
                     };
-                    for update in history {
-                        send_update(&connection, &request.session_id, update)?;
+                    // A resume with a `replayFrom` cursor ends its replay with
+                    // `replay_complete`, also when the history is empty. A
+                    // resume without a cursor must not send it.
+                    if let Some(history) = history {
+                        for update in history {
+                            send_update(&connection, &request.session_id, update)?;
+                        }
+                        send_update(
+                            &connection,
+                            &request.session_id,
+                            schema::SessionUpdate::ReplayComplete(schema::ReplayComplete::new()),
+                        )?;
                     }
                     // This example only resumes sessions without foreground work.
                     // Every successful resume synchronizes current state, with or
