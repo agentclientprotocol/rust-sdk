@@ -10,7 +10,8 @@ Rust, serve them directly, or attach them to an ACP proxy.
 
 Each supported rmcp major version has its own module behind a matching Cargo
 feature. No rmcp feature is enabled by default; without one, this crate is
-empty. Enable the feature for the rmcp major version your application uses:
+empty and has no dependencies. Enable the feature for the rmcp major version
+your application uses:
 
 | Feature  | Module                                | rmcp |
 | -------- | ------------------------------------- | ---- |
