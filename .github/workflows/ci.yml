@@ -177,4 +177,12 @@ jobs:
         # Depth 2 covers every remaining individual feature and pair, while the
         # regular CI all-features tests cover their full union without making
         # this matrix grow exponentially.
+        env:
+          # `--no-dev-deps` removes dev-dependencies from the manifests while
+          # cargo-hack runs. Cargo then reports the workspace dependencies that
+          # only dev-dependencies inherit as unused, and denying all warnings
+          # would fail every combination. Deny compiler warnings only. The
+          # Build job still denies Cargo's warnings for the real manifests.
+          CARGO_BUILD_WARNINGS: warn
+          RUSTFLAGS: -D warnings
         run: cargo hack check --workspace --feature-powerset --depth 2 --exclude-features default,unstable,wasm_js --no-dev-deps --partition ${{ matrix.partition }}
