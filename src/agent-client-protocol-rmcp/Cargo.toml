@@ -18,11 +18,25 @@ rustdoc-args = ["--cfg", "docsrs"]
 # No rmcp version is enabled by default. Each supported rmcp major version has
 # its own feature and module; features are additive.
 default = []
-# rmcp 3.x integration in the `rmcp_3` module.
-rmcp_3 = ["dep:rmcp_3"]
+# rmcp 3.x integration in the `rmcp_3` module. Without an rmcp version feature
+# the crate is empty, so the dependencies the integration uses are optional
+# and enabled here.
+rmcp_3 = [
+    "dep:rmcp_3",
+    "dep:agent-client-protocol",
+    "dep:futures",
+    "dep:futures-concurrency",
+    "dep:schemars",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:tokio",
+    "dep:tokio-util",
+]
 # Passthrough feature for the core crate's `unstable_mcp_over_acp`. The native
-# MCP-over-ACP path follows the core feature however it is enabled.
-unstable_mcp_over_acp = ["agent-client-protocol/unstable_mcp_over_acp"]
+# MCP-over-ACP path follows the core feature however it is enabled. On its own
+# it enables nothing, because the core crate is only a dependency with an
+# rmcp version feature.
+unstable_mcp_over_acp = ["agent-client-protocol?/unstable_mcp_over_acp"]
 
 [[example]]
 name = "with_mcp_server"
@@ -34,16 +48,16 @@ name = "stateless_native_mcp"
 required-features = ["rmcp_3", "unstable_mcp_over_acp"]
 
 [dependencies]
-agent-client-protocol = { workspace = true, features = ["schemars"] }
-futures.workspace = true
-futures-concurrency.workspace = true
+agent-client-protocol = { workspace = true, optional = true, features = ["schemars"] }
+futures = { workspace = true, optional = true }
+futures-concurrency = { workspace = true, optional = true }
 # Keep the version and features in step with the workspace `rmcp` entry.
 rmcp_3 = { package = "rmcp", version = "3.4.0", optional = true, default-features = false, features = ["server", "schemars"] }
-schemars.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
-tokio-util = { workspace = true, features = ["rt"] }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["io-util", "macros", "rt"] }
+tokio-util = { workspace = true, optional = true, features = ["rt"] }
 
 [dev-dependencies]
 # The `stateless_native_mcp` example attaches a server to a v2 proxy.

@@ -77,7 +77,7 @@ Internal crates request only the core capabilities they use:
 | --- | --- |
 | HTTP client/server | None; transport sides remain opt-in through `client` and `server` |
 | MCP-over-ACP polyfill | `unstable_mcp_over_acp`, with independent draft-v2 and session-fork passthrough features |
-| rmcp integration | `schemars`; one feature per rmcp major version (`rmcp_3`), and an `unstable_mcp_over_acp` passthrough feature. It has no draft-v2 feature: enable `unstable_protocol_v2` on `agent-client-protocol` itself |
+| rmcp integration | `schemars`; one feature per rmcp major version (`rmcp_3`), and an `unstable_mcp_over_acp` passthrough feature. The core crate is only a dependency with an rmcp version feature, so the passthrough does nothing on its own. It has no draft-v2 feature: enable `unstable_protocol_v2` on `agent-client-protocol` itself |
 | Conductor | `process`, `stdio`, and `unstable_mcp_over_acp` for launching components, serving stdio, and classifying MCP traces |
 | YOPO | `process` for launching the agent |
 | Test utilities | `process` and `stdio` for fixture binaries and launch helpers |

@@ -56,6 +56,10 @@
 //! [`Proxy`]: agent_client_protocol::Proxy
 //! [`ConnectTo`]: agent_client_protocol::ConnectTo
 
+// Only rustdoc links and doctests use this crate. Name it here so that Cargo
+// does not report the dependency as unused.
+use agent_client_protocol_rmcp as _;
+
 pub mod ordered_application_dispatch;
 
 pub mod v2_session_coordination {
