@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v5.2.0...agent-client-protocol-rmcp-v5.3.0) - 2026-11-14
+
+### Other
+
+- fix Cargo 1.100's unused dependency warnings ([#500](https://github.com/agentclientprotocol/rust-sdk/pull/500))
+
 ## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-rmcp-v4.0.6...agent-client-protocol-rmcp-v5.0.0) - 2026-11-02
 
 ### Added
