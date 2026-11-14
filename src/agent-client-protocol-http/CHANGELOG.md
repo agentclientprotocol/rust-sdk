@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [5.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v5.2.0...agent-client-protocol-http-v5.3.0) - 2026-11-14
+
+### Other
+
+- release v5.3.0 ([#498](https://github.com/agentclientprotocol/rust-sdk/pull/498))
+
 ## [5.0.0](https://github.com/agentclientprotocol/rust-sdk/compare/agent-client-protocol-http-v3.6.0...agent-client-protocol-http-v5.0.0) - 2026-11-02
 
 ### Added
