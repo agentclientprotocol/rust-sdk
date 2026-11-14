@@ -173,27 +173,6 @@ mod v2_methods {
         }
     }
 
-    #[cfg(feature = "unstable_subagents")]
-    #[test]
-    fn v2_session_tool_call_content_round_trips() {
-        let mut params = json!({
-            "sessionId": "parent",
-            "update": {
-                "sessionUpdate": "tool_call_update",
-                "toolCallId": "call_1",
-                "content": [{ "type": "session", "sessionId": "child" }]
-            }
-        });
-        assert_message_round_trips::<v2::AgentNotification>("session/update", &params);
-
-        // A malformed known variant is dropped like other malformed display
-        // items. It is not read as a custom variant.
-        params["update"]["content"] = json!([{ "type": "session" }]);
-        let parsed = v2::AgentNotification::parse_message("session/update", &params).unwrap();
-        let untyped = parsed.to_untyped_message().unwrap();
-        assert_eq!(untyped.params()["update"]["content"], json!([]));
-    }
-
     #[cfg(feature = "unstable_auth_status")]
     #[test]
     fn v2_auth_account_description_round_trips() {

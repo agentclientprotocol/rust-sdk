@@ -60,6 +60,14 @@ does not expose partial replay to a loading view. Production applications
 should project protocol entities according to their own UI needs, outside SDK
 callbacks.
 
+The agent ends the replayed history with a `replay_complete` update. The
+projection records how many leading updates precede it in `history_len`. The
+marker, current-state synchronization, and later updates are live. A resume
+that fails is never exposed, so a truncated replay never reaches a view. An
+agent that responds successfully without `replay_complete` violates the
+protocol. The response still certifies the updates before it, so the example
+counts them all as history.
+
 Do not generalize the next `idle` state into completion of a particular prompt:
 v2 state is session-wide, updates have no prompt identity, and background
 updates may continue while idle.

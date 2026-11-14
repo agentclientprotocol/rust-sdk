@@ -31,6 +31,10 @@ type Waiters = HashMap<u64, Reply>;
 struct Projection {
     response: schema::ResumeSessionResponse,
     updates: Vec<schema::SessionUpdate>,
+    /// How many leading `updates` are replayed history. The rest are live:
+    /// the `replay_complete` marker, current-state synchronization, and
+    /// everything received after the resume response.
+    history_len: usize,
     disconnected: bool,
 }
 
@@ -283,9 +287,18 @@ impl Driver {
                     }
                 };
 
+                let updates = replay.unwrap_or_default();
+                // `replay_complete` ends the replayed history. An agent that
+                // omits it violates the protocol, but the successful response
+                // still certifies everything before it as the history.
+                let history_len = updates
+                    .iter()
+                    .position(|update| matches!(update, schema::SessionUpdate::ReplayComplete(_)))
+                    .unwrap_or(updates.len());
                 let view = Rc::new(RefCell::new(Projection {
                     response,
-                    updates: replay.unwrap_or_default(),
+                    updates,
+                    history_len,
                     disconnected: false,
                 }));
                 let mut leases = HashSet::new();
@@ -486,17 +499,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let first = sessions.load(id.clone())?;
             let second = sessions.load(id.clone())?;
             let (first, second) = futures::try_join!(first.wait(), second.wait())?;
-            println!(
-                "Shared replay: {} updates",
-                first.view.borrow().updates.len()
-            );
+            println!("Shared replay: {} updates", first.view.borrow().history_len);
             println!("Resume setup: {:?}", first.view.borrow().response);
             drop((first, second));
 
             let reopened = sessions.load(id)?.wait().await?;
             println!(
                 "Fresh replay after close: {} updates",
-                reopened.view.borrow().updates.len()
+                reopened.view.borrow().history_len
             );
             // The last application owner disappearing stops the transport rather
             // than waiting indefinitely for remote cleanup.

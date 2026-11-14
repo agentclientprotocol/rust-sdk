@@ -129,10 +129,12 @@ impl Testy {
         sessions
     }
 
+    /// Reattach to a session. Returns the history to replay when the client
+    /// sent a `replayFrom` cursor, and `None` when it asked for no replay.
     fn resume_session(
         &self,
         request: &acp::ResumeSessionRequest,
-    ) -> Result<Vec<acp::SessionUpdate>, agent_client_protocol::Error> {
+    ) -> Result<Option<Vec<acp::SessionUpdate>>, agent_client_protocol::Error> {
         require_absolute(&request.cwd, "cwd")?;
         reject_mcp_servers(&request.mcp_servers)?;
         let mut state = self.lock_state();
@@ -154,8 +156,8 @@ impl Testy {
         }
 
         let replay = match &request.replay_from {
-            None => Vec::new(),
-            Some(acp::ReplayFrom::Start(_)) => session.history.clone(),
+            None => None,
+            Some(acp::ReplayFrom::Start(_)) => Some(session.history.clone()),
             Some(_) => {
                 return Err(invalid_params("unsupported session replay cursor"));
             }
@@ -576,8 +578,18 @@ impl ConnectTo<Client> for Testy {
                             Ok(replay) => replay,
                             Err(error) => return responder.respond_with_error(error),
                         };
-                        for update in replay {
-                            send_update(&connection, &request.session_id, update)?;
+                        // A resume with a `replayFrom` cursor ends its replay
+                        // with `replay_complete`, also when the history is
+                        // empty. A resume without a cursor must not send it.
+                        if let Some(replay) = replay {
+                            for update in replay {
+                                send_update(&connection, &request.session_id, update)?;
+                            }
+                            send_update(
+                                &connection,
+                                &request.session_id,
+                                acp::SessionUpdate::ReplayComplete(acp::ReplayComplete::new()),
+                            )?;
                         }
                         // Synchronize current metadata rather than replaying
                         // historical changes.

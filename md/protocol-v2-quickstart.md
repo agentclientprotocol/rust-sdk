@@ -92,12 +92,13 @@ the connection can continue dispatching cancellation and other traffic. That
 task sends the accepted user message, a running update, output, and finally an
 idle update with a stop reason.
 
-The example keeps history in memory and supports replay from the start. Every
-successful resume sends a current idle-state snapshot after any replay and
-before the response, even without replay. A production agent should replace
-this with durable session storage, synchronize its actual foreground state,
-define its supported replay cursors, and make resource cleanup and
-cancellation robust across process failure.
+The example keeps history in memory and supports replay from the start. It
+ends a requested replay with a `replay_complete` update, also when the history
+is empty. Every successful resume sends a current idle-state snapshot after
+any replay and before the response, even without replay. A production agent
+should replace this with durable session storage, synchronize its actual
+foreground state, define its supported replay cursors, and make resource
+cleanup and cancellation robust across process failure.
 
 For the connection APIs, proxy routing, and compatibility details surrounding
 these examples, continue with [Protocol V2](./protocol-v2.md).

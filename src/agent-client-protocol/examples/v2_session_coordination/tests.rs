@@ -48,9 +48,11 @@ impl Peer {
         }
     }
 
+    /// Replay one update, mark the end of the replay, and respond.
     fn replay_and_respond(&self, id: RawJsonRpcId, session: &str, text: &str) {
         self.send_all([
             update(session, text),
+            replay_complete(session),
             RawJsonRpcMessage::response(id, Ok(json!({}))),
         ]);
     }
@@ -111,12 +113,25 @@ fn update(session: &str, text: &str) -> RawJsonRpcMessage {
     .unwrap()
 }
 
+fn replay_complete(session: &str) -> RawJsonRpcMessage {
+    RawJsonRpcMessage::notification(
+        "session/update".into(),
+        json!({
+            "sessionId": session,
+            "update": {"sessionUpdate": "replay_complete"}
+        }),
+    )
+    .unwrap()
+}
+
+/// The text of every chunk in the log, replayed or live.
 fn text(session: &Session) -> String {
     session
         .view
         .borrow()
         .updates
         .iter()
+        .filter(|update| !matches!(update, schema::SessionUpdate::ReplayComplete(_)))
         .map(|update| {
             let schema::SessionUpdate::AgentMessageChunk(chunk) = update else {
                 panic!("expected a chunk");
@@ -178,6 +193,9 @@ async fn concurrent_loaders_share_one_resume_and_projection() {
             assert!(Rc::ptr_eq(&second.view, &third.view));
             assert_eq!(text(&second), "hello");
             assert_eq!(second.view.borrow().response, expected);
+            // This peer sends no `replay_complete`. The successful response
+            // still certifies the update before it as the history.
+            assert_eq!(second.view.borrow().history_len, 1);
 
             let clone = second.clone();
             drop(second);
@@ -258,6 +276,9 @@ async fn delayed_close_blocks_only_its_session() {
             let reopened = reopened.wait().await?;
             assert_eq!(text(&reopened), "fresh");
             assert_eq!(text(&other), "other+live");
+            // `replay_complete` separates the replayed chunk from the live one.
+            assert_eq!(other.view.borrow().history_len, 1);
+            assert_eq!(other.view.borrow().updates.len(), 3);
             drop(reopened);
             drop(other);
             finished.await.unwrap();

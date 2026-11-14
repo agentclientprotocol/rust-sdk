@@ -235,9 +235,10 @@ Install connection handlers before `session/new`, `session/resume`, and
 feature-gated `session/fork` requests. This is especially important before
 calling `start_session` on a `v2::ResumeSessionBuilder`: replay updates precede
 the resume response on the wire, so preinstalled typed handlers observe them in
-order. If a handler forwards updates to another task, the application is
-responsible for any additional projection-drained barrier it needs before
-treating replay as locally applied.
+order. The agent ends the replayed history with a `replay_complete` update
+(see [Schema 1.18](#schema-118)). If a handler forwards updates to another
+task, the application is responsible for any additional projection-drained
+barrier it needs before treating replay as locally applied.
 See [Ordered Application Dispatch](./ordered-application-dispatch.md) for a
 single-consumer queue that carries updates, response results, and closure.
 For an application-owned prototype that additionally coordinates shared resume
@@ -660,7 +661,7 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.14
+## Schema changes in schema 1.5 through 1.18
 
 The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
@@ -732,8 +733,9 @@ Foreground states are aggregate snapshots, not per-prompt events:
 - New sessions default to idle, but updates can precede the new-session
   response. Do not overwrite them with idle when that response arrives.
 - Every successful resume must send a current-state snapshot after any replay
-  and before its response, even without a replay cursor. Do not replay
-  historical states as live activity or reset state to idle on the response.
+  and its `replay_complete`, and before its response, even without a replay
+  cursor. Do not replay historical states as live activity or reset state to
+  idle on the response.
   Testy and the echo example only resume sessions without foreground work, so
   their snapshot is idle without a new stop reason.
 - A resume should also return the current `configOptions` in its response and
@@ -832,7 +834,9 @@ Draft v2 type changes:
 - `AvailableCommand` is a `type`-tagged union. Build commands with
   `AvailableCommand::Command(Command::new(..))` and read them through
   `name()`, `description()`, and `meta()`. Unknown command kinds parse as
-  `Other`; show them as plain commands by name and description, or ignore them.
+  `Other`. Ignore them, and do not show them as slash commands. Schema 1.13
+  allowed showing them as plain commands. Schema 1.18 forbids it, because each
+  command type defines how its entries are invoked.
 - `ToolCallLocation.line` is a 1-based `NonZeroU32`. The builder still takes a
   `u32` and treats `0` as no line.
 - `TerminalExitStatus.exit_code` is an `i64` holding the code the platform
@@ -899,9 +903,9 @@ Draft v2 type changes:
   empty after skipping values they cannot parse.
 - `SessionInfo.additionalDirectories` treats `null` as `[]`, and
   `Annotations.lastModified` accepts any ISO 8601 string.
-- With `unstable_subagents`, subagent updates gain `cwd` and
-  `additional_directories` patch fields (absolute paths; omitted leaves them
-  unchanged, `null` inherits the parent's).
+- Subagent updates gain `cwd` and `additional_directories` patch fields
+  (absolute paths; omitted leaves them unchanged, `null` inherits the
+  parent's). They needed `unstable_subagents` until schema 1.18.
 
 Connection and lifecycle rules:
 
@@ -952,7 +956,127 @@ Client projections should also follow these rules:
   agents finalize unfinished tool calls when foreground work ends.
 - A prompt invokes a slash command only when its first text block starts with
   `/` and the command name followed by whitespace or the end of the block.
+  This applies to `command` entries only.
 - Show a placeholder for content you cannot render rather than dropping it.
 - A terminal's `size` is a rendering hint.
 - `_meta` keys `traceparent`, `tracestate`, and `baggage` use the W3C formats;
   extensions use reverse-DNS prefixes such as `com.example/requestId`.
+
+### Schema 1.18
+
+Draft v2 type changes:
+
+- `SessionUpdate::ReplayComplete` marks the end of the history replay that a
+  `session/resume` request asked for. `ReplayComplete` has only an optional
+  `_meta`.
+- Subagents are part of v2 and no longer need `unstable_subagents`:
+  `SessionUpdate::SubagentUpdate`, `SessionUpdate::SessionMessage`,
+  `SessionUpdate::SessionMessageChunk`, `StateUpdate::Unknown`,
+  `BackgroundWork::Subagent`, and `ToolCallContent::Session` are always
+  available. These wire values used to parse as `Other` without the feature
+  and now parse as their typed variants, so add match arms where you relied on
+  the fallback. v1 still needs `unstable_subagents`.
+- With `unstable_plan_operations`, the `file` plan type is removed:
+  `PlanUpdateContent::File`, `PlanFile`, and `PlanUpdateContent::file` no
+  longer exist, and a received `file` plan parses as
+  `PlanUpdateContent::Other`. `PlanMarkdown` gains an optional `path`, the
+  absolute path of the file that holds the plan. Build it with
+  `PlanUpdateContent::Markdown(PlanMarkdown::new(..).path(..))`.
+- With `unstable_agent_skills`, `AvailableCommand::Skill` advertises an Agent
+  Skill and `ContentBlock::Skill` (`SkillReference`) invokes one in a prompt.
+  The agent advertises `PromptCapabilities::skill`, and the client advertises
+  `session.commands.skill`.
+- With `unstable_prompt_suggestions`,
+  `SessionUpdate::PromptSuggestionsUpdate` replaces the session's list of
+  prompts the agent predicts the user will send next. The client advertises
+  `session.promptSuggestions`.
+- `ClientCapabilities::session` (`ClientSessionCapabilities`) exists with
+  either of those two features. It only groups capabilities: `{}` advertises
+  nothing.
+- With `unstable_speed_config_category`, `SessionConfigOptionCategory::Speed`
+  marks a response speed option such as a fast mode toggle.
+- With `unstable_session_fork` and `unstable_session_options`,
+  `ForkSessionRequest::config_options` carries initial config option values.
+  The entries apply on top of the configuration the fork would start with.
+
+Agents must follow these replay rules:
+
+- For a `session/resume` request with a `replayFrom` cursor, send
+  `replay_complete` exactly once on the session, after the last replayed
+  update and before current-state synchronization and the response. Send it
+  for an empty history too.
+- Do not send it when `replayFrom` is omitted or `null`, for `session/new`,
+  when the cursor is rejected with `-32602`, or when the replay cannot finish.
+- Every update for the session between the request and `replay_complete` must
+  be replayed history. Hold everything else until after it: chunks of a
+  message that is still streaming, notices, `available_commands_update`,
+  `config_option_update`, and the current session info and state snapshots.
+  Permission requests and elicitations should wait too.
+- Each child session announced with `subagent_update` during the resume gets
+  its own `replay_complete` on its own `sessionId`, after its last replayed
+  update. The markers of different sessions have no required order.
+- `replay_complete` does not make the session active. A session that was not
+  active before the request becomes active with the successful response, so
+  `session/prompt` fails with `-32002` until then.
+- Report known gaps in the retained history after `replay_complete`, for
+  example with a notice.
+
+Testy and `simple_agent_v2` follow these rules.
+
+Other agent rules:
+
+- `auth/logout` is idempotent. Respond with the same empty result when there
+  is no authenticated state to end.
+- Answer a repeated `tool_call/cancel` or `terminal/cancel` with `-32602` once
+  the tool call is final or the terminal has exited. The `tool_call_update` or
+  `terminal_update` reports the outcome.
+- List the values of a `select` `thought_level` option from lowest to highest,
+  and of a `select` `speed` option from slowest to fastest. In a `boolean`
+  `speed` option, `true` is the faster setting.
+- `content` on `tool_call_update` replaces the whole array, so send the
+  `session` references again when you send new content. Add a reference only
+  for a handle you can resolve to a known session.
+- Omit `senderSessionId` on a session-directed message when you have no
+  evidence of who sent it. Do not assume the parent.
+- Report `unknown` on an actual loss of observability, not after silence.
+  Leave unfinished tool calls and terminals as last reported, and update
+  capabilities explicitly when a control is no longer available.
+- Send `skill` command entries only to a client that advertises
+  `session.commands.skill`, and advertise `session.prompt.skill` when you do.
+  Reject a prompt with a `skill` block that your capability does not allow, or
+  whose `name` you cannot resolve, with `-32602` and without inserting it.
+- Send `prompt_suggestions_update` only to a client that advertises
+  `session.promptSuggestions`. When you accept a `session/prompt`, replace a
+  non-empty list or withdraw it with an empty one. Do not replay suggestions.
+- While applying initial `configOptions`, do not send `config_option_update`
+  for them on the requesting connection, and send other updates they cause
+  only after the `session/new` or `session/fork` response. A resumed session
+  that is active on other connections does get `config_option_update` there.
+- `session/options` may start the agent's runtime to resolve the options. It
+  still stores no session and writes no history.
+
+Client projections should also follow these rules:
+
+- Use `replay_complete` to find the end of the replayed history. Every update
+  for the session before it is history, and every update after it is not.
+  A resume that ends in an error response or a closed connection without
+  `replay_complete` delivered a truncated replay. Do not use those updates as
+  the full history. A successful response without `replay_complete` is a
+  protocol violation, but the response still certifies the history.
+- Ignore command types you do not understand, and never show them as slash
+  commands. The `/name` syntax invokes `command` entries only. Invoke a skill
+  with a `skill` content block, and only where the agent's
+  `session.prompt.skill` capability allows it: one leading block, or any
+  number at any position with `inline`.
+- On `unknown`, stop presenting a previous `running` or `requires_action` as
+  confirmed live activity. It is not `idle`, not an outcome, and not a
+  cancellation. A later known state replaces it.
+- Session-directed messages are agent content. Attribute them to the sending
+  session and do not present them as user messages.
+- Render a markdown plan from `content`. Use `path` only to open the file, and
+  do not read a `path` outside the session's roots without user action.
+- Skip a whole prompt suggestion you cannot use rather than dropping one of
+  its blocks. Never send a suggestion as a prompt without an explicit user
+  action.
+- Render `speed` options near the model selector.
+- Do not call `session/options` on a timer.

@@ -114,9 +114,9 @@ async fn wait_until_idle(
                     return Ok((projection.text(), idle.stop_reason));
                 }
             }
-            // Running, requires_action, and any state this client does not
-            // recognize all mean foreground work is still active. An unknown
-            // state must never be treated as idle.
+            // Running and requires_action mean foreground work is active. The
+            // `unknown` state and any state this client does not recognize
+            // are not idle either, so keep waiting for a known idle state.
             schema::SessionUpdate::StateUpdate(_) => observed_active = true,
             update if observed_active => projection.apply(update),
             _ => {}

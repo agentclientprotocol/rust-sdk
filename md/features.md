@@ -122,12 +122,15 @@ surfaces. The former `unstable_session_notices` and `unstable_session_compaction
 SDK features have been removed. Applications still negotiate support through
 the corresponding protocol capabilities.
 
-The `unstable_subagents` feature exposes the schema's subagent capabilities,
-updates, and session-message types. It is also included in `unstable`. The
-existing `session/update` notification route carries subagent updates in v1 and,
-with `unstable_protocol_v2`, draft v2. This is schema support, not a subagent
-scheduler or an implementation of application-level ownership and lifecycle
-policy.
+The `unstable_subagents` feature exposes the schema's v1 subagent capabilities,
+updates, and session-message types. It is also included in `unstable`. Since
+schema 1.18, draft v2 includes subagents with only `unstable_protocol_v2`:
+`subagent_update`, `session_message`, `session_message_chunk`, the `unknown`
+foreground state, `subagent` background work, and `session` tool call content
+need no `unstable_subagents`. The existing `session/update` notification route
+carries subagent updates in both versions. This is schema support, not a
+subagent scheduler or an implementation of application-level ownership and
+lifecycle policy.
 
 Client-provided system prompts are stable in schema 1.16 and available without
 feature flags in v1. Draft v2 only needs `unstable_protocol_v2`. The former
@@ -160,6 +163,27 @@ value is not allowed, so compare the `configOptions` in the response with what
 you sent. Schema 1.17 also adds the `session` tool call content variant
 (`ToolCallContent::Session`) under `unstable_subagents`, and `description` on
 `AuthAccount` under `unstable_auth_status`.
+
+Schema 1.18 adds three features, each also included in `unstable`:
+
+- `unstable_prompt_suggestions` exposes the `prompt_suggestions_update` session
+  update and the client's `session.promptSuggestions` capability in v1 and
+  draft v2. Agents only send the update to a client that advertises the
+  capability. A client must not send a suggestion as a prompt without an
+  explicit user action.
+- `unstable_agent_skills` exposes Agent Skills in draft v2:
+  `AvailableCommand::Skill`, the `skill` content block (`ContentBlock::Skill`),
+  the agent's `session.prompt.skill` capability, and the client's
+  `session.commands.skill` capability. It adds nothing to v1.
+- `unstable_speed_config_category` adds `SessionConfigOptionCategory::Speed`
+  (`speed`). Without it, `speed` parses as `Other("speed")`.
+
+Schema 1.18 also adds `configOptions` on `session/fork`, which needs both
+`unstable_session_fork` and `unstable_session_options`. In draft v2, send it
+through `fork_session_from`. With `unstable_plan_operations`, the `file` plan
+type is removed: `PlanFile` and `PlanUpdateContent::file` no longer exist. Name
+the file that holds a markdown plan with `PlanMarkdown::path` instead. See
+[Schema 1.18](./protocol-v2.md#schema-118) for the draft v2 changes.
 
 The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
 always enables it, because the `Proxy` and `Conductor` roles and the conductor
