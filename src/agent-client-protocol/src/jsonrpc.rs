@@ -7093,6 +7093,9 @@ impl<T, P: Protocol> SentRequest<T, P> {
 /// This is particularly useful for debugging, logging, or implementing custom line-based
 /// protocols.
 ///
+/// An `Err` from the incoming stream ends the connection. A stream that decodes bytes itself
+/// should replace invalid UTF-8, as [`ByteStreams`] does, instead of yielding an error for it.
+///
 /// # Use Cases
 ///
 /// - **Line-by-line logging**: Intercept and log each line before parsing
@@ -7224,6 +7227,9 @@ where
 /// streams, handling serialization of JSON-RPC messages to/from newline-delimited JSON.
 /// This is the standard way to communicate with external processes or network connections.
 ///
+/// Incoming bytes that are not valid UTF-8 are replaced with U+FFFD, so a line that contains
+/// them is parsed like any other and does not end the connection.
+///
 /// # Use Cases
 ///
 /// - **Stdio communication**: Connect to agents or proxies via stdin/stdout
@@ -7278,15 +7284,48 @@ where
         impl futures::Sink<String, Error = std::io::Error> + Send + 'static,
         impl futures::Stream<Item = std::io::Result<String>> + Send + 'static,
     > {
-        use futures::AsyncBufReadExt;
-        use futures::io::BufReader;
         let Self { outgoing, incoming } = self;
 
-        let incoming_lines = Box::pin(BufReader::new(incoming).lines());
+        let incoming_lines = Box::pin(lossy_lines(incoming));
         let outgoing_lines = transport_actor::LineWriter::new(outgoing);
 
         Lines::new(outgoing_lines, incoming_lines)
     }
+}
+
+/// Splits `reader` into lines, without their `\n` or `\r\n` endings.
+///
+/// Bytes that are not valid UTF-8 are replaced with U+FFFD. Reporting them as
+/// a read error would end the connection over one message. A line that is
+/// JSON after the replacement is delivered, for example one with such a byte
+/// inside a string. Any other line is a [`TransportFrame::Malformed`].
+pub(crate) fn lossy_lines<R>(
+    reader: R,
+) -> impl futures::Stream<Item = std::io::Result<String>> + Send + 'static
+where
+    R: AsyncRead + Send + 'static,
+{
+    use futures::AsyncBufReadExt as _;
+
+    let reader = Box::pin(futures::io::BufReader::new(reader));
+    futures::stream::try_unfold(reader, async |mut reader| {
+        let mut line = Vec::new();
+        if reader.read_until(b'\n', &mut line).await? == 0 {
+            return Ok::<_, std::io::Error>(None);
+        }
+        if line.ends_with(b"\n") {
+            line.pop();
+            if line.ends_with(b"\r") {
+                line.pop();
+            }
+        }
+        let line = String::from_utf8(line).unwrap_or_else(|error| {
+            // The line's content may be private, so it is not logged.
+            tracing::debug!("Replaced invalid UTF-8 in an incoming line");
+            String::from_utf8_lossy(error.as_bytes()).into_owned()
+        });
+        Ok(Some((line, reader)))
+    })
 }
 
 #[cfg(any(
@@ -8856,6 +8895,17 @@ mod tests {
         write_line(&mut writer, "message".into()).await.unwrap();
 
         assert_eq!(writer.into_inner().into_inner(), b"message\n");
+    }
+
+    #[tokio::test]
+    async fn lossy_lines_strip_line_endings_and_replace_invalid_utf8() {
+        use futures::TryStreamExt as _;
+
+        let reader = futures::io::Cursor::new(b"crlf\r\n\ninva\xfflid\nno ending".to_vec());
+
+        let lines: Vec<String> = lossy_lines(reader).try_collect().await.unwrap();
+
+        assert_eq!(lines, ["crlf", "", "inva\u{FFFD}lid", "no ending"]);
     }
 
     #[test]

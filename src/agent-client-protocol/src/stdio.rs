@@ -52,16 +52,18 @@ impl<Counterpart: Role> ConnectTo<Counterpart> for Stdio {
         let stdout = blocking::Unblock::new(std::io::stdout());
 
         if let Some(callback) = self.debug_callback {
-            use futures::io::BufReader;
-            use futures::{AsyncBufReadExt, StreamExt};
+            use futures::StreamExt;
 
             let incoming_callback = callback.clone();
-            let incoming_lines = Box::pin(BufReader::new(stdin).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    incoming_callback(line, LineDirection::Stdin);
-                }
-            }))
-                as std::pin::Pin<Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>>;
+            let incoming_lines =
+                Box::pin(crate::jsonrpc::lossy_lines(stdin).inspect(move |result| {
+                    if let Ok(line) = result {
+                        incoming_callback(line, LineDirection::Stdin);
+                    }
+                }))
+                    as std::pin::Pin<
+                        Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
+                    >;
 
             let outgoing_sink = Box::pin(futures::sink::unfold(
                 (stdout, callback),
