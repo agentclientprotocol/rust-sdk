@@ -148,6 +148,8 @@ Output: mpsc::UnboundedSender<TransportFrame>
 For byte streams:
 
 - Read newline-delimited JSON from stream
+- Replace bytes that are not valid UTF-8 with U+FFFD, so a line with such a
+  byte is one message to parse, not a read failure that ends the connection
 - Parse a single message
 - Retain malformed input, including JSON arrays, so relays can forward it
 - Leave call/response-shape classification and Error Response decisions to the

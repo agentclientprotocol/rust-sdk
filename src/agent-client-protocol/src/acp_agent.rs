@@ -820,8 +820,7 @@ impl AcpAgent {
         ),
         crate::Error,
     > {
-        use futures::io::BufReader;
-        use futures::{AsyncBufReadExt, StreamExt};
+        use futures::StreamExt;
 
         let (child_stdin, child_stdout, child_stderr, child) = self.spawn_process()?;
 
@@ -859,13 +858,15 @@ impl AcpAgent {
         let incoming_lines: std::pin::Pin<
             Box<dyn futures::Stream<Item = std::io::Result<String>> + Send>,
         > = if let Some(callback) = self.debug_callback.clone() {
-            Box::pin(BufReader::new(child_stdout).lines().inspect(move |result| {
-                if let Ok(line) = result {
-                    callback(line, LineDirection::Stdout);
-                }
-            }))
+            Box::pin(
+                crate::jsonrpc::lossy_lines(child_stdout).inspect(move |result| {
+                    if let Ok(line) = result {
+                        callback(line, LineDirection::Stdout);
+                    }
+                }),
+            )
         } else {
-            Box::pin(BufReader::new(child_stdout).lines())
+            Box::pin(crate::jsonrpc::lossy_lines(child_stdout))
         };
 
         // The JSON-RPC transport keeps polling stdout while it drains stdin.

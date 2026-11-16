@@ -880,6 +880,77 @@ async fn test_bad_request_params_return_invalid_params_and_connection_stays_aliv
 }
 
 // ============================================================================
+// Test 6b: Invalid UTF-8 is replaced and connection stays alive
+// ============================================================================
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_invalid_utf8_is_replaced_and_connection_stays_alive() {
+    use tokio::io::{AsyncWriteExt, BufReader};
+    use tokio::task::LocalSet;
+
+    let local = LocalSet::new();
+
+    local
+        .run_until(async {
+            let (mut client_writer, server_reader) = tokio::io::duplex(2048);
+            let (server_writer, client_reader) = tokio::io::duplex(2048);
+
+            let server_reader = server_reader.compat();
+            let server_writer = server_writer.compat_write();
+
+            let server_transport =
+                agent_client_protocol::ByteStreams::new(server_writer, server_reader);
+            let server = UntypedRole.builder().on_receive_request(
+                async |request: SimpleRequest,
+                       responder: Responder<SimpleResponse>,
+                       _connection: ConnectionTo<UntypedRole>| {
+                    responder.respond(SimpleResponse {
+                        result: format!("echo: {}", request.message),
+                    })
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+
+            tokio::task::spawn_local(async move {
+                if let Err(err) = server.connect_to(server_transport).await {
+                    panic!("server should stay alive: {err:?}");
+                }
+            });
+
+            let mut client_reader = BufReader::new(client_reader);
+
+            // Outside a string, the line is not JSON after the replacement either.
+            client_writer
+                .write_all(b"\xff{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"simple_method\"}\n")
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let parse_error = read_jsonrpc_response_line(&mut client_reader).await;
+            assert_eq!(parse_error["id"], serde_json::Value::Null);
+            assert_eq!(parse_error["error"]["code"], -32700);
+            assert_eq!(
+                parse_error["error"]["data"]["line"],
+                "\u{FFFD}{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"simple_method\"}"
+            );
+
+            // Inside a string, the message is delivered with the replacement.
+            client_writer
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"simple_method\",\"params\":{\"message\":\"a\xffb\"}}\n",
+                )
+                .await
+                .unwrap();
+            client_writer.flush().await.unwrap();
+
+            let ok_response = read_jsonrpc_response_line(&mut client_reader).await;
+            assert_eq!(ok_response["id"], 6);
+            assert_eq!(ok_response["result"]["result"], "echo: a\u{FFFD}b");
+        })
+        .await;
+}
+
+// ============================================================================
 // Test 7: Notification errors
 // ============================================================================
 
