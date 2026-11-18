@@ -4,8 +4,8 @@
 //! supporting types) are in that version's SDK module: [`crate::v1::schema`]
 //! and, with `unstable_protocol_v2`, `agent_client_protocol::v2::schema`. This
 //! module holds only the items every version shares: [`ProtocolVersion`],
-//! [`MaybeUndefined`], the [`IntoOption`] and [`IntoMaybeUndefined`]
-//! conversion traits, and [`SuccessorMessage`].
+//! [`MaybeUndefined`], [`MethodDispatchError`], the [`IntoOption`] and
+//! [`IntoMaybeUndefined`] conversion traits, and [`SuccessorMessage`].
 //!
 //! The types come from the `agent-client-protocol-schema` crate, which this
 //! crate pins to one exact version. Use them through the SDK instead of
@@ -99,165 +99,20 @@ macro_rules! impl_jsonrpc_notification {
     };
 }
 
-/// Implement `JsonRpcMessage` and `JsonRpcRequest` for an enum that dispatches
-/// across multiple request types, with an extension method fallback.
-///
-/// Variants can optionally have `#[cfg(...)]` attributes for conditional compilation.
-///
-/// ```ignore
-/// impl_jsonrpc_request_enum!(ClientRequest {
-///     InitializeRequest => "initialize",
-///     PromptRequest => "session/prompt",
-///     [ext] ExtMethodRequest,
-/// });
-/// ```
-macro_rules! impl_jsonrpc_request_enum {
-    ($enum:ty {
-        $( $(#[$meta:meta])* $variant:ident => $method:literal, )*
-        [ext] $ext_variant:ident,
-    }) => {
-        impl $crate::JsonRpcMessage for $enum {
-            fn matches_method(_method: &str) -> bool {
-                true
-            }
-
-            fn method(&self) -> &str {
-                // The schema enum's inherent `method()` (path syntax prefers
-                // inherent items) covers every variant, including ones this
-                // macro does not list.
-                <$enum>::method(self)
-            }
-
-            fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
-                $crate::UntypedMessage::new(self.method(), self)
-            }
-
-            fn parse_message(
-                method: &str,
-                params: &serde_json::Value,
-            ) -> Result<Self, $crate::Error> {
-                match method {
-                    $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
-                    _ => {
-                        if method.starts_with('_') {
-                            $crate::util::json_cast_params(params).map(
-                                |ext_req: $crate::v1::schema::ExtRequest| {
-                                    Self::$ext_variant($crate::v1::schema::ExtRequest::new(
-                                        method.to_string(),
-                                        ext_req.params,
-                                    ))
-                                },
-                            )
-                        } else {
-                            Err($crate::Error::method_not_found())
-                        }
-                    }
-                }
-            }
-        }
-
-        impl $crate::JsonRpcRequest for $enum {
-            type Response = serde_json::Value;
-        }
-    };
-}
-
-/// Implement `JsonRpcMessage` and `JsonRpcNotification` for an enum that
-/// dispatches across multiple notification types, with an extension fallback.
-///
-/// Variants can optionally have `#[cfg(...)]` attributes for conditional compilation.
-///
-/// ```ignore
-/// impl_jsonrpc_notification_enum!(AgentNotification {
-///     SessionNotification => "session/update",
-///     [ext] ExtNotification,
-/// });
-/// ```
-macro_rules! impl_jsonrpc_notification_enum {
-    ($enum:ty {
-        $( $(#[$meta:meta])* $variant:ident => $method:literal, )*
-        [ext] $ext_variant:ident,
-    }) => {
-        impl $crate::JsonRpcMessage for $enum {
-            fn matches_method(_method: &str) -> bool {
-                true
-            }
-
-            fn method(&self) -> &str {
-                // The schema enum's inherent `method()` (path syntax prefers
-                // inherent items) covers every variant, including ones this
-                // macro does not list.
-                <$enum>::method(self)
-            }
-
-            fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
-                $crate::UntypedMessage::new(self.method(), self)
-            }
-
-            fn parse_message(
-                method: &str,
-                params: &serde_json::Value,
-            ) -> Result<Self, $crate::Error> {
-                match method {
-                    $( $(#[$meta])* $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
-                    _ => {
-                        if method.starts_with('_') {
-                            $crate::util::json_cast_params(params).map(
-                                |ext_notif: $crate::v1::schema::ExtNotification| {
-                                    Self::$ext_variant($crate::v1::schema::ExtNotification::new(
-                                        method.to_string(),
-                                        ext_notif.params,
-                                    ))
-                                },
-                            )
-                        } else {
-                            Err($crate::Error::method_not_found())
-                        }
-                    }
-                }
-            }
-        }
-
-        impl $crate::JsonRpcNotification for $enum {}
-    };
-}
-
-/// Implement `JsonRpcMessage` and `JsonRpcNotification` for a protocol-level
-/// notification enum (`$/`-prefixed methods), shared between the v1 and v2
-/// schema namespaces.
-///
-/// The incoming side (`matches_method`, `parse_message`) only recognizes the
-/// methods listed in the macro invocation: when the schema crate adds a
-/// protocol-level notification, list it here to parse it. The outgoing side
-/// (`method`, `to_untyped_message`) instead delegates to the schema enum's
-/// inherent `method()` and untagged serialization, which cover every variant,
-/// so unlisted variants still serialize with the correct method name.
-///
-/// ```ignore
-/// impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification {
-///     CancelRequestNotification => "$/cancel_request",
-/// });
-/// ```
-macro_rules! impl_jsonrpc_protocol_level_notification_enum {
-    ($enum:ty {
-        $( $variant:ident => $method:literal, )*
-    }) => {
+// The schema owns method-to-variant dispatch. These adapters retain SDK handler
+// matching, untyped envelopes, and error policy.
+macro_rules! impl_jsonrpc_message_enum {
+    ($enum:ty, $matches:expr) => {
         impl $crate::JsonRpcMessage for $enum {
             fn matches_method(method: &str) -> bool {
-                matches!(method, $( $method )|*)
+                ($matches)(method)
             }
 
             fn method(&self) -> &str {
-                // Resolves to the schema enum's *inherent* `method()` (path
-                // syntax prefers inherent items over trait items), which
-                // matches its variants exhaustively: the enum is only
-                // non-exhaustive downstream.
                 <$enum>::method(self)
             }
 
             fn to_untyped_message(&self) -> Result<$crate::UntypedMessage, $crate::Error> {
-                // The schema enum is `#[serde(untagged)]`, so serializing the
-                // enum serializes the inner notification.
                 $crate::UntypedMessage::new(<$enum>::method(self), self)
             }
 
@@ -265,49 +120,79 @@ macro_rules! impl_jsonrpc_protocol_level_notification_enum {
                 method: &str,
                 params: &serde_json::Value,
             ) -> Result<Self, $crate::Error> {
-                match method {
-                    $( $method => $crate::util::json_cast_params(params).map(Self::$variant), )*
-                    _ => Err($crate::Error::method_not_found()),
-                }
+                <$enum>::from_method_and_params(method, params).map_err(|error| {
+                    $crate::schema::dispatch_error(
+                        error,
+                        params.clone(),
+                        $crate::Error::invalid_params,
+                    )
+                })
             }
         }
+    };
+}
 
+macro_rules! impl_jsonrpc_request_enum {
+    ($enum:ty) => {
+        // Aggregate request handlers remain catch-all handlers. Their parser
+        // rejects unknown methods rather than falling through to another handler.
+        impl_jsonrpc_message_enum!($enum, |_| true);
+        impl $crate::JsonRpcRequest for $enum {
+            type Response = serde_json::Value;
+        }
+    };
+}
+
+macro_rules! impl_jsonrpc_notification_enum {
+    ($enum:ty) => {
+        impl_jsonrpc_message_enum!($enum, |_| true);
         impl $crate::JsonRpcNotification for $enum {}
     };
 }
 
-/// Implement `JsonRpcResponse` for an enum that dispatches across multiple
-/// response types, with an extension method fallback.
+macro_rules! impl_jsonrpc_protocol_level_notification_enum {
+    ($enum:ty) => {
+        impl_jsonrpc_message_enum!($enum, <$enum>::supports_method);
+        impl $crate::JsonRpcNotification for $enum {}
+    };
+}
+
 macro_rules! impl_jsonrpc_response_enum {
-    ($enum:ty {
-        $( $(#[$meta:meta])* $variant:ident => $method:literal, )*
-        [ext] $ext_variant:ident,
-    }) => {
+    ($enum:ty) => {
         impl $crate::JsonRpcResponse for $enum {
-            fn into_json(
-                self,
-                _method: &str,
-            ) -> Result<serde_json::Value, $crate::Error> {
+            fn into_json(self, _method: &str) -> Result<serde_json::Value, $crate::Error> {
                 serde_json::to_value(self).map_err($crate::Error::into_internal_error)
             }
 
-            fn from_json(
-                method: &str,
-                value: serde_json::Value,
-            ) -> Result<Self, $crate::Error> {
-                match method {
-                    $( $(#[$meta])* $method => $crate::util::json_cast(value).map(Self::$variant), )*
-                    _ => {
-                        if method.starts_with('_') {
-                            $crate::util::json_cast(value).map(Self::$ext_variant)
-                        } else {
-                            Err($crate::Error::method_not_found())
-                        }
-                    }
-                }
+            fn from_json(method: &str, value: serde_json::Value) -> Result<Self, $crate::Error> {
+                <$enum>::from_method_and_result(method, value.clone()).map_err(|error| {
+                    $crate::schema::dispatch_error(error, value, $crate::Error::parse_error)
+                })
             }
         }
     };
+}
+
+// Match json_cast_params/json_cast diagnostics without putting SDK error codes
+// or payload-bearing diagnostics into the schema's dispatch implementation.
+fn dispatch_error(
+    error: agent_client_protocol_schema::MethodDispatchError,
+    payload: serde_json::Value,
+    invalid_payload: fn() -> crate::Error,
+) -> crate::Error {
+    use agent_client_protocol_schema::MethodDispatchError;
+
+    match error {
+        MethodDispatchError::UnknownMethod { .. } => crate::Error::method_not_found(),
+        MethodDispatchError::InvalidPayload { source, .. } => {
+            invalid_payload().data(serde_json::json!({
+                "error": source.to_string(),
+                "json": payload,
+                "phase": "deserialization",
+            }))
+        }
+        _ => crate::Error::internal_error(),
+    }
 }
 
 // Internal organization
