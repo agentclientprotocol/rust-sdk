@@ -7,9 +7,12 @@ use agent_client_protocol::{
 };
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 const SESSION_TITLE: &str = "Testy v2 session";
 const SESSION_UPDATED_AT: &str = "2026-01-01T00:00:00Z";
@@ -56,7 +59,10 @@ struct V2SessionData {
 enum KeyedPrompt {
     /// A prompt with this key was accepted and its user message is not
     /// inserted yet.
-    Pending,
+    Pending {
+        inserted: watch::Sender<Option<acp::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+    },
     /// The user message that was inserted with this key.
     Inserted(acp::MessageId),
 }
@@ -72,7 +78,10 @@ enum PromptAdmission {
     Retry(acp::MessageId),
     /// A retry of a prompt that is not inserted yet. It is not held a second
     /// time. It gets the outcome of the first request with this key.
-    RetryOfPending(acp::IdempotencyKey),
+    RetryOfPending {
+        inserted: watch::Receiver<Option<acp::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+    },
 }
 
 impl Testy {
@@ -97,6 +106,7 @@ impl Testy {
     ) -> Result<acp::SessionId, agent_client_protocol::Error> {
         require_absolute(&request.cwd, "cwd")?;
         reject_mcp_servers(&request.mcp_servers)?;
+        reject_system_prompt(request.system_prompt.as_ref())?;
         let mut state = self.lock_state();
         loop {
             let session_id =
@@ -158,6 +168,7 @@ impl Testy {
     ) -> Result<Option<Vec<acp::SessionUpdate>>, agent_client_protocol::Error> {
         require_absolute(&request.cwd, "cwd")?;
         reject_mcp_servers(&request.mcp_servers)?;
+        reject_system_prompt(request.system_prompt.as_ref())?;
         let mut state = self.lock_state();
         let session = state
             .sessions
@@ -215,17 +226,27 @@ impl Testy {
                 Some(KeyedPrompt::Inserted(message_id)) => {
                     return Ok(PromptAdmission::Retry(message_id.clone()));
                 }
-                Some(KeyedPrompt::Pending) => {
-                    return Ok(PromptAdmission::RetryOfPending(key.clone()));
+                Some(KeyedPrompt::Pending {
+                    inserted,
+                    withdrawn,
+                }) => {
+                    return Ok(PromptAdmission::RetryOfPending {
+                        inserted: inserted.subscribe(),
+                        withdrawn: withdrawn.clone(),
+                    });
                 }
                 None => {}
             }
         }
         validate_prompt_content(prompt)?;
         if let Some(key) = idempotency_key {
-            session
-                .idempotency_keys
-                .insert(key.clone(), KeyedPrompt::Pending);
+            session.idempotency_keys.insert(
+                key.clone(),
+                KeyedPrompt::Pending {
+                    inserted: watch::Sender::new(None),
+                    withdrawn: Arc::new(AtomicBool::new(false)),
+                },
+            );
         }
         if session.foreground_work || !session.held_prompts.is_empty() {
             session.held_prompts.push_back(ticket);
@@ -264,9 +285,15 @@ impl Testy {
                 let Some(session) = state.sessions.get_mut(session_id) else {
                     return Err(agent_client_protocol::Error::request_cancelled());
                 };
+                let retry_withdrew_prompt = idempotency_key
+                    .and_then(|key| session.idempotency_keys.get(key))
+                    .is_some_and(|prompt| {
+                        matches!(prompt, KeyedPrompt::Pending { withdrawn, .. } if withdrawn.load(Ordering::Acquire))
+                    });
                 if !session.active
                     || session.cancel_epoch != cancel_epoch
                     || withdrawn.is_cancelled()
+                    || retry_withdrew_prompt
                 {
                     session.held_prompts.retain(|held| *held != ticket);
                     if let Some(key) = idempotency_key {
@@ -290,33 +317,30 @@ impl Testy {
         }
     }
 
-    /// Wait for the outcome of the pending prompt that first carried
-    /// `idempotency_key`, and return it for a retry of that prompt.
-    ///
-    /// The retry gets the first prompt's `messageId` once its user message is
-    /// inserted, or `-32800` when that prompt is dropped before insertion.
     async fn wait_for_pending_prompt(
         &self,
-        session_id: &acp::SessionId,
-        idempotency_key: &acp::IdempotencyKey,
+        mut inserted: watch::Receiver<Option<acp::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+        cancellation: RequestCancellation,
     ) -> Result<acp::MessageId, agent_client_protocol::Error> {
-        let notified = self.state_changed.notified();
-        tokio::pin!(notified);
-        loop {
-            notified.as_mut().enable();
-            let recorded = self
-                .lock_state()
-                .sessions
-                .get(session_id)
-                .and_then(|session| session.idempotency_keys.get(idempotency_key))
-                .cloned();
-            match recorded {
-                Some(KeyedPrompt::Inserted(message_id)) => return Ok(message_id),
-                Some(KeyedPrompt::Pending) => {}
-                None => return Err(agent_client_protocol::Error::request_cancelled()),
+        // Wait for this particular held prompt, not for whatever attempt
+        // might reuse its key once it has been dropped.
+        let outcome = async {
+            inserted
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|message_id| message_id.clone())
+                .ok_or_else(agent_client_protocol::Error::request_cancelled)
+        };
+        tokio::pin!(outcome);
+        tokio::select! {
+            outcome = &mut outcome => outcome,
+            () = cancellation.cancelled() => {
+                withdrawn.store(true, Ordering::Release);
+                self.state_changed.notify_waiters();
+                outcome.await
             }
-            notified.as_mut().await;
-            notified.set(self.state_changed.notified());
         }
     }
 
@@ -461,14 +485,14 @@ impl Testy {
     ) {
         if let Some(session) = self.lock_state().sessions.get_mut(session_id) {
             session.history.push(update);
-            if let Some(key) = idempotency_key {
-                session
+            if let Some(key) = idempotency_key
+                && let Some(KeyedPrompt::Pending { inserted, .. }) = session
                     .idempotency_keys
-                    .insert(key, KeyedPrompt::Inserted(message_id.clone()));
+                    .insert(key, KeyedPrompt::Inserted(message_id.clone()))
+            {
+                inserted.send_replace(Some(message_id.clone()));
             }
         }
-        // Wake retries that wait for this prompt's outcome.
-        self.state_changed.notify_waiters();
     }
 
     async fn process_prompt(
@@ -758,13 +782,17 @@ impl ConnectTo<Client> for Testy {
                             Ok(PromptAdmission::Retry(message_id)) => {
                                 responder.respond(acp::PromptResponse::new(message_id))
                             }
-                            Ok(PromptAdmission::RetryOfPending(idempotency_key)) => {
+                            Ok(PromptAdmission::RetryOfPending {
+                                inserted,
+                                withdrawn,
+                            }) => {
                                 let agent = agent.clone();
                                 connection.spawn(async move {
                                     let outcome = agent
                                         .wait_for_pending_prompt(
-                                            &request.session_id,
-                                            &idempotency_key,
+                                            inserted,
+                                            withdrawn,
+                                            responder.cancellation(),
                                         )
                                         .await;
                                     responder
@@ -817,6 +845,15 @@ impl ConnectTo<Client> for Testy {
             .connect_to(client)
             .await
     }
+}
+
+fn reject_system_prompt(
+    system_prompt: Option<&acp::SystemPrompt>,
+) -> Result<(), agent_client_protocol::Error> {
+    if system_prompt.is_some() {
+        return Err(invalid_params("Testy cannot apply systemPrompt"));
+    }
+    Ok(())
 }
 
 /// Clients must not send an empty prompt, and Testy rejects one with `-32602`.

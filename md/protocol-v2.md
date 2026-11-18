@@ -89,19 +89,17 @@ name clash. The preceding agent fragment demonstrates version negotiation only.
 An agent that advertises session support must also implement the complete
 baseline session surface shown in the runnable quickstart.
 
-## Unhandled `tool_call/cancel` and `terminal/cancel`
+## `tool_call/cancel` and `terminal/cancel`
 
-An initialized `Agent.v2()` agent without a handler for `tool_call/cancel` or
-`terminal/cancel` answers them with `-32602` (Invalid params), not `-32601`
-(Method not found). Neither method has an initialize-time capability: a Client
-sends one only for a tool call or terminal that advertises
-`capabilities.cancel`, and the spec answers a request for an unknown, final or
-non-cancellable one with `-32602`. The error's `data` holds the request's
-`toolCallId` or `terminalId`. A typed handler for `v2::schema::CancelToolCallRequest`
-or `v2::schema::CancelTerminalRequest`, or a catch-all handler that answers the
-request, takes precedence. Before initialization these requests get `-32600`
-like any other. v1 agents and agents built with `Builder::new` answer them with
-`-32601`, since v1 has no such methods.
+Neither method has an initialize-time capability. An agent that advertises
+`capabilities.cancel` on a tool call or terminal must implement the corresponding
+request. The SDK answers an unhandled method with `-32601` (Method not found).
+Before initialization these requests get `-32600` like any other.
+
+If you implement the method, respond with `-32002` and `data.sessionId` for an
+unknown or inactive session. An announced child of an active session is not
+unknown. For a known session, respond with `-32602` (Invalid params) if the tool
+call or terminal is unknown, final, or not cancellable.
 
 `sessionId` is the session that reports the tool call or terminal. For a
 subagent's tool call or terminal, that is the child session. The item's own
@@ -664,7 +662,8 @@ agent:
   It does not send a second initialize request.
 - If they differ, the connector closes that connection, calls both factories
   again as needed, and performs a fresh v1 initialization on a new agent
-  connection.
+  connection. The protocol permits requesting the lower selected version in
+  that initialization.
 - If the agent rejects the v2 initialize request, the error is surfaced. A
   rejected initialize is not treated as permission to retry with v1.
 
@@ -1158,6 +1157,13 @@ Testy and `simple_agent_v2` follow these rules. They do not compare prompts.
 
 Other agent rules:
 
+- Include the session's `configOptions` and `availableCommands` in the
+  `session/new` and `session/resume` responses when the lists are nonempty.
+  If a new session is not idle, send its `state_update` after the
+  `session/new` response.
+- If the agent cannot apply a supplied `systemPrompt` because the value is
+  unsupported or exceeds its limits, answer `-32602` without creating or
+  resuming the session.
 - `session/cancel` and `session/close` drop every prompt you have not
   inserted. Answer each with `-32800`. Honoring `$/cancel_request` for a held
   prompt is optional: either answer `-32800` and do not insert the message, or
@@ -1224,6 +1230,10 @@ Client projections should also follow these rules:
   `Responder::cancellation`. A responder dropped after the cancellation
   answers `-32800` instead. Also dismiss permission and elicitation prompts
   for a session you closed.
+- Correlate a submitted prompt with the agent's `user_message` by the
+  response's `messageId`, not by content. The agent owns the inserted message
+  and may report different content. The client may display what it originally
+  sent; replay carries the agent's content.
 - A resume without `replayFrom` does not resynchronize messages or foreground
   tool calls. Keep the session's entities if you missed no updates, and
   request replay otherwise, for example after a lost connection.

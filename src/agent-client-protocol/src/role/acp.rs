@@ -43,35 +43,11 @@ pub struct Client;
 impl Role for Client {
     type Counterpart = Agent;
 
-    /// Handles the requests and notifications an agent receives from its
-    /// client that no handler claimed.
-    ///
-    /// A v2 agent (`Agent.v2()`) answers an unhandled `tool_call/cancel` or
-    /// `terminal/cancel` with `-32602`: it has no tool call or terminal it can
-    /// cancel. Every other message is left to the generic `-32601` fallback.
     fn default_handle_dispatch_from(
         &self,
         message: Dispatch,
-        connection: ConnectionTo<Client>,
+        _connection: ConnectionTo<Client>,
     ) -> impl Future<Output = Result<Handled<Dispatch>, crate::Error>> + Send {
-        #[cfg(feature = "unstable_protocol_v2")]
-        let message = match message {
-            Dispatch::Request(request, responder)
-                if connection.protocol_version() == Some(ProtocolVersion::V2) =>
-            {
-                match unhandled_v2_entity_cancel(&request) {
-                    Some(error) => {
-                        return std::future::ready(
-                            responder.respond_with_error(error).map(|()| Handled::Yes),
-                        );
-                    }
-                    None => Dispatch::Request(request, responder),
-                }
-            }
-            message => message,
-        };
-        #[cfg(not(feature = "unstable_protocol_v2"))]
-        drop(connection);
         std::future::ready(Ok(Handled::No {
             message,
             retry: false,
@@ -353,41 +329,6 @@ impl Role for Agent {
             .await
             .done()
     }
-}
-
-/// The error for an unhandled v2 `tool_call/cancel` or `terminal/cancel`
-/// request, or `None` for every other request.
-///
-/// Neither method has an initialize-time capability. An Agent cancels only a
-/// tool call or terminal that advertises `capabilities.cancel`, and the spec
-/// answers a request for an unknown or non-cancellable one with `-32602`
-/// (Invalid params), not `-32601` (Method not found). The error's `data`
-/// holds the `toolCallId` or `terminalId` from the request when it is a
-/// string.
-#[cfg(feature = "unstable_protocol_v2")]
-fn unhandled_v2_entity_cancel(request: &crate::UntypedMessage) -> Option<crate::Error> {
-    let method = request.method();
-    let (key, label) = if method == v2::AGENT_METHOD_NAMES.tool_call_cancel {
-        ("toolCallId", "tool call")
-    } else if method == v2::AGENT_METHOD_NAMES.terminal_cancel {
-        ("terminalId", "terminal")
-    } else {
-        return None;
-    };
-    let error = crate::Error::new(
-        crate::ErrorCode::INVALID_PARAMS,
-        format!("the {label} is unknown or not cancellable"),
-    );
-    Some(
-        match request
-            .params()
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(id) => error.data(serde_json::json!({ key: id })),
-            None => error,
-        },
-    )
 }
 
 impl Agent {

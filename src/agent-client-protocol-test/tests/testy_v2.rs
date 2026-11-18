@@ -1125,20 +1125,27 @@ async fn testy_v2_answers_a_retry_of_a_held_prompt_with_its_outcome() {
                 .await?;
 
             // `$/cancel_request` for the held prompt withdraws it, and every
-            // pending request with its key gets `-32800`.
+            // pending request with its key gets `-32800`, even if the
+            // cancellation names a retry rather than the original request.
             let key = v2::IdempotencyKey::generate();
-            let held = session.send_prompt_blocks_with_key(greet(), key.clone());
-            let retry = session.send_prompt_blocks_with_key(greet(), key.clone());
-            held.cancel()?;
-            for request in [held, retry] {
-                let error = request
-                    .block_task()
-                    .await
-                    .expect_err("a withdrawn prompt is never inserted");
-                assert_eq!(
-                    error.code,
-                    agent_client_protocol::ErrorCode::REQUEST_CANCELLED
-                );
+            for cancel_retry in [false, true] {
+                let held = session.send_prompt_blocks_with_key(greet(), key.clone());
+                let retry = session.send_prompt_blocks_with_key(greet(), key.clone());
+                if cancel_retry {
+                    retry.cancel()?;
+                } else {
+                    held.cancel()?;
+                }
+                for request in [held, retry] {
+                    let error = request
+                        .block_task()
+                        .await
+                        .expect_err("a withdrawn prompt is never inserted");
+                    assert_eq!(
+                        error.code,
+                        agent_client_protocol::ErrorCode::REQUEST_CANCELLED
+                    );
+                }
             }
 
             // `session/cancel` drops a held prompt and its pending retry.
@@ -1233,11 +1240,76 @@ async fn testy_v2_rejects_a_malformed_idempotency_key() {
     .expect("Testy v2 malformed idempotency key failed");
 }
 
-/// Testy v2 never advertises `capabilities.cancel`, so it answers
-/// `tool_call/cancel` and `terminal/cancel` with `-32602`, as the spec
-/// answers a request for an unknown or non-cancellable tool call or terminal.
 #[tokio::test(flavor = "current_thread")]
-async fn testy_v2_answers_entity_cancel_with_invalid_params() {
+async fn testy_v2_rejects_an_unsupported_system_prompt_without_opening_a_session() {
+    let client = Client
+        .v2()
+        .connect_with(testy::v2::Testy::new(), async |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let cwd = PathBuf::from("/tmp");
+            let system_prompt = v2::SystemPrompt::new(vec!["Use short replies.".into()]);
+            let new_error = connection
+                .send_request(
+                    v2::NewSessionRequest::new(cwd.clone()).system_prompt(system_prompt.clone()),
+                )
+                .block_task()
+                .await
+                .expect_err("an unsupported system prompt must not be ignored");
+            assert_eq!(
+                new_error.code,
+                agent_client_protocol::ErrorCode::INVALID_PARAMS
+            );
+            let sessions = connection
+                .send_request(v2::ListSessionsRequest::new())
+                .block_task()
+                .await?;
+            assert!(sessions.sessions.is_empty());
+
+            let session = connection
+                .build_session(cwd.clone())
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            let session_id = session.session_id().clone();
+            session.close().block_task().await?;
+            let resume_error = connection
+                .send_request(
+                    v2::ResumeSessionRequest::new(session_id.clone(), cwd)
+                        .system_prompt(system_prompt),
+                )
+                .block_task()
+                .await
+                .expect_err("an unsupported system prompt must not resume a session");
+            assert_eq!(
+                resume_error.code,
+                agent_client_protocol::ErrorCode::INVALID_PARAMS
+            );
+            let prompt_error = connection
+                .send_request(v2::PromptRequest::new(session_id, vec!["hello".into()]))
+                .block_task()
+                .await
+                .expect_err("the session stays closed");
+            assert_eq!(
+                prompt_error.code,
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
+            );
+            Ok(())
+        });
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 system prompt validation timed out")
+        .expect("Testy v2 system prompt validation failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn testy_v2_does_not_implement_entity_cancel() {
     tokio::time::timeout(
         TIMEOUT,
         Client
@@ -1255,13 +1327,13 @@ async fn testy_v2_answers_entity_cancel_with_invalid_params() {
                     .block_task()
                     .await
                     .expect_err("Testy has no cancellable tool call");
-                assert_eq!(i32::from(error.code), -32602, "{error:?}");
+                assert_eq!(i32::from(error.code), -32601, "{error:?}");
                 let error = connection
                     .send_request(v2::CancelTerminalRequest::new("s", "t"))
                     .block_task()
                     .await
                     .expect_err("Testy has no cancellable terminal");
-                assert_eq!(i32::from(error.code), -32602, "{error:?}");
+                assert_eq!(i32::from(error.code), -32601, "{error:?}");
                 Ok(())
             }),
     )

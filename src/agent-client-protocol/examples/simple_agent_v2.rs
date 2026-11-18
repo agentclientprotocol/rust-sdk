@@ -13,12 +13,15 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use agent_client_protocol::v2::{ConnectionTo, Responder, schema};
 use agent_client_protocol::{Agent, Client, Error, RequestCancellation, Result, Stdio};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 const SESSION_TITLE: &str = "Echo agent session";
 
@@ -58,7 +61,10 @@ struct Session {
 enum KeyedPrompt {
     /// A prompt with this key was accepted and its user message is not
     /// inserted yet.
-    Pending,
+    Pending {
+        inserted: watch::Sender<Option<schema::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+    },
     /// The user message that was inserted with this key.
     Inserted(schema::MessageId),
 }
@@ -74,13 +80,17 @@ enum PromptAdmission {
     Retry(schema::MessageId),
     /// A retry of a prompt that is not inserted yet. It is not held a second
     /// time. It gets the outcome of the first request with this key.
-    RetryOfPending(schema::IdempotencyKey),
+    RetryOfPending {
+        inserted: watch::Receiver<Option<schema::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+    },
 }
 
 impl EchoAgent {
     fn create_session(&self, request: schema::NewSessionRequest) -> Result<schema::SessionId> {
         require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
+        reject_system_prompt(request.system_prompt.as_ref())?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         state.next_session_id += 1;
         let session_id = schema::SessionId::new(format!("echo-session-{}", state.next_session_id));
@@ -128,6 +138,7 @@ impl EchoAgent {
     ) -> Result<Option<Vec<schema::SessionUpdate>>> {
         require_absolute(&request.cwd)?;
         reject_mcp_servers(&request.mcp_servers)?;
+        reject_system_prompt(request.system_prompt.as_ref())?;
         let mut state = self.state.lock().expect("session state lock poisoned");
         let session = state
             .sessions
@@ -185,8 +196,14 @@ impl EchoAgent {
                 Some(KeyedPrompt::Inserted(message_id)) => {
                     return Ok(PromptAdmission::Retry(message_id.clone()));
                 }
-                Some(KeyedPrompt::Pending) => {
-                    return Ok(PromptAdmission::RetryOfPending(key.clone()));
+                Some(KeyedPrompt::Pending {
+                    inserted,
+                    withdrawn,
+                }) => {
+                    return Ok(PromptAdmission::RetryOfPending {
+                        inserted: inserted.subscribe(),
+                        withdrawn: withdrawn.clone(),
+                    });
                 }
                 None => {}
             }
@@ -208,9 +225,13 @@ impl EchoAgent {
         // A rejected prompt records nothing, so its key stays unused. From
         // here on the prompt is accepted.
         if let Some(key) = idempotency_key {
-            session
-                .idempotency_keys
-                .insert(key.clone(), KeyedPrompt::Pending);
+            session.idempotency_keys.insert(
+                key.clone(),
+                KeyedPrompt::Pending {
+                    inserted: watch::Sender::new(None),
+                    withdrawn: Arc::new(AtomicBool::new(false)),
+                },
+            );
         }
         if session.foreground_work || !session.held_prompts.is_empty() {
             session.held_prompts.push_back(ticket);
@@ -248,9 +269,15 @@ impl EchoAgent {
                 let Some(session) = state.sessions.get_mut(session_id) else {
                     return Err(Error::request_cancelled());
                 };
+                let retry_withdrew_prompt = idempotency_key
+                    .and_then(|key| session.idempotency_keys.get(key))
+                    .is_some_and(|prompt| {
+                        matches!(prompt, KeyedPrompt::Pending { withdrawn, .. } if withdrawn.load(Ordering::Acquire))
+                    });
                 if !session.active
                     || session.cancel_epoch != cancel_epoch
                     || withdrawn.is_cancelled()
+                    || retry_withdrew_prompt
                 {
                     session.held_prompts.retain(|held| *held != ticket);
                     if let Some(key) = idempotency_key {
@@ -274,34 +301,30 @@ impl EchoAgent {
         }
     }
 
-    /// Wait for the outcome of the pending prompt that first carried
-    /// `idempotency_key`, and return it for a retry of that prompt: the first
-    /// prompt's message ID once its user message is inserted, or `-32800`
-    /// when that prompt is dropped before insertion.
     async fn wait_for_pending_prompt(
         &self,
-        session_id: &schema::SessionId,
-        idempotency_key: &schema::IdempotencyKey,
+        mut inserted: watch::Receiver<Option<schema::MessageId>>,
+        withdrawn: Arc<AtomicBool>,
+        cancellation: RequestCancellation,
     ) -> Result<schema::MessageId> {
-        let notified = self.state_changed.notified();
-        tokio::pin!(notified);
-        loop {
-            notified.as_mut().enable();
-            let recorded = self
-                .state
-                .lock()
-                .expect("session state lock poisoned")
-                .sessions
-                .get(session_id)
-                .and_then(|session| session.idempotency_keys.get(idempotency_key))
-                .cloned();
-            match recorded {
-                Some(KeyedPrompt::Inserted(message_id)) => return Ok(message_id),
-                Some(KeyedPrompt::Pending) => {}
-                None => return Err(Error::request_cancelled()),
+        // A fresh attempt can reuse the key if this held prompt is dropped.
+        // Its outcome does not apply to the retries of the dropped prompt.
+        let outcome = async {
+            inserted
+                .wait_for(Option::is_some)
+                .await
+                .ok()
+                .and_then(|message_id| message_id.clone())
+                .ok_or_else(Error::request_cancelled)
+        };
+        tokio::pin!(outcome);
+        tokio::select! {
+            outcome = &mut outcome => outcome,
+            () = cancellation.cancelled() => {
+                withdrawn.store(true, Ordering::Release);
+                self.state_changed.notify_waiters();
+                outcome.await
             }
-            notified.as_mut().await;
-            notified.set(self.state_changed.notified());
         }
     }
 
@@ -423,14 +446,14 @@ impl EchoAgent {
             .get_mut(session_id)
         {
             session.history.push(update);
-            if let Some(key) = idempotency_key {
-                session
+            if let Some(key) = idempotency_key
+                && let Some(KeyedPrompt::Pending { inserted, .. }) = session
                     .idempotency_keys
-                    .insert(key, KeyedPrompt::Inserted(message_id.clone()));
+                    .insert(key, KeyedPrompt::Inserted(message_id.clone()))
+            {
+                inserted.send_replace(Some(message_id.clone()));
             }
         }
-        // Wake retries that wait for this prompt's outcome.
-        self.state_changed.notify_waiters();
     }
 
     fn is_cancelled(&self, session_id: &schema::SessionId) -> bool {
@@ -741,11 +764,18 @@ async fn main() -> Result<()> {
                         Ok(PromptAdmission::Retry(message_id)) => {
                             responder.respond(schema::PromptResponse::new(message_id))
                         }
-                        Ok(PromptAdmission::RetryOfPending(idempotency_key)) => {
+                        Ok(PromptAdmission::RetryOfPending {
+                            inserted,
+                            withdrawn,
+                        }) => {
                             let agent = agent.clone();
                             connection.spawn(async move {
                                 let outcome = agent
-                                    .wait_for_pending_prompt(&request.session_id, &idempotency_key)
+                                    .wait_for_pending_prompt(
+                                        inserted,
+                                        withdrawn,
+                                        responder.cancellation(),
+                                    )
                                     .await;
                                 responder
                                     .respond_with_result(outcome.map(schema::PromptResponse::new))
@@ -808,6 +838,13 @@ fn send_update(
 
 fn invalid_params(message: impl ToString) -> Error {
     Error::invalid_params().data(message.to_string())
+}
+
+fn reject_system_prompt(system_prompt: Option<&schema::SystemPrompt>) -> Result<()> {
+    if system_prompt.is_some() {
+        return Err(invalid_params("this agent cannot apply systemPrompt"));
+    }
+    Ok(())
 }
 
 /// Requests naming a session that does not exist or is not active on this
@@ -892,7 +929,7 @@ mod tests {
                 &[schema::ContentBlock::from("hello")],
                 Some(&key)
             ),
-            Ok(PromptAdmission::RetryOfPending(pending)) if pending == key
+            Ok(PromptAdmission::RetryOfPending { .. })
         ));
     }
 

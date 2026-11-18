@@ -3419,12 +3419,8 @@ fn v2_initialize_only_agent()
     )
 }
 
-/// A v2 agent without handlers for `tool_call/cancel` and `terminal/cancel`
-/// answers them with `-32602`, as the spec answers a request for an unknown
-/// or non-cancellable tool call or terminal, not with `-32601`. Before
-/// initialization the usual `-32600` applies.
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_answers_unhandled_entity_cancel_with_invalid_params() -> Result<(), Error> {
+async fn v2_agent_answers_unhandled_entity_cancel_with_method_not_found() -> Result<(), Error> {
     let (mut channel, task) = initialized_v2_agent_channel(v2_initialize_only_agent());
 
     let before = raw_v2_response(
@@ -3445,15 +3441,7 @@ async fn v2_agent_answers_unhandled_entity_cancel_with_invalid_params() -> Resul
         json!({ "sessionId": "s", "toolCallId": "c" }),
     )
     .await?;
-    assert_eq!(
-        response["error"],
-        json!({
-            "code": -32602,
-            "message": "the tool call is unknown or not cancellable",
-            "data": { "toolCallId": "c" },
-        }),
-        "{response}"
-    );
+    assert_eq!(response["error"]["code"], -32601, "{response}");
     let response = raw_v2_response(
         &mut channel,
         RawJsonRpcId::Number(3),
@@ -3461,15 +3449,7 @@ async fn v2_agent_answers_unhandled_entity_cancel_with_invalid_params() -> Resul
         json!({ "sessionId": "s", "terminalId": "t" }),
     )
     .await?;
-    assert_eq!(
-        response["error"],
-        json!({
-            "code": -32602,
-            "message": "the terminal is unknown or not cancellable",
-            "data": { "terminalId": "t" },
-        }),
-        "{response}"
-    );
+    assert_eq!(response["error"]["code"], -32601, "{response}");
     // Other unknown methods still get `-32601`.
     let response = raw_v2_response(
         &mut channel,
@@ -3484,14 +3464,18 @@ async fn v2_agent_answers_unhandled_entity_cancel_with_invalid_params() -> Resul
     Ok(())
 }
 
-/// A typed handler for `tool_call/cancel` and a catch-all handler that
-/// answers `terminal/cancel` take precedence over the default `-32602`.
 #[tokio::test(flavor = "current_thread")]
-async fn v2_agent_entity_cancel_handlers_take_precedence() -> Result<(), Error> {
+async fn v2_agent_dispatches_entity_cancel_to_typed_and_catch_all_handlers() -> Result<(), Error> {
     let agent = v2_initialize_only_agent()
         .on_receive_request(
-            async |_request: v2::CancelToolCallRequest, responder, _cx| {
-                responder.respond(v2::CancelToolCallResponse::new())
+            async |request: v2::CancelToolCallRequest, responder, _cx| match (
+                request.session_id.0.as_ref(),
+                request.tool_call_id.0.as_ref(),
+            ) {
+                ("s", "c") => responder.respond(v2::CancelToolCallResponse::new()),
+                ("s", _) => responder.respond_with_error(Error::invalid_params()),
+                _ => responder
+                    .respond_with_error(v2::Error::session_not_found(request.session_id).into()),
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -3533,6 +3517,31 @@ async fn v2_agent_entity_cancel_handlers_take_precedence() -> Result<(), Error> 
         json!({ "caughtAll": true }),
         "{response}"
     );
+
+    for (id, params, code) in [
+        (
+            4,
+            json!({ "sessionId": "s", "toolCallId": "other" }),
+            -32602,
+        ),
+        (
+            5,
+            json!({ "sessionId": "other", "toolCallId": "c" }),
+            -32002,
+        ),
+    ] {
+        let response = raw_v2_response(
+            &mut channel,
+            RawJsonRpcId::Number(id),
+            "tool_call/cancel",
+            params,
+        )
+        .await?;
+        assert_eq!(response["error"]["code"], code, "{response}");
+        if code == -32002 {
+            assert_eq!(response["error"]["data"]["sessionId"], "other");
+        }
+    }
 
     task.abort();
     Ok(())
