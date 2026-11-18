@@ -858,9 +858,20 @@ where
     /// work is active: the agent either inserts it right away or holds it and
     /// inserts held prompts in received order, and it must not reject a prompt
     /// only because work is active. A held prompt's response stays pending
-    /// until it is inserted. Cancel the returned [`SentRequest`] to withdraw a
-    /// held prompt; [`Self::cancel_active_work`] and [`Self::close`] also
-    /// answer prompts that were not yet inserted with `-32800`.
+    /// until it is inserted.
+    ///
+    /// [`Self::cancel_active_work`] and [`Self::close`] drop every prompt the
+    /// agent has not inserted, and the agent answers each with `-32800`.
+    /// Cancelling the returned [`SentRequest`] sends `$/cancel_request`, which
+    /// is best effort: an agent that honors it answers `-32800` and does not
+    /// insert the message, and otherwise the prompt is inserted as usual and
+    /// the response carries its `messageId`. An inserted prompt cannot be
+    /// withdrawn. Stop the work it started with [`Self::cancel_active_work`].
+    ///
+    /// A prompt sent this way has no idempotency key, so sending it again
+    /// after a lost response can insert a second user message. Use
+    /// [`Self::send_prompt_blocks_with_key`] for a prompt you may need to
+    /// retry.
     pub fn send_prompt_blocks(
         &self,
         prompt: Vec<v2::ContentBlock>,
@@ -868,6 +879,40 @@ where
         self.connection.send_request_to(
             Agent,
             v2::PromptRequest::new(self.session_id.clone(), prompt),
+        )
+    }
+
+    /// Submit prompt content with an idempotency key and return its
+    /// acceptance request.
+    ///
+    /// The key identifies one submission. The agent inserts at most one user
+    /// message for a key in a session and answers a retry with the `messageId`
+    /// of the message it already inserted, without starting the work again.
+    /// To retry after a lost response, for example on a new connection after
+    /// `session/resume`, call this again with the same key and the same
+    /// `prompt`. Each attempt is its own request.
+    ///
+    /// Create the key when the user submits the input, with
+    /// [`v2::schema::IdempotencyKey::generate`](v2::IdempotencyKey::generate)
+    /// or another random value, and store it with the pending input. Use a
+    /// new key for a new submission, including when the user sends the same
+    /// text again on purpose. Do not derive the key from the content, and do
+    /// not send the same key with a different prompt.
+    ///
+    /// An error response means the message was not inserted and leaves the
+    /// key unused, so the same prompt can be sent again with the same key.
+    /// The agent recognizes a key for as long as it retains the message.
+    ///
+    /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#retrying-a-prompt>.
+    pub fn send_prompt_blocks_with_key(
+        &self,
+        prompt: Vec<v2::ContentBlock>,
+        idempotency_key: v2::IdempotencyKey,
+    ) -> SentRequest<v2::PromptResponse, V2> {
+        self.connection.send_request_to(
+            Agent,
+            v2::PromptRequest::new(self.session_id.clone(), prompt)
+                .idempotency_key(idempotency_key),
         )
     }
 
@@ -890,8 +935,11 @@ where
     ///
     /// The agent stops waiting for pending
     /// [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest)s
-    /// of the cancelled work and should cancel each of them with
-    /// `$/cancel_request`. Answer a cancelled permission request with the
+    /// of the cancelled work and must cancel each of them with
+    /// `$/cancel_request`. The agent decides which requests belong to that
+    /// work, so do not answer every pending permission request when you send
+    /// this notification. When `$/cancel_request` arrives for a permission
+    /// request you have not answered, dismiss the prompt and answer with the
     /// `cancelled` outcome. A client may also answer a request it knows belongs
     /// to the cancelled work that way without waiting for `$/cancel_request`.
     ///

@@ -898,7 +898,8 @@ async fn testy_v2_holds_prompts_during_active_work() {
             let withdrawn = session.send_prompt(TestyCommand::Greet.to_prompt());
             let held = session.send_prompt(TestyCommand::Greet.to_prompt());
 
-            // `$/cancel_request` withdraws a held prompt.
+            // Testy honors `$/cancel_request` for a held prompt. That is best
+            // effort: an agent may insert the prompt instead.
             withdrawn.cancel()?;
             let error = withdrawn
                 .block_task()
@@ -942,6 +943,294 @@ async fn testy_v2_holds_prompts_during_active_work() {
         .await
         .expect("Testy v2 held prompts timed out")
         .expect("Testy v2 held prompts failed");
+}
+
+/// Collect the IDs of the user messages reported for `session_id` until the
+/// session reports idle after foreground work.
+async fn user_messages_until_idle(
+    events: &mut UnboundedReceiver<TestEvent>,
+    session_id: &v2::SessionId,
+) -> Vec<v2::MessageId> {
+    let mut user_messages = Vec::new();
+    let mut running = false;
+    loop {
+        let notification = next_update(events).await;
+        if &notification.session_id != session_id {
+            continue;
+        }
+        match notification.update {
+            v2::SessionUpdate::UserMessage(message) => user_messages.push(message.message_id),
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_)) => running = true,
+            v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_)) if running => {
+                return user_messages;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An agent that advertises `capabilities.session` supports `idempotencyKey`
+/// on `session/prompt`: it inserts at most one user message for a key in a
+/// session and answers a retry with the original `messageId`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_answers_a_prompt_retry_with_the_original_message_id() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let client = Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
+                event_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            let session_id = session.session_id().clone();
+            let greet = || vec![v2::ContentBlock::from(TestyCommand::Greet.to_prompt())];
+
+            let key = v2::IdempotencyKey::generate();
+            let first = session
+                .send_prompt_blocks_with_key(greet(), key.clone())
+                .block_task()
+                .await?;
+            assert_eq!(
+                user_messages_until_idle(&mut event_rx, &session_id).await,
+                std::slice::from_ref(&first.message_id)
+            );
+
+            // A retry gets the original `messageId` and nothing else.
+            for _ in 0..2 {
+                let retry = session
+                    .send_prompt_blocks_with_key(greet(), key.clone())
+                    .block_task()
+                    .await?;
+                assert_eq!(retry.message_id, first.message_id);
+            }
+
+            // A reused key never inserts a second message, also when the
+            // prompt differs. Testy does not compare prompts.
+            let reused = session
+                .send_prompt_blocks_with_key(
+                    vec![v2::ContentBlock::from(
+                        TestyCommand::Echo {
+                            message: "another prompt".to_string(),
+                        }
+                        .to_prompt(),
+                    )],
+                    key.clone(),
+                )
+                .block_task()
+                .await?;
+            assert_eq!(reused.message_id, first.message_id);
+
+            // The same text with a new key is a new submission. The retries
+            // inserted no message and started no work, so its user message is
+            // the next one reported.
+            let second = session
+                .send_prompt_blocks_with_key(greet(), v2::IdempotencyKey::generate())
+                .block_task()
+                .await?;
+            assert_ne!(second.message_id, first.message_id);
+            assert_eq!(
+                user_messages_until_idle(&mut event_rx, &session_id).await,
+                std::slice::from_ref(&second.message_id)
+            );
+
+            // A prompt without a key is never deduplicated.
+            let unkeyed = session
+                .send_prompt_blocks(greet())
+                .block_task()
+                .await?
+                .message_id;
+            assert_ne!(unkeyed, first.message_id);
+            assert_ne!(unkeyed, second.message_id);
+            assert_eq!(
+                user_messages_until_idle(&mut event_rx, &session_id).await,
+                [unkeyed]
+            );
+
+            // The key lasts as long as the message. After the session is
+            // closed and resumed, a retry still gets the original ID.
+            session.close().block_task().await?;
+            let error = session
+                .send_prompt_blocks_with_key(greet(), key.clone())
+                .block_task()
+                .await
+                .expect_err("a retry needs an active session");
+            assert_eq!(
+                error.code,
+                agent_client_protocol::ErrorCode::RESOURCE_NOT_FOUND
+            );
+            let resumed = connection
+                .resume_session(session_id.clone(), PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            let retry = resumed
+                .send_prompt_blocks_with_key(greet(), key)
+                .block_task()
+                .await?;
+            assert_eq!(retry.message_id, first.message_id);
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 prompt retry timed out")
+        .expect("Testy v2 prompt retry failed");
+}
+
+/// A retry of a prompt that is not inserted yet is not held a second time. It
+/// is answered when the first request is, with the same outcome. A dropped
+/// prompt leaves its key unused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_answers_a_retry_of_a_held_prompt_with_its_outcome() {
+    let client = Client
+        .v2()
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            let greet = || vec![v2::ContentBlock::from(TestyCommand::Greet.to_prompt())];
+
+            let running = session
+                .send_prompt(wait_for_cancel_prompt())
+                .block_task()
+                .await?;
+
+            // `$/cancel_request` for the held prompt withdraws it, and every
+            // pending request with its key gets `-32800`.
+            let key = v2::IdempotencyKey::generate();
+            let held = session.send_prompt_blocks_with_key(greet(), key.clone());
+            let retry = session.send_prompt_blocks_with_key(greet(), key.clone());
+            held.cancel()?;
+            for request in [held, retry] {
+                let error = request
+                    .block_task()
+                    .await
+                    .expect_err("a withdrawn prompt is never inserted");
+                assert_eq!(
+                    error.code,
+                    agent_client_protocol::ErrorCode::REQUEST_CANCELLED
+                );
+            }
+
+            // `session/cancel` drops a held prompt and its pending retry.
+            let held = session.send_prompt_blocks_with_key(greet(), key.clone());
+            let retry = session.send_prompt_blocks_with_key(greet(), key.clone());
+            session.cancel_active_work()?;
+            for request in [held, retry] {
+                let error = request
+                    .block_task()
+                    .await
+                    .expect_err("session/cancel drops prompts that are not inserted");
+                assert_eq!(
+                    error.code,
+                    agent_client_protocol::ErrorCode::REQUEST_CANCELLED
+                );
+            }
+
+            // An error leaves the key unused, so the same key now inserts the
+            // prompt. A retry sent right behind it gets the same message,
+            // whether or not the first request is still held.
+            let inserted = session.send_prompt_blocks_with_key(greet(), key.clone());
+            let retry = session.send_prompt_blocks_with_key(greet(), key);
+            let inserted = inserted.block_task().await?;
+            let retry = retry.block_task().await?;
+            assert_ne!(inserted.message_id, running.message_id);
+            assert_eq!(retry.message_id, inserted.message_id);
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 held prompt retry timed out")
+        .expect("Testy v2 held prompt retry failed");
+}
+
+/// A malformed `idempotencyKey` fails the request with `-32602`. It is never
+/// treated as an omitted key.
+#[tokio::test(flavor = "current_thread")]
+async fn testy_v2_rejects_a_malformed_idempotency_key() {
+    tokio::time::timeout(
+        TIMEOUT,
+        Client
+            .v2()
+            .connect_with(testy::v2::Testy::new(), async |connection| {
+                connection
+                    .send_request(v2::InitializeRequest::new(
+                        ProtocolVersion::V2,
+                        implementation(),
+                    ))
+                    .block_task()
+                    .await?;
+                let session = connection
+                    .build_session(PathBuf::from("/tmp"))
+                    .start_session()
+                    .block_task()
+                    .await?
+                    .session;
+
+                let too_long = "k".repeat(v2::IdempotencyKey::MAX_LENGTH + 1);
+                for key in [
+                    serde_json::json!(""),
+                    serde_json::json!(too_long),
+                    serde_json::json!(7),
+                ] {
+                    let error = connection
+                        .send_request(agent_client_protocol::UntypedMessage::new(
+                            "session/prompt",
+                            serde_json::json!({
+                                "sessionId": session.session_id(),
+                                "idempotencyKey": key,
+                                "prompt": [{ "type": "text", "text": "greet" }]
+                            }),
+                        )?)
+                        .block_task()
+                        .await
+                        .expect_err("a malformed key must fail the request");
+                    assert_eq!(i32::from(error.code), -32602, "{key}: {error:?}");
+                }
+
+                // Nothing was inserted: the next prompt gets the session's
+                // first user message ID.
+                let accepted = session
+                    .send_prompt(TestyCommand::Greet.to_prompt())
+                    .block_task()
+                    .await?;
+                assert_eq!(accepted, v2::PromptResponse::new("testy-v2-user-message-0"));
+                Ok(())
+            }),
+    )
+    .await
+    .expect("Testy v2 malformed idempotency key timed out")
+    .expect("Testy v2 malformed idempotency key failed");
 }
 
 /// Testy v2 never advertises `capabilities.cancel`, so it answers

@@ -44,7 +44,21 @@ struct V2SessionData {
     cancel_epoch: u64,
     /// Prompts received during foreground work, held in received order.
     held_prompts: VecDeque<u64>,
+    /// What the session has recorded for each `idempotencyKey`. A key lasts
+    /// as long as the session's history, across `session/close` and
+    /// `session/resume`.
+    idempotency_keys: HashMap<acp::IdempotencyKey, KeyedPrompt>,
     history: Vec<acp::SessionUpdate>,
+}
+
+/// What a session has recorded for an `idempotencyKey`.
+#[derive(Clone, Debug)]
+enum KeyedPrompt {
+    /// A prompt with this key was accepted and its user message is not
+    /// inserted yet.
+    Pending,
+    /// The user message that was inserted with this key.
+    Inserted(acp::MessageId),
 }
 
 /// How an accepted `session/prompt` request proceeds.
@@ -53,6 +67,12 @@ enum PromptAdmission {
     Inserted,
     /// The prompt waits for the current foreground work to end.
     Held { ticket: u64, cancel_epoch: u64 },
+    /// A retry of a prompt whose user message is already inserted. It gets
+    /// that message's ID and starts no work.
+    Retry(acp::MessageId),
+    /// A retry of a prompt that is not inserted yet. It is not held a second
+    /// time. It gets the outcome of the first request with this key.
+    RetryOfPending(acp::IdempotencyKey),
 }
 
 impl Testy {
@@ -94,6 +114,7 @@ impl Testy {
                         cancelled: false,
                         cancel_epoch: 0,
                         held_prompts: VecDeque::new(),
+                        idempotency_keys: HashMap::new(),
                         history: Vec::new(),
                     },
                 );
@@ -171,10 +192,16 @@ impl Testy {
     ///
     /// A v2 Agent must not reject a prompt only because foreground work is
     /// active, so Testy holds it and inserts held prompts in received order.
+    ///
+    /// A request whose `idempotencyKey` the session has recorded is a retry.
+    /// Testy never inserts a second user message for it and does not compare
+    /// the prompts. A rejected prompt records nothing, so its key stays
+    /// unused.
     fn admit_prompt(
         &self,
         session_id: &acp::SessionId,
         prompt: &[acp::ContentBlock],
+        idempotency_key: Option<&acp::IdempotencyKey>,
     ) -> Result<PromptAdmission, agent_client_protocol::Error> {
         let mut state = self.lock_state();
         let ticket = state.next_prompt_ticket;
@@ -183,7 +210,23 @@ impl Testy {
             .get_mut(session_id)
             .filter(|session| session.active)
             .ok_or_else(|| session_not_found(session_id))?;
+        if let Some(key) = idempotency_key {
+            match session.idempotency_keys.get(key) {
+                Some(KeyedPrompt::Inserted(message_id)) => {
+                    return Ok(PromptAdmission::Retry(message_id.clone()));
+                }
+                Some(KeyedPrompt::Pending) => {
+                    return Ok(PromptAdmission::RetryOfPending(key.clone()));
+                }
+                None => {}
+            }
+        }
         validate_prompt_content(prompt)?;
+        if let Some(key) = idempotency_key {
+            session
+                .idempotency_keys
+                .insert(key.clone(), KeyedPrompt::Pending);
+        }
         if session.foreground_work || !session.held_prompts.is_empty() {
             session.held_prompts.push_back(ticket);
             let cancel_epoch = session.cancel_epoch;
@@ -202,12 +245,14 @@ impl Testy {
     ///
     /// Fails with `-32800` when the prompt is withdrawn with
     /// `$/cancel_request`, or when `session/cancel` or `session/close` arrives
-    /// before it is inserted.
+    /// before it is inserted. The prompt's `idempotencyKey` is then unused
+    /// again, and pending retries with that key get `-32800` too.
     async fn insert_held_prompt(
         &self,
         session_id: &acp::SessionId,
         ticket: u64,
         cancel_epoch: u64,
+        idempotency_key: Option<&acp::IdempotencyKey>,
         withdrawn: RequestCancellation,
     ) -> Result<(), agent_client_protocol::Error> {
         loop {
@@ -224,6 +269,9 @@ impl Testy {
                     || withdrawn.is_cancelled()
                 {
                     session.held_prompts.retain(|held| *held != ticket);
+                    if let Some(key) = idempotency_key {
+                        session.idempotency_keys.remove(key);
+                    }
                     drop(state);
                     self.state_changed.notify_waiters();
                     return Err(agent_client_protocol::Error::request_cancelled());
@@ -239,6 +287,36 @@ impl Testy {
                 () = &mut notified => {}
                 () = withdrawn.cancelled() => {}
             }
+        }
+    }
+
+    /// Wait for the outcome of the pending prompt that first carried
+    /// `idempotency_key`, and return it for a retry of that prompt.
+    ///
+    /// The retry gets the first prompt's `messageId` once its user message is
+    /// inserted, or `-32800` when that prompt is dropped before insertion.
+    async fn wait_for_pending_prompt(
+        &self,
+        session_id: &acp::SessionId,
+        idempotency_key: &acp::IdempotencyKey,
+    ) -> Result<acp::MessageId, agent_client_protocol::Error> {
+        let notified = self.state_changed.notified();
+        tokio::pin!(notified);
+        loop {
+            notified.as_mut().enable();
+            let recorded = self
+                .lock_state()
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.idempotency_keys.get(idempotency_key))
+                .cloned();
+            match recorded {
+                Some(KeyedPrompt::Inserted(message_id)) => return Ok(message_id),
+                Some(KeyedPrompt::Pending) => {}
+                None => return Err(agent_client_protocol::Error::request_cancelled()),
+            }
+            notified.as_mut().await;
+            notified.set(self.state_changed.notified());
         }
     }
 
@@ -372,6 +450,27 @@ impl Testy {
         }
     }
 
+    /// Record an inserted user message, and its `idempotencyKey` in the same
+    /// step, so a retry with that key finds the message.
+    fn record_user_message(
+        &self,
+        session_id: &acp::SessionId,
+        message_id: &acp::MessageId,
+        idempotency_key: Option<acp::IdempotencyKey>,
+        update: acp::SessionUpdate,
+    ) {
+        if let Some(session) = self.lock_state().sessions.get_mut(session_id) {
+            session.history.push(update);
+            if let Some(key) = idempotency_key {
+                session
+                    .idempotency_keys
+                    .insert(key, KeyedPrompt::Inserted(message_id.clone()));
+            }
+        }
+        // Wake retries that wait for this prompt's outcome.
+        self.state_changed.notify_waiters();
+    }
+
     async fn process_prompt(
         &self,
         request: acp::PromptRequest,
@@ -482,7 +581,12 @@ impl Testy {
         let user_update = acp::SessionUpdate::UserMessage(
             acp::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
         );
-        self.record_history(&session_id, user_update.clone());
+        self.record_user_message(
+            &session_id,
+            &user_message_id,
+            request.idempotency_key.clone(),
+            user_update.clone(),
+        );
         if let Err(error) = responder.respond(acp::PromptResponse::new(user_message_id)) {
             self.abandon_prompt(&session_id);
             return Err(error);
@@ -642,10 +746,30 @@ impl ConnectTo<Client> for Testy {
                     async move |request: acp::PromptRequest,
                                 responder: Responder<acp::PromptResponse>,
                                 connection: ConnectionTo<Client>| {
-                        match agent.admit_prompt(&request.session_id, &request.prompt) {
+                        match agent.admit_prompt(
+                            &request.session_id,
+                            &request.prompt,
+                            request.idempotency_key.as_ref(),
+                        ) {
                             Err(error) => responder.respond_with_error(error),
                             Ok(PromptAdmission::Inserted) => {
                                 agent.run_inserted_prompt(request, responder, &connection)
+                            }
+                            Ok(PromptAdmission::Retry(message_id)) => {
+                                responder.respond(acp::PromptResponse::new(message_id))
+                            }
+                            Ok(PromptAdmission::RetryOfPending(idempotency_key)) => {
+                                let agent = agent.clone();
+                                connection.spawn(async move {
+                                    let outcome = agent
+                                        .wait_for_pending_prompt(
+                                            &request.session_id,
+                                            &idempotency_key,
+                                        )
+                                        .await;
+                                    responder
+                                        .respond_with_result(outcome.map(acp::PromptResponse::new))
+                                })
                             }
                             Ok(PromptAdmission::Held {
                                 ticket,
@@ -660,6 +784,7 @@ impl ConnectTo<Client> for Testy {
                                             &request.session_id,
                                             ticket,
                                             cancel_epoch,
+                                            request.idempotency_key.as_ref(),
                                             withdrawn,
                                         )
                                         .await

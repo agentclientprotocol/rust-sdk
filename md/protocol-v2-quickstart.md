@@ -92,6 +92,12 @@ the connection can continue dispatching cancellation and other traffic. That
 task sends the accepted user message, a running update, output, and finally an
 idle update with a stop reason.
 
+The example supports `idempotencyKey` on `session/prompt`, as every agent that
+advertises session support must. It records the key with the inserted user
+message, answers a retry with that message's ID, and starts no second round of
+work. A client that may need to retry a prompt sends it with
+`ActiveSession::send_prompt_blocks_with_key`.
+
 The example keeps history in memory and supports replay from the start. It
 ends a requested replay with a `replay_complete` update, also when the history
 is empty. Every successful resume sends a current idle-state snapshot after

@@ -1395,6 +1395,87 @@ async fn v2_session_new_error_is_preserved_without_closing_connection() {
         .expect("v2 session/new error closed the connection");
 }
 
+/// `send_prompt_blocks_with_key` puts the key on the wire, and each attempt
+/// with the same key is its own request. The other prompt helpers send none.
+#[tokio::test(flavor = "current_thread")]
+async fn v2_prompt_helper_sends_the_idempotency_key_on_every_attempt() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let agent_seen = seen.clone();
+    let agent = Agent
+        .v2()
+        .on_receive_request(
+            async |request: v2::InitializeRequest,
+                   responder: Responder<v2::InitializeResponse, agent_client_protocol::V2>,
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                responder.respond(initialize_response(request.protocol_version))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async |_request: v2::NewSessionRequest,
+                   responder: Responder<v2::NewSessionResponse, agent_client_protocol::V2>,
+                   _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                responder.respond(v2::NewSessionResponse::new("keyed-session"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: v2::PromptRequest,
+                        responder: Responder<v2::PromptResponse, agent_client_protocol::V2>,
+                        _connection: agent_client_protocol::v2::ConnectionTo<Client>| {
+                agent_seen
+                    .lock()
+                    .expect("seen prompts lock poisoned")
+                    .push((responder.id().clone(), request.idempotency_key));
+                // A retry is answered with the message inserted for the key.
+                responder.respond(v2::PromptResponse::new("user-message-1"))
+            },
+            agent_client_protocol::on_receive_request!(),
+        );
+
+    let key = v2::IdempotencyKey::generate();
+    let client_key = key.clone();
+    let client = Client.v2().connect_with(agent, async move |connection| {
+        connection
+            .send_request(v2::InitializeRequest::new(
+                ProtocolVersion::V2,
+                implementation(),
+            ))
+            .block_task()
+            .await?;
+        let session = connection
+            .build_session(cwd()?)
+            .start_session()
+            .block_task()
+            .await?
+            .session;
+
+        for _ in 0..2 {
+            let response = session
+                .send_prompt_blocks_with_key(vec!["hello".into()], client_key.clone())
+                .block_task()
+                .await?;
+            assert_eq!(response, v2::PromptResponse::new("user-message-1"));
+        }
+        session.send_prompt("hello").block_task().await?;
+        session
+            .send_prompt_blocks(vec!["hello".into()])
+            .block_task()
+            .await?;
+        Ok(())
+    });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("v2 keyed prompt test timed out")
+        .expect("v2 keyed prompt connection failed");
+
+    let seen = seen.lock().expect("seen prompts lock poisoned");
+    let keys = seen.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>();
+    assert_eq!(keys, [Some(key.clone()), Some(key), None, None]);
+    assert_ne!(seen[0].0, seen[1].0, "each attempt is its own request");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn low_level_v2_runner_cannot_use_the_v1_connection_type() {
     let (completed_tx, completed_rx) = oneshot::channel();
