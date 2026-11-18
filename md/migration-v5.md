@@ -1056,6 +1056,11 @@ An `Agent.v2()` agent without a handler for `tool_call/cancel` or
 that is unknown or not cancellable. A typed or catch-all handler still takes
 precedence. v1 and unguarded agents are unchanged.
 
+After SDK 5.4.0, the SDK no longer overrides the fallback for these methods.
+An unhandled method gets `-32601`. See [the v2 cancellation
+rules](./protocol-v2.md#tool_callcancel-and-terminalcancel) for the errors an
+agent returns when it implements the method.
+
 The schema's `unstable_proxy_chains` feature is not forwarded: the SDK always
 enables it. See [Proxy chains](#proxy-chains).
 
