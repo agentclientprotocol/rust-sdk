@@ -58,6 +58,7 @@ unstable = [
     "unstable_plan_operations",
     "unstable_prompt_suggestions",
     "unstable_session_archive",
+    "unstable_session_cursors",
     "unstable_session_fork",
     "unstable_session_options",
     "unstable_session_set_title",
@@ -73,13 +74,19 @@ unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
 unstable_plan_operations = ["agent-client-protocol-schema/unstable_plan_operations"]
 unstable_prompt_suggestions = ["agent-client-protocol-schema/unstable_prompt_suggestions"]
 unstable_session_archive = ["agent-client-protocol-schema/unstable_session_archive"]
+unstable_session_cursors = ["agent-client-protocol-schema/unstable_session_cursors"]
 unstable_session_fork = ["agent-client-protocol-schema/unstable_session_fork"]
 unstable_session_options = ["agent-client-protocol-schema/unstable_session_options"]
 unstable_session_set_title = ["agent-client-protocol-schema/unstable_session_set_title"]
 unstable_session_status = ["agent-client-protocol-schema/unstable_session_status"]
 unstable_speed_config_category = ["agent-client-protocol-schema/unstable_speed_config_category"]
 unstable_subagents = ["agent-client-protocol-schema/unstable_subagents"]
-unstable_protocol_v2 = ["agent-client-protocol-schema/unstable_protocol_v2"]
+# The schema's `uuid` feature adds `v2::schema::IdempotencyKey::generate`. This
+# crate already depends on `uuid` for request IDs, so it costs nothing extra.
+unstable_protocol_v2 = [
+    "agent-client-protocol-schema/unstable_protocol_v2",
+    "agent-client-protocol-schema/uuid",
+]
 
 # Use Web Crypto through wasm-bindgen for UUID randomness on JavaScript-hosted,
 # OS-less WebAssembly targets.

@@ -34,7 +34,9 @@ Every load uses the fixed working directory passed to `with_sessions` and
 `ReplayFrom::Start`.
 
 - Concurrent active loads for one session share one resume operation and one
-  projection. Dropping only some loads does not affect those that remain.
+  projection, so the client never has two replaying `session/resume` requests
+  pending for one session. Dropping only some loads does not affect those that
+  remain.
 - A lease covers both consumed sessions and results that were delivered but
   never consumed, so either path eventually releases its load.
 - If every load is abandoned during resume, accumulated replay is discarded,

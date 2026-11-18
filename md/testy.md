@@ -133,9 +133,17 @@ and never issues `nextCursor`, so any `cursor` is rejected with `-32602`.
 
 A prompt that arrives while the session has foreground work is held, not rejected. Held prompts
 are inserted in received order once the current work ends, and their responses stay pending until
-then. `session/cancel` and `session/close` answer prompts held before them with `-32800`, and the
-client can withdraw a held prompt with `$/cancel_request`, which also yields `-32800`. A prompt
-received after `session/cancel` is not cancelled by it.
+then. `session/cancel` and `session/close` answer prompts held before them with `-32800`. Testy
+also honors `$/cancel_request` for a held prompt and answers it with `-32800`, which the protocol
+leaves optional. A prompt received after `session/cancel` is not cancelled by it.
+
+Testy supports `idempotencyKey` on `session/prompt`. It inserts at most one user message for a key
+in a session and answers a retry with the original `messageId`, without starting the work again.
+It does not compare a retry's prompt with the first one. A retry of a prompt that is still held is
+not held a second time. Testy answers it when it answers the held prompt, with the same outcome. A
+prompt that is rejected or dropped before insertion leaves its key unused. A key lasts as long as
+the session's history, across `session/close` and `session/resume`. A malformed key fails the
+request with `-32602`.
 
 A relative `cwd` in `session/new`, `session/resume`, or a `session/list` filter is rejected with
 `-32602`. Testy does not advertise `additionalDirectories`, so it ignores that field and never

@@ -148,6 +148,14 @@
 //! message was already inserted. Otherwise respond with
 //! [`Error::request_cancelled`] (`-32800`), not partial results.
 //!
+//! In protocol v2 the agent cancels the permission requests and elicitations
+//! it stops waiting for, for example after `session/cancel`. A client that
+//! has not answered such a request should dismiss its prompt and respond
+//! with the `cancelled` outcome or the `cancel` action. Keep the
+//! [`Responder`] with the pending prompt and watch
+//! [`cancelled`][`RequestCancellation::cancelled`] to do so. Dropping the
+//! responder answers `-32800` instead.
+//!
 //! Cancellation markers are only updated when the connection can process the
 //! incoming `$/cancel_request` notification. Long-running handlers and ordered
 //! [`SentRequest`] callbacks should return quickly and move work into

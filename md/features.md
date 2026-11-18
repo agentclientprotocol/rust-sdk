@@ -185,6 +185,22 @@ type is removed: `PlanFile` and `PlanUpdateContent::file` no longer exist. Name
 the file that holds a markdown plan with `PlanMarkdown::path` instead. See
 [Schema 1.18](./protocol-v2.md#schema-118) for the draft v2 changes.
 
+Schema 1.19 adds `unstable_session_cursors`, which is also included in
+`unstable`. It exposes the `cursor_update` session update and its `CursorId`,
+`CursorAnchor`, and `CursorCapabilities` types in v1 and draft v2, and the v1
+client capability `session.cursors`. With `unstable_session_fork` as well, it
+adds `cursorId` on `session/fork`, which forks a session at a cursor that
+advertises `capabilities.fork`. A malformed `cursorId` fails the request with
+`-32602`. A proxy that parses `session/fork` into the typed request and sends
+it on must enable `unstable_session_cursors` too. Without it the typed request
+drops `cursorId`, and the agent forks the whole session.
+
+Schema 1.19 also adds `idempotencyKey` on draft v2 `session/prompt`.
+`unstable_protocol_v2` enables the schema's `uuid` feature, so
+`v2::schema::IdempotencyKey::generate` is available without another
+dependency. The SDK already depends on `uuid` for request IDs. See
+[Schema 1.19](./protocol-v2.md#schema-119) for the other draft v2 changes.
+
 The schema's `unstable_proxy_chains` feature is not an SDK feature: the SDK
 always enables it, because the `Proxy` and `Conductor` roles and the conductor
 crate use its `proxy/initialize` and `proxy/successor` types.

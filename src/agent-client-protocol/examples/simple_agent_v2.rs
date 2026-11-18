@@ -4,7 +4,9 @@
 //! close, prompt, cancel, and update. It keeps session history in memory so a
 //! client can request replay from the beginning when resuming a session.
 //! A prompt sent while earlier work is still running is held and inserted
-//! once that work ends, rather than rejected.
+//! once that work ends, rather than rejected. A prompt sent again with the same
+//! `idempotencyKey` is answered with the first one's message ID and inserts no
+//! second user message.
 //!
 //! Run it with the companion `v2_one_shot_client` example. An ACP agent owns
 //! stdout for JSON-RPC, so diagnostics belong on stderr.
@@ -45,7 +47,20 @@ struct Session {
     cancel_epoch: u64,
     /// Prompts received during foreground work, held in received order.
     held_prompts: VecDeque<u64>,
+    /// What the session has recorded for each `idempotencyKey`. A key lasts as
+    /// long as the history that holds its message.
+    idempotency_keys: HashMap<schema::IdempotencyKey, KeyedPrompt>,
     history: Vec<schema::SessionUpdate>,
+}
+
+/// What a session has recorded for an `idempotencyKey`.
+#[derive(Clone, Debug)]
+enum KeyedPrompt {
+    /// A prompt with this key was accepted and its user message is not
+    /// inserted yet.
+    Pending,
+    /// The user message that was inserted with this key.
+    Inserted(schema::MessageId),
 }
 
 /// How an accepted `session/prompt` request proceeds.
@@ -54,6 +69,12 @@ enum PromptAdmission {
     Inserted,
     /// The prompt waits for the current foreground work to end.
     Held { ticket: u64, cancel_epoch: u64 },
+    /// A retry of a prompt whose user message is already inserted. It gets
+    /// that message's ID and starts no work.
+    Retry(schema::MessageId),
+    /// A retry of a prompt that is not inserted yet. It is not held a second
+    /// time. It gets the outcome of the first request with this key.
+    RetryOfPending(schema::IdempotencyKey),
 }
 
 impl EchoAgent {
@@ -73,6 +94,7 @@ impl EchoAgent {
                 cancelled: false,
                 cancel_epoch: 0,
                 held_prompts: VecDeque::new(),
+                idempotency_keys: HashMap::new(),
                 history: Vec::new(),
             },
         );
@@ -138,10 +160,18 @@ impl EchoAgent {
     ///
     /// A v2 agent must not reject a prompt only because foreground work is
     /// active. It may hold the prompt and insert it later, in received order.
+    ///
+    /// An agent that advertises `capabilities.session` must support
+    /// `idempotencyKey`. A request whose key the session has recorded is a
+    /// retry: the agent never inserts a second user message for it. This
+    /// agent does not compare the retry's prompt with the first one, which
+    /// the protocol allows. A malformed key never reaches this handler,
+    /// because the request fails to parse and the SDK answers `-32602`.
     fn admit_prompt(
         &self,
         session_id: &schema::SessionId,
         prompt: &[schema::ContentBlock],
+        idempotency_key: Option<&schema::IdempotencyKey>,
     ) -> Result<PromptAdmission> {
         let mut state = self.state.lock().expect("session state lock poisoned");
         let ticket = state.next_prompt_ticket;
@@ -150,6 +180,17 @@ impl EchoAgent {
             .get_mut(session_id)
             .filter(|session| session.active)
             .ok_or_else(|| session_not_found(session_id))?;
+        if let Some(key) = idempotency_key {
+            match session.idempotency_keys.get(key) {
+                Some(KeyedPrompt::Inserted(message_id)) => {
+                    return Ok(PromptAdmission::Retry(message_id.clone()));
+                }
+                Some(KeyedPrompt::Pending) => {
+                    return Ok(PromptAdmission::RetryOfPending(key.clone()));
+                }
+                None => {}
+            }
+        }
         // Clients must not send an empty prompt; reject one without inserting it.
         if prompt.is_empty() {
             return Err(invalid_params("prompt must not be empty"));
@@ -163,6 +204,13 @@ impl EchoAgent {
             )
         }) {
             return Err(invalid_params("unsupported prompt content block"));
+        }
+        // A rejected prompt records nothing, so its key stays unused. From
+        // here on the prompt is accepted.
+        if let Some(key) = idempotency_key {
+            session
+                .idempotency_keys
+                .insert(key.clone(), KeyedPrompt::Pending);
         }
         if session.foreground_work || !session.held_prompts.is_empty() {
             session.held_prompts.push_back(ticket);
@@ -178,13 +226,17 @@ impl EchoAgent {
         Ok(PromptAdmission::Inserted)
     }
 
-    /// Wait until a held prompt can start. A held prompt is cancelled with
-    /// `-32800` by `session/cancel`, `session/close`, or `$/cancel_request`.
+    /// Wait until a held prompt can start. `session/cancel` and
+    /// `session/close` drop a held prompt with `-32800`. This agent also
+    /// honors `$/cancel_request` for it, which is optional. A dropped prompt
+    /// leaves its `idempotencyKey` unused, and pending retries with that key
+    /// get `-32800` too.
     async fn insert_held_prompt(
         &self,
         session_id: &schema::SessionId,
         ticket: u64,
         cancel_epoch: u64,
+        idempotency_key: Option<&schema::IdempotencyKey>,
         withdrawn: RequestCancellation,
     ) -> Result<()> {
         loop {
@@ -201,6 +253,9 @@ impl EchoAgent {
                     || withdrawn.is_cancelled()
                 {
                     session.held_prompts.retain(|held| *held != ticket);
+                    if let Some(key) = idempotency_key {
+                        session.idempotency_keys.remove(key);
+                    }
                     drop(state);
                     self.state_changed.notify_waiters();
                     return Err(Error::request_cancelled());
@@ -219,6 +274,37 @@ impl EchoAgent {
         }
     }
 
+    /// Wait for the outcome of the pending prompt that first carried
+    /// `idempotency_key`, and return it for a retry of that prompt: the first
+    /// prompt's message ID once its user message is inserted, or `-32800`
+    /// when that prompt is dropped before insertion.
+    async fn wait_for_pending_prompt(
+        &self,
+        session_id: &schema::SessionId,
+        idempotency_key: &schema::IdempotencyKey,
+    ) -> Result<schema::MessageId> {
+        let notified = self.state_changed.notified();
+        tokio::pin!(notified);
+        loop {
+            notified.as_mut().enable();
+            let recorded = self
+                .state
+                .lock()
+                .expect("session state lock poisoned")
+                .sessions
+                .get(session_id)
+                .and_then(|session| session.idempotency_keys.get(idempotency_key))
+                .cloned();
+            match recorded {
+                Some(KeyedPrompt::Inserted(message_id)) => return Ok(message_id),
+                Some(KeyedPrompt::Pending) => {}
+                None => return Err(Error::request_cancelled()),
+            }
+            notified.as_mut().await;
+            notified.set(self.state_changed.notified());
+        }
+    }
+
     /// Insert the user message for a prompt that holds the foreground work,
     /// acknowledge it with its message ID, and run it.
     fn run_inserted_prompt(
@@ -231,7 +317,12 @@ impl EchoAgent {
         let user_message = schema::SessionUpdate::UserMessage(
             schema::UserMessage::new(user_message_id.clone()).content(request.prompt.clone()),
         );
-        self.record_history(&request.session_id, user_message.clone());
+        self.record_user_message(
+            &request.session_id,
+            &user_message_id,
+            request.idempotency_key.clone(),
+            user_message.clone(),
+        );
         let session_id = request.session_id.clone();
         if let Err(error) = responder.respond(schema::PromptResponse::new(user_message_id)) {
             self.abandon_prompt(&session_id);
@@ -312,6 +403,34 @@ impl EchoAgent {
         {
             session.history.push(update);
         }
+    }
+
+    /// Record an inserted user message, and its `idempotencyKey` in the same
+    /// step, so a retry with that key finds the message. The key is not
+    /// echoed in any update, response, or replayed history.
+    fn record_user_message(
+        &self,
+        session_id: &schema::SessionId,
+        message_id: &schema::MessageId,
+        idempotency_key: Option<schema::IdempotencyKey>,
+        update: schema::SessionUpdate,
+    ) {
+        if let Some(session) = self
+            .state
+            .lock()
+            .expect("session state lock poisoned")
+            .sessions
+            .get_mut(session_id)
+        {
+            session.history.push(update);
+            if let Some(key) = idempotency_key {
+                session
+                    .idempotency_keys
+                    .insert(key, KeyedPrompt::Inserted(message_id.clone()));
+            }
+        }
+        // Wake retries that wait for this prompt's outcome.
+        self.state_changed.notify_waiters();
     }
 
     fn is_cancelled(&self, session_id: &schema::SessionId) -> bool {
@@ -609,10 +728,28 @@ async fn main() -> Result<()> {
                 async move |request: schema::PromptRequest,
                             responder: Responder<schema::PromptResponse>,
                             connection: ConnectionTo<Client>| {
-                    match agent.admit_prompt(&request.session_id, &request.prompt) {
+                    match agent.admit_prompt(
+                        &request.session_id,
+                        &request.prompt,
+                        request.idempotency_key.as_ref(),
+                    ) {
                         Err(error) => responder.respond_with_error(error),
                         Ok(PromptAdmission::Inserted) => {
                             agent.run_inserted_prompt(request, responder, &connection)
+                        }
+                        // A retry starts no second round of work.
+                        Ok(PromptAdmission::Retry(message_id)) => {
+                            responder.respond(schema::PromptResponse::new(message_id))
+                        }
+                        Ok(PromptAdmission::RetryOfPending(idempotency_key)) => {
+                            let agent = agent.clone();
+                            connection.spawn(async move {
+                                let outcome = agent
+                                    .wait_for_pending_prompt(&request.session_id, &idempotency_key)
+                                    .await;
+                                responder
+                                    .respond_with_result(outcome.map(schema::PromptResponse::new))
+                            })
                         }
                         Ok(PromptAdmission::Held {
                             ticket,
@@ -627,6 +764,7 @@ async fn main() -> Result<()> {
                                         &request.session_id,
                                         ticket,
                                         cancel_epoch,
+                                        request.idempotency_key.as_ref(),
                                         withdrawn,
                                     )
                                     .await
@@ -711,7 +849,7 @@ mod tests {
             .create_session(schema::NewSessionRequest::new("/tmp"))
             .expect("session should be created");
 
-        let Err(error) = agent.admit_prompt(&session_id, &[]) else {
+        let Err(error) = agent.admit_prompt(&session_id, &[], None) else {
             panic!("an empty prompt should be rejected");
         };
         assert_eq!(error.code, agent_client_protocol::ErrorCode::INVALID_PARAMS);
@@ -724,7 +862,78 @@ mod tests {
         }
 
         assert!(matches!(
-            agent.admit_prompt(&session_id, &[schema::ContentBlock::from("hello")]),
+            agent.admit_prompt(&session_id, &[schema::ContentBlock::from("hello")], None),
+            Ok(PromptAdmission::Inserted)
+        ));
+    }
+
+    #[test]
+    fn rejected_prompt_leaves_its_idempotency_key_unused() {
+        let agent = EchoAgent::default();
+        let session_id = agent
+            .create_session(schema::NewSessionRequest::new("/tmp"))
+            .expect("session should be created");
+        let key = schema::IdempotencyKey::generate();
+
+        assert!(agent.admit_prompt(&session_id, &[], Some(&key)).is_err());
+        // The same key then starts the prompt as a new submission.
+        assert!(matches!(
+            agent.admit_prompt(
+                &session_id,
+                &[schema::ContentBlock::from("hello")],
+                Some(&key)
+            ),
+            Ok(PromptAdmission::Inserted)
+        ));
+        // A second request with that key is a retry and is not held.
+        assert!(matches!(
+            agent.admit_prompt(
+                &session_id,
+                &[schema::ContentBlock::from("hello")],
+                Some(&key)
+            ),
+            Ok(PromptAdmission::RetryOfPending(pending)) if pending == key
+        ));
+    }
+
+    #[test]
+    fn retry_gets_the_inserted_message_id_and_inserts_nothing() {
+        let agent = EchoAgent::default();
+        let session_id = agent
+            .create_session(schema::NewSessionRequest::new("/tmp"))
+            .expect("session should be created");
+        let key = schema::IdempotencyKey::generate();
+        let message_id = schema::MessageId::new("user-message-1");
+        let user_message = schema::SessionUpdate::UserMessage(
+            schema::UserMessage::new(message_id.clone())
+                .content(vec![schema::ContentBlock::from("hello")]),
+        );
+        agent.record_user_message(&session_id, &message_id, Some(key.clone()), user_message);
+
+        for _ in 0..2 {
+            assert!(matches!(
+                agent.admit_prompt(
+                    &session_id,
+                    &[schema::ContentBlock::from("hello")],
+                    Some(&key)
+                ),
+                Ok(PromptAdmission::Retry(retried)) if retried == message_id
+            ));
+        }
+        {
+            let state = agent.state.lock().expect("session state lock poisoned");
+            let session = &state.sessions[&session_id];
+            assert_eq!(session.history.len(), 1, "a retry inserts no message");
+            assert!(!session.foreground_work, "a retry starts no work");
+        }
+        // Another key with the same text is a new submission.
+        let other = schema::IdempotencyKey::generate();
+        assert!(matches!(
+            agent.admit_prompt(
+                &session_id,
+                &[schema::ContentBlock::from("hello")],
+                Some(&other)
+            ),
             Ok(PromptAdmission::Inserted)
         ));
     }
