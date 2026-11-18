@@ -18,6 +18,26 @@ The core SDK. Provides:
 - **Transports and process launching** (`Channel`, `Lines`, `ByteStreams`, `Stdio`, `AcpAgent`)
 - **MCP server attachment** - runtime-agnostic interfaces for wiring MCP servers into ACP sessions through the opt-in `unstable_mcp_over_acp` transport
 
+#### Schema dispatch boundary
+
+The `agent-client-protocol-schema` crate selects aggregate request, notification,
+and response variants by method name. Its `from_method_and_params` and
+`from_method_and_result` helpers deserialize only the selected payload type.
+Do not deserialize an aggregate enum directly with its untagged `Deserialize`
+implementation. Overlapping payload shapes can select the wrong variant.
+
+The SDK's JSON-RPC traits delegate aggregate parsing to those helpers. The SDK
+still owns handler matching, envelopes, request-ID tracking, and error mapping.
+During aggregate parsing, the SDK maps unknown methods to Method not found
+(`-32601`) and malformed incoming params to Invalid params (`-32602`). Malformed
+response results retain the SDK's local parse-error handling. Payloads,
+including `null`, are passed to the selected type's deserializer unchanged.
+
+Aggregate handlers can receive variants for any method enabled on the schema
+dependency, including methods enabled through Cargo feature unification.
+Recognizing a method does not install a handler. Requests no handler claims
+still follow the [unhandled-message rules](#unhandled-messages).
+
 ### agent-client-protocol-http
 
 Optional HTTP/SSE and WebSocket clients and servers built on the core transport-frame boundary.

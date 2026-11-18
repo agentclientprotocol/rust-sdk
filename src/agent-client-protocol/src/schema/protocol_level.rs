@@ -4,6 +4,4 @@ use crate::v1::schema::{CancelRequestNotification, ProtocolLevelNotification};
 
 impl_jsonrpc_notification!(CancelRequestNotification, "$/cancel_request");
 
-impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification {
-    CancelRequestNotification => "$/cancel_request",
-});
+impl_jsonrpc_protocol_level_notification_enum!(ProtocolLevelNotification);
