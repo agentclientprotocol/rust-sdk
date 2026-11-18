@@ -74,6 +74,8 @@ ignore = [
     #{ id = "RUSTSEC-0000-0000", reason = "you can specify a reason the advisory is ignored" },
     #"a-crate-that-is-yanked@0.1.1", # you can also ignore yanked crate versions if you wish
     #{ crate = "a-crate-that-is-yanked@0.1.1", reason = "you can specify why you are ignoring the yanked crate" },
+    # Keep this list narrow, and remove an entry once its reason no longer holds.
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained and has no fixed version. rmcp depends on it unconditionally, up to and including 3.11.0, so it cannot be removed from the graph. Remove this once rmcp no longer depends on chrono." },
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
