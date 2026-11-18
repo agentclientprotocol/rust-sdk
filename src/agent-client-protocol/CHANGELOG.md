@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [5.4.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.3.0...v5.4.0) - 2026-11-18
+
+### Added
+
+- *(acp)* adopt schema 1.19.0 with session cursors and prompt idempotency keys ([#505](https://github.com/agentclientprotocol/rust-sdk/pull/505))
+
+### Fixed
+
+- *(acp)* keep the connection open when an incoming line is not valid UTF-8 ([#504](https://github.com/agentclientprotocol/rust-sdk/pull/504))
+
+### Other
+
+- *(acp)* delegate aggregate dispatch to the schema ([#507](https://github.com/agentclientprotocol/rust-sdk/pull/507))
+
 ## [5.3.0](https://github.com/agentclientprotocol/rust-sdk/compare/v5.2.0...v5.3.0) - 2026-11-14
 
 ### Added
