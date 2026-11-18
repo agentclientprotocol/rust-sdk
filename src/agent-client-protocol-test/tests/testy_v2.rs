@@ -1269,7 +1269,7 @@ async fn testy_v2_rejects_an_unsupported_system_prompt_without_opening_a_session
                 .send_request(v2::ListSessionsRequest::new())
                 .block_task()
                 .await?;
-            assert!(sessions.sessions.is_empty());
+            assert_eq!(sessions.sessions, Vec::<v2::SessionInfo>::new());
 
             let session = connection
                 .build_session(cwd.clone())
