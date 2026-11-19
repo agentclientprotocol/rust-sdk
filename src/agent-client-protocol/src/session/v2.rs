@@ -845,6 +845,10 @@ where
     /// A successful response only acknowledges that the agent accepted the
     /// prompt. The accepted user message, output, state changes, and completion
     /// arrive independently through [`v2::schema::UpdateSessionNotification`](v2::UpdateSessionNotification).
+    ///
+    /// The agent owns the inserted user message. Match it to this submission
+    /// by the response's `message_id`, never by content or arrival order: the
+    /// `content` the agent reports for it can differ from `prompt`.
     pub fn send_prompt(&self, prompt: impl ToString) -> SentRequest<v2::PromptResponse, V2> {
         self.send_prompt_blocks(vec![prompt.to_string().into()])
     }

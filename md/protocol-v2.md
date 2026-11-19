@@ -748,10 +748,12 @@ Foreground states are aggregate snapshots, not per-prompt events:
   idle on the response.
   Testy and the echo example only resume sessions without foreground work, so
   their snapshot is idle without a new stop reason.
-- A resume should also return the current `configOptions` in its response and
-  send current session info through `session_info_update` after any replay and
-  before responding. Like the state snapshot, this synchronizes current state
-  rather than replaying historical configuration or metadata changes.
+- A resume must also return the session's current `configOptions` and
+  available commands in its response when it has any, because the response
+  replaces the client's lists. It should send current session info through
+  `session_info_update` after any replay and before responding. Like the state
+  snapshot, this synchronizes current state rather than replaying historical
+  configuration or metadata changes.
 
 Prompt acceptance means logical user-message insertion with an ID and a
 position, not receipt or queueing. Running may precede insertion. Rejection
@@ -1144,6 +1146,12 @@ Agents must follow these `session/prompt` retry rules:
   with the same outcome.
 - An error response means the message was not inserted. Record nothing, so
   the client can send the same prompt with the same key again.
+- If you honor `$/cancel_request` for any pending request with a key, withdraw
+  the prompt if it is not inserted yet and answer every pending request for
+  that key with `-32800`.
+- A key is scoped to its session. The same key in another session, including
+  one that `session/fork` created from this one, names an unrelated
+  submission.
 - Never insert a second message for a recorded key. A request that reuses a
   recorded key with a different prompt is answered as a retry, or rejected
   with `-32602` if you compare prompts. Comparing is optional.
@@ -1222,7 +1230,11 @@ Client projections should also follow these rules:
   `session/delete`, `tool_call/cancel`, and `terminal/cancel` can be sent
   again as they are. A second `session/new` creates a second session. Do not
   send `session/cancel` again later: a copy that arrives after new work has
-  started cancels that work. See
+  started cancels that work. Retry `session/set_config_option` before you send
+  further changes, because a retry sent after a later change to the same
+  option overwrites it. Treat `-32002` from `session/delete` as a successful
+  delete. A `tool_call/cancel` or `terminal/cancel` retry gets `-32602` once
+  the tool call is final or the terminal has exited. See
   [Retrying requests](https://agentclientprotocol.com/protocol/v2/overview#retrying-requests).
 - When `$/cancel_request` arrives for a `session/request_permission` or
   `elicitation/create` request you have not answered, dismiss the prompt and
@@ -1252,7 +1264,18 @@ Client projections should also follow these rules:
   `terminal/cancel` for an item that advertises its own. When you resume the
   parent, discard the child state and capabilities you held and wait for
   current ones: a `subagent_update` before the parent's `replay_complete`
-  carries historical `capabilities` and `state`.
+  carries historical `capabilities` and `state`. A permission request or
+  elicitation can name a child session, so do not send `session/cancel` for
+  the session a request names unless it is a session you created or a child
+  that advertises `capabilities.cancel`.
+- A session's `cost` already includes the costs of its descendants. Do not add
+  a child session's cost to an ancestor's. A child without a reported cost has
+  an unknown cost, not zero. Context window usage belongs to each session and
+  is not summed. See
+  [Subagents](https://agentclientprotocol.com/protocol/v2/subagents) for the
+  other client rules: the patch semantics of `subagent_update`, inherited
+  working directories, read-only child configuration, session-directed
+  messages, and what to show after the connection ends.
 - Build cursors from `cursor_update` by `cursorId`. Pass a cursor to a method
   only when the agent announced it on that session and it currently
   advertises that method's capability, and pass the `cursorId`, never the

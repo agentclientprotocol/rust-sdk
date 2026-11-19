@@ -82,6 +82,11 @@ queues and an unbounded update log for clarity; production code needs explicit
 memory, backpressure, and fairness policies. UI work and user code must not run
 in SDK callbacks.
 
+The prototype routes updates only for the sessions it resumed, so it drops the
+updates of child sessions that an agent announces with `subagent_update`. A
+complete client registers each child and attributes its updates and requests
+to it.
+
 Run it against an agent with an existing resumable session:
 
 ```sh
