@@ -44,7 +44,9 @@ Write logs and diagnostics to stderr when extending it.
 The client installs its `session/update` and `session/request_permission`
 handlers before it opens a session. Permission requests are part of the
 baseline client surface and have no capability marker; this non-interactive
-example cancels them explicitly. It then follows this sequence:
+example declines them. It selects the agent's `reject_once` option when one is
+offered and answers with the `cancelled` outcome otherwise. It then follows
+this sequence:
 
 1. Send `initialize` and verify that the agent advertised session support.
 2. Send `session/new` and retain the returned command handle and session ID.

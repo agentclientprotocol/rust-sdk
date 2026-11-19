@@ -145,6 +145,11 @@ prompt that is rejected or dropped before insertion leaves its key unused. A key
 the session's history, across `session/close` and `session/resume`. A malformed key fails the
 request with `-32602`.
 
+Testy does not advertise `session.systemPrompt`. A `session/new` or `session/resume` that carries
+a `systemPrompt` is rejected with `-32602`, and the session is not created or resumed. Testy
+advertises `capabilities.cancel` on nothing and does not implement `tool_call/cancel` or
+`terminal/cancel`, so both get `-32601`.
+
 A relative `cwd` in `session/new`, `session/resume`, or a `session/list` filter is rejected with
 `-32602`. Testy does not advertise `additionalDirectories`, so it ignores that field and never
 lists additional directories. `session/close` is idempotent: closing an unknown or already-closed

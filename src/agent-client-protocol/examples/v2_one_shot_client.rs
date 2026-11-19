@@ -53,8 +53,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .on_receive_request(
             async move |request: schema::RequestPermissionRequest,
                         responder: Responder<schema::RequestPermissionResponse>,
-                        connection: ConnectionTo<Agent>| {
-                responder.respond(reject_permission(&request, &connection)?)
+                        _connection: ConnectionTo<Agent>| {
+                responder.respond(reject_permission(&request))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -127,34 +127,29 @@ async fn wait_until_idle(
 /// Declines a permission request in this non-interactive example.
 ///
 /// Selects the agent's `reject_once` option when it offers one. Otherwise it
-/// sends `session/cancel` to stop the prompt and answers with the `cancelled`
-/// outcome. The agent stops waiting for the request after `session/cancel`,
-/// and a client may answer a request of the cancelled work this way without
-/// waiting for the agent's `$/cancel_request`.
+/// answers with the `cancelled` outcome, which declines the request by policy:
+/// the agent must not proceed with the operation.
+///
+/// The request can come from a child session the agent announced with
+/// `subagent_update`, so this does not send `session/cancel` for
+/// `request.session_id`. A client may only send that for a child that
+/// advertises `capabilities.cancel`.
 fn reject_permission(
     request: &schema::RequestPermissionRequest,
-    connection: &ConnectionTo<Agent>,
-) -> Result<schema::RequestPermissionResponse, Error> {
+) -> schema::RequestPermissionResponse {
     if let Some(option) = request
         .options
         .iter()
         .find(|option| option.kind == schema::PermissionOptionKind::RejectOnce)
     {
         eprintln!("Agent requested permission; rejecting it once in this non-interactive example");
-        return Ok(schema::RequestPermissionResponse::new(
-            schema::RequestPermissionOutcome::Selected(schema::SelectedPermissionOutcome::new(
-                option.option_id.clone(),
-            )),
+        return schema::RequestPermissionResponse::new(schema::RequestPermissionOutcome::Selected(
+            schema::SelectedPermissionOutcome::new(option.option_id.clone()),
         ));
     }
 
-    eprintln!("Agent requested permission without a reject option; cancelling the prompt");
-    connection.send_notification(schema::CancelSessionNotification::new(
-        request.session_id.clone(),
-    ))?;
-    Ok(schema::RequestPermissionResponse::new(
-        schema::CancelledPermissionOutcome::new().into(),
-    ))
+    eprintln!("Agent requested permission without a reject option; declining it");
+    schema::RequestPermissionResponse::new(schema::CancelledPermissionOutcome::new().into())
 }
 
 /// Removes terminal control characters from agent text before printing it.

@@ -43,7 +43,9 @@ unknown modes are preserved for forwarding, not treated as append.
 Clients should re-send the prompt on load (v1), resume, and fork (with
 `unstable_session_fork`). Agents that advertise support must apply a supplied
 prompt or reject the lifecycle operation, not silently create or restore a
-session without it. Override replaces agent-authored default instructions, not
+session without it. In v2 the error must be `-32602` when the cause is the
+value itself: an unadvertised mode, an unsupported content block type, or
+content over the agent's limits. Override replaces agent-authored default instructions, not
 tools, permissions, or workspace instructions. Only supply content trusted at
 system-instruction precedence.
 

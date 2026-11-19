@@ -234,7 +234,7 @@ pub mod v2_one_shot_prompt {
     //!         .on_receive_request(
     //!             async move |request: schema::RequestPermissionRequest,
     //!                         responder: Responder<schema::RequestPermissionResponse>,
-    //!                         connection: ConnectionTo<Agent>| {
+    //!                         _connection: ConnectionTo<Agent>| {
     //!                 // This non-interactive recipe rejects permission requests.
     //!                 let reject_once = request
     //!                     .options
@@ -244,15 +244,12 @@ pub mod v2_one_shot_prompt {
     //!                     Some(option) => schema::RequestPermissionOutcome::Selected(
     //!                         schema::SelectedPermissionOutcome::new(option.option_id.clone()),
     //!                     ),
-    //!                     // Stop the prompt and decline. After `session/cancel`, the
-    //!                     // client may answer `cancelled` without waiting for the
-    //!                     // agent's `$/cancel_request`.
-    //!                     None => {
-    //!                         connection.send_notification(schema::CancelSessionNotification::new(
-    //!                             request.session_id.clone(),
-    //!                         ))?;
-    //!                         schema::CancelledPermissionOutcome::new().into()
-    //!                     }
+    //!                     // Decline by policy. The agent must not proceed with the
+    //!                     // operation. Do not send `session/cancel` for
+    //!                     // `request.session_id` here: it can name a child session,
+    //!                     // which only accepts it while it advertises
+    //!                     // `capabilities.cancel`.
+    //!                     None => schema::CancelledPermissionOutcome::new().into(),
     //!                 };
     //!                 responder.respond(schema::RequestPermissionResponse::new(outcome))
     //!             },
