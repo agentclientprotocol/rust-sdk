@@ -373,6 +373,118 @@ fn forwarding_and_success_callbacks_preserve_ordering_and_peer_errors() {
 }
 
 #[test]
+fn forwarded_id_requires_two_live_requests() {
+    let upstream = Fixture::new();
+    let downstream = Fixture::new();
+    let incoming = RequestCancellationRegistry::new();
+    let original_id = RawJsonRpcId::Number(3);
+    let accept = || upstream.responder("authenticate", &original_id, &incoming);
+    let forward = |responder: &Responder| {
+        downstream
+            .connection
+            .prepare_request(request())
+            .forwarded_from(responder)
+            .into_sent_request(false)
+    };
+    let lookup = |sent: &SentRequest<serde_json::Value>| {
+        downstream
+            .connection
+            .pending_replies
+            .forwarded_origin(UntypedRole.role_id(), sent.raw_id())
+            .and_then(RequestOrigin::live_id)
+    };
+
+    let first = accept();
+    let first_sent = forward(&first);
+    assert_eq!(lookup(&first_sent), Some(original_id.clone()));
+    // Reusing the same number before its first responder was dropped cannot
+    // make an old challenge resolve to the second request.
+    let second = accept();
+    let second_sent = forward(&second);
+    assert_eq!(lookup(&first_sent), None);
+    assert_eq!(lookup(&second_sent), Some(original_id.clone()));
+    assert!(incoming.cancel(&original_id));
+    assert_eq!(lookup(&second_sent), None);
+
+    let third = accept();
+    let third_sent = forward(&third);
+    third_sent.cancel().unwrap();
+    assert_eq!(lookup(&third_sent), None);
+
+    let fourth = accept();
+    let fourth_sent = forward(&fourth);
+    fourth.respond(json!({})).unwrap();
+    assert_eq!(lookup(&fourth_sent), None);
+
+    let fifth = accept();
+    let fifth_sent = forward(&fifth);
+    assert!(
+        downstream
+            .route(fifth_sent.raw_id().clone(), Ok(json!({})))
+            .is_none()
+    );
+    assert_eq!(lookup(&fifth_sent), None);
+}
+
+#[test]
+fn default_proxy_only_returns_references_to_its_own_predecessor() {
+    let proxy = Fixture::new();
+    let side = Fixture::new();
+    let local = RequestCancellationRegistry::new();
+    let other = RequestCancellationRegistry::new();
+    let id = RawJsonRpcId::Number(1);
+    // Two live requests with the same numeric ID on different connections.
+    let predecessor = proxy.responder("authenticate", &id, &local);
+    let side_request = side.responder("authenticate", &id, &other);
+    let successor = proxy.responder("proxy/successor", &RawJsonRpcId::Number(2), &local);
+    for (responder, can_return) in [
+        (&predecessor, true),
+        (&side_request, false),
+        (&successor, false),
+    ] {
+        let sent = proxy
+            .connection
+            .prepare_request(request())
+            .forwarded_from(responder)
+            .into_sent_request(false);
+        let lookup = &proxy.connection.pending_replies;
+        let mut challenge =
+            UntypedMessage::new("elicitation/create", json!({"requestId":sent.raw_id()})).unwrap();
+        let translate = |request: &mut UntypedMessage| {
+            lookup.translate_elicitation(UntypedRole.role_id(), request, |origin| {
+                origin.local_peer == Some(RemoteStyle::Predecessor)
+            })
+        };
+        let result = translate(&mut challenge);
+        if can_return {
+            result.unwrap();
+            assert_eq!(challenge.params()["requestId"], 1);
+        } else {
+            assert_eq!(result.unwrap_err().code, crate::ErrorCode::INVALID_PARAMS);
+        }
+        // Even a null sessionId must not let an unresolvable requestId through.
+        challenge.params["sessionId"] = serde_json::Value::Null;
+        assert_eq!(
+            translate(&mut challenge).unwrap_err().code,
+            crate::ErrorCode::INVALID_PARAMS
+        );
+        assert!(
+            proxy
+                .connection
+                .pending_replies
+                .forwarded_origin(Agent.role_id(), sent.raw_id())
+                .is_none()
+        );
+        assert!(
+            side.connection
+                .pending_replies
+                .forwarded_origin(UntypedRole.role_id(), sent.raw_id())
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn consumer_waits_for_publication_before_forwarding_cancellation() {
     let mut fixture = Fixture::new();
     let cancellation = RequestCancellation::new();
@@ -619,6 +731,22 @@ impl Fixture {
             task_rx,
             pending_replies,
         }
+    }
+
+    fn responder(
+        &self,
+        method: &str,
+        id: &RawJsonRpcId,
+        registry: &RequestCancellationRegistry,
+    ) -> Responder {
+        Responder::new(
+            self.connection.message_tx.clone(),
+            self.connection.incoming_closed.clone(),
+            method.into(),
+            id.clone(),
+            registry,
+            ResponseDestination::individual(),
+        )
     }
 
     fn next_message(&mut self) -> OutgoingMessage {

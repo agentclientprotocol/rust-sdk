@@ -759,6 +759,10 @@ where
         };
 
         match message {
+            // Any elicitation reference is already in the predecessor's namespace
+            // (translated on ingress). Send it as such, then relay the response;
+            // applying SDK proxy translation here would rewrite it a second time
+            // when a nested conductor shares a connection with both logical peers.
             Dispatch::Request(request, responder) => self
                 .send_request_to_predecessor_of(client, source_component_index, request)
                 .forward_response_to(responder),
@@ -1082,7 +1086,7 @@ where
             .name(format!("conductor-to-component({component_index})"))
             // Intercept messages sent by the proxy.
             .on_receive_dispatch(
-                async move |dispatch: Dispatch, _connection| {
+                async move |dispatch: Dispatch, connection| {
                     MatchDispatch::new(dispatch)
                         .if_dispatch(async |dispatch: SuccessorDispatch| {
                             //                         ------------------
@@ -1114,8 +1118,9 @@ where
                                 })
                         })
                         .await
-                        .otherwise(async |dispatch| {
-                            // Other messagrs send by the proxy go its predecessor.
+                        .otherwise(async |mut dispatch| {
+                            connection.translate_elicitation_request_id(Proxy, &mut dispatch)?;
+                            // Other messages sent by the proxy go to its predecessor.
                             // As in the previous handler:
                             //
                             // Messages here are seen in their "desugared form", so we are seeing
@@ -1177,20 +1182,9 @@ where
                 // then initializes itself and forwards an `initialize` request
                 // to its successor.
                 request.method = PROXY_INITIALIZE.to_string();
-                // The request is rewritten, so `forward_response_to` cannot be
-                // used here; wire up cancellation forwarding explicitly to
-                // keep `initialize` cancellable like every other forwarded
-                // request.
                 proxy
-                    .send_request(request)
-                    .forward_cancellation_from(responder.cancellation())
-                    .on_receiving_result(async move |result| {
-                        tracing::debug!(
-                            ok = result.is_ok(),
-                            "got initialize_proxy response from proxy"
-                        );
-                        responder.respond_with_result(result)
-                    })
+                    .prepare_request(request)
+                    .forward_response_to(responder)
             }
             message => proxy.send_proxied_message(message),
         }
@@ -1723,7 +1717,8 @@ impl HostRole for Agent {
                 .on_receive_dispatch(
                     {
                         let mut conductor_tx = runner.conductor_tx.clone();
-                        async move |dispatch: Dispatch, _cx| {
+                        async move |mut dispatch: Dispatch, cx| {
+                            cx.translate_elicitation_request_id(Agent, &mut dispatch)?;
                             conductor_tx
                                 .send(ConductorMessage::RightToLeft {
                                     source_component_index: SourceComponentIndex::Successor,
@@ -1826,7 +1821,8 @@ impl HostRole for Proxy {
             .if_dispatch_from(Agent, {
                 // Messages from our successor arrive already unwrapped
                 // (RemoteRoleStyle::Successor strips the SuccessorMessage envelope).
-                async |message: Dispatch| {
+                async |mut message: Dispatch| {
+                    client_connection.translate_elicitation_request_id(Agent, &mut message)?;
                     tracing::debug!(
                         method = ?message.method(),
                         "ConductorToConductor::handle_dispatch - matched Agent"

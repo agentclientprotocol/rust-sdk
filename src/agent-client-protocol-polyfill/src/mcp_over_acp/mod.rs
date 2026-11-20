@@ -259,8 +259,8 @@ impl PolyfillHandler {
                     self.protocol = Some(protocol);
                     request.method = "initialize".into();
                     let sent = cx
-                        .send_request_to(Agent, request)
-                        .forward_cancellation_from(responder.cancellation());
+                        .prepare_request_to(Agent, request)
+                        .forwarded_from(&responder);
                     let mut bridge_tx = self.bridge_tx.clone();
                     sent.on_receiving_result(async move |result| {
                         let result = match result {
@@ -290,7 +290,7 @@ impl PolyfillHandler {
                 if protocol.is_session_setup_method(request.method()) {
                     protocol.validate_session_setup_request(&request)?;
                     transform_session_servers(&mut request, &mut self.bridge_tx).await?;
-                    cx.send_request_to(Agent, request)
+                    cx.prepare_request_to(Agent, request)
                         .forward_response_to(responder)?;
                     return Ok(Handled::Yes);
                 }

@@ -6,8 +6,8 @@ use futures::{
 };
 
 use crate::{
-    Agent, Client, ConnectionTo as RawConnectionTo, DynamicHandlerGuard, JsonRpcRequest, Responder,
-    SentRequest, V2,
+    Agent, Client, ConnectionTo as RawConnectionTo, DynamicHandlerGuard, JsonRpcRequest,
+    PreparedRequest, Responder, SentRequest, V2,
     jsonrpc::run::{NullRun, RunWithConnectionTo},
     role::{HasPeer, acp::ProxySessionMessages},
     v2::ConnectionTo,
@@ -95,13 +95,12 @@ where
     }
 }
 
-fn send_session_setup<Counterpart, Request, Run>(
+fn prepare_session_setup<Counterpart, Request, Run>(
     connection: ConnectionTo<Counterpart>,
     request: Request,
     dynamic_handler_registrations: Vec<DynamicHandlerGuard<Counterpart>>,
     run: Run,
-    ordered: bool,
-) -> SentRequest<Request::Response, V2>
+) -> PreparedRequest<Request::Response, V2>
 where
     Counterpart: HasPeer<Agent>,
     Request: JsonRpcRequest + 'static,
@@ -111,11 +110,7 @@ where
     let raw_connection = connection.raw_connection().clone();
     if dynamic_handler_registrations.is_empty() {
         drop(run);
-        if ordered {
-            raw_connection.send_ordered_request_to(Agent, request)
-        } else {
-            connection.send_request_to(Agent, request)
-        }
+        connection.prepare_request_to(Agent, request)
     } else {
         let handlers_ready = raw_connection.dynamic_handler_barrier();
         let (runner_started_tx, runner_started_rx) = oneshot::channel();
@@ -151,21 +146,12 @@ where
             Ok(())
         };
 
-        if ordered {
-            raw_connection.send_ordered_request_to_with_response_hook_after(
-                Agent,
-                request,
-                readiness,
-                response_hook,
-            )
-        } else {
-            raw_connection.send_request_to_with_response_hook_after(
-                Agent,
-                request,
-                readiness,
-                response_hook,
-            )
-        }
+        raw_connection.prepare_request_to_with_response_hook_after(
+            Agent,
+            request,
+            readiness,
+            response_hook,
+        )
     }
 }
 
@@ -335,7 +321,7 @@ where
         })
     }
 
-    fn send_new_session(self, ordered: bool) -> SentRequest<v2::NewSessionResponse, V2>
+    fn prepare_new_session(self) -> PreparedRequest<v2::NewSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -345,13 +331,7 @@ where
             dynamic_handler_registrations,
             run,
         } = self;
-        send_session_setup(
-            connection,
-            request,
-            dynamic_handler_registrations,
-            run,
-            ordered,
-        )
+        prepare_session_setup(connection, request, dynamic_handler_registrations, run)
     }
 
     /// Send `session/new` and return its independently consumable request.
@@ -371,13 +351,15 @@ where
         Run: 'static,
     {
         let session_connection = self.connection.clone();
-        self.send_new_session(false).map(move |response| {
-            let session = ActiveSession {
-                session_id: response.session_id.clone(),
-                connection: session_connection,
-            };
-            Ok(SessionSetup { session, response })
-        })
+        self.prepare_new_session()
+            .into_sent_request(false)
+            .map(move |response| {
+                let session = ActiveSession {
+                    session_id: response.session_id.clone(),
+                    connection: session_connection,
+                };
+                Ok(SessionSetup { session, response })
+            })
     }
 
     /// Start a protocol v2 session through a proxy and forward its response.
@@ -403,8 +385,8 @@ where
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
-        self.send_new_session(true)
-            .forward_cancellation_from(responder.cancellation())
+        self.prepare_new_session()
+            .forwarded_from(&responder)
             .on_receiving_ok_result(responder, async move |response, responder| {
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
@@ -509,7 +491,7 @@ where
         })
     }
 
-    fn send_fork_session(self, ordered: bool) -> SentRequest<v2::ForkSessionResponse, V2>
+    fn prepare_fork_session(self) -> PreparedRequest<v2::ForkSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -519,13 +501,7 @@ where
             dynamic_handler_registrations,
             run,
         } = self;
-        send_session_setup(
-            connection,
-            request,
-            dynamic_handler_registrations,
-            run,
-            ordered,
-        )
+        prepare_session_setup(connection, request, dynamic_handler_registrations, run)
     }
 
     /// Send `session/fork` and return its independently consumable request.
@@ -548,13 +524,15 @@ where
         Run: 'static,
     {
         let session_connection = self.connection.clone();
-        self.send_fork_session(false).map(move |response| {
-            let session = ActiveSession {
-                session_id: response.session_id.clone(),
-                connection: session_connection,
-            };
-            Ok(SessionSetup { session, response })
-        })
+        self.prepare_fork_session()
+            .into_sent_request(false)
+            .map(move |response| {
+                let session = ActiveSession {
+                    session_id: response.session_id.clone(),
+                    connection: session_connection,
+                };
+                Ok(SessionSetup { session, response })
+            })
     }
 
     /// Fork a protocol v2 session through a proxy and forward its response.
@@ -581,8 +559,8 @@ where
         Fut: Future<Output = Result<(), crate::Error>> + Send,
     {
         let session_connection = self.connection.clone();
-        self.send_fork_session(true)
-            .forward_cancellation_from(responder.cancellation())
+        self.prepare_fork_session()
+            .forwarded_from(&responder)
             .on_receiving_ok_result(responder, async move |response, responder| {
                 let session_id = response.session_id.clone();
                 let raw_connection = session_connection.raw_connection();
@@ -683,7 +661,7 @@ where
         })
     }
 
-    fn send_resume_session(self, ordered: bool) -> SentRequest<v2::ResumeSessionResponse, V2>
+    fn prepare_resume_session(self) -> PreparedRequest<v2::ResumeSessionResponse, V2>
     where
         Run: 'static,
     {
@@ -693,13 +671,7 @@ where
             dynamic_handler_registrations,
             run,
         } = self;
-        send_session_setup(
-            connection,
-            request,
-            dynamic_handler_registrations,
-            run,
-            ordered,
-        )
+        prepare_session_setup(connection, request, dynamic_handler_registrations, run)
     }
 
     /// Send `session/resume` and return its independently consumable request.
@@ -722,13 +694,15 @@ where
     {
         let session_id = self.request.session_id.clone();
         let session_connection = self.connection.clone();
-        self.send_resume_session(false).map(move |response| {
-            let session = ActiveSession {
-                session_id,
-                connection: session_connection,
-            };
-            Ok(SessionSetup { session, response })
-        })
+        self.prepare_resume_session()
+            .into_sent_request(false)
+            .map(move |response| {
+                let session = ActiveSession {
+                    session_id,
+                    connection: session_connection,
+                };
+                Ok(SessionSetup { session, response })
+            })
     }
 
     /// Resume a protocol v2 session through a proxy and forward its response.
@@ -765,8 +739,8 @@ where
                 ))?,
         );
 
-        self.send_resume_session(true)
-            .forward_cancellation_from(responder.cancellation())
+        self.prepare_resume_session()
+            .forwarded_from(&responder)
             .on_receiving_ok_result(responder, async move |response, responder| {
                 let setup = SessionSetup {
                     session: ActiveSession {

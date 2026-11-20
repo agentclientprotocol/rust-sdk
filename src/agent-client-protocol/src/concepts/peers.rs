@@ -78,7 +78,7 @@
 //!     // Receive a request from the client
 //!     .on_receive_request_from(Client, async |req: MyRequest, responder, cx| {
 //!         // Forward it to the agent
-//!         cx.send_request_to(Agent, req)
+//!         cx.prepare_request_to(Agent, req)
 //!             .forward_response_to(responder)
 //!     }, agent_client_protocol::on_receive_request!())
 //!     .connect_to(transport)
