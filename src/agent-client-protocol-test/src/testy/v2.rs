@@ -1,4 +1,4 @@
-//! Native draft protocol v2 support for Testy.
+//! Native protocol v2 support for Testy.
 
 use super::{TestyCommand, TestyScenario, parse_command};
 use agent_client_protocol::v2::{ConnectionTo, Responder, schema as acp};
@@ -17,7 +17,7 @@ use tokio::sync::{Notify, watch};
 const SESSION_TITLE: &str = "Testy v2 session";
 const SESSION_UPDATED_AT: &str = "2026-01-01T00:00:00Z";
 
-/// The native draft protocol v2 Testy agent.
+/// The native protocol v2 Testy agent.
 ///
 /// Unlike the v1 [`super::v1::Testy`], prompt
 /// responses only acknowledge acceptance; output and completion are reported
@@ -34,11 +34,15 @@ struct TestyState {
     next_session_id: u64,
     next_message_id: u64,
     next_prompt_ticket: u64,
+    next_activity: u64,
 }
 
 #[derive(Clone, Debug)]
 struct V2SessionData {
     cwd: acp::AbsolutePath,
+    /// When the session last had activity: its creation or its latest
+    /// inserted user message. `session/list` returns the most recent first.
+    last_activity: u64,
     active: bool,
     foreground_work: bool,
     cancelled: bool,
@@ -113,12 +117,15 @@ impl Testy {
                 acp::SessionId::new(format!("testy-v2-session-{}", state.next_session_id));
             state.next_session_id += 1;
             if !state.sessions.contains_key(&session_id) {
+                state.next_activity += 1;
+                let last_activity = state.next_activity;
                 state.sessions.insert(
                     session_id.clone(),
                     // Testy does not advertise `additionalDirectories`, so it
                     // ignores that field.
                     V2SessionData {
                         cwd: request.cwd,
+                        last_activity,
                         active: true,
                         foreground_work: false,
                         cancelled: false,
@@ -140,24 +147,24 @@ impl Testy {
         message_id
     }
 
+    /// The sessions in `cwd`, or all of them, with the most recent activity
+    /// first.
     fn list_sessions(&self, request: &acp::ListSessionsRequest) -> Vec<acp::SessionInfo> {
         let state = self.lock_state();
         let mut sessions = state
             .sessions
             .iter()
             .filter(|(_, session)| request.cwd.as_ref().is_none_or(|cwd| cwd == &session.cwd))
+            .collect::<Vec<_>>();
+        sessions.sort_by_key(|(_, session)| std::cmp::Reverse(session.last_activity));
+        sessions
+            .into_iter()
             .map(|(session_id, session)| {
                 acp::SessionInfo::new(session_id.clone(), session.cwd.clone())
                     .title(SESSION_TITLE)
                     .updated_at(SESSION_UPDATED_AT)
             })
-            .collect::<Vec<_>>();
-        sessions.sort_by(|left, right| {
-            left.session_id
-                .to_string()
-                .cmp(&right.session_id.to_string())
-        });
-        sessions
+            .collect()
     }
 
     /// Reattach to a session. Returns the history to replay when the client
@@ -483,7 +490,11 @@ impl Testy {
         idempotency_key: Option<acp::IdempotencyKey>,
         update: acp::SessionUpdate,
     ) {
-        if let Some(session) = self.lock_state().sessions.get_mut(session_id) {
+        let mut state = self.lock_state();
+        state.next_activity += 1;
+        let last_activity = state.next_activity;
+        if let Some(session) = state.sessions.get_mut(session_id) {
+            session.last_activity = last_activity;
             session.history.push(update);
             if let Some(key) = idempotency_key
                 && let Some(KeyedPrompt::Pending { inserted, .. }) = session

@@ -1,6 +1,6 @@
 #![cfg(feature = "unstable_llm_providers")]
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 
 use agent_client_protocol::{
     Agent, Client, Error, JsonRpcMessage, JsonRpcRequest, JsonRpcResponse,
@@ -28,8 +28,8 @@ fn provider_info() -> ProviderInfo {
     )
 }
 
-fn test_headers() -> HashMap<String, String> {
-    HashMap::from([("X-Test-Routing".to_string(), "tenant-demo".to_string())])
+fn test_headers() -> IndexMap<String, String> {
+    IndexMap::from([("X-Test-Routing".to_string(), "tenant-demo".to_string())])
 }
 
 fn assert_request_pair<Request, Response>()

@@ -838,8 +838,9 @@ where
     /// only because work is active. A held prompt's response stays pending
     /// until it is inserted.
     ///
-    /// [`Self::cancel_active_work`] and [`Self::close`] drop every prompt the
-    /// agent has not inserted, and the agent answers each with `-32800`.
+    /// [`Self::cancel_active_work`] and [`Self::close`] drop the prompts the
+    /// agent has received and not inserted, and the agent answers each with
+    /// `-32800`.
     /// Cancelling the returned [`SentRequest`] sends `$/cancel_request`, which
     /// is best effort: an agent that honors it answers `-32800` and does not
     /// insert the message, and otherwise the prompt is inserted as usual and
@@ -863,12 +864,19 @@ where
     /// Submit prompt content with an idempotency key and return its
     /// acceptance request.
     ///
-    /// The key identifies one submission. The agent inserts at most one user
-    /// message for a key in a session and answers a retry with the `messageId`
-    /// of the message it already inserted, without starting the work again.
-    /// To retry after a lost response, for example on a new connection after
-    /// `session/resume`, call this again with the same key and the same
-    /// `prompt`. Each attempt is its own request.
+    /// The key identifies one submission. While the agent recognizes the key,
+    /// it inserts at most one user message for it in a session and answers a
+    /// retry with the `messageId` of the message it already inserted, without
+    /// starting the work again. To retry, call this again with the same key
+    /// and the same `prompt`. Each attempt is its own request.
+    ///
+    /// A retry is not always safe. On a new connection, resume the session
+    /// before you retry. A successful `session/resume` does not tell you
+    /// whether the prompt was inserted or whether the agent kept the key, and
+    /// a retry with a forgotten key is a new submission. If a duplicate would
+    /// matter and you cannot rule one out, do not resend the prompt
+    /// automatically. Tell the user that it might already have run and let
+    /// them decide.
     ///
     /// Create the key when the user submits the input, with
     /// [`v2::schema::IdempotencyKey::generate`](v2::IdempotencyKey::generate)
@@ -879,7 +887,9 @@ where
     ///
     /// An error response means the message was not inserted and leaves the
     /// key unused, so the same prompt can be sent again with the same key.
-    /// The agent recognizes a key for as long as it retains the message.
+    /// The agent recognizes a key for as long as it retains the message. For
+    /// a message it does not retain, it recognizes the key while the session
+    /// stays active on a connection.
     ///
     /// See <https://agentclientprotocol.com/protocol/v2/prompt-lifecycle#retrying-a-prompt>.
     pub fn send_prompt_blocks_with_key(
@@ -906,10 +916,18 @@ where
     ///
     /// If foreground work was active, cancellation completes when the agent
     /// reports an `idle` state update with [`v2::schema::StopReason::Cancelled`](v2::StopReason::Cancelled); no
-    /// completion update is required when nothing was running. `cancelled` is only
-    /// reported for work the client cancelled, through this notification or
-    /// by closing the session. The client should immediately mark unfinished
-    /// tool calls for the active work as cancelled.
+    /// idle update is required when nothing was running. The agent sends that
+    /// update before it starts new foreground work in the session, and it does
+    /// not reject a prompt because cancellation is in progress. `cancelled` is
+    /// only reported for work the client cancelled, through this notification
+    /// or by closing the session, and for a child session whose parent
+    /// cancelled its work. The client should immediately mark unfinished tool
+    /// calls for the active work as cancelled.
+    ///
+    /// Keep accepting updates after sending this notification. Updates for
+    /// listed background work can arrive after the `idle` update. To stop a
+    /// listed tool call or terminal, send `tool_call/cancel` or
+    /// `terminal/cancel` while the item advertises `capabilities.cancel`.
     ///
     /// The agent stops waiting for pending
     /// [`v2::schema::RequestPermissionRequest`](v2::RequestPermissionRequest)s
@@ -934,6 +952,8 @@ where
     /// Only send a `config_id` the agent advertised for this session, with a
     /// value from that option. The agent rejects an unknown `config_id` or an
     /// invalid value with `-32602` and leaves the configuration unchanged.
+    /// The options of a child session are read-only, so do not call this for
+    /// one.
     ///
     /// The response contains the complete option set as of the response and
     /// may report a different `currentValue` than requested; `currentValue`
@@ -969,7 +989,12 @@ where
     ///
     /// Existing clones of this local command handle are not invalidated, but
     /// the session is no longer active: the agent rejects later commands for it
-    /// with `-32002` (resource not found).
+    /// with `-32002` (resource not found). After the close response the agent
+    /// sends no notifications or requests for the session. It still answers
+    /// `session/prompt` requests that were pending.
+    ///
+    /// A child session cannot be closed on its own. Close its root session
+    /// instead.
     ///
     /// Closing is idempotent. An agent should answer a close of an unknown or
     /// already-closed session with success, and an older agent may answer

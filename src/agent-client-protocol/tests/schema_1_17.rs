@@ -1,11 +1,6 @@
 //! Schema 1.17 additions parse into the SDK's typed v1 and v2 messages.
 
-#![cfg(any(
-    feature = "unstable_auth_status",
-    feature = "unstable_session_options",
-    feature = "unstable_subagents"
-))]
-#![allow(unused_imports)]
+#![allow(unused_imports, dead_code)]
 
 use agent_client_protocol::v1::schema as v1;
 use agent_client_protocol::{JsonRpcMessage, JsonRpcResponse};
@@ -90,7 +85,6 @@ fn v1_session_setup_requests_carry_initial_config_options() {
     }
 }
 
-#[cfg(feature = "unstable_subagents")]
 #[test]
 fn v1_session_tool_call_content_round_trips() {
     let params = json!({

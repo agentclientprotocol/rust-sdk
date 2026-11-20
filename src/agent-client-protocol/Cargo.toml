@@ -55,7 +55,6 @@ unstable = [
     "unstable_end_turn_token_usage",
     "unstable_llm_providers",
     "unstable_mcp_over_acp",
-    "unstable_plan_operations",
     "unstable_prompt_suggestions",
     "unstable_session_archive",
     "unstable_session_cursors",
@@ -64,14 +63,12 @@ unstable = [
     "unstable_session_set_title",
     "unstable_session_status",
     "unstable_speed_config_category",
-    "unstable_subagents",
 ]
 unstable_agent_skills = ["agent-client-protocol-schema/unstable_agent_skills"]
 unstable_auth_status = ["agent-client-protocol-schema/unstable_auth_status"]
 unstable_end_turn_token_usage = ["agent-client-protocol-schema/unstable_end_turn_token_usage"]
 unstable_llm_providers = ["agent-client-protocol-schema/unstable_llm_providers"]
 unstable_mcp_over_acp = ["agent-client-protocol-schema/unstable_mcp_over_acp"]
-unstable_plan_operations = ["agent-client-protocol-schema/unstable_plan_operations"]
 unstable_prompt_suggestions = ["agent-client-protocol-schema/unstable_prompt_suggestions"]
 unstable_session_archive = ["agent-client-protocol-schema/unstable_session_archive"]
 unstable_session_cursors = ["agent-client-protocol-schema/unstable_session_cursors"]
@@ -80,7 +77,6 @@ unstable_session_options = ["agent-client-protocol-schema/unstable_session_optio
 unstable_session_set_title = ["agent-client-protocol-schema/unstable_session_set_title"]
 unstable_session_status = ["agent-client-protocol-schema/unstable_session_status"]
 unstable_speed_config_category = ["agent-client-protocol-schema/unstable_speed_config_category"]
-unstable_subagents = ["agent-client-protocol-schema/unstable_subagents"]
 # The schema's `uuid` feature adds `v2::schema::IdempotencyKey::generate`. This
 # crate already depends on `uuid` for request IDs, so it costs nothing extra.
 unstable_protocol_v2 = [
@@ -125,6 +121,8 @@ agent-client-protocol-test.workspace = true
 clap.workspace = true
 expect-test.workspace = true
 futures = { workspace = true, features = ["executor"] }
+# The schema keeps wire maps in `IndexMap`s, which tests build by name.
+indexmap.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tokio-util.workspace = true
 tracing-subscriber.workspace = true

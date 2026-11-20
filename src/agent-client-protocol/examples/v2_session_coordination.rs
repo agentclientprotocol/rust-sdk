@@ -290,7 +290,9 @@ impl Driver {
                 let updates = replay.unwrap_or_default();
                 // `replay_complete` ends the replayed history. An agent that
                 // omits it violates the protocol, but the successful response
-                // still certifies everything before it as the history.
+                // still confirms that the requested replay finished. The
+                // session was not active on this connection before the
+                // request, so no live update precedes the marker.
                 let history_len = updates
                     .iter()
                     .position(|update| matches!(update, schema::SessionUpdate::ReplayComplete(_)))

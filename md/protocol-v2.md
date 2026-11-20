@@ -1,14 +1,15 @@
 # Protocol V2
 
-The core SDK can opt into the draft ACP protocol v2 surface with the
-`unstable_protocol_v2` crate feature:
+The core SDK can opt into ACP protocol v2 with the `unstable_protocol_v2` crate
+feature. Protocol v2 has been in Preview since schema 1.20: it is ready to build
+on, and it is not frozen. The SDK's v2 API can still change in a minor release.
 
 ```toml
 agent-client-protocol = { version = "...", features = ["unstable_protocol_v2"] }
 ```
 
 This feature is separate from the broad `unstable` feature because protocol v2
-is a versioning experiment, not just an unstable method family.
+is a separate protocol version, not an unstable method family.
 
 To start from working code, build and run the companion agent and client in the
 [Runnable Protocol V2 Quickstart](./protocol-v2-quickstart.md). The examples
@@ -195,14 +196,16 @@ V2 deliberately separates prompt submission from session observation:
   away or holds it and inserts held prompts in received order; it must not
   reject a prompt only because foreground work is active. A held prompt's
   response stays pending until insertion. `cancel_active_work` and `close`
-  drop every prompt the agent has not inserted. Cancelling a held prompt's
+  drop the prompts the agent has received and not inserted. Cancelling a held prompt's
   `SentRequest` sends `$/cancel_request`, which is best effort: the agent
   either answers `-32800` or inserts the prompt as usual. An inserted prompt
   cannot be withdrawn.
-- `send_prompt_blocks_with_key` sends the prompt with an `idempotencyKey`, so
-  it can be sent again after a lost response without inserting a second user
-  message (see [Schema 1.19](#schema-119)). `send_prompt` and
-  `send_prompt_blocks` send no key.
+- `send_prompt_blocks_with_key` sends the prompt with an `idempotencyKey`.
+  While the agent recognizes the key, a retry with the same key does not
+  insert a second user message. A resumed session does not tell the client
+  which keys the agent kept, so a retry after a reconnect can still insert one
+  (see [Schema 1.20](#schema-120)). `send_prompt` and `send_prompt_blocks` send
+  no key.
 - `cancel_active_work` sends session-wide `session/cancel`. It covers the
   session's foreground work and prompts received before it that the agent has
   not yet inserted; those prompt requests fail with `-32800` (request
@@ -211,10 +214,16 @@ V2 deliberately separates prompt submission from session observation:
   Work in the latest `background` list is not covered and keeps running; the
   agent may stop background activity it does not list.
   Cancellation of active foreground work completes after the required `idle`
-  update with stop reason `cancelled`; cancelling an idle session need not
-  emit another completion. `cancelled` is reserved for work the client
-  cancelled with `session/cancel` or by closing the session; work the agent
-  stops on its own uses another reason, such as `error`. The client should immediately mark unfinished tool calls for the active work as
+  update with stop reason `cancelled`, which the agent sends before it starts
+  new foreground work in the session. Updates for listed background work can
+  still arrive after it. Cancelling an idle session need not emit another
+  idle update, and work that had already ended keeps its stop reason.
+  `cancelled` is reserved for work the client cancelled with `session/cancel`
+  or by closing the session, and for a child session whose parent cancelled
+  its work. Work the agent stops on its own uses another reason, such as
+  `error`. A prompt sent while cancellation is in progress is not rejected for
+  that reason: the agent inserts it, or holds it until the cancelled work has
+  reported `idle`. The client should immediately mark unfinished tool calls for the active work as
   cancelled. The agent owns pending permission requests: it stops waiting
   for those of the cancelled work, treats them as not approved, and must
   cancel each with `$/cancel_request`. The agent decides which requests
@@ -671,9 +680,9 @@ The reuse probe is conservative: if parsing and serializing the raw v2 request
 would change any parameter, reuse is disabled and fallback opens a fresh
 connection. That does not turn an otherwise valid v2 request into an error.
 
-## Schema changes in schema 1.5 through 1.19
+## Schema changes in schema 1.5 through 1.20
 
-The `unstable_protocol_v2` API follows the moving draft schema. Schema 1.5 added
+The `unstable_protocol_v2` API follows the v2 schema as it changes. Schema 1.5 added
 semantic newtypes for paths, media types, IDs, and cursors, renamed
 `DiffPatch.diff` to `DiffPatch.text`, and added terminal state and output update
 types. Schema 1.7 removed the former schema-wide v1/v2 conversion API:
@@ -761,8 +770,9 @@ before insertion requires an error response and no user-message updates for
 that submission; it does not alone end foreground work. A pre-insertion
 foreground failure can also require an error idle update. After insertion,
 the response stays successful and failure is reported on idle instead.
-This includes authentication failures: after insertion, `auth_required`
-(`-32000`) belongs in the error stop reason, not an error prompt response.
+This includes authentication failures: after insertion, `-32000`
+(Authentication required) belongs in the error stop reason, not an error
+prompt response.
 Authenticating again does not restart ended work, and automatically retrying
 an inserted prompt would insert another message and could repeat side effects.
 When closing cancels active work, final updates and idle with `cancelled`
@@ -785,8 +795,10 @@ there the client must answer every pending permission request with
 Agents reject unsupported replay cursor types with `-32602`, rather than
 substituting another cursor. Retained user messages preserve the prompt
 response's ID across replay. Agent and thought message IDs may change across
-reconnections: rebuild that history on full replay instead of deduplicating
-only by ID. A chunk replay's empty-content primer clears only its replay ID.
+reconnections, so do not deduplicate a replay against history you already
+hold by ID. A client can rebuild its transcript from a full replay, which
+holds the history the agent retained and not necessarily everything the client
+saw live. A chunk replay's empty-content primer clears only its replay ID.
 Since schema 1.19 the primer applies to every entity replayed as chunks, not
 only to messages (see [Schema 1.19](#schema-119)).
 
@@ -797,14 +809,14 @@ Nested objects are not merged; nested nulls are ordinary data. An empty object
 does not clear metadata. Replay uses the same rules and never implicitly resets
 metadata. `ToolCallUpdate::apply_update` and `TerminalUpdate::apply_update`
 apply this rule; use `v2::schema::apply_meta_update` for application-owned
-message, session, compaction, or subagent projections. Metadata on chunks,
+message, session, usage, compaction, or subagent projections. Metadata on chunks,
 content, snapshots, and `plan_update` is not an entity patch.
 
 Protocol v2 negotiation does not select every experimental feature. Operations
 such as provider configuration require their advertised capabilities.
-Informational notices, compaction, draft plan representations, subagent
-updates, and idle token usage can use their documented capability-free
-fallbacks; accepting an unknown variant is not a support advertisement.
+Informational notices, compaction, plan updates, subagent updates, and idle
+token usage can use their documented capability-free fallbacks; accepting an
+unknown variant is not a support advertisement.
 Unknown capability fields are ignored, while malformed known discriminators
 must not fall through to an unknown-variant fallback.
 
@@ -821,9 +833,7 @@ Client projections of tool calls and terminals should follow these rules:
   `terminal_output_chunk` for an unseen `terminalId` creates the terminal with
   unknown fields and empty output, then appends.
 - Decode each terminal chunk independently and append the bytes in order.
-  Ignore a chunk or `output` snapshot whose `data` is not valid base64,
-  keeping the bytes already held; the rest of that `terminal_update` still
-  applies. Agents should send all output before a
+  Agents should send all output before a
   concrete `exitStatus`, but clients still append output that arrives after
   it. Clients may cap how much output they retain, for example by dropping the
   oldest bytes; a later `output` snapshot replaces whatever they kept.
@@ -909,13 +919,12 @@ Draft v2 type changes:
 - `UsageUpdate.cost` is a `MaybeUndefined<Cost>` patch field: omitted leaves
   the cost unchanged, `null` clears it, and a value replaces it.
   `Cost.currency` is any unit string, not only an ISO 4217 code.
-- `ElicitationContentValue::Other` holds any JSON value. Validate accepted
-  content per property against the requested schema: an unexpected value
-  invalidates only that property.
+- `ElicitationContentValue::Other` holds any JSON value, such as the value of
+  a custom or future property type. Validate accepted content against the
+  requested schema yourself.
 - `ElicitationSchema` requires `type: "object"` and `properties` on the wire.
 - `PromptRequest.prompt` must not be empty, and select config options and
-  option groups must not be empty. Clients should hide a group that becomes
-  empty after skipping values they cannot parse.
+  option groups must not be empty.
 - `SessionInfo.additionalDirectories` treats `null` as `[]`, and
   `Annotations.lastModified` accepts any ISO 8601 string.
 - Subagent updates gain `cwd` and `additional_directories` patch fields
@@ -937,9 +946,11 @@ Connection and lifecycle rules:
   succeeds. `v2::ActiveSession::close` treats a `-32002` response as success, and
   Testy and `simple_agent_v2` close idempotently.
 - Closing cancels the session's work like `session/cancel`, cancels pending
-  elicitations scoped to it, answers held prompts with `-32800`, and the agent
-  sends nothing more for that session afterwards. Deleting an active session
-  first closes it.
+  elicitations scoped to it, and answers held prompts with `-32800`. After the
+  close response the agent sends no notifications or requests for that
+  session, but it still answers `session/prompt` requests that were pending.
+  Deleting a session first cancels its work and frees its resources, as if it
+  had been closed when it is active.
 - `cwd` must be absolute in the native syntax of the agent's machine, and
   agents reject a relative `cwd` in `session/new`, `session/resume`, and the
   `session/list` filter with `-32602`. That filter matches only the exact
@@ -990,8 +1001,9 @@ Draft v2 type changes:
   `BackgroundWork::Subagent`, and `ToolCallContent::Session` are always
   available. These wire values used to parse as `Other` without the feature
   and now parse as their typed variants, so add match arms where you relied on
-  the fallback. v1 still needs `unstable_subagents`.
-- With `unstable_plan_operations`, the `file` plan type is removed:
+  the fallback. v1 needed `unstable_subagents` until schema 1.20.
+- The `file` plan type is removed (plan operations needed
+  `unstable_plan_operations` until schema 1.20):
   `PlanUpdateContent::File`, `PlanFile`, and `PlanUpdateContent::file` no
   longer exist, and a received `file` plan parses as
   `PlanUpdateContent::Other`. `PlanMarkdown` gains an optional `path`, the
@@ -1019,11 +1031,12 @@ Agents must follow these replay rules:
 - For a `session/resume` request with a `replayFrom` cursor, send
   `replay_complete` exactly once on the session, after the last replayed
   update and before current-state synchronization and the response. Send it
-  for an empty history too.
+  for an empty replay too.
 - Do not send it when `replayFrom` is omitted or `null`, for `session/new`,
   when the cursor is rejected with `-32602`, or when the replay cannot finish.
-- Every update for the session between the request and `replay_complete` must
-  be replayed history. Hold everything else until after it: chunks of a
+- From the time you receive the request until you send `replay_complete`,
+  every update you send for the session must be replayed history. Hold
+  everything else until after it: chunks of a
   message that is still streaming, notices, `available_commands_update`,
   `config_option_update`, and the current session info and state snapshots.
   Permission requests and elicitations should wait too.
@@ -1072,12 +1085,16 @@ Other agent rules:
 
 Client projections should also follow these rules:
 
-- Use `replay_complete` to find the end of the replayed history. Every update
-  for the session before it is history, and every update after it is not.
+- Use `replay_complete` to find the end of the replay you requested. Every
+  update for the session after it is not history. Sending `session/resume`
+  does not mark the start of the replay: when the session is already active on
+  the connection, a live update the agent sent before it received the request
+  can still arrive before `replay_complete`.
   A resume that ends in an error response or a closed connection without
-  `replay_complete` delivered a truncated replay. Do not use those updates as
-  the full history. A successful response without `replay_complete` is a
-  protocol violation, but the response still certifies the history.
+  `replay_complete` delivered a truncated replay. Do not treat those updates
+  as a complete replay. A successful response without `replay_complete` is a
+  protocol violation, but the response still confirms that the requested
+  replay finished.
 - Ignore command types you do not understand, and never show them as slash
   commands. The `/name` syntax invokes `command` entries only. Invoke a skill
   with a `skill` content block, and only where the agent's
@@ -1172,8 +1189,8 @@ Other agent rules:
 - If the agent cannot apply a supplied `systemPrompt` because the value is
   unsupported or exceeds its limits, answer `-32602` without creating or
   resuming the session.
-- `session/cancel` and `session/close` drop every prompt you have not
-  inserted. Answer each with `-32800`. Honoring `$/cancel_request` for a held
+- `session/cancel` and `session/close` drop the prompts you have received and
+  not inserted. Answer each with `-32800`. Honoring `$/cancel_request` for a held
   prompt is optional: either answer `-32800` and do not insert the message, or
   insert it as usual. When the connection ends, you may insert or discard the
   prompts you were holding.
@@ -1217,20 +1234,20 @@ Other agent rules:
 
 Client projections should also follow these rules:
 
-- To be able to retry a prompt whose response was lost, send it with
-  `send_prompt_blocks_with_key`. Create one key per submission when the user
-  submits the input, and store it with the pending input. After reconnecting,
-  call `initialize` and `session/resume`, then send the prompt again with the
-  same key. Use a new key for a new submission, and never send a key with a
-  different prompt. Show a prompt you have held for a long time to the user
-  instead of resending it, because the agent may have discarded the message.
-- Without a key, a `session/prompt` sent again can insert a second user
-  message. `auth/login`, `auth/logout`, `session/resume`,
+- To let the agent recognize a retry of a prompt whose response was lost, send
+  the prompt with `send_prompt_blocks_with_key`. Create one key per submission
+  when the user submits the input, and store it with the pending input. Use a
+  new key for a new submission, and never send a key with a different prompt.
+  On a new connection, call `initialize` and `session/resume` before you
+  retry. Schema 1.20 changed what a client does next: see
+  [Schema 1.20](#schema-120).
+- Without a key, or with a key the agent has forgotten, a `session/prompt`
+  sent again can insert a second user message. `auth/login`, `auth/logout`, `session/resume`,
   `session/set_config_option`, `session/list`, `session/close`,
   `session/delete`, `tool_call/cancel`, and `terminal/cancel` can be sent
   again as they are. A second `session/new` creates a second session. Do not
-  send `session/cancel` again later: a copy that arrives after new work has
-  started cancels that work. Retry `session/set_config_option` before you send
+  send `session/cancel` again later: a later copy can cancel newer foreground
+  work or a newly held prompt. Retry `session/set_config_option` before you send
   further changes, because a retry sent after a later change to the same
   option overwrites it. Treat `-32002` from `session/delete` as a successful
   delete. A `tool_call/cancel` or `terminal/cancel` retry gets `-32602` once
@@ -1282,3 +1299,141 @@ Client projections should also follow these rules:
   anchored entity's ID. Do not guess a place for a cursor whose anchor you do
   not hold or do not recognize. A full replay rebuilds the session's cursors,
   so discard the ones you held. A forked session does not inherit cursors.
+
+### Schema 1.20
+
+ACP v2 moved from Draft to Preview with this release, and its schema is
+`2.0.0-beta.1`. The SDK's v2 API stays behind `unstable_protocol_v2`.
+
+Type changes:
+
+- Plan operations are stable in both protocol versions, and the
+  `unstable_plan_operations` feature is removed. In v2,
+  `PlanUpdateContent::Markdown`, `PlanMarkdown`, and
+  `SessionUpdate::PlanRemoved` are always available and need no client
+  capability. A `markdown` plan and a `plan_removed` update used to parse as
+  `Other` without the feature and now parse as their typed variants, so add
+  match arms where you relied on the fallback. In v1,
+  `SessionUpdate::PlanUpdate`, `SessionUpdate::PlanRemoved`, and
+  `ClientCapabilities::plan` need no feature.
+- Subagent sessions are stable in v1, and the `unstable_subagents` feature is
+  removed. v2 has included them since schema 1.18.
+- Maps on the wire keep their key order. In v2 they are `indexmap::IndexMap`s
+  instead of `BTreeMap`s: the `fields` of every `Other*` variant,
+  `ElicitationSchema::properties`, and `ElicitationAcceptAction::content`.
+  `SetProviderRequest::headers` (with `unstable_llm_providers`) was a
+  `HashMap` and is an `IndexMap` in both versions. In v1, the `fields` of
+  `OtherStateUpdate`, `OtherStopReason`, and `OtherCursorAnchor` are
+  `IndexMap`s too. The other v1 maps are unchanged. Add `indexmap = "2"` to
+  your dependencies to name the type. Where a function takes the map
+  directly, such as `OtherMcpServer::new`, an array of pairs with `.into()`
+  also works. `apply_meta_update` keeps the order of the remaining keys when
+  it removes one.
+- `CompactionUpdate::status` is a `MaybeUndefined<CompactionStatus>` patch
+  field: omitted leaves the status unchanged, `null` resets it to
+  `in_progress`, and a value replaces it. `CompactionUpdate::new` takes only
+  the ID. Set the status with `CompactionUpdate::status`. v1 still requires
+  `status`.
+- `UsageUpdate::meta` is a `MaybeUndefined<Meta>` metadata patch, like the
+  `_meta` of the other upsert updates. Apply it with `apply_meta_update`.
+- `TerminalSize::cols` and `TerminalSize::rows` are `NonZeroU16`. A received
+  `size` with a zero is parsed as no size, and the rest of the
+  `terminal_update` still applies.
+- A `RequestPermissionRequest` with an empty `options` list fails typed
+  parsing. The SDK answers that request with `-32602` and the handler does not
+  run.
+- `CreateElicitationRequest` rejects a `requestId` sent together with
+  `sessionId` or `toolCallId`, and a `null` in the scope field that is not
+  used. `MultiSelectItems` is selected by `type`: the titled `anyOf` form has
+  no `type`, and a `type` of `"string"` needs `enum`.
+- `SystemPrompt.content` has `minItems: 1` in the JSON Schema. The SDK still
+  parses an empty list.
+- The v2 JSON Schema validates the JSON-RPC envelope by method and direction
+  and rejects `"params": null`. The SDK omits `params` when a message has
+  none. The schema also carries `x-state` and `x-scope` hints, which say what
+  a message changes and which session, tool call, or request it belongs to.
+  They add no Rust types.
+
+Agents must follow these rules:
+
+- When `session/cancel` stops active foreground work, send that work's
+  pending updates and then `idle` with `stopReason: "cancelled"` before you
+  start new foreground work in the session, including work you start
+  yourself. Do not reject a prompt because cancellation is in progress.
+  Insert and acknowledge it, or hold it with its response pending if its work
+  would start right away. Listed background work is not covered, and its
+  updates can follow the idle update. If the foreground work had already
+  ended, its stop reason stands.
+- A `selected` permission outcome is not approval by itself. Match `optionId`
+  against the options you offered in that request. Do not perform the
+  operation when the option's kind is `reject_once` or `reject_always`, when
+  no option matches, or when you do not understand the kind or the outcome.
+  Neither the option's `name` nor the spelling of its `optionId` overrides a
+  rejection. An error response is not approval, and neither is a connection
+  that ends before the client answers.
+- Reject a stdio MCP server whose `command` is not an absolute path with
+  `-32602`. When a server fails to launch or connect, continue without it and
+  tell the user, for example with a notice.
+- Reject a `session/close` or a `session/delete` that names a child session
+  with `-32602`. A child's config options are read-only, because no child
+  capability permits `session/set_config_option`.
+- Give every config option a `configId` that is unique in `configOptions`,
+  and every group a `groupId` that is unique in its option.
+- Do not replay past `usage_update`, `session_info_update`,
+  `config_option_update`, or `available_commands_update` notifications. They
+  describe earlier values. Synchronize the current ones instead.
+- During a replaying resume, hold live updates and requests for each child
+  you announce until that child's `replay_complete`.
+- Report `unknown` whenever you can no longer observe a session's foreground
+  work. This applies to every session, not only to child sessions.
+- A child session also reports `cancelled` when its parent cancels its work.
+  A response that arrives after work was cancelled must not permit a new task
+  for the same child.
+- Return the sessions with the most recent activity first from
+  `session/list`.
+- Send `plan_removed` when a plan is cancelled, for example when the user
+  rejects it. A finished plan does not need to be removed. The `path` of a
+  markdown plan must be absolute.
+- In an elicitation, omit the scope field you do not use instead of sending
+  `null`, and do not send `toolCallId` with `requestId`.
+- Every authentication method carries a `type`, a `methodId`, and a `name`.
+  The `env` names of a terminal method should be unique. Otherwise the last
+  entry with a name wins.
+
+Testy and `simple_agent_v2` already follow the rules that apply to them. They
+have no permission requests, MCP servers, config options, plans, or child
+sessions.
+
+Client projections should also follow these rules:
+
+- A successful `session/resume`, with or without replay, does not tell you
+  whether an unanswered prompt was inserted or whether the agent kept its
+  `idempotencyKey`. If a duplicate would matter and you cannot rule one out,
+  do not resend the prompt automatically. Tell the user that the prompt might
+  already have run and let them decide. A retry sends the original prompt and
+  key in a new `session/prompt` request. This replaces the earlier advice to
+  resend a pending prompt as soon as the session is resumed.
+- Accept `items` and `markdown` plans and `plan_removed`. Accepting a plan
+  does not require showing it. A `plan_update` replaces the whole plan with
+  that `planId`. Ignore a `plan_removed` for a `planId` you do not know.
+- When the user picks an offered option, answer with `selected` and its
+  `optionId`, also for a rejection. You can return the ID without
+  interpreting the option's kind.
+- Keep accepting updates after `session/cancel`, including updates for
+  surviving background work after the `idle` update with
+  `stopReason: "cancelled"`. To stop a listed tool call or terminal, send
+  `tool_call/cancel` or `terminal/cancel` while the item advertises
+  `capabilities.cancel`. `session/cancel` on a child does not stop a terminal
+  in the child's `background` list.
+- Adjacent text blocks form one continuous text. Join them without a
+  separator before rendering, in messages and in tool call content.
+- Tool call titles, session titles, and the names and descriptions of
+  commands and config options are plain text. Do not render them as Markdown.
+  A plan entry's `content` may contain Markdown.
+- Answer `elicitation/create` with `-32602` when you cannot render the form.
+- Follow a `nextCursor` from `session/list` with the same `cwd` you sent
+  before.
+- Call `auth/logout` only when the agent advertised authentication methods.
+- After the agent selects a lower protocol version, you may send that
+  version, or a lower one you support, when you repeat `initialize` or open a
+  new connection. `Client.protocol_connector()` does this when it falls back.

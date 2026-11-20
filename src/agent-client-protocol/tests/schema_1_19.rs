@@ -475,8 +475,8 @@ mod v2_methods {
     #[test]
     fn v2_cursor_update_covers_each_anchor_and_patches_capabilities() {
         let mut anchors = known_anchors();
-        // Session-directed messages are part of v2, so this anchor needs no
-        // `unstable_subagents`.
+        // Session-directed messages are part of v2, so this anchor is always
+        // available.
         anchors.push(json!({
             "type": "session_message",
             "messageId": "msg_session_1",

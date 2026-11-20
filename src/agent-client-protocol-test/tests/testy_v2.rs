@@ -689,6 +689,86 @@ async fn testy_v2_rejects_unknown_sessions_unadvertised_mcp_servers_and_list_cur
         .expect("Testy v2 error handling failed");
 }
 
+/// `session/list` returns the sessions with the most recent activity first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_lists_sessions_with_the_most_recent_activity_first() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let client = Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
+                event_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let first = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+            let second = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+
+            let listed = async || -> Result<Vec<v2::SessionId>, Error> {
+                let response = connection
+                    .send_request(v2::ListSessionsRequest::new())
+                    .block_task()
+                    .await?;
+                Ok(response
+                    .sessions
+                    .into_iter()
+                    .map(|session| session.session_id)
+                    .collect())
+            };
+            assert_eq!(
+                listed().await?,
+                [second.session_id().clone(), first.session_id().clone()],
+                "the newest session is listed first"
+            );
+
+            // A prompt is the first session's latest activity.
+            first
+                .send_prompt(TestyCommand::Greet.to_prompt())
+                .block_task()
+                .await?;
+            loop {
+                if matches!(
+                    next_update(&mut event_rx).await.update,
+                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(_))
+                ) {
+                    break;
+                }
+            }
+            assert_eq!(
+                listed().await?,
+                [first.session_id().clone(), second.session_id().clone()],
+                "the prompted session is listed first"
+            );
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 session list test timed out")
+        .expect("Testy v2 session list test failed");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn testy_v2_rejects_unadvertised_prompt_content() {
     Client
@@ -943,6 +1023,89 @@ async fn testy_v2_holds_prompts_during_active_work() {
         .await
         .expect("Testy v2 held prompts timed out")
         .expect("Testy v2 held prompts failed");
+}
+
+/// When `session/cancel` stops foreground work, the agent reports `idle` with
+/// the `cancelled` stop reason before it starts the work of a prompt that
+/// arrived during the cancellation. That prompt is not rejected.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn testy_v2_reports_cancelled_idle_before_the_next_work_starts() {
+    let (event_tx, mut event_rx) = unbounded_channel();
+    let client = Client
+        .v2()
+        .on_receive_notification(
+            async move |update: v2::UpdateSessionNotification,
+                        _connection: ConnectionTo<agent_client_protocol::Agent>| {
+                event_tx
+                    .send(TestEvent::Update(Box::new(update)))
+                    .map_err(Error::into_internal_error)
+            },
+            agent_client_protocol::on_receive_notification!(),
+        )
+        .connect_with(testy::v2::Testy::new(), async move |connection| {
+            connection
+                .send_request(v2::InitializeRequest::new(
+                    ProtocolVersion::V2,
+                    implementation(),
+                ))
+                .block_task()
+                .await?;
+            let session = connection
+                .build_session(PathBuf::from("/tmp"))
+                .start_session()
+                .block_task()
+                .await?
+                .session;
+
+            let cancelled = session
+                .send_prompt(wait_for_cancel_prompt())
+                .block_task()
+                .await?;
+            session.cancel_active_work()?;
+            let next = session
+                .send_prompt(TestyCommand::Greet.to_prompt())
+                .block_task()
+                .await?;
+
+            // The order of user messages and state updates, up to the idle
+            // update that ends the second prompt's work.
+            let mut order = Vec::new();
+            loop {
+                match next_update(&mut event_rx).await.update {
+                    v2::SessionUpdate::UserMessage(message) => {
+                        order.push(format!("user_message {}", message.message_id));
+                    }
+                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Running(_)) => {
+                        order.push("running".to_string());
+                    }
+                    v2::SessionUpdate::StateUpdate(v2::StateUpdate::Idle(idle)) => {
+                        let stop_reason = idle.stop_reason;
+                        order.push(format!("idle {stop_reason:?}"));
+                        if stop_reason == Some(v2::StopReason::EndTurn) {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(
+                order,
+                [
+                    format!("user_message {}", cancelled.message_id),
+                    "running".to_string(),
+                    format!("idle {:?}", Some(v2::StopReason::Cancelled)),
+                    format!("user_message {}", next.message_id),
+                    "running".to_string(),
+                    format!("idle {:?}", Some(v2::StopReason::EndTurn)),
+                ]
+            );
+            Ok(())
+        });
+
+    tokio::time::timeout(TIMEOUT, client)
+        .await
+        .expect("Testy v2 cancellation order timed out")
+        .expect("Testy v2 cancellation order failed");
 }
 
 /// Collect the IDs of the user messages reported for `session_id` until the

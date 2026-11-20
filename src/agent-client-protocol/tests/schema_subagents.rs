@@ -1,14 +1,11 @@
-//! Subagent updates use the existing `session/update` route. v1 needs
-//! `unstable_subagents`. v2 includes subagents since schema 1.18.
-
-#![cfg(any(feature = "unstable_subagents", feature = "unstable_protocol_v2"))]
+//! Subagent updates use the existing `session/update` route. v2 includes
+//! subagents since schema 1.18, and v1 since schema 1.20.
 
 use agent_client_protocol::{JsonRpcMessage, JsonRpcNotification};
 use serde_json::json;
 
 fn assert_notification<T: JsonRpcNotification>() {}
 
-#[cfg(feature = "unstable_subagents")]
 #[test]
 fn v1_subagent_update_uses_existing_session_notification_route() {
     use agent_client_protocol::v1::schema as v1;
