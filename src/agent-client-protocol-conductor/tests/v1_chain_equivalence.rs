@@ -389,6 +389,14 @@ async fn request_scoped_elicitation_references_survive_proxy_hops() {
             },
             agent_client_protocol::on_receive_dispatch!(),
         );
+    let typed_callback = Proxy.v1().on_receive_request_from(
+        Agent,
+        async |challenge: v1::CreateElicitationRequest, responder, cx| {
+            cx.prepare_request_to(Client, challenge)
+                .forward_response_to(responder)
+        },
+        agent_client_protocol::on_receive_request!(),
+    );
     let nested = ConductorImpl::new_proxy("inner", vec![Proxy.v1()]);
     for (path, components) in [
         ("direct", None),
@@ -398,6 +406,7 @@ async fn request_scoped_elicitation_references_survive_proxy_hops() {
             Some(chain().proxy(Proxy.v1()).proxy(Proxy.v1())),
         ),
         ("intercepting proxy", Some(chain().proxy(intercept))),
+        ("typed callback proxy", Some(chain().proxy(typed_callback))),
         ("nested conductor", Some(chain().proxy(nested))),
     ] {
         let (incoming, incoming_rx) = mpsc::unbounded::<io::Result<String>>();
@@ -416,8 +425,8 @@ async fn request_scoped_elicitation_references_survive_proxy_hops() {
         let mut recv = async || -> Value {
             let line = tokio::time::timeout(TIMEOUT, outgoing.next())
                 .await
-                .expect("peer should answer in time")
-                .expect("peer closed its output");
+                .unwrap_or_else(|_| panic!("{path}: timed out waiting for a message"))
+                .unwrap_or_else(|| panic!("{path}: peer closed its output"));
             serde_json::from_str(&line).unwrap()
         };
         send(json!({

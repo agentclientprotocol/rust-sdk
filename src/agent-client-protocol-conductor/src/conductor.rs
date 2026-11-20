@@ -759,6 +759,10 @@ where
         };
 
         match message {
+            // Any elicitation reference is already in the predecessor's namespace
+            // (translated on ingress). Send it as such, then relay the response;
+            // applying SDK proxy translation here would rewrite it a second time
+            // when a nested conductor shares a connection with both logical peers.
             Dispatch::Request(request, responder) => self
                 .send_request_to_predecessor_of(client, source_component_index, request)
                 .forward_response_to(responder),

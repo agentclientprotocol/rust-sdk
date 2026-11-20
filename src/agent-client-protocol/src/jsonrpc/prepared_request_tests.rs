@@ -452,7 +452,7 @@ fn default_proxy_only_returns_references_to_its_own_predecessor() {
             UntypedMessage::new("elicitation/create", json!({"requestId":sent.raw_id()})).unwrap();
         let translate = |request: &mut UntypedMessage| {
             lookup.translate_elicitation(UntypedRole.role_id(), request, |origin| {
-                origin.from_local_predecessor
+                origin.local_peer == Some(RemoteStyle::Predecessor)
             })
         };
         let result = translate(&mut challenge);

@@ -75,8 +75,7 @@ use crate::jsonrpc::termination::{
 };
 #[cfg(feature = "unstable_mcp_over_acp")]
 use crate::mcp_server::McpServer;
-use crate::role::HasPeer;
-use crate::role::Role;
+use crate::role::{HasPeer, RemoteStyle, Role};
 use crate::{Agent, ConnectTo, RoleId};
 
 /// One valid JSON-RPC message carried inside a [`TransportFrame`].
@@ -2613,9 +2612,9 @@ struct RequestOrigin {
     id: RawJsonRpcId,
     generation: u64,
     registry: Weak<Mutex<RequestCancellationRegistryInner>>,
-    /// A default SDK proxy can return an elicitation only to its own predecessor,
-    /// not to the origin of an arbitrary side request forwarded to its agent.
-    from_local_predecessor: bool,
+    /// For a proxy forwarding on the same connection, which logical peer
+    /// supplied the request. `None` for requests from another connection.
+    local_peer: Option<RemoteStyle>,
 }
 
 impl RequestOrigin {
@@ -3995,16 +3994,9 @@ impl<Counterpart: Role> ConnectionTo<Counterpart> {
         Counterpart: HasPeer<Peer>,
     {
         match message {
-            Dispatch::Request(request, responder) => {
-                let mut prepared = self.prepare_request_to(peer, request);
-                if let Err(error) = prepared
-                    .publication
-                    .translate_proxied_elicitation(&responder)
-                {
-                    return responder.respond_with_error(error);
-                }
-                prepared.forward_response_to(responder)
-            }
+            Dispatch::Request(request, responder) => self
+                .prepare_request_to(peer, request)
+                .forward_response_to(responder),
             Dispatch::Notification(notification) => {
                 // `$/cancel_request` is connection-scoped: its `requestId` was
                 // allocated on the connection the notification arrived over
@@ -4847,8 +4839,13 @@ impl<T: JsonRpcResponse, P: Protocol> Responder<T, P> {
             id: self.raw_id().clone(),
             generation: guard.cancellation.generation,
             registry: Arc::downgrade(&guard.cancellation.registry.inner),
-            from_local_predecessor: outgoing.same_receiver(&guard.message_tx)
-                && guard.wire_method != crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor,
+            local_peer: outgoing.same_receiver(&guard.message_tx).then(|| {
+                if guard.wire_method == crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor {
+                    RemoteStyle::Successor
+                } else {
+                    RemoteStyle::Predecessor
+                }
+            }),
         }
     }
 
@@ -5985,15 +5982,15 @@ struct RequestPublication {
 }
 
 impl RequestPublication {
-    /// When relaying a dispatch through an SDK proxy, both logical peers
-    /// share one connection. Restore a request reference only if the callback
-    /// came from its successor and the original request from its predecessor.
-    fn translate_proxied_elicitation<T: JsonRpcResponse, Q: Protocol>(
-        &mut self,
-        responder: &Responder<T, Q>,
-    ) -> Result<(), crate::Error> {
+    /// Both logical peers of an SDK proxy share a connection. When forwarding
+    /// a callback, translate its parent ID exactly once, at publication.
+    fn translate_proxied_elicitation(&mut self) -> Result<(), crate::Error> {
+        let Some(callback) = &self.pending_reply.forwarded_from else {
+            // A locally authored request is already in the destination's namespace.
+            return Ok(());
+        };
         let Ok(OutgoingMessage::Request {
-            remote_style: crate::role::RemoteStyle::Predecessor,
+            remote_style: RemoteStyle::Predecessor,
             untyped,
             ..
         }) = &mut self.message
@@ -6005,20 +6002,16 @@ impl RequestPublication {
         }
         self.pending_replies
             .translate_elicitation(Agent.role_id(), untyped, |origin| {
-                origin.from_local_predecessor
-                    && self
-                        .message_tx
-                        .same_receiver(&responder.drop_guard.message_tx)
-                    && responder.drop_guard.wire_method
-                        == crate::v1::schema::PROXY_METHOD_NAMES.proxy_successor
+                callback.local_peer == Some(RemoteStyle::Successor)
+                    && origin.local_peer == Some(RemoteStyle::Predecessor)
             })
     }
 
-    fn publish(self) -> Result<(), crate::Error> {
+    fn publish(mut self) -> Result<(), crate::Error> {
         let message = if self.incoming_closed.is_closing() {
             Err(incoming_transport_closed_error(&self.pending_reply.method))
         } else {
-            self.message
+            self.translate_proxied_elicitation().and(self.message)
         };
         let message = match message {
             Ok(message) => message,
@@ -6158,6 +6151,8 @@ impl<T, P: Protocol> PreparedRequest<T, P> {
     /// The association lets default ACP forwarding translate request-scoped
     /// elicitations and propagates cancellation from `responder`. Merely
     /// sharing a cancellation source does not establish request identity.
+    /// If this request is itself an elicitation forwarded to the client,
+    /// its request-scope ID is translated before sending.
     /// [`forward_response_to`](Self::forward_response_to) does this automatically.
     pub fn forwarded_from<Q: Protocol>(mut self, responder: &Responder<T, Q>) -> Self
     where
@@ -6800,6 +6795,8 @@ impl<T, P: Protocol> SentRequest<T, P> {
     /// This also records the upstream ID for request-scoped elicitations.
     /// When the peer can run concurrently, use [`PreparedRequest::forward_response_to`]
     /// to install that association before the outgoing request is observable.
+    /// Use the prepared form when relaying an elicitation back to the client:
+    /// an eager send can no longer change the callback's `params.requestId`.
     ///
     /// # Example: Proxying requests
     ///

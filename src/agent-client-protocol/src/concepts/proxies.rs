@@ -88,9 +88,11 @@
 //! If you transform the response yourself, use
 //! [`PreparedRequest::forwarded_from`](crate::PreparedRequest::forwarded_from)
 //! before registering your callback to preserve the upstream request's ID and cancellation.
-//! For the reverse direction, leave elicitation callbacks to default forwarding
-//! or relay the incoming dispatch with `cx.send_proxied_message_to(Client, message)`.
-//! An independently constructed request to `Client` already uses the client's ID namespace.
+//! To relay an elicitation back to the client, use default forwarding,
+//! `cx.send_proxied_message_to(Client, dispatch)`, or
+//! `cx.prepare_request_to(Client, request).forward_response_to(responder)` in a typed handler.
+//! An eager send cannot translate an already-published callback. Elicitations
+//! the proxy originates itself use the client's ID namespace and are not rewritten.
 //!
 //! # Adding MCP Servers
 //!

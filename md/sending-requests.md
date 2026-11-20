@@ -42,6 +42,11 @@ elicitation. If you need a custom response callback, call
 cancellation as well. Use `forward_cancellation_from(...)` instead for a child
 operation that should be cancelled with its parent but is not the same request.
 
+In the reverse direction, relay a request-scoped elicitation with
+`prepare_request_to(Client, challenge).forward_response_to(responder)` or
+`send_proxied_message_to(Client, dispatch)`. Both translate the challenge's
+`params.requestId` before sending it. An eager send cannot rewrite it afterward.
+
 Keep ordered callbacks short. They must not await another response,
 notification, or other inbound traffic on the same connection: dispatch cannot
 deliver that traffic until the callback returns. Enqueue application work and
